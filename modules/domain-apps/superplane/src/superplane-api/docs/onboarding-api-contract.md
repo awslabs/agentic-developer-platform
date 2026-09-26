@@ -73,7 +73,7 @@ tells a user their workspace is gone when it may be running and billable.
 |---|--------|------|-------|------------|---------|---------|-------|
 | 1 | `POST` | `/auth/login` | _public_ | — | `LoginRequest` | `LoginResponse` | `200`, `422` |
 | 2 | `GET` | `/orgs/current` | `organization` | `workspace:read` | — | `OrgResponse` | `200` |
-| 3 | `GET` | `/workspaces` | `organization` | `workspace:read` | — | `WorkspaceListResponse` | `200` |
+| 3 | `GET` | `/workspaces` | `organization` | `workspace:read` | — | `WorkspaceListResponse` or `EligibleClusterListResponse` | `200`, `422` |
 | 4 | `POST` | `/workspaces` | `organization` | `workspace:provision` | `CreateWorkspaceRequest` | `WorkspaceResponse` | `201`, `422` |
 | 5 | `GET` | `/workspaces/{workspace_id}` | `workspace` | `workspace:read` | — | `WorkspaceResponse` | `200`, `422` |
 | 6 | `DELETE` | `/workspaces/{workspace_id}` | `workspace` | `workspace:provision` | — | `WorkspaceDeleteResponse` | `200`, `422` |

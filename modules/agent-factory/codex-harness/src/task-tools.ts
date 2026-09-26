@@ -1,3 +1,4 @@
+import { observeOperation } from "./telemetry.js";
 import assert from "node:assert/strict";
 import { Ajv } from "ajv";
 import { z } from "zod";
@@ -66,7 +67,7 @@ export class TaskTools {
           const tool = this.descriptors.find(tool => tool.definition.name === name);
           if (!binding || !tool || binding.call.name !== name || this.completed.length >= this.maxCalls * 2) throw new Error("Task tool has no confirmed model binding");
           assert.deepEqual(JSON.parse(binding.call.arguments), args);
-          const result = confirmedTool.parse(await this.bridge.tool(tool.permission, args, { turn_id: binding.turn_id, call_id: binding.call.call_id }));
+          const result = confirmedTool.parse(await observeOperation("tool", () => this.bridge.tool(tool.permission, args, { turn_id: binding.turn_id, call_id: binding.call.call_id })));
           signal.throwIfAborted();
           if (Buffer.byteLength(result.content) > 32768) throw new Error("Task tool receipt exceeds bound");
           this.completed.push(binding.call, { type: "function_call_output", call_id: binding.call.call_id, output: [

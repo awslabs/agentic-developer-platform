@@ -28,6 +28,11 @@ async def test_task_model_requires_explicit_transport_selection(monkeypatch):
     [
         (module.TASK_PERSONA, module.TASK_CONTRACT_REVISION, module.TASK_REQUEST_SHAPE),
         (module.TASK_CYBER_PERSONA, module.TASK_CYBER_CONTRACT_REVISION, module.TASK_CYBER_REQUEST_SHAPE),
+        *(
+            (name, profile.harness_contract_revision, profile.request_shape_sha256)
+            for name, profile in module.TASK_PERSONAS.items()
+            if name.endswith("-developer")
+        ),
     ],
 )
 async def test_task_transport_cannot_reuse_cli_probe(monkeypatch, persona, revision, shape):
@@ -47,9 +52,9 @@ async def test_task_transport_cannot_reuse_cli_probe(monkeypatch, persona, revis
     )
     lookup = AsyncMock(return_value=None)
     monkeypatch.setattr(module, "lookup_evidence", lookup)
-    db = SimpleNamespace(
-        scalar=AsyncMock(return_value=SimpleNamespace(canonical_model_id="global.anthropic.claude-haiku-4-5-20251001-v1:0", revision=1))
-    )
+    native = module.TASK_PERSONAS[persona].compatibility_class == "codex-sdk"
+    model_id = "openai.gpt-6-astra" if native else "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    db = SimpleNamespace(scalar=AsyncMock(return_value=SimpleNamespace(canonical_model_id=model_id, revision=1)))
     with pytest.raises(ModelPolicyError, match="task_model_probe_required"):
         await module.resolve_task_model(
             db,
@@ -58,8 +63,9 @@ async def test_task_transport_cannot_reuse_cli_probe(monkeypatch, persona, revis
             deadline=datetime.now(UTC) + timedelta(minutes=30),
             expected_policy_version="1",
             persona=persona,
+            responses_tools=native,
         )
-    assert lookup.call_args.kwargs["compatibility_class"] == "anthropic_messages"
+    assert lookup.call_args.kwargs["compatibility_class"] == ("codex-sdk" if native else "anthropic_messages")
     assert lookup.call_args.kwargs["harness_contract_revision"] == revision
     assert lookup.call_args.kwargs["request_shape_sha256"] == shape
 

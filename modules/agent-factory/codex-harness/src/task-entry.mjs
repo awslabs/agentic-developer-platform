@@ -6,7 +6,7 @@ import { HostBridge, decode, encode, MAX_FRAME_BYTES } from './task-sdk/protocol
 import { taskHarness, parseTaskReport } from './task-adapter.js';
 import { runAdmittedSession } from './session.js';
 import { TaskTools } from './task-tools.js';
-import { startTelemetry, activeTraceparent } from './telemetry.js';
+import { startTelemetry, activeTraceparent, observeOperation } from './telemetry.js';
 
 console.log = console.info = console.debug = () => {};
 const transfers = new ArtifactTransfers();
@@ -51,13 +51,13 @@ async function run() {
     }, {
       ...(toolSession ? { toolBroker: toolSession.toolBroker } : {}),
       ...(JSON.parse(snapshot.definition).completionPolicy === 'validated-change' ? {
-        async verifyCompletion(signal) { signal.throwIfAborted(); return bridge.completion(); },
+        async verifyCompletion(signal) { signal.throwIfAborted(); return observeOperation("completion", () => bridge.completion()); },
       } : {}),
       async assertCurrent(signal) { signal.throwIfAborted(); await bridge.current(); signal.throwIfAborted(); },
       async model(request, signal) {
         signal.throwIfAborted();
         if (++operations > maxOperations) throw new Error('task model operation budget exhausted');
-        return toolSession ? toolSession.model(request, signal) : bridge.responses(request);
+        return observeOperation("model", () => toolSession ? toolSession.model(request, signal) : bridge.responses(request));
       },
       async progress(event) { if (event.type === 'turn.started') bridge.progress('Analysing the admitted task and supplied evidence.', 'analysis'); },
     });

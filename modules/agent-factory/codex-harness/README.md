@@ -159,7 +159,8 @@ still apply; more available turns do not imply more default model work.
 Host-only `ADP_CODEX_OTEL_ENDPOINT` selects an OTLP HTTP collector base URL.
 Admission freezes valid gateway trace context; SDK IPC carries W3C trace context
 and the signed worker transport emits W3C and X-Ray headers. Default telemetry
-contains identifiers, bounded metrics and event kinds, not task/source content.
+contains identifiers, bounded metrics, model/tool/completion spans and correlated
+operation logs, not task/source content.
 Exporter queues/timeouts are bounded and shutdown waits at most 750 ms. The
 collector setting is not copied into the isolated SDK subprocess. This provides
 export plumbing; production collector routing, dashboards and alerts remain to
@@ -170,7 +171,7 @@ The packaged Task keys `agent-task-gpt-developer` and
 `agent-task-gpt-intent-refinement` have authoritative Codex compatibility metadata
 and resolve to this shared entrypoint only when the host explicitly includes them
 in `ADP_CODEX_TASK_PERSONAS`. The Terraform `codex_task_personas` setting defaults
-to an empty set in every environment; `codex_otel_endpoint` similarly defaults
-to disabled export. No legacy mention or automatic routing is added. The gateway
+to an empty set in every environment; `codex_otel_endpoint` uses the existing ADOT collector when
+`enable_agent_otel` is true, and otherwise defaults to disabled export. No legacy mention or automatic routing is added. The gateway
 still requires a reviewed catalogue, current model evidence and explicit service
 policy; enabling a worker is not an admission grant.

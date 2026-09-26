@@ -94,6 +94,10 @@ def sdk_otel_collector(request, monkeypatch):
         turns = [span for span in spans if span["name"] == "adp.codex.turn"]
         assert turns and all(span["traceId"] == run["traceId"] for span in turns)
         assert any(path == "/v1/metrics" for path, _ in documents)
+        assert {"adp.codex.model", "adp.codex.tool", "adp.codex.completion"} <= {span["name"] for span in spans}
+        records = [record for path, doc in documents if path == "/v1/logs"
+            for resource in doc["resourceLogs"] for scope in resource["scopeLogs"] for record in scope["logRecords"]]
+        assert records and all(record["traceId"] == run["traceId"] and record["spanId"] for record in records)
         serialized = json.dumps(documents).lower()
         assert all(secret not in serialized for secret in ("run-secret", "source.txt", "authorization", "access_token"))
     finally:

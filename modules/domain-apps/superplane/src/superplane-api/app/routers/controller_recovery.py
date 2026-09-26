@@ -12,7 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
 
+from app.database import async_session_factory
 from app.routers.heartbeat import _authenticated_submitter
 
 
@@ -143,13 +145,18 @@ async def claim_context(request, claim):
         await require_deployment_registration(connection, operation)
         target = await connection.fetchrow(
             "SELECT w.id::text AS workspace_id,w.org_id::text AS domain_org_id,w.namespace_name AS namespace,"
-            "c.id::text AS cluster_id,c.eks_cluster_arn AS cluster_arn,c.endpoint FROM workspaces w "
+            "c.id::text AS cluster_id,c.eks_cluster_arn AS cluster_arn,c.endpoint,"
+            "w.shared_cluster_id::text AS shared_cluster_id FROM workspaces w "
             "JOIN clusters c ON c.id=w.cluster_id AND c.org_id=w.org_id WHERE w.id::text=$1 AND w.org_id::text=$2",
             claim.workspace_id,
             claim.org_id,
         )
     if target is None:
         raise HTTPException(403, "original recovery registration unavailable")
+    if target["shared_cluster_id"] is not None:
+        raise HTTPException(403, "shared controller recovery is unavailable")
+    target = dict(target)
+    target.pop("shared_cluster_id")
     return operation, dict(target), Plan.read(operation, target)
 
 
@@ -204,6 +211,7 @@ async def observation_provider(request, claim):
                             "ec2:GetTransitGatewayRouteTableAssociations",
                             "eks:DescribeCluster",
                             "sts:GetCallerIdentity",
+                            "ssm:GetCommandInvocation",
                         ],
                         "Resource": "*",
                     }
@@ -219,12 +227,21 @@ async def observation_provider(request, claim):
                     DurationSeconds=900,
                     Policy=json.dumps(policy),
                 )["Credentials"]
-                return boto3.Session(
+                session = boto3.Session(
                     aws_access_key_id=result["AccessKeyId"],
                     aws_secret_access_key=result["SecretAccessKey"],
                     aws_session_token=result["SessionToken"],
                     region_name=plan.cluster_region,
                 )
+                identity = session.client(
+                    "sts", region_name=plan.cluster_region
+                ).get_caller_identity()
+                prefix = f"arn:aws:sts::{plan.data['provider_account_id']}:assumed-role/{role.rsplit('/', 1)[-1]}/"
+                if identity.get("Account") != plan.data[
+                    "provider_account_id"
+                ] or not identity.get("Arn", "").startswith(prefix):
+                    raise HTTPException(403, "recovery provider identity refused")
+                return session
 
             session = await asyncio.to_thread(assume)
             await claim_context(request, claim)
@@ -233,12 +250,14 @@ async def observation_provider(request, claim):
     pool = SimpleNamespace(acquire=composition(request).operation_connect)
     sky = SkyPilot(sky_url, sky_token)
     try:
-        yield ReadProvider(
+        provider = ReadProvider(
             sky=sky,
             workspace=ReadWorkspace(directory, management),
             domain_pool=pool,
             execution_pool=pool,
         )
+        provider.node_observation_authorize = lambda: claim_context(request, claim)
+        yield provider
     finally:
         await sky.aclose()
 
@@ -285,28 +304,74 @@ async def observe(
     from superplane_executor.recovery_observation import observe_request
 
     permitted(submitter, body.claim.org_id)
-    operation, _, plan = await claim_context(request, body.claim)
+    operation, target, plan = await claim_context(request, body.claim)
     async with composition(request).operation_connect() as connection:
-        journal = await connection.fetchrow(
-            "SELECT j.request_id,j.operation_kind FROM controller_provider_requests j "
-            "JOIN harness_provider_call_intent c ON c.idempotency_key=j.idempotency_key "
-            "AND c.operation_id=j.operation_id AND c.org_id=j.org_id AND c.workspace_id=j.workspace_id "
-            "AND c.provider='aws' AND c.operation_kind=j.operation_kind AND c.target=j.cluster_name "
-            "WHERE j.idempotency_key=$1 AND j.operation_id=$2 AND j.org_id=$3 AND j.workspace_id=$4 "
-            "AND j.cluster_name=$5",
+        call = await connection.fetchrow(
+            "SELECT c.* FROM harness_provider_call_intent c "
+            "WHERE c.idempotency_key=$1 AND c.operation_id=$2 AND c.org_id=$3 AND c.workspace_id=$4 "
+            "AND c.provider='aws' AND c.target=$5 AND c.allocation_id=$6",
             body.idempotency_key,
             body.claim.operation_id,
             body.claim.org_id,
             body.claim.workspace_id,
             plan.cluster_name,
+            operation.request.parameters["allocation_id"],
         )
-    if journal is None or not journal["request_id"]:
+    if call is None:
         raise HTTPException(403, "journalled provider request unavailable")
+    from superplane_executor.recovery_workload import selected_call
+
+    selected_call(operation, plan, call)
+    # The domain transport journal and shared intent are separate authorities.
+    # A mismatched journal must not disappear through a permissive LEFT JOIN.
+    async with async_session_factory() as db:
+        journal = (
+            (
+                await db.execute(
+                    text(
+                        "SELECT * FROM controller_provider_requests WHERE idempotency_key=:key"
+                    ),
+                    {"key": body.idempotency_key},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    if journal is not None and any(
+        journal[key] != expected
+        for key, expected in {
+            "operation_id": call["operation_id"],
+            "org_id": call["org_id"],
+            "workspace_id": call["workspace_id"],
+            "operation_kind": call["operation_kind"],
+            "cluster_name": call["target"],
+        }.items()
+    ):
+        raise HTTPException(403, "original transport journal binding changed")
+    request_id = journal["request_id"] if journal is not None else None
+
+    async def authorize():
+        current, current_target, current_plan = await claim_context(request, body.claim)
+        if (
+            current.request != operation.request
+            or current.plan_digest != operation.plan_digest
+            or current_target != target
+            or current_plan != plan
+        ):
+            raise HTTPException(403, "original recovery context changed")
+
     async with observation_provider(request, body.claim) as provider:
         outcome, reference = await observe_request(
-            provider, operation, plan, **dict(journal)
+            provider,
+            operation,
+            plan,
+            operation_kind=call["operation_kind"],
+            request_id=request_id,
+            target=target,
+            call=call,
+            authorize=authorize,
         )
-    await claim_context(request, body.claim)
+    await authorize()
     permitted(await _authenticated_submitter(request), body.claim.org_id)
     return {
         "version": 1,

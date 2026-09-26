@@ -18,6 +18,7 @@ on:
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/codex-reviewer/**'
       - 'modules/agent-factory/task-agents/investigator/**'
+      - 'modules/tools/task-sdk/**'
       - 'tests/task-api/test_model_message_seam.py'
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/**'
@@ -32,6 +33,7 @@ on:
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/codex-reviewer/**'
       - 'modules/agent-factory/task-agents/investigator/**'
+      - 'modules/tools/task-sdk/**'
       - 'tests/task-api/test_model_message_seam.py'
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/**'
@@ -125,6 +127,19 @@ jobs:
       - name: Build and test the investigator task agent
         working-directory: modules/agent-factory/task-agents/investigator
         run: npm ci --include=dev && npm test
+      - name: Verify pinned Codex binary against the Task start protocol
+        run: |
+          set -euo pipefail
+          task_test_dir=$(mktemp -d)
+          trap 'rm -rf "$task_test_dir"' EXIT
+          export HOME="$task_test_dir/home" BG_CONFIG_DIR="$task_test_dir/bg" CODEX_HOME="$task_test_dir/codex"
+          export XDG_CONFIG_HOME="$task_test_dir/config" XDG_CACHE_HOME="$task_test_dir/cache" XDG_DATA_HOME="$task_test_dir/data"
+          export XDG_STATE_HOME="$task_test_dir/state" XDG_RUNTIME_DIR="$task_test_dir/runtime"
+          export AWS_CONFIG_FILE="$task_test_dir/aws-config" AWS_SHARED_CREDENTIALS_FILE="$task_test_dir/aws-credentials" AWS_EC2_METADATA_DISABLED=true
+          mkdir -p "$HOME"
+          codex_version=$(sed -n 's/^ARG CODEX_VERSION=//p' modules/agent-factory/agent-worker-image/Dockerfile)
+          npm install --prefix "$task_test_dir/package" --ignore-scripts --no-audit --no-fund "@openai/codex@$codex_version"
+          CODEX_BRIDGE_TEST_BIN="$task_test_dir/package/node_modules/.bin/codex" node --test modules/tools/task-sdk/test/*.test.mjs
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'

@@ -9,6 +9,7 @@ import json
 from uuid import uuid4
 
 import httpx
+from botocore.exceptions import ClientError
 from superplane_executor.workspace import Workspace
 
 
@@ -42,6 +43,16 @@ class Cloud:
             "BlockDeviceMappings": [{"Ebs": {"VolumeId": "vol-0123456789abcdef0"}}],
             "NetworkInterfaces": [{"NetworkInterfaceId": "eni-0123456789abcdef0"}],
         }
+
+    @property
+    def node_region(self):
+        # Provider-observed location follows SkyPilot's actual selection, never
+        # the region of the bound EKS control plane.
+        return self.launched_region or self.data["region"]
+
+    @property
+    def node_zone(self):
+        return self.node_region + "a"
 
     def client(self, name, region_name=None, **kwargs):
         self._client_region = region_name
@@ -176,6 +187,7 @@ class Cloud:
                         dict(
                             self.instance,
                             State={"Name": "running" if self.exists else "terminated"},
+                            Placement={"AvailabilityZone": self.node_zone},
                         )
                     ]
                 }
@@ -183,6 +195,12 @@ class Cloud:
         }
 
     def describe_volumes(self, **kwargs):
+        if "VolumeIds" in kwargs and not (
+            (self.exists or self.leaked_volume) and self._here()
+        ):
+            raise ClientError(
+                {"Error": {"Code": "InvalidVolume.NotFound"}}, "DescribeVolumes"
+            )
         return {
             "Volumes": [{"VolumeId": "vol-0123456789abcdef0", "State": "in-use"}]
             if (self.exists or self.leaked_volume) and self._here()
@@ -190,6 +208,11 @@ class Cloud:
         }
 
     def describe_network_interfaces(self, **kwargs):
+        if "NetworkInterfaceIds" in kwargs and not (self.exists and self._here()):
+            raise ClientError(
+                {"Error": {"Code": "InvalidNetworkInterfaceID.NotFound"}},
+                "DescribeNetworkInterfaces",
+            )
         return {
             "NetworkInterfaces": [
                 {"NetworkInterfaceId": "eni-0123456789abcdef0", "Status": "in-use"}
@@ -199,7 +222,44 @@ class Cloud:
         }
 
     def describe_addresses(self, **kwargs):
+        if "AllocationIds" in kwargs:
+            raise ClientError(
+                {"Error": {"Code": "InvalidAllocationID.NotFound"}}, "DescribeAddresses"
+            )
         return {"Addresses": []}
+
+
+def completed_job_pod(job):
+    """Declared completed ordinary Pod from the actual submitted Job template."""
+    pod = json.loads(json.dumps(job["spec"]["template"]))
+    pod["metadata"].update(
+        name=job["metadata"]["name"] + "-pod",
+        namespace=job["metadata"]["namespace"],
+        uid="pod-" + job["metadata"]["uid"],
+        resourceVersion="1",
+        ownerReferences=[
+            {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "name": job["metadata"]["name"],
+                "uid": job["metadata"]["uid"],
+                "controller": True,
+                "blockOwnerDeletion": True,
+            }
+        ],
+    )
+    pod["spec"].update(nodeName="allocated-node", dnsPolicy="ClusterFirst")
+    pod["status"] = {
+        "phase": "Succeeded",
+        "podIP": "10.1.2.3",
+        "containerStatuses": [
+            {
+                "name": "workload",
+                "state": {"terminated": {"exitCode": 0}},
+            }
+        ],
+    }
+    return pod
 
 
 class Kubernetes(Workspace):
@@ -207,6 +267,8 @@ class Kubernetes(Workspace):
         self.cloud = cloud
         self.stored = {}
         self.requests = []
+        self.node = None
+        self.node_deleted = False
 
     async def request(
         self, operation, target, method, path, *, body=None, headers=None
@@ -216,26 +278,83 @@ class Kubernetes(Workspace):
             return httpx.Response(200, json={"status": {"phase": "Active"}})
         if "/superplane.ai/" in path:
             return httpx.Response(200, json={"items": []})
+        if self.node is None and self.cloud.exists and not self.node_deleted:
+            self.node = {
+                "metadata": {
+                    "name": "allocated-node",
+                    "uid": "allocated-node-uid",
+                    "resourceVersion": "1",
+                    "labels": {
+                        "superplane.ai/capacity": self.cloud.sky_tasks[-1]["name"],
+                        "superplane.ai/workspace": operation.grant.lease.workspace_id,
+                        "topology.kubernetes.io/region": self.cloud.node_region,
+                        "topology.kubernetes.io/zone": self.cloud.node_zone,
+                    },
+                },
+                "spec": {
+                    "providerID": f"aws:///{self.cloud.node_zone}/{self.cloud.instance['InstanceId']}"
+                },
+                "status": {
+                    "conditions": [{"type": "Ready", "status": "True"}],
+                    "allocatable": {"nvidia.com/gpu": "1"},
+                },
+            }
         if path.startswith("/api/v1/nodes?"):
+            return httpx.Response(200, json={"items": [self.node] if self.node else []})
+        if path == "/api/v1/nodes/allocated-node":
+            if self.node is None:
+                return httpx.Response(404)
+            if method == "PATCH":
+                assert headers == {"Content-Type": "application/json-patch+json"}
+                if body[:2] != [
+                    {
+                        "op": "test",
+                        "path": "/metadata/uid",
+                        "value": self.node["metadata"]["uid"],
+                    },
+                    {
+                        "op": "test",
+                        "path": "/metadata/resourceVersion",
+                        "value": self.node["metadata"]["resourceVersion"],
+                    },
+                ]:
+                    return httpx.Response(409)
+                assert body[2] == {
+                    "op": "add",
+                    "path": "/spec/unschedulable",
+                    "value": True,
+                }
+                self.node["spec"]["unschedulable"] = True
+                self.node["metadata"]["resourceVersion"] = str(
+                    int(self.node["metadata"]["resourceVersion"]) + 1
+                )
+            if method == "DELETE":
+                assert not self.cloud.exists, (
+                    "original compute must terminate before Node removal"
+                )
+                if body["preconditions"]["uid"] != self.node["metadata"]["uid"]:
+                    return httpx.Response(409)
+                self.node = None
+                self.node_deleted = True
+                return httpx.Response(200, json={})
+            return httpx.Response(200, json=self.node)
+        if "/pods?" in path:
             return httpx.Response(
                 200,
                 json={
                     "items": [
-                        {
-                            "spec": {
-                                "providerID": "aws:///us-east-1a/i-0123456789abcdef0"
-                            },
-                            "status": {
-                                "conditions": [{"type": "Ready", "status": "True"}]
-                            },
-                        }
+                        completed_job_pod(obj)
+                        for obj in self.stored.values()
+                        if obj["kind"] == "Job"
                     ]
-                    if self.cloud.exists
-                    else []
                 },
             )
-        if "/pods?" in path:
-            return httpx.Response(200, json={"items": []})
+        if method == "GET" and "/pods/" in path:
+            for obj in self.stored.values():
+                if obj["kind"] == "Job":
+                    pod = completed_job_pod(obj)
+                    if path.endswith("/" + pod["metadata"]["name"]):
+                        return httpx.Response(200, json=pod)
         if "/secrets/" in path:
             return httpx.Response(
                 200,

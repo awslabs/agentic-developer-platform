@@ -17,7 +17,7 @@ export async function readExplanations(invocationId: string, cursor: string | un
   const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' };
   if (cursor) headers['Last-Event-ID'] = cursor;
   const response = await fetch(`${deploymentSetting('VITE_API_URL') || '/api'}/activity/invocations/${encodeURIComponent(invocationId)}/agent/events`,
-    { headers, signal, cache: 'no-store' });
+    { headers, signal, cache: 'no-store', redirect: 'error' });
   if (!response.ok) {
     const detail = response.status === 409 ? await response.json().catch(() => ({})) : {};
     throw new FeedError(response.status, detail.detail === 'run has reached a terminal state');

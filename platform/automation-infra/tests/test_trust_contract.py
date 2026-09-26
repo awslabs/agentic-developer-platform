@@ -50,6 +50,7 @@ def test_all_action_jobs_run_on_arc():
                 "arc-runner-agent",
                 "${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}",
                 {"group": "adp-deployment", "labels": "arc-runner-deployment"},
+                {"group": "Default", "labels": "arc-runner-org"},
             ], f"{path.name}/{name}: GitHub Actions must run via ARC"
 
 
@@ -98,6 +99,13 @@ def assert_gateway_reviewed_source(workflow, job, authority_index):
 # individually below rather than in this parametrized loop.
 DEDICATED_ACTION_WORKFLOWS = {"webhook-code-deploy.yml"}
 
+# Gateway release uses the existing ARC pool with its reduced ambient role.
+# Protected environments, main-source checks and OIDC remain mandatory below.
+GATEWAY_EXISTING_RUNNER_WORKFLOWS = {
+    "gateway-deploy.yml", "run-gateway-migrations.yml", "gateway-infra-apply.yml",
+    "gateway-smoke.yml", "pricing-finalize.yml",
+}
+
 
 @pytest.mark.parametrize("kind", ["deployment", "build"])
 def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
@@ -116,7 +124,12 @@ def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
             found += 1
             assert len(matching) == 1, name
             assert "github.ref == 'refs/heads/main'" in job["if"], name
-            assert job["runs-on"] == {"group": "adp-deployment", "labels": "arc-runner-deployment"}, name
+            expected_runner = (
+                "arc-runner-org"
+                if name in GATEWAY_EXISTING_RUNNER_WORKFLOWS
+                else {"group": "adp-deployment", "labels": "arc-runner-deployment"}
+            )
+            assert job["runs-on"] == expected_runner, name
             assert job["environment"].startswith("adp-deploy-" if kind == "deployment" else "adp-build-"), name
             assert job["permissions"]["id-token"] == "write", name
             if name == "gateway-infra-apply.yml":

@@ -248,7 +248,7 @@ ${local.agent_worker_pause_annotation}
                   - name: ADP_CODEX_TASK_PERSONAS
                     value: ${jsonencode(join(",", sort(tolist(var.codex_task_personas))))}
                   - name: ADP_CODEX_OTEL_ENDPOINT
-                    value: ${jsonencode(var.codex_otel_endpoint)}
+                    value: ${jsonencode(var.codex_otel_endpoint != "" ? var.codex_otel_endpoint : var.enable_agent_otel ? "http://adot-collector.adp-agents.svc.cluster.local:4318" : "")}
                   - name: CODEX_REVIEWER_APPLY_FIXES
                     value: "${var.codex_reviewer_apply_fixes}"
                   - name: CODEX_REVIEWER_MERGE_ENABLED

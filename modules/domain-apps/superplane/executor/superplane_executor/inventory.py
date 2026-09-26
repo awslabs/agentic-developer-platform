@@ -99,7 +99,8 @@ class Finalizer:
         creating = {
             call["operation_kind"]: call["idempotency_key"]
             for call in calls
-            if call["operation_kind"] in ("launch", "deploy")
+            if call["operation_kind"]
+            in ("launch", "deploy", "run-node-bootstrap", "run-node-probe")
         }
 
         def add(reference, kind, operation_kind, region=None):
@@ -142,6 +143,13 @@ class Finalizer:
                 )
                 if allocation := interface.get("Association", {}).get("AllocationId"):
                     add(allocation, "address", "launch", instance["SuperplaneRegion"])
+        from .node_inventory import discover as discover_nodes
+
+        resources.update(
+            await discover_nodes(
+                self.provider, operation, target, plan, resources, instances
+            )
+        )
         for obj in self.provider.workspace.objects(operation, target, plan):
             response = await self.provider.workspace.request(
                 operation,
@@ -217,9 +225,21 @@ class Finalizer:
             )
             for reference, resource in network.items():
                 resources.setdefault(reference, resource)
+        if plan.node_bootstrap is not None:
+            from .node_command_inventory import discover
+
+            resources.update(await discover(self.provider, operation))
         return resources
 
     async def observe(self, operation, target, plan, resource):
+        if resource.kind == "kubernetes_node":
+            from .node_inventory import observe
+
+            return await observe(self.provider, operation, target, plan, resource)
+        if resource.kind == "node_command":
+            from .node_command_inventory import observe
+
+            return await observe(self.provider, operation, plan, resource)
         if resource.kind == "network_dependency":
             from .network_inventory import observe
 
@@ -254,11 +274,22 @@ class Finalizer:
                     "GET",
                     self.provider.workspace.path(target, "Pod")
                     + "?labelSelector="
-                    + selector,
+                    + selector
+                    + "&limit=257",
                 )
                 if pods.status_code != 200:
                     raise ValueError("dependent pod read unavailable")
-                if pods.json().get("items"):
+                listing = pods.json()
+                if (
+                    not isinstance(listing, dict)
+                    or not isinstance(listing.get("metadata", {}), dict)
+                    or listing.get("metadata", {}).get("continue")
+                    or not isinstance(listing.get("items"), list)
+                    or len(listing["items"]) > 256
+                    or any(not isinstance(pod, dict) for pod in listing["items"])
+                ):
+                    raise ValueError("complete bounded dependent pod listing required")
+                if listing["items"]:
                     return ResourceObservation(
                         ResourcePresence.PRESENT, ref, "dependent_pods_present"
                     )
@@ -342,10 +373,21 @@ class Finalizer:
                     for reservation in items
                     for instance in reservation["Instances"]
                 ]
-                if items and items[0]["State"]["Name"] == "terminated":
+            identity_key = {
+                "instance": "InstanceId",
+                "volume": "VolumeId",
+                "network_interface": "NetworkInterfaceId",
+                "address": "AllocationId",
+            }[resource.kind]
+            if len(items) != 1 or items[0].get(identity_key) != raw_ref:
+                return ResourceObservation(
+                    ResourcePresence.UNKNOWN,
+                    ref,
+                    detail="exact provider identity unavailable",
+                )
+            if resource.kind == "instance":
+                if items[0]["State"]["Name"] == "terminated":
                     return ResourceObservation(ResourcePresence.ABSENT, ref)
-            if not items:
-                return ResourceObservation(ResourcePresence.ABSENT, ref)
             state = items[0].get("State", items[0].get("Status", "present"))
             if isinstance(state, dict):
                 state = state["Name"]
@@ -418,8 +460,20 @@ class Finalizer:
         }
         return payload
 
-    async def persist(self, operation, target, calls, assessment=None):
+    async def accounting_with_costs(self, operation, target, calls, assessment=None):
+        from .cost_evidence import build_cost_evidence
+
         payload = self.accounting(operation, calls, assessment)
+        resources = await self.known(
+            operation.grant.lease, operation.request.parameters["allocation_id"]
+        )
+        payload["cost_evidence"] = build_cost_evidence(
+            operation, Plan.read(operation, target), resources, payload
+        )
+        return payload
+
+    async def persist(self, operation, target, calls, assessment=None):
+        payload = await self.accounting_with_costs(operation, target, calls, assessment)
         # Retiring capacity and publishing a release observation both require
         # the original live fence, including after a slow provider listing.
         async with (

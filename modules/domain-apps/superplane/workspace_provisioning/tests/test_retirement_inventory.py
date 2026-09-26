@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 import json
+from uuid import uuid4
 
 import pytest
 
@@ -30,6 +31,46 @@ def test_actual_bootstrap_journal_supplies_retirement_ownership(runtime):
         grant.identity.get("uid") or grant.identity.get("arn")
         for grant in inventory.grants
     )
+
+
+def test_dedicated_owner_cannot_retire_after_cluster_opens_for_sharing(runtime):
+    assert runtime.run().ready
+    db = runtime.store.store
+    with db.transaction():
+        db.execute("UPDATE clusters SET sharing_enabled=true", {})
+    with pytest.raises(BootstrapRefused, match="membership-scoped retirement"):
+        load(runtime)
+    # Withdrawal of sharing eligibility restores the unchanged dedicated path;
+    # no cluster/namespace/credential object was removed by the refused review.
+    with db.transaction():
+        db.execute("UPDATE clusters SET sharing_enabled=false", {})
+    assert load(runtime).remove_namespace
+
+
+def test_live_peer_prevents_owner_retirement_even_after_sharing_is_disabled(runtime):
+    assert runtime.run().ready
+    db = runtime.store.store
+    peer, member = str(uuid4()), str(uuid4())
+    with db.transaction():
+        db.execute(
+            "INSERT INTO workspaces(id,org_id,name,isolation_mode,status,is_default) "
+            "SELECT CAST(:peer AS uuid),org_id,'peer','namespace','Provisioning',false "
+            "FROM workspaces WHERE id=CAST(:owner AS uuid)",
+            {"peer": peer, "owner": runtime.target.workspace_id},
+        )
+        db.execute(
+            "INSERT INTO cluster_memberships(id,org_id,workspace_id,cluster_id,generation,namespace,state) "
+            "SELECT CAST(:member AS uuid),org_id,CAST(:peer AS uuid),id,:generation,'peer','reserved' "
+            "FROM clusters WHERE workspace_id=CAST(:owner AS uuid)",
+            {
+                "member": member,
+                "peer": peer,
+                "owner": runtime.target.workspace_id,
+                "generation": "a" * 64,
+            },
+        )
+    with pytest.raises(BootstrapRefused, match="membership-scoped retirement"):
+        load(runtime)
 
 
 @pytest.mark.parametrize("change", ["action", "expiry", "org"])

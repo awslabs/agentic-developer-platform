@@ -19,6 +19,7 @@ from src.internal.persona_model_probe_service import (
 )
 from src.shared.config import get_settings
 from src.shared.database import get_db
+from src.tasks.personas import TASK_PERSONAS
 
 router = APIRouter(prefix="/internal/v1/persona-model-probes", tags=["internal-model-probes"])
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -30,11 +31,13 @@ class StrictBody(BaseModel):
 
 
 class ClaimRequest(StrictBody):
+    task_persona: Literal["agent-task-investigator", "agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"] | None = None
     trigger: Literal["scheduled", "manual", "change"] = "scheduled"
 
 
 class ClaimResponse(BaseModel):
     claimed: bool
+    task_probe_json: str | None = None
     reason: str | None = None
     slot_id: str | None = None
     lease_token: str | None = None
@@ -113,12 +116,13 @@ async def verify_model_probe_irsa(
 
 @router.post("/claim", response_model=ClaimResponse, dependencies=[Depends(verify_model_probe_irsa)])
 async def claim(body: ClaimRequest, db: AsyncSession = Depends(get_db)) -> ClaimResponse:
-    result = await claim_probe(db, trigger=body.trigger)
+    result = await claim_probe(db, trigger=body.trigger, task_persona=body.task_persona)
     if not result.claimed or result.slot is None:
         return ClaimResponse(claimed=False, reason=result.reason)
     slot = result.slot
     return ClaimResponse(
         claimed=True,
+        task_probe_json=TASK_PERSONAS[body.task_persona].probe_json if body.task_persona else None,
         slot_id=slot.id,
         lease_token=result.lease_token,
         model_id=slot.canonical_model_id,

@@ -1,3 +1,4 @@
+import { TaskActivity } from '@/components/activity/TaskActivity';
 /**
  * Agent Activity page — paginated list of agent invocations.
  *
@@ -896,6 +897,8 @@ export default function AgentActivity() {
           )}
         </div>
       </div>
+
+      {viewMode === 'mine' && <TaskActivity onOpen={setDetailItem} />}
 
       {/* Filters */}
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">

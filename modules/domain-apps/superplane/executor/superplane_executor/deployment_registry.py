@@ -12,6 +12,8 @@ from .deployment_plan import (
     validate_request,
 )
 
+from .network_probe_contract import COMMAND as PROBE_COMMAND
+
 REGISTRY_TABLE = "controller_deployment_operations"
 
 
@@ -111,7 +113,15 @@ async def registration_values(
         elif (
             set(document) != BATCH_FIELDS | {"name", "profile_id", "kind"}
             or document["kind"] != "batch"
-            or any(document[key] != workload[key] for key in BATCH_FIELDS)
+            or any(
+                document[key]
+                != (
+                    []
+                    if key == "args" and workload["command"] == PROBE_COMMAND
+                    else workload[key]
+                )
+                for key in BATCH_FIELDS
+            )
             or intent["desired_replicas"] != 1
             or intent["gpu_per_replica"] != workload["gpu_count"]
             or any(intent[key] is not None for key in model_fields)
@@ -127,27 +137,22 @@ async def registration_values(
             ):
                 raise ValueError("create request changed")
         elif request.action == "teardown":
-            source = await connection.fetchrow(
-                "SELECT o.request_payload,o.plan_digest,o.state,r.* FROM controller_deployment_operations r "
-                "JOIN harness_operations o ON o.operation_id=r.operation_id "
-                "AND o.org_id=r.org_id AND o.workspace_id=r.workspace_id AND o.plan_digest=r.plan_digest "
-                "JOIN harness_operation_leases l ON l.operation_id=o.operation_id "
-                "AND l.org_id=o.org_id AND l.workspace_id=o.workspace_id AND l.closed_at IS NOT NULL "
-                "WHERE r.operation_id=$1 AND r.org_id=$2 AND r.workspace_id=$3 "
-                "AND r.deployment_id=$4 AND r.action='provision'",
-                source_id,
-                org_id,
-                workspace_id,
-                deployment_id,
+            from .cleanup_binding import source_for, validate
+
+            source = await source_for(
+                connection,
+                org_id=org_id,
+                workspace_id=workspace_id,
+                deployment_id=deployment_id,
+                source_id=source_id,
             )
-            # Do not race a live create; cancellation/recovery must settle its
-            # provider intent first. Unknown is intentionally not sufficient.
-            if source is None or source["state"] not in {
-                "succeeded",
-                "failed",
-                "cancelled",
-            }:
-                raise ValueError("original create is not settled")
+            await validate(
+                connection,
+                source,
+                request,
+                approval_id=row["approval_id"],
+                require_binding=True,
+            )
             original = decode_payload(source["request_payload"])
             if (
                 original != original_request

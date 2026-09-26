@@ -377,14 +377,18 @@ def test_create_receipt_uses_the_request_gateway_when_legacy_config_changes(gate
     with pytest.raises(common.CliError) as raised:
         cli.run(cli.parser().parse_args(["workspace", "create", "--name", "new-ws", "--yes"]), api)
     assert raised.value.code == "create_delivery_uncertain"
-    assert requested_urls == [gateway.url + cli.DOMAIN_CAPABILITIES, gateway.url + cli.API_BASE + "/workspaces"]
+    assert requested_urls == [
+        gateway.url + cli.DOMAIN_CAPABILITIES,
+        gateway.url + common.CAPABILITIES_PATH,
+        gateway.url + cli.API_BASE + "/workspaces",
+    ]
     receipt = next(iter(cli.create_recoveries().values()))
     assert receipt["recovery_context"]["gateway"] == gateway.url
     assert token not in json.dumps(receipt)
     # A later command binds a new transport without reusing this command's pin.
     context = CURRENT_RECOVERY_CONTEXT(cli.SessionApi(cli.LazyApi()))
     assert context["gateway"] == selected_gateway[0]
-    assert gateway.paths() == [capability_path, create_path]
+    assert gateway.paths() == [capability_path, "/api/me/cli-capabilities", create_path]
 
 
 def test_provider_delete_keeps_the_original_token_when_another_terminal_switches(gateway, monkeypatch):
@@ -410,7 +414,7 @@ def test_provider_delete_keeps_the_original_token_when_another_terminal_switches
     result = cli.run(_delete_args(), api)
 
     assert result["status"] == "ok"
-    assert headers == ["Bearer " + original_token] * 3
+    assert headers == ["Bearer " + original_token] * 4
     assert reads == [original_token]
     assert cli.provider_delete_recoveries() == {}
     # A separate command may use the newly selected session; the pin is local.
@@ -445,7 +449,7 @@ def test_lost_provider_put_and_receipt_use_the_same_token_before_any_request(gat
     with pytest.raises(common.CliError) as raised:
         cli.run(_add_args(), api)
     assert raised.value.code == "provider_vault_uncertain"
-    assert headers == ["Bearer " + original_token] * 2
+    assert headers == ["Bearer " + original_token] * 3
     assert reads == [original_token]
     receipt = cli.provider_recoveries()[VAULT_REFERENCE]
     assert receipt["recovery_context"]["principal"] == "user-1"
@@ -455,7 +459,7 @@ def test_lost_provider_put_and_receipt_use_the_same_token_before_any_request(gat
     with pytest.raises(common.CliError) as raised:
         cli.run(cli.parser().parse_args(["provider", "add", "--recover", VAULT_REFERENCE, "--yes"]), api)
     assert raised.value.code == "provider_recovery_context_mismatch"
-    assert headers == ["Bearer " + original_token] * 2
+    assert headers == ["Bearer " + original_token] * 3
     assert cli.provider_recoveries()[VAULT_REFERENCE] == receipt
 
 
@@ -480,7 +484,7 @@ def test_expired_pinned_token_does_not_switch_identity_to_finish_provider_cleanu
         cli.run(_delete_args(), api)
     assert raised.value.code == "provider_delete_incomplete"
     assert len(reads) == 1
-    assert headers == ["Bearer " + original_token] * 3
+    assert headers == ["Bearer " + original_token] * 4
     assert cli.provider_delete_recoveries()[DOMAIN_RECORD]["recovery_context"]["tenant"] == "org-1"
 
 
@@ -535,6 +539,58 @@ def test_malformed_json_is_still_a_failure(gateway) -> None:
     finally:
         api.opener.open = original
     assert raised.value.code == "gateway_unavailable"
+
+
+def test_a_read_timeout_has_the_stable_timeout_subcode(gateway) -> None:
+    api = _api(gateway)
+    api.opener.open = lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError())
+
+    with pytest.raises(common.CliError) as raised:
+        api.request("GET", cli.API_BASE + "/workspaces")
+
+    assert raised.value.code == "request_timeout"
+    assert raised.value.exit_code == 4
+
+
+def test_an_unconfirmed_mutation_is_not_reported_as_safe_to_retry(gateway) -> None:
+    api = _api(gateway)
+    api.opener.open = lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError())
+
+    with pytest.raises(common.CliError) as raised:
+        api.request("DELETE", cli.API_BASE + "/providers/cred-1")
+
+    assert raised.value.code == "unknown_mutation_outcome"
+    assert raised.value.exit_code == 4
+    assert "do not retry blindly" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "expected"),
+    [
+        (402, {"error": "budget_exceeded", "message": "Budget limit exceeded"}, "budget_exhausted"),
+        (409, {"detail": {"reason": "revision_conflict"}}, "stale_revision"),
+        (409, {"detail": {"reason": "default_revision_conflict"}}, "stale_revision"),
+    ],
+)
+def test_serialized_server_errors_use_the_stable_shared_contract(gateway, status, payload, expected) -> None:
+    gateway.route("POST", f"/api{cli.API_BASE}/workspaces", status, payload)
+
+    with pytest.raises(common.CliError) as raised:
+        _api(gateway).request("POST", cli.API_BASE + "/workspaces", {})
+
+    assert raised.value.code == expected
+    assert raised.value.exit_code == 4
+    assert f"({expected})" in str(raised.value)
+
+
+def test_established_auth_exit_codes_are_not_remapped(gateway) -> None:
+    gateway.route("GET", f"/api{cli.API_BASE}/workspaces", 401, {"detail": "expired"})
+
+    with pytest.raises(common.CliError) as raised:
+        _api(gateway).request("GET", cli.API_BASE + "/workspaces")
+
+    assert raised.value.code == "http_error"
+    assert raised.value.exit_code == 2
 
 
 def test_an_unreachable_gateway_is_still_reported(gateway) -> None:
@@ -600,7 +656,7 @@ def test_delete_sends_the_record_id_to_the_domain_and_the_reference_to_the_vault
     assert result["detail"]["domain_metadata"] == "deleted"
     assert result["detail"]["vault_credential"] == "deleted"
     # Read first, then delete each store with ITS OWN identifier, in that order.
-    assert gateway.paths() == [DOMAIN_LIST, DOMAIN_RECORD_PATH, f"{VAULT_LIST}/{VAULT_REFERENCE}"]
+    assert gateway.paths() == [DOMAIN_LIST, "/api/me/cli-capabilities", DOMAIN_RECORD_PATH, f"{VAULT_LIST}/{VAULT_REFERENCE}"]
 
 
 def test_delete_accepts_the_vault_reference_as_well_as_the_record_id(gateway) -> None:
@@ -1031,7 +1087,7 @@ def test_a_failed_registration_removes_only_the_credential_this_run_created(gate
     assert "safe to retry" in str(raised.value)
     # No lookup was performed to decide what to delete — a list call is how a
     # label-matching cleanup would have found its victim.
-    assert gateway.paths("GET") == []
+    assert gateway.paths("GET") == ["/api/me/cli-capabilities"]
 
 
 def test_a_committed_registration_with_a_lost_response_is_reconciled_without_deleting_the_vault(gateway, monkeypatch) -> None:
@@ -1105,7 +1161,7 @@ def test_a_malformed_first_vault_success_is_reconciled_by_its_exact_operation_id
 
     assert result["detail"]["adp_credential_id"] == VAULT_REFERENCE
     assert gateway.paths("PUT") == [VAULT_RECORD_PATH]
-    assert gateway.paths("GET") == [VAULT_LIST]
+    assert gateway.paths("GET") == ["/api/me/cli-capabilities", VAULT_LIST]
     assert cli.provider_recoveries() == {}
 
 
@@ -1123,7 +1179,7 @@ def test_failed_server_cleanup_retains_the_exact_vault_recovery_receipt(gateway,
         cli.run(_add_args(), _api(gateway))
 
     assert raised.value.code == "provider_vault_uncertain"
-    assert gateway.paths() == [VAULT_RECORD_PATH, VAULT_LIST]
+    assert gateway.paths() == ["/api/me/cli-capabilities", VAULT_RECORD_PATH, VAULT_LIST]
     assert cli.provider_recoveries()[VAULT_REFERENCE]["phase"] == "vault_pending"
 
 
@@ -1169,7 +1225,7 @@ def test_a_vault_conflict_retains_its_receipt_and_replays_only_the_same_operatio
 
     assert raised.value.code == "provider_vault_conflict"
     assert f"--recover {VAULT_REFERENCE} --stdin --yes" in str(raised.value)
-    assert gateway.paths() == [VAULT_RECORD_PATH]
+    assert gateway.paths() == ["/api/me/cli-capabilities", VAULT_RECORD_PATH]
     assert cli.provider_recoveries()[VAULT_REFERENCE]["phase"] == "vault_conflict"
 
     def fresh_identity():
@@ -1499,7 +1555,7 @@ def test_an_old_vault_without_idempotent_put_fails_before_any_secret_write(gatew
 
     assert raised.value.code == "vault_idempotency_unavailable"
     assert raised.value.exit_code == 4
-    assert gateway.paths() == [VAULT_RECORD_PATH]
+    assert gateway.paths() == ["/api/me/cli-capabilities", VAULT_RECORD_PATH]
     assert cli.provider_recoveries() == {}
 
 

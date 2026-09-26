@@ -263,3 +263,25 @@ async def test_historical_adoption_api_refuses_active_attempt_before_provider(se
     response = read.client_for(app_with_router).post(recovery_url(node), json=body(adopt_delivery=True))
     assert response.status_code == 409
     providers.assert_not_awaited()
+
+
+async def test_cli_recovery_revision_fences_binding_and_duplicate(session, app_with_router, providers):
+    from src.orchestration.recovery_snapshot import snapshot
+
+    node, _ = await _story(session, binding_marker=False)
+    _, before = await snapshot(session, org_id=node.org_id, node_id=node.id, flow_id=node.flow_id)
+    client = read.client_for(app_with_router)
+    request = body(head_sha=HEAD, expected_revision=before["revision"])
+    response = client.post(recovery_url(node), json=request)
+    assert response.status_code == 200, response.text
+    providers.reset_mock()
+    assert client.post(recovery_url(node), json=request).status_code == 409
+    providers.assert_not_called()
+    bindings = list((await session.scalars(select(OrchestrationPullRequestBinding))).all())
+    assert len(bindings) == 1
+    _, current = await snapshot(session, org_id=node.org_id, node_id=node.id, flow_id=node.flow_id)
+    bindings[0].revision += 1
+    await session.commit()
+    request["expected_revision"] = current["revision"]
+    assert client.post(recovery_url(node), json=request).status_code == 409
+    providers.assert_not_called()

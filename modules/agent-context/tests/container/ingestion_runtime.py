@@ -28,7 +28,7 @@ def refused_write(path):
 
 def main():
     sys.path.insert(0, "/app")
-    assert os.getuid() == 1001 and os.getgid() == 1001
+    assert os.getuid() == 10001 and os.getgid() == 10001
     status = Path("/proc/self/status").read_text()
     for expected in ["NoNewPrivs:\t1", "Seccomp:\t2", "CapEff:\t0000000000000000"]:
         assert expected in status, expected

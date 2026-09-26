@@ -40,8 +40,10 @@ remote controls, production latency, p95 or superiority to Claude.
 - 33 signed worker-client tests pass, including trace headers and context cleanup.
 - Broad worker suite: 2,477 pass, 12 fail, 2 skip. All 12 failures reproduce on pre-change commit `35c10df48` (2,475 pass, 12 fail, 1 skip). Failures concern redirect-test ordering, legacy distilled prompt size, legacy model enforcement, shellcheck and bootstrap fixtures.
 
-The full gateway regression run remains in progress; its final outcome must be
-recorded before claiming that suite passes. All tests use run-isolated.py.
+The full gateway regression was interrupted to reconcile current main; no full
+suite pass is claimed. After reconciliation, 169 focused worker tests, 94 gateway
+model/admission/tool/finalization tests, and 15 gateway/worker/SDK scenarios pass.
+All tests use run-isolated.py.
 
 ## Remaining release gates
 

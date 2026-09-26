@@ -179,6 +179,17 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #     authority to spend more, which is the effect that matters.
 #   * Deleting a provider credential is RENEW_CREDENTIAL, matching the policy's
 #     grouping of credential lifecycle operations.
+# These require domain credentials and live workspace grants, but are deliberately
+# absent from the public Gateway projection. INTERNAL_ROUTES means machine auth,
+# so putting a private user-authenticated route there would weaken its boundary.
+PRIVATE_DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
+    (
+        "GET",
+        "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
+    ): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+}
+
+
 DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/capabilities"): (Scope.ORGANIZATION, Permission.READ),
     # -- Workspace lifecycle -------------------------------------------------
@@ -195,6 +206,9 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     # per-caller filter that no handler performs.
     ("POST", "/workspaces"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("GET", "/workspaces"): (Scope.ORGANIZATION, Permission.READ),
+    # Issue #6048. Organization-scoped like `GET /workspaces` above: this lists
+    # shared-placement eligibility across the caller's whole organization, not
+    # one workspace, so it takes the same scope for the same reason.
     ("GET", "/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
     ("DELETE", "/workspaces/{workspace_id}"): (
         Scope.WORKSPACE,
@@ -288,6 +302,7 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.WORKSPACE,
         Permission.SPEND,
     ),
+    ("GET", "/workspaces/{workspace_id}/lifecycle"): (Scope.WORKSPACE, Permission.READ),
     ("GET", "/workspaces/{workspace_id}/quota"): (Scope.WORKSPACE, Permission.READ),
     ("PATCH", "/workspaces/{workspace_id}/quota"): (Scope.WORKSPACE, Permission.SPEND),
     # -- Cost / budget (workspace-scoped reads) ------------------------------
@@ -295,6 +310,7 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/workspaces/{workspace_id}/budget"): (Scope.WORKSPACE, Permission.READ),
     # -- Events: org collection, filtered to the caller's workspaces ---------
     ("GET", "/events"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/events/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
     ("POST", "/workspaces/preview"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("POST", "/workspaces/adopt"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("POST", "/workspaces/{workspace_id}/retirement/preview"): (
@@ -421,6 +437,7 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ),
     ("GET", "/api/v1/research/stats"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/sources"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/api/v1/research/cli-support"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/proposals"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/proposals/stats"): (
         Scope.ORGANIZATION,
@@ -487,7 +504,12 @@ def classify(method: str, path_template: str) -> tuple[RouteClass, object]:
     if key in INTERNAL_ROUTES:
         return RouteClass.INTERNAL, None
     try:
-        return RouteClass.DOMAIN, DOMAIN_ROUTES[key]
+        requirement = (
+            PRIVATE_DOMAIN_ROUTES[key]
+            if key in PRIVATE_DOMAIN_ROUTES
+            else DOMAIN_ROUTES[key]
+        )
+        return RouteClass.DOMAIN, requirement
     except KeyError:
         raise RouteNotInventoried(
             f"{method.upper()} {path_template} has no recorded authorization decision"
@@ -496,7 +518,12 @@ def classify(method: str, path_template: str) -> tuple[RouteClass, object]:
 
 def all_inventoried() -> frozenset[tuple[str, str]]:
     """Every (method, template) with a recorded decision, in any class."""
-    return PUBLIC_ROUTES | INTERNAL_ROUTES | frozenset(DOMAIN_ROUTES)
+    return (
+        PUBLIC_ROUTES
+        | INTERNAL_ROUTES
+        | frozenset(DOMAIN_ROUTES)
+        | frozenset(PRIVATE_DOMAIN_ROUTES)
+    )
 
 
 # ---------------------------------------------------------------------------

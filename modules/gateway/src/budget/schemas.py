@@ -1304,15 +1304,11 @@ class PersonCapResponse(BaseModel):
     source: PersonLimitSource | None = Field(
         default=None,
         description=(
-            "WHERE the reported limit comes from (#4690), and therefore who can "
-            "change it. `own` — an individual row this person authored; they may "
-            "lower it freely. `admin` — an individual row a platform admin "
-            "authored for them. `team_default` / `org_default` / `platform_default` "
-            "— no individual row exists and a DEFAULT rule governs them; the "
-            "number is a ceiling they may set themselves BELOW but not above. "
-            "`null` only when `cap_status` is `uncapped`, i.e. no rule of any kind "
-            "applies. A client that renders a default as if it were the person's "
-            "own limit invites them to raise it and collect a 422."
+            "WHERE the reported limit comes from. `own` is a legacy self-authored "
+            "individual row; `admin` is an admin-authored individual row. "
+            "`team_default` / `org_default` / `platform_default` identify inherited "
+            "rules. All person-limit writes are platform-admin-only under the "
+            "2026-09-07 ruling. `null` means no rule applies for this period."
         ),
     )
     source_label: str | None = Field(

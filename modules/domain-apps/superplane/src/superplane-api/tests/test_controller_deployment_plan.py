@@ -537,7 +537,7 @@ def test_zero_new_spend_exception_is_limited_to_reviewed_teardown(action, change
         )
 
 
-def test_network_profile_is_carried_unchanged_through_preview_and_teardown():
+def network_profile_fixture():
     profile = regional_profile_fixture(uuid4())
 
     def side(octet):
@@ -574,6 +574,11 @@ def test_network_profile_is_carried_unchanged_through_preview_and_teardown():
             }
         },
     }
+    return profile
+
+
+def test_network_profile_is_carried_unchanged_through_preview_and_teardown():
+    profile = network_profile_fixture()
     preview, values = build(profile)
     parsed = validate_request(
         preview.request,
@@ -597,3 +602,264 @@ def test_network_profile_is_carried_unchanged_through_preview_and_teardown():
         stopped.parameters["controller_network_regions"]
         == preview.request.parameters["controller_network_regions"]
     )
+
+
+def probe_profile():
+    from superplane_executor.network_probe_contract import COMMAND
+
+    profile = profile_fixture(uuid4())
+    profile["model_options"] = {}
+    profile["serving_auth_contract"] = None
+    profile["workload"].update(
+        kind="batch", command=COMMAND, args=[], port=None, auth_secret=None
+    )
+    profile["network_probe"] = {
+        "version": 1,
+        "namespace": profile["namespace"],
+        "service_name": "acceptance",
+        "service_uid": "approved-service-uid",
+        "port": 8080,
+        "cidrs": ["172.20.1.4/32"],
+    }
+    return profile
+
+
+def test_network_probe_preview_binds_fresh_nonce_and_retains_original_replay():
+    from superplane_executor.network_probe_contract import read
+
+    profile = probe_profile()
+    preview, values = build(
+        profile,
+        workload_kind="batch",
+        model_options={},
+        batch_options={key: profile["workload"][key] for key in BATCH_FIELDS},
+    )
+    again = build_deployment_preview(**values)
+    assert again.request == preview.request
+    data = json.loads(preview.request.parameters["controller_plan"])
+    contract = read(
+        data,
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+        request_id=values["request_id"],
+        allocation_id=preview.request.parameters["allocation_id"],
+    )
+    assert contract["service_uid"] == "approved-service-uid"
+    assert contract["namespace"] == values["target"]["namespace"]
+    assert contract["cluster_arn"] == values["target"]["cluster_arn"]
+    assert (
+        preview.deployment_request["args"] == []
+    )  # Original caller request replays unchanged.
+    changed = build_deployment_preview(**{**values, "request_id": str(uuid4())})
+    new_contract = json.loads(
+        json.loads(changed.request.parameters["controller_plan"])["workload"]["args"][0]
+    )
+    assert new_contract["nonce"] != contract["nonce"]
+    retirement = teardown_request(
+        preview.request,
+        source_operation_id="original-operation",
+        request_id=str(uuid4()),
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+    validate_request(
+        retirement,
+        values["target"],
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+
+
+@pytest.mark.parametrize(
+    "change", ["namespace", "cidr", "image", "command", "port", "args"]
+)
+def test_network_probe_profile_refuses_unapproved_surface(change):
+    profile = probe_profile()
+    if change == "namespace":
+        profile["network_probe"]["namespace"] = "another-tenant"
+    elif change == "cidr":
+        profile["network_probe"]["cidrs"] = ["0.0.0.0/0"]
+    elif change == "image":
+        profile["workload"]["image"] = "probe:latest"
+    elif change == "command":
+        profile["workload"]["command"] = ["sh"]
+    elif change == "port":
+        profile["network_probe"]["port"] = True
+    elif change == "args":
+        profile["workload"]["args"] = ["caller-controlled-nonce"]
+    with pytest.raises(OperationRefused):
+        build(
+            profile,
+            workload_kind="batch",
+            model_options={},
+            batch_options={key: profile["workload"][key] for key in BATCH_FIELDS},
+        )
+
+
+@pytest.mark.parametrize(
+    "field", ["org_id", "workspace_id", "allocation_id", "nonce", "request_id"]
+)
+def test_network_probe_contract_rejects_cross_admission_substitution(field):
+    profile = probe_profile()
+    preview, values = build(
+        profile,
+        workload_kind="batch",
+        model_options={},
+        batch_options={key: profile["workload"][key] for key in BATCH_FIELDS},
+    )
+    parameters = dict(preview.request.parameters)
+    data = json.loads(parameters["controller_plan"])
+    contract = json.loads(data["workload"]["args"][0])
+    contract[field] = str(uuid4())
+    data["workload"]["args"] = [json.dumps(contract, separators=(",", ":"))]
+    parameters["controller_plan"] = json.dumps(data, separators=(",", ":"))
+    forged = OperationRequest(
+        action="provision", idempotency_key=values["request_id"], parameters=parameters
+    )
+    with pytest.raises(OperationRefused):
+        validate_request(
+            forged,
+            values["target"],
+            org_id=values["org_id"],
+            workspace_id=values["workspace_id"],
+        )
+
+
+def native_profile_fixture():
+    from superplane_executor.node_runner import NODEADM_COMMIT
+
+    profile = network_profile_fixture()
+    profile["node_bootstrap"] = {
+        "version": 1,
+        "bootstrap_wrapper_sha256": "c" * 64,
+        "probe_wrapper_sha256": "d" * 64,
+        "runtime_manifest": {
+            "version": 1,
+            "nodeadm_commit": NODEADM_COMMIT,
+            "artifact_sha256": "a" * 64,
+            "architecture": "x86_64",
+            "kubelet_version": "v1.34.1",
+            "containerd_version": "2.2.3",
+            "cni": "aws-vpc-cni",
+            "cni_version": "v1.20.1",
+            "nvidia_driver_version": "580.65.06",
+            "nvidia_runtime_version": "1.17.8",
+            "device_plugin_image": "sha256:" + "b" * 64,
+            "ssm_agent_version": "3.3.3050.0",
+        },
+    }
+    return profile
+
+
+def test_native_bootstrap_approval_orders_join_before_readiness_and_omits_task_material():
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+    from harness_jobs.effects import CallEffect, call_effect
+    from superplane_executor.node_command_plan import PARAMETER
+
+    profile = native_profile_fixture()
+    preview, values = build(profile)
+    parsed = validate_request(
+        preview.request,
+        values["target"],
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+    )
+    assert [step["operation_kind"] for step in parsed.steps] == [
+        "launch",
+        "run-node-bootstrap",
+        "status",
+        "run-node-probe",
+        "deploy",
+        "status",
+    ]
+    assert [step["step_id"] for step in parsed.steps] == ["1", "2", "3", "4", "5", "6"]
+    for kind in ("run-node-bootstrap", "run-node-probe"):
+        assert call_effect(kind, provider="aws") is CallEffect.CREATES
+    assert len(preview.request.parameters[PARAMETER]) <= 2000
+    operation = SimpleNamespace(
+        grant=SimpleNamespace(
+            lease=SimpleNamespace(
+                org_id=values["org_id"],
+                workspace_id=values["workspace_id"],
+                runtime_deadline=datetime.now(UTC) + timedelta(minutes=10),
+            )
+        )
+    )
+    task = parsed.task(operation)
+    assert "nodeadm" not in task and profile["certificate_authority"] not in task
+    assert profile["endpoint"] not in task
+    assert "superplane-org" in task and values["org_id"] in task
+    stopped = teardown_request(
+        preview.request,
+        org_id=values["org_id"],
+        workspace_id=values["workspace_id"],
+        request_id=str(uuid4()),
+        source_operation_id="original",
+    )
+    assert stopped.parameters[PARAMETER] == preview.request.parameters[PARAMETER]
+    assert (
+        json.loads(stopped.parameters["execution_steps"])[0]["operation_kind"]
+        == "delete_cluster"
+    )
+    legacy = deepcopy(profile)
+    legacy.pop("node_bootstrap")
+    old, old_values = build(
+        legacy, **{k: v for k, v in values.items() if k != "profile"}
+    )
+    old_plan = validate_request(
+        old.request,
+        old_values["target"],
+        org_id=old_values["org_id"],
+        workspace_id=old_values["workspace_id"],
+    )
+    assert [step["operation_kind"] for step in old_plan.steps] == [
+        "launch",
+        "status",
+        "deploy",
+        "status",
+    ]
+    assert "nodeadm init" in old_plan.task(operation)
+    assert PARAMETER not in old.request.parameters
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["missing-network", "shared", "extra-command", "unresolved", "graph-tamper"],
+)
+def test_native_bootstrap_cannot_inherit_unapproved_or_shared_authority(change):
+    from superplane_executor.node_command_plan import PARAMETER
+
+    profile = native_profile_fixture()
+    if change == "missing-network":
+        profile.pop("network")
+    elif change == "extra-command":
+        profile["node_bootstrap"]["command"] = "touch /tmp/injected"
+    elif change == "unresolved":
+        profile["node_bootstrap"]["runtime_manifest"]["artifact_sha256"] = "0" * 64
+    if change in {"missing-network", "extra-command", "unresolved"}:
+        with pytest.raises(OperationRefused):
+            build(profile)
+        return
+    preview, values = build(profile)
+    parameters = dict(preview.request.parameters)
+    target = dict(values["target"])
+    if change == "shared":
+        target["shared_cluster_id"] = target["cluster_id"]
+    else:
+        parameters["execution_steps"] = parameters["execution_steps"].replace(
+            "run-node-bootstrap", "status"
+        )
+    assert PARAMETER in parameters
+    request = OperationRequest(
+        action="provision",
+        idempotency_key=preview.request.idempotency_key,
+        parameters=parameters,
+    )
+    with pytest.raises(OperationRefused):
+        validate_request(
+            request,
+            target,
+            org_id=values["org_id"],
+            workspace_id=values["workspace_id"],
+        )

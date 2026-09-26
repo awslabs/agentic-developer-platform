@@ -3,10 +3,11 @@
 import json
 import logging
 import uuid
+from typing import Annotated, Literal
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,8 @@ from app.models.cluster import Cluster
 from app.models.workspace import STATUS_ACTIVE, Workspace
 from app.schemas.workspace import (
     CreateWorkspaceRequest,
+    EligibleClusterListResponse,
+    EligibleClusterResponse,
     KubeconfigResponse,
     WorkspaceDeleteResponse,
     WorkspaceListResponse,
@@ -105,8 +108,10 @@ def _workspace_to_response(
 
 
 def _operation_request(body: CreateWorkspaceRequest) -> str:
+    from app.services.onboarding import placement_document
+
     return json.dumps(
-        body.model_dump(mode="json", exclude={"operation_id", "approval_id"}),
+        placement_document(body, exclude={"operation_id", "approval_id"}),
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -285,6 +290,12 @@ async def create_workspace(
     db: AsyncSession = Depends(get_session),
 ) -> WorkspaceResponse:
     """Admit an approved plan before creating its workspace and ownership grant."""
+    from app.operation_activation import require_admission_enabled
+
+    try:
+        require_admission_enabled()
+    except ProvisioningError as error:
+        raise HTTPException(503, str(error)) from None
     from app.adapters.operation_authority_source import (
         acting_principal,
         GrantBackedAuthority,
@@ -294,6 +305,8 @@ async def create_workspace(
     from app.services.onboarding import normalized_request, preview
     from app.services.provisioning import start_planned_provision
     from harness_jobs.identity import OperationRequest
+    from workspace_provisioning.runtime_config import LifecycleRefused
+    from workspace_provisioning.shared_membership import approved_membership
 
     body = normalized_request(body)
     operation_request = _operation_request(body)
@@ -314,6 +327,26 @@ async def create_workspace(
                 409, "Workspace plan changed; review and approve the current revision"
             )
         approved_request = plan["approval_request"]
+        membership = None
+        if (
+            body.cluster_placement == "shared"
+            or "shared_membership" in approved_request["parameters"]
+        ):
+            membership = approved_membership(
+                approved_request["parameters"],
+                org_id=str(org_id),
+                workspace_id=plan["workspace_id"],
+            )
+        if body.cluster_placement == "dedicated" and membership is not None:
+            raise ProvisioningRefused(
+                "shared membership differs from requested placement"
+            )
+        if body.cluster_placement == "shared" and (
+            membership is None or membership.request_id != str(body.operation_id)
+        ):
+            raise ProvisioningRefused(
+                "approved membership names another creation request"
+            )
         if body.approval_id is not None:
             authority = GrantBackedAuthority(async_session_factory)
             principal = await authority.resolve(
@@ -341,7 +374,7 @@ async def create_workspace(
             org_id=str(org_id),
             parameters=approved_request["parameters"],
         )
-    except ProvisioningRefused as error:
+    except (ProvisioningRefused, LifecycleRefused) as error:
         raise HTTPException(403, str(error)) from None
     except ProvisioningError:
         raise HTTPException(
@@ -374,6 +407,10 @@ async def create_workspace(
     db.add(workspace)
     try:
         await db.flush()
+        if body.cluster_placement == "shared":
+            from app.adapters.shared_membership import reserve_workspace_membership
+
+            await reserve_workspace_membership(db, membership)
         db.add(
             WorkspaceGrantRecord(
                 workspace_id=workspace.id,
@@ -384,6 +421,12 @@ async def create_workspace(
             )
         )
         await db.commit()
+    except LifecycleRefused:
+        await db.rollback()
+        raise HTTPException(
+            409,
+            "Approved shared membership changed; retain the admitted request identity",
+        ) from None
     except IntegrityError:
         await db.rollback()
         existing = await _workspace_for_operation(db, org_id, body, operation_request)
@@ -398,15 +441,19 @@ async def create_workspace(
     )
 
 
-@router.get("", response_model=WorkspaceListResponse)
+@router.get("", response_model=WorkspaceListResponse | EligibleClusterListResponse)
 async def list_workspaces(
+    request: Request,
+    view: Literal["workspaces", "eligible-clusters"] = "workspaces",
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
-) -> WorkspaceListResponse:
+) -> WorkspaceListResponse | EligibleClusterListResponse:
     """List all workspaces for the authenticated organization.
 
     Research workspaces appear with a [research] tag in the display_name.
     """
+    if view == "eligible-clusters":
+        return await list_eligible_clusters(request=request, org_id=org_id, db=db)
     result = await db.execute(
         select(Workspace)
         .where(Workspace.org_id == org_id)
@@ -416,6 +463,43 @@ async def list_workspaces(
     return WorkspaceListResponse(
         workspaces=[_workspace_to_response(ws) for ws in workspaces],
         total=len(workspaces),
+    )
+
+
+async def list_eligible_clusters(
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+) -> EligibleClusterListResponse:
+    """List clusters the verified caller has explicit live authority to use.
+
+    Issue #6048. Selected through GET /workspaces?view=eligible-clusters,
+    retaining the existing Gateway route contract. Returns only
+    clusters explicitly ``sharing_enabled`` under the caller's own
+    authenticated organization — never another organization's, even one in
+    the same AWS account. See ``app/services/cluster_sharing.py``.
+    """
+    from app.services.cluster_sharing import (
+        list_eligible_clusters as resolve_eligible_clusters,
+    )
+
+    try:
+        eligible = await resolve_eligible_clusters(
+            db, org_id, caller=getattr(request.state, "caller", None)
+        )
+    except ProvisioningRefused as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return EligibleClusterListResponse(
+        clusters=[
+            EligibleClusterResponse(
+                id=cluster.id,
+                name=cluster.name,
+                cluster_arn=cluster.cluster_arn,
+                platform_eligible=cluster.platform_eligible,
+                member_count=cluster.member_count,
+            )
+            for cluster in eligible
+        ]
     )
 
 
@@ -451,13 +535,31 @@ async def get_workspace(
     return _workspace_to_response(workspace, cluster)
 
 
+@router.get("/{workspace_id}/lifecycle")
+async def get_workspace_lifecycle(
+    workspace_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    """Bounded read-only review; does not reconcile or open a teardown operation."""
+    from app.services.cli_lifecycle import workspace_snapshot
+    return (await workspace_snapshot(db, org_id, workspace_id))[1]
+
+
 @router.delete("/{workspace_id}", response_model=WorkspaceDeleteResponse)
 async def delete_workspace(
     workspace_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> WorkspaceDeleteResponse:
     """Teardown a workspace — updates status and triggers teardown workflow."""
+    from app.operation_activation import require_admission_enabled
+
+    try:
+        require_admission_enabled()
+    except ProvisioningError as error:
+        raise HTTPException(503, str(error)) from None
     result = await db.execute(
         select(Workspace)
         .where(Workspace.id == workspace_id, Workspace.org_id == org_id)
@@ -470,6 +572,12 @@ async def delete_workspace(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found"
         )
+
+    if expected_revision is not None:
+        from app.services.cli_lifecycle import workspace_snapshot
+        _, snapshot = await workspace_snapshot(db, org_id, workspace_id, lock=True)
+        if snapshot["revision"] != expected_revision:
+            raise HTTPException(409, "Workspace lifecycle changed; review again")
 
     # Prevent deletion of the platform's default workspace
     if workspace.is_default:

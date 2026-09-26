@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
@@ -113,6 +114,8 @@ class PersonaModelCostEntryResponse(BaseModel):
 
 class PersonaCostResponse(BaseModel):
     """Tenant- and owner-scoped usage-ledger cost report."""
+
+    tenant_id: str
 
     principal_kind: Literal["human", "service_account"]
     principal_id: str
@@ -235,6 +238,7 @@ class RegisterServicePrincipalRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     alias_source: AliasSource
     alias_id: str = Field(min_length=1, max_length=255)
+    operation_id: UUID | None = None
 
 
 class RegisterServicePrincipalResponse(BaseModel):
@@ -252,12 +256,14 @@ class LinkAliasRequest(BaseModel):
 
     alias_source: AliasSource
     alias_id: str = Field(min_length=1, max_length=255)
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class StatusTransitionRequest(BaseModel):
     """Body for ``PATCH /service-principals/{canonical_id}/status``."""
 
     status: Literal["active", "suspended", "retired"]
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class StatusTransitionResponse(BaseModel):

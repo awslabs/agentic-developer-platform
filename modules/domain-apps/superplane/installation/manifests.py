@@ -670,6 +670,13 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                 },
             )
         )
+    if env.get("credential_controller"):
+        from .credential_controller import documents
+
+        docs.extend(documents(env, lock))
+    from .api_adapters import project as project_api_adapters
+
+    project_api_adapters(env, docs)
     return docs
 
 

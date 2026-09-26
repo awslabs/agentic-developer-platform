@@ -173,6 +173,10 @@ async def admit_root(
         compatibility = registered_compatibility_class(persona)
         if body.source == "chat" and compatibility != "claude-agent-sdk":
             raise ModelPolicyError("persona_incompatible")
+        if body.source == "gitlab":
+            from src.gitlab.service import require_managed_association
+
+            await require_managed_association(session, binding)
         human_id = await canonical_human(session, binding, body.subject)
         invocation = envelope["message_id"]
         if not isinstance(invocation, str) or not 1 <= len(invocation) <= 128:

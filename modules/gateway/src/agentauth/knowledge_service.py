@@ -55,6 +55,7 @@ async def locked_door_identity(record, grant):
                     User.is_shadow.is_(False),
                     TenantMembership.tenant_id == record.tenant_id,
                     TenantMembership.is_active.is_(True),
+                    TenantMembership.revoked_at.is_(None),
                 )
                 .with_for_update(read=True, of=(User, TenantMembership))
             )

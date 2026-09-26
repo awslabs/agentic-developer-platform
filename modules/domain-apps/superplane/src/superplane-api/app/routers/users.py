@@ -4,13 +4,14 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware.auth import get_current_org, get_current_user_context
 from app.middleware.rbac import require_role
 from app.models.user import User, USER_STATUS_DISABLED, USER_STATUS_INVITED
+from app.models.organization import Organization
 from app.schemas.user import (
     InviteUserRequest,
     UpdateUserRoleRequest,
@@ -27,6 +28,33 @@ from app.services.cognito import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+async def _require_legacy_identity_mutation(db, org_id, *, email, subject=None):
+    """Never turn an org-local action into a global ADP identity mutation.
+
+    Gateway currently has no supported domain membership-mutation transport.
+    Keep the unbound, single-organization Cognito path only; ADP-bound tenants
+    must manage membership at its authority until that interface is available.
+    """
+    organization = await db.get(Organization, org_id)
+    if organization is None:
+        raise HTTPException(403, "organization unavailable")
+    if organization.adp_org_id is not None:
+        raise HTTPException(
+            409,
+            "Manage membership in ADP; the domain membership interface is unavailable",
+        )
+    identities = [User.email == email]
+    if subject:
+        identities.append(User.cognito_sub == subject)
+    peer = await db.scalar(
+        select(User.id).where(User.org_id != org_id, or_(*identities)).limit(1)
+    )
+    if peer is not None:
+        raise HTTPException(
+            409, "Global identity mutation would affect another organization"
+        )
 
 
 @router.post(
@@ -61,6 +89,7 @@ async def invite_user(
             detail=f"User {body.email} already exists in this organization",
         )
 
+    await _require_legacy_identity_mutation(db, org_id, email=body.email)
     # Create user in Cognito (sends invite email)
     cognito_sub = await admin_create_user(
         email=body.email,
@@ -164,6 +193,10 @@ async def update_user_role(
 
     old_role = user.role
 
+    await _require_legacy_identity_mutation(
+        db, org_id, email=user.email, subject=user.cognito_sub
+    )
+
     # Update Cognito custom attribute
     await admin_update_user_role(email=user.email, role=body.role)
 
@@ -231,6 +264,9 @@ async def delete_user(
             detail="User is already disabled",
         )
 
+    await _require_legacy_identity_mutation(
+        db, org_id, email=user.email, subject=user.cognito_sub
+    )
     # Disable in Cognito
     await admin_disable_user(email=user.email)
 

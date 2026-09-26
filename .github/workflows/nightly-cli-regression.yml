@@ -10,10 +10,15 @@ on:
   workflow_dispatch:
     inputs:
       ec2_scope:
-        description: 'login = nightly key scenarios; full = all 18 acceptance cases (requires additional fixtures)'
+        description: 'nightly = install/login plus CLI story read regressions; login = install/login only; full = all acceptance cases'
         type: choice
-        options: [login, full]
-        default: login
+        options: [nightly, login, full]
+        default: nightly
+      fixtures_json:
+        description: 'Optional non-secret existing fixture JSON for the EC2 child; validated by CLI Uplift'
+        required: false
+        type: string
+        default: '{}'
   pull_request:
     branches: [main]
     paths:
@@ -74,6 +79,9 @@ jobs:
     name: CLI onboarding and agent conversations
     needs: prepare
     if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/eval-cli-onboarding.yml
     with:
       environment: dev
@@ -84,6 +92,9 @@ jobs:
     # A failed onboarding assertion must not hide budget regressions. The called
     # workflow must verify cleanup before this next suite obtains the live lock.
     if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.onboarding.outputs.cleanup_ok == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/eval-budget-ratelimit.yml
     with:
       environment: dev
@@ -101,7 +112,8 @@ jobs:
       environment: dev
       expected_revision: ${{ needs.prepare.outputs.revision }}
       resolve_revision: true
-      suites: ${{ inputs.ec2_scope || 'login' }}
+      suites: ${{ inputs.ec2_scope || 'nightly' }}
+      fixtures_json: ${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}
 
   summary:
     name: Nightly regression result
@@ -123,5 +135,5 @@ jobs:
           CLI_REGRESSION_JOBS: ${{ toJSON(needs) }}
           CLI_REGRESSION_REVISION: ${{ needs.prepare.outputs.revision }}
           CLI_REGRESSION_EC2_REVISION: ${{ needs.ec2.outputs.revision }}
-          CLI_REGRESSION_EC2_SCOPE: ${{ inputs.ec2_scope || 'login' }}
+          CLI_REGRESSION_EC2_SCOPE: ${{ inputs.ec2_scope || 'nightly' }}
         run: python -m tests.e2e.cli_regression.report

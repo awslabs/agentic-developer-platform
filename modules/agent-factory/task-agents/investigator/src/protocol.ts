@@ -80,6 +80,7 @@ export interface InputArtifact {
 }
 
 export interface StartLimits {
+  deadline_at?: string;
   max_turns?: number;
   max_output_tokens_per_turn?: number;
 }
@@ -642,10 +643,16 @@ function parseStartFrame(frame: Record<string, unknown>, maxTurns: number): Wire
     }
     requireOnlyFields(
       limits,
-      ['max_turns', 'max_output_tokens_per_turn'],
+      ['max_turns', 'max_output_tokens_per_turn', 'deadline_at'],
       'start frame limits',
     );
     const parsedLimits: StartLimits = {};
+    if (limits['deadline_at'] !== undefined) {
+      parsedLimits.deadline_at = requireString(limits, 'deadline_at', 'start frame limits', { pattern: RFC3339_UTC });
+      if (!Number.isFinite(Date.parse(parsedLimits.deadline_at))) {
+        throw new ProtocolViolation('start frame deadline must be a valid timestamp');
+      }
+    }
     if (limits['max_turns'] !== undefined) {
       parsedLimits.max_turns = requireInteger(limits, 'max_turns', 'start frame limits', 1, maxTurns);
     }

@@ -134,3 +134,51 @@ def test_token_storage_is_domain_separated_digest():
     token = "sp-bootstrap-read-" + "fixture" * 8
     assert len(token_digest(token)) == 64
     assert token not in token_digest(token)
+
+
+async def test_shared_reader_acknowledgement_binds_exact_revision_and_namespace(
+    monkeypatch,
+):
+    org, target, snapshot = await setup_observation(monkeypatch)
+    target["shared_membership"] = True
+    target["membership_credential"] = {
+        "org_id": str(org.id),
+        "workspace_id": target["workspace_id"],
+        "cluster_id": str(uuid.uuid4()),
+        "cluster_arn": target["cluster_arn"],
+        "generation": "b" * 64,
+        "namespace": target["namespace"],
+        "namespace_uid": "namespace-uid",
+        "service_account_uid": "reader-sa-uid",
+        "revision": 1,
+        "scope": "reader",
+        "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+    }
+    async with async_session_test() as db:
+        with pytest.raises(HTTPException):
+            await verified_observation(db, org=org, target=target, snapshot=snapshot)
+        snapshot["bootstrap_observations"][target["workspace_id"]][
+            "membership_credential"
+        ] = deepcopy(target["membership_credential"])
+        result = await verified_observation(
+            db, org=org, target=target, snapshot=snapshot
+        )
+        assert result["membership_credential"] == target["membership_credential"]
+        # An existing governed manager may observe a new member without granting
+        # that provisional member any assignments or workload authority.
+        snapshot["mode"] = "governed"
+        result = await verified_observation(
+            db, org=org, target=target, snapshot=snapshot
+        )
+        assert result["membership_credential"] == target["membership_credential"]
+        for field, replacement in (
+            ("revision", 2),
+            ("namespace_uid", "replacement"),
+            ("service_account_uid", "replacement"),
+        ):
+            changed = deepcopy(snapshot)
+            changed["bootstrap_observations"][target["workspace_id"]][
+                "membership_credential"
+            ][field] = replacement
+            with pytest.raises(HTTPException):
+                await verified_observation(db, org=org, target=target, snapshot=changed)

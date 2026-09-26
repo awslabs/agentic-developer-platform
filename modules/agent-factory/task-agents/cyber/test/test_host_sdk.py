@@ -148,8 +148,8 @@ def test_python_host_real_sdk_broker_artifact_report(tmp_path, monkeypatch, assi
         assert client.finalize_body['error']['code'] == 'model_outcome_unknown', client.finalize_body
         return
     assert exit_code == 0, (events, client.finalize_body, client.settlements)
-    assert len(client.model_bodies) == 3
-    assert len(turns.list_turns(assignment.task_id)) == 3
+    assert len(client.model_bodies) == 2
+    assert len(turns.list_turns(assignment.task_id)) == 2
     assert all(request['allow_autonomous'] is True for request in client.turn_requests)
     assert all(turn['command_ids'] == [] for turn in turns.list_turns(assignment.task_id))
     assert events.count('cyber:url_analysis') == 1

@@ -12,6 +12,48 @@
 # Build context: this directory (no parent references).
 # =============================================================================
 
+# Preserve Terraform 1.14.9 behavior while updating its embedded Go dependencies.
+# The reviewed patch fixes the dependency graph; no floating go get runs here.
+FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS terraform-build
+ENV GOTOOLCHAIN=local CGO_ENABLED=0
+WORKDIR /src
+RUN git init . \
+    && git remote add origin https://github.com/hashicorp/terraform.git \
+    && git fetch --depth=1 origin c3c23dd8f1201506dbd21788f482420ee3c1b248 \
+    && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = c3c23dd8f1201506dbd21788f482420ee3c1b248
+COPY terraform-security-dependencies.patch /tmp/terraform-security-dependencies.patch
+RUN git apply --check /tmp/terraform-security-dependencies.patch \
+    && git apply /tmp/terraform-security-dependencies.patch \
+    && sha256sum go.mod go.sum > /tmp/terraform-modules.sha256 \
+    && go mod download \
+    && go mod verify \
+    && go build -mod=readonly -p 2 -buildvcs=false -trimpath \
+        -ldflags "-s -w -X github.com/hashicorp/terraform/version.dev=no" \
+        -o /out/terraform . \
+    && sha256sum -c /tmp/terraform-modules.sha256
+
+# Signed maintained Kaniko release; rebuild only executor with reviewed dependencies.
+FROM ghcr.io/osscontainertools/kaniko:v1.28.5@sha256:738807f0e31daf07743f89260a95956dcc6ee4f62553f4f6344c990cabab8675 AS kaniko-release
+FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS kaniko-build
+ENV GOTOOLCHAIN=local CGO_ENABLED=0
+WORKDIR /src
+RUN git init . \
+    && git remote add origin https://github.com/osscontainertools/kaniko.git \
+    && git fetch --depth=1 origin 9c3dcc112b7a71bed4de3bc8c4ed089ef98cbf0c \
+    && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = 9c3dcc112b7a71bed4de3bc8c4ed089ef98cbf0c
+COPY kaniko-security-dependencies.patch /tmp/kaniko-security-dependencies.patch
+RUN git apply --check /tmp/kaniko-security-dependencies.patch \
+    && git apply /tmp/kaniko-security-dependencies.patch \
+    && sha256sum go.mod go.sum > /tmp/kaniko-modules.sha256 \
+    && go mod download \
+    && go mod verify \
+    && go build -mod=readonly -p 1 -buildvcs=false -trimpath \
+        -ldflags "-s -w -X github.com/osscontainertools/kaniko/pkg/version.version=v1.28.5" \
+        -o /out/executor ./cmd/executor \
+    && sha256sum -c /tmp/kaniko-modules.sha256
+
 FROM ghcr.io/actions/actions-runner:2.337.0
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -88,11 +130,10 @@ RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tm
 
 # ── Terraform (matches project version per session-context: 1.14.x) ─────────
 ENV TERRAFORM_VERSION=1.14.9
-RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
-        -o /tmp/terraform.zip \
-    && unzip -q /tmp/terraform.zip -d /usr/local/bin \
-    && rm /tmp/terraform.zip \
-    && terraform version
+COPY --from=terraform-build /out/terraform /usr/local/bin/terraform
+COPY --from=terraform-build /src/LICENSE /usr/local/share/licenses/terraform/LICENSE
+COPY terraform-security-NOTICE /usr/local/share/licenses/terraform/NOTICE
+RUN terraform version
 
 # ── kubectl (matches cluster: 1.35.x) ───────────────────────────────────────
 ENV KUBECTL_VERSION=1.35.9
@@ -101,9 +142,14 @@ RUN curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/ku
     && chmod +x /usr/local/bin/kubectl \
     && kubectl version --client
 
-# ── Helm 3.17.x ─────────────────────────────────────────────────────────────
-RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | \
-    DESIRED_VERSION=v3.17.4 bash \
+# ── Helm 3 (security refresh, checksum-verified upstream binary) ─────────────
+ENV HELM_VERSION=3.22.0
+RUN curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" \
+        -o /tmp/helm.tar.gz \
+    && echo "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb  /tmp/helm.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm \
+    && install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm \
+    && rm -rf /tmp/helm.tar.gz /tmp/linux-amd64 \
     && helm version
 
 # ── gh CLI (latest) ─────────────────────────────────────────────────────────
@@ -132,11 +178,33 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && docker --version
 
 # ── Kaniko executor (daemonless container builds; no Docker daemon needed) ──
-# Pinned to v1.24.0 (final release; repo archived 2025-06-03).
-# Do NOT use :latest — pin tag + digest to avoid silent CVE regression.
-COPY --from=gcr.io/kaniko-project/executor:v1.24.0@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698 /kaniko /kaniko
+# Maintained v1.28.5 helpers plus executor rebuilt with patched dependencies.
+# Keep the release digest and exact source commit aligned.
+COPY --from=kaniko-release /kaniko /kaniko
+COPY --from=kaniko-build /out/executor /kaniko/executor
+COPY --from=kaniko-build /src/LICENSE /usr/local/share/licenses/kaniko/LICENSE
+COPY kaniko-security-NOTICE /usr/local/share/licenses/kaniko/NOTICE
 RUN chmod -R 777 /kaniko
 ENV PATH="/kaniko:${PATH}"
+
+# Preserve the runner Node runtimes and install compatible patched npm 11.
+COPY security/check-npm-tar.cjs /tmp/check-npm-tar.cjs
+RUN curl -fsSL https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -o /tmp/runner-npm.tgz \
+    && echo "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483  /tmp/runner-npm.tgz" | sha256sum -c - \
+    && rm -rf /home/runner/externals/node20/lib/node_modules/npm \
+    && mkdir -p /home/runner/externals/node20/lib/node_modules/npm \
+    && tar -xzf /tmp/runner-npm.tgz -C /home/runner/externals/node20/lib/node_modules/npm --strip-components=1 --no-same-owner \
+    && /home/runner/externals/node20/bin/node /home/runner/externals/node20/lib/node_modules/npm/bin/npm-cli.js --version \
+    && /home/runner/externals/node20/bin/node /tmp/check-npm-tar.cjs /home/runner/externals/node20/lib/node_modules/npm/node_modules/tar \
+    && rm /tmp/runner-npm.tgz
+RUN curl -fsSL https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -o /tmp/runner-npm.tgz \
+    && echo "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483  /tmp/runner-npm.tgz" | sha256sum -c - \
+    && rm -rf /home/runner/externals/node24/lib/node_modules/npm \
+    && mkdir -p /home/runner/externals/node24/lib/node_modules/npm \
+    && tar -xzf /tmp/runner-npm.tgz -C /home/runner/externals/node24/lib/node_modules/npm --strip-components=1 --no-same-owner \
+    && /home/runner/externals/node24/bin/node /home/runner/externals/node24/lib/node_modules/npm/bin/npm-cli.js --version \
+    && /home/runner/externals/node24/bin/node /tmp/check-npm-tar.cjs /home/runner/externals/node24/lib/node_modules/npm/node_modules/tar \
+    && rm /tmp/runner-npm.tgz
 
 # ── Cleanup ─────────────────────────────────────────────────────────────────
 RUN apt-get clean \

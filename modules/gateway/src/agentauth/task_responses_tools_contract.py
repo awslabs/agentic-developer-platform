@@ -7,6 +7,7 @@ using this contract. The existing report-only v2 parser remains unchanged.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Literal
 
@@ -130,3 +131,37 @@ class TaskToolsResponsesResult(ClosedModel):
         if sum(isinstance(item, TaskFunctionOutput) for item in self.output) > 1:
             raise ValueError("parallel tool calls unavailable")
         return self
+
+
+# Distinct evidence is required for namespace calls and their continuation. A
+# text/reviewer probe cannot certify this wire shape.
+TASK_RESPONSES_TOOLS_PROBE_BODY = {
+    "input": "Call task_probe with value OK.",
+    "reasoning": {"effort": "medium"},
+    "max_output_tokens": 128,
+    "parallel_tool_calls": False,
+    "tools": [
+        {
+            "type": "namespace",
+            "name": "mcp__adp",
+            "description": "Authorized ADP tools.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "task_probe",
+                    "description": "Return probe evidence.",
+                    "strict": False,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"],
+                        "additionalProperties": False,
+                    },
+                }
+            ],
+        }
+    ],
+}
+TASK_RESPONSES_TOOLS_REQUEST_SHAPE = hashlib.sha256(
+    json.dumps(TASK_RESPONSES_TOOLS_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()

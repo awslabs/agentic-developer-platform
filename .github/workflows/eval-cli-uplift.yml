@@ -49,8 +49,13 @@ on:
         type: choice
         options: [start, resume, status, cleanup]
         default: start
+      fixtures_json:
+        description: 'Optional bounded non-secret coding/chat/vault/hierarchy/knowledge/machine/budget/capability fixture JSON; existing policy authorization required'
+        required: false
+        type: string
+        default: '{}'
       suites:
-        description: 'Start with login (install + Cognito login + cleanup); full selects the complete evaluation. multi-deployment selects #5413 E16/E17 and requires the CLI_UPLIFT_EVAL_DEPLOYMENTS variable — three reachable gateways, each with its own sign-in fixture. superplane selects #5637 E18 and requires the config superplane object — a domain service actually deployed behind the gateway plus an admin sign-in fixture; it BLOCKS without one.'
+        description: 'nightly selects install/login and CLI story read regressions; story-reads selects E20-E22 only; Start with login (install + Cognito login + cleanup); full selects the complete evaluation. multi-deployment selects #5413 E16/E17 and requires the CLI_UPLIFT_EVAL_DEPLOYMENTS variable — three reachable gateways, each with its own sign-in fixture. superplane selects #5637 E18 and requires the config superplane object — a domain service actually deployed behind the gateway plus an admin sign-in fixture; it BLOCKS without one.'
         required: false
         type: string
         default: login
@@ -83,6 +88,11 @@ on:
       expected_revision:
         required: true
         type: string
+      fixtures_json:
+        description: 'Optional bounded non-secret coding/chat/vault/hierarchy/knowledge/machine/budget/capability fixture JSON; existing policy authorization required'
+        required: false
+        type: string
+        default: '{}'
       suites:
         required: false
         type: string
@@ -98,6 +108,8 @@ on:
     paths:
       - 'tests/e2e/cli_uplift/**'
       - 'tests/unit/test_cli_uplift.py'
+      - 'tests/unit/test_cli_tenant_scenarios.py'
+      - 'tests/unit/test_cli_usage_exports.py'
       - 'tests/unit/test_superplane_executor_build.py'
       - '.github/workflows/superplane-executor-build.yml'
       - '.github/actions/trusted-build/action.yml'
@@ -148,8 +160,8 @@ jobs:
       - name: Lint and format check
         run: |
           set -euo pipefail
-          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_superplane_executor_build.py
-          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_superplane_executor_build.py
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
 
       - name: Offline guards
         # --disable-socket is the load-bearing flag: it proves these guards
@@ -163,7 +175,7 @@ jobs:
         # make full acceptance non-successful.
         env:
           AWS_EC2_METADATA_DISABLED: 'true'
-        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket
+        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket
 
       - name: Assert the published result schema still matches the report builder
         # report.schema.json is a deliverable other tooling validates against, so
@@ -174,23 +186,28 @@ jobs:
           python - <<'PY'
           from tests.e2e.cli_uplift import cases, config, report
 
-          matrix = cases.new_matrix(("full",))
-          for case_id in matrix:
-              cases.record(matrix, case_id, cases.PASSED)
-          document = report.build(
-              matrix=matrix,
-              suites=("full",),
-              config=config.load("tests/e2e/cli_uplift/config.example.json"),
-              evaluation_id="adp-e2e-20260915-000000-abcdef",
-              attempt_id="adp-e2e-20260915-000000-abcdef-a1",
-              cleanup_ok=True,
-              timing={"started_at": "x", "ended_at": "y", "duration_seconds": 1},
-              correlation={},
-          )
-          errors = report.validate(document)
-          if errors:
-              raise SystemExit("report.schema.json drifted: " + "; ".join(errors))
-          print(f"schema matches builder across {len(document['cases'])} cases")
+          covered = set()
+          for suite in cases.SUITES:
+              matrix = cases.new_matrix((suite,))
+              for case_id in matrix:
+                  cases.record(matrix, case_id, cases.PASSED)
+              document = report.build(
+                  matrix=matrix,
+                  suites=(suite,),
+                  config=config.load("tests/e2e/cli_uplift/config.example.json"),
+                  evaluation_id="adp-e2e-20260915-000000-abcdef",
+                  attempt_id="adp-e2e-20260915-000000-abcdef-a1",
+                  cleanup_ok=True,
+                  timing={"started_at": "x", "ended_at": "y", "duration_seconds": 1},
+                  correlation={},
+              )
+              errors = report.validate(document)
+              if errors:
+                  raise SystemExit(f"report.schema.json drifted for {suite}: " + "; ".join(errors))
+              covered.update(matrix)
+          if covered != set(cases.BY_ID):
+              raise SystemExit("Schema parity omitted supported cases")
+          print(f"schema matches builder across {len(cases.SUITES)} suites and {len(covered)} cases")
           PY
 
       - name: Assert the example config carries no secrets
@@ -238,11 +255,19 @@ jobs:
       CLI_UPLIFT_EVAL_GITHUB_APP: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_APP }}
       CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT: ${{ vars.CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT }}
       CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+      CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
       CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
       CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE }}
+      CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE }}
+      CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID: ${{ vars.CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID }}
+      CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE }}
       # #5413's three deployment bindings, as a JSON ARRAY of
       # {name, gateway_url, credential_secret_name} objects. Its own variable
       # rather than the scalar overlay because every other name here maps one
@@ -251,6 +276,7 @@ jobs:
       # instead of at the variable. Each entry names a secret, never a password.
       # Unset means E16/E17 BLOCK, which is the honest state until a coordinator
       # supplies real integration and pre-production gateways.
+      CLI_UPLIFT_EVAL_FIXTURES: ${{ inputs.fixtures_json }}
       CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
       # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
       # overlay by `config.from_environment()`. The repository variables are
@@ -554,11 +580,19 @@ jobs:
       CLI_UPLIFT_EVAL_GITHUB_APP: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_APP }}
       CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT: ${{ vars.CLI_UPLIFT_EVAL_SECOND_DESTINATION_ACCOUNT }}
       CLI_UPLIFT_EVAL_INSTANCE_PROFILE: ${{ vars.CLI_UPLIFT_EVAL_INSTANCE_PROFILE }}
+      CLI_UPLIFT_EVAL_SECURITY_GROUP_ID: ${{ vars.CLI_UPLIFT_EVAL_SECURITY_GROUP_ID }}
       CLI_UPLIFT_EVAL_STATE_BUCKET: ${{ vars.CLI_UPLIFT_EVAL_STATE_BUCKET }}
       CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID: ${{ vars.CLI_UPLIFT_EVAL_STATE_KMS_KEY_ID }}
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE }}
+      CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE }}
+      CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION: ${{ vars.CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION }}
+      CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID: ${{ vars.CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID }}
+      CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE: ${{ vars.CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE }}
       # #5413's three deployment bindings, as a JSON ARRAY of
       # {name, gateway_url, credential_secret_name} objects. Its own variable
       # rather than the scalar overlay because every other name here maps one
@@ -567,6 +601,7 @@ jobs:
       # instead of at the variable. Each entry names a secret, never a password.
       # Unset means E16/E17 BLOCK, which is the honest state until a coordinator
       # supplies real integration and pre-production gateways.
+      CLI_UPLIFT_EVAL_FIXTURES: ${{ inputs.fixtures_json }}
       CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
       # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
       # overlay by `config.from_environment()`. The repository variables are

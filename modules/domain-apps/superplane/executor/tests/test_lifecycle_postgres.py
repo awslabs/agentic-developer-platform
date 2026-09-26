@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 from harness_jobs import OperationStore
 from harness_jobs.execution_rpc import ExecutionGrant
 from harness_jobs.execution_plan import confirmed_plan_progress, PlanProgress
@@ -45,6 +46,7 @@ class Cloud:
         self.lose_status_response = False
         self.instance = {
             "InstanceId": "i-0123456789abcdef0",
+            "Placement": {"AvailabilityZone": data["region"] + "a"},
             "ImageId": data["image_id"],
             "InstanceType": data["instance_type"],
             "State": {"Name": "running"},
@@ -128,6 +130,10 @@ class Cloud:
         }
 
     def describe_volumes(self, **kwargs):
+        if "VolumeIds" in kwargs and not (self.exists or self.leaked_volume):
+            raise ClientError(
+                {"Error": {"Code": "InvalidVolume.NotFound"}}, "DescribeVolumes"
+            )
         return {
             "Volumes": [{"VolumeId": "vol-0123456789abcdef0", "State": "in-use"}]
             if self.exists or self.leaked_volume
@@ -135,6 +141,11 @@ class Cloud:
         }
 
     def describe_network_interfaces(self, **kwargs):
+        if "NetworkInterfaceIds" in kwargs and not self.exists:
+            raise ClientError(
+                {"Error": {"Code": "InvalidNetworkInterfaceID.NotFound"}},
+                "DescribeNetworkInterfaces",
+            )
         return {
             "NetworkInterfaces": [
                 {"NetworkInterfaceId": "eni-0123456789abcdef0", "Status": "in-use"}
@@ -144,6 +155,10 @@ class Cloud:
         }
 
     def describe_addresses(self, **kwargs):
+        if "AllocationIds" in kwargs:
+            raise ClientError(
+                {"Error": {"Code": "InvalidAllocationID.NotFound"}}, "DescribeAddresses"
+            )
         return {"Addresses": []}
 
 
@@ -162,16 +177,28 @@ class Kubernetes(Workspace):
         if "/superplane.ai/" in path:
             return httpx.Response(200, json={"items": []})
         if path.startswith("/api/v1/nodes?"):
+            zone = self.cloud.instance["Placement"]["AvailabilityZone"]
             return httpx.Response(
                 200,
                 json={
                     "items": [
                         {
+                            "metadata": {
+                                "name": "allocated-node",
+                                "uid": "allocated-node-uid",
+                                "labels": {
+                                    "superplane.ai/capacity": self.cloud.cluster_name,
+                                    "superplane.ai/workspace": operation.grant.lease.workspace_id,
+                                    "topology.kubernetes.io/region": zone[:-1],
+                                    "topology.kubernetes.io/zone": zone,
+                                },
+                            },
                             "spec": {
-                                "providerID": "aws:///us-east-1a/i-0123456789abcdef0"
+                                "providerID": f"aws:///{zone}/{self.cloud.instance['InstanceId']}"
                             },
                             "status": {
-                                "conditions": [{"type": "Ready", "status": "True"}]
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                                "allocatable": {"nvidia.com/gpu": "1"},
                             },
                         }
                     ]
@@ -180,7 +207,23 @@ class Kubernetes(Workspace):
                 },
             )
         if "/pods?" in path:
-            return httpx.Response(200, json={"items": []})
+            from workload_support import completed_job_pod
+
+            pods = [
+                completed_job_pod(obj)
+                for obj in self.stored.values()
+                if obj.get("kind") == "Job"
+            ]
+            return httpx.Response(200, json={"items": pods})
+        if "/pods/" in path and method == "GET":
+            from workload_support import completed_job_pod
+
+            for obj in self.stored.values():
+                if obj.get("kind") == "Job":
+                    pod = completed_job_pod(obj)
+                    if path.endswith("/" + pod["metadata"]["name"]):
+                        return httpx.Response(200, json=pod)
+
         if method == "POST":
             obj = json.loads(json.dumps(body))
             obj["metadata"]["uid"] = str(uuid4())
@@ -243,7 +286,7 @@ async def system(pool, tmp_path):
         await c.execute("""
             CREATE TABLE organizations(id uuid PRIMARY KEY,adp_org_id text UNIQUE);
             CREATE TABLE clusters(id uuid PRIMARY KEY,org_id uuid,eks_cluster_arn text,endpoint text,status text);
-            CREATE TABLE workspaces(id uuid PRIMARY KEY,org_id uuid,cluster_id uuid,namespace_name text,status text);
+            CREATE TABLE workspaces(id uuid PRIMARY KEY,org_id uuid,cluster_id uuid,namespace_name text,status text,shared_cluster_id uuid);
             CREATE TABLE observation_leases(scope text PRIMARY KEY,holder text,expires_at timestamptz);
             CREATE TABLE controller_executions(operation_id text PRIMARY KEY,org_id uuid,workspace_id uuid,controller_holder text,assignment json,expires_at timestamptz);
             CREATE TABLE controller_provider_requests(idempotency_key text PRIMARY KEY,operation_id text,org_id text,workspace_id text,cluster_name text,operation_kind text,request_id text,region text);
@@ -261,7 +304,7 @@ async def system(pool, tmp_path):
             data["endpoint"],
         )
         await c.execute(
-            "INSERT INTO workspaces VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,'tenant-a','active')",
+            "INSERT INTO workspaces(id,org_id,cluster_id,namespace_name,status) VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,'tenant-a','active')",
             workspace,
             org,
             cluster,
@@ -322,6 +365,7 @@ async def system(pool, tmp_path):
             payload = json.loads(request.content)
             assert isinstance(payload["task"], str)
             task = json.loads(payload["task"])
+            cloud.cluster_name = task["name"]
             assert "SSM_ACTIVATION" not in payload["task"]
             assert "nodeadm init" in task["setup"] and "remaining=" in task["run"]
             assert payload["retry_until_up"] is False

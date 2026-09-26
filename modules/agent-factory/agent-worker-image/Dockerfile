@@ -105,7 +105,20 @@ RUN /stage/stage-personas.sh /source /stage
 # python:3.13-slim-bookworm includes Python 3.13 + pip, based on Debian 12.
 # Uses deb.debian.org (Fastly CDN) for apt — far more reliable than
 # Ubuntu's archive.ubuntu.com.
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm
+# Current stable Debian runtime; preserve all worker tooling and staged agents.
+FROM public.ecr.aws/docker/library/python:3.13-slim-trixie AS stdlib-security
+COPY modules/gateway/security/stdlib/ /opt/stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/stdlib-security/apply.py \
+    && python /opt/stdlib-security/check.py
+
+FROM public.ecr.aws/docker/library/python:3.13-slim-trixie
+COPY --from=stdlib-security /usr/local/lib/python3.13/stringprep.py /usr/local/lib/python3.13/stringprep.py
+COPY --from=stdlib-security /usr/local/lib/python3.13/tarfile.py /usr/local/lib/python3.13/tarfile.py
+COPY --from=stdlib-security /usr/local/lib/python3.13/urllib/request.py /usr/local/lib/python3.13/urllib/request.py
+COPY modules/gateway/security/stdlib/ /opt/stdlib-security/
+RUN python /opt/stdlib-security/apply.py --verify-only \
+    && python /opt/stdlib-security/check.py
 
 LABEL org.opencontainers.image.title="adp-agent"
 LABEL org.opencontainers.image.description="ADP hosted agent worker image"
@@ -159,7 +172,7 @@ RUN curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION
     rm /tmp/fzf.tar.gz && \
     fzf --version
 
-# Install Node.js 24 from NodeSource (works on Debian bookworm).
+# Install Node.js 24 from NodeSource (supports Debian trixie).
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
@@ -167,9 +180,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
 # Install pnpm and yarn via corepack. The Node 24 image ships a yarn stub
 # at /usr/bin/yarn, so `npm install -g yarn` fails with EEXIST. Corepack
 # is the modern way to install both and handles replacement idempotently.
+ARG PNPM_VERSION=12.6.0
+ARG YARN_VERSION=4.18.1
 RUN corepack enable && \
-    corepack prepare pnpm@latest --activate && \
-    corepack prepare yarn@stable --activate
+    corepack prepare "pnpm@${PNPM_VERSION}" --activate && \
+    corepack prepare "yarn@${YARN_VERSION}" --activate && \
+    pnpm --version && yarn --version
 
 # Install the OpenAI Codex CLI (issue #2704, EPIC #2702). Pinned so the image
 # is reproducible and doesn't inherit a surprise "latest". Invoked headlessly
@@ -252,7 +268,9 @@ RUN find /tmp/domain-requirements -name '*.txt' -exec \
 RUN groupadd -g 1001 agent && \
     useradd -m -u 1001 -g agent -s /bin/bash agent && \
     mkdir -p /app /work && \
-    chown -R agent:agent /app /work
+    mkdir -p /home/agent/.cache/node && \
+    cp -a /root/.cache/node/corepack /home/agent/.cache/node/corepack && \
+    chown -R agent:agent /app /work /home/agent/.cache
 
 # GIT_ASKPASS helper reads token from a file kept fresh by token-refresh.ts,
 # with env-var fallback for backward compat. gh wrapper does the same for the

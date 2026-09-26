@@ -409,6 +409,17 @@ def _jwt(claims):
     return f"header.{encoded}.signature"
 
 
+def test_recovery_context_uses_selected_tenant_from_envelope(monkeypatch):
+    monkeypatch.setattr(common, "deployment_stamp", lambda: {"deployment_id": "deployment-1"})
+    monkeypatch.setattr(common, "gateway_url", lambda: "https://gateway.example.test/api")
+    original = _jwt({"sub": "user-1", "org_id": "home", "custom:org_id": "home"})
+    lease = _jwt({"tenant": "selected"})
+    monkeypatch.setattr(common, "access_token", lambda: "adpctx1~" + lease + "~" + original)
+    result = CURRENT_RECOVERY_CONTEXT()
+    assert result["principal"] == "user-1"
+    assert result["tenant"] == "selected"
+
+
 def test_orgless_password_session_cannot_create_workspaces_or_deployments(
     monkeypatch,
 ) -> None:
@@ -1231,7 +1242,11 @@ def test_events_filters_only_by_parameters_the_route_declares() -> None:
     passed it, and the parameter it sent was invisible.
     """
     declared = declared_query_parameters("events.py", "GET", "/events")
-    offered = [action for action in leaf_actions("events") if action.option_strings and action.dest not in ("help", "json")]
+    offered = [
+        action
+        for action in leaf_actions("events")
+        if action.option_strings and action.dest not in ("help", "json", "workspace", "follow", "after", "timeout", "max_pages")
+    ]
     argv = ["events"]
     for action in offered:
         argv += [action.option_strings[0], "10" if action.type is int else "synthetic"]
@@ -1506,8 +1521,12 @@ def test_deployment_delete_uses_uuid_and_reports_pending():
     ],
 )
 def test_deployment_namespace_is_server_owned(subcommand, flags):
-    with pytest.raises(cli.CliError, match="unrecognized arguments"):
-        cli.parser().parse_args(["deploy", subcommand, *flags, "--namespace", "kube-system"])
+    if subcommand in {"create", "preview"}:
+        parsed = cli.parser().parse_args(["deploy", subcommand, *flags, "--namespace", "kube-system"])
+        assert parsed.namespace == "kube-system"  # An expectation, never a namespace override.
+    else:
+        with pytest.raises(cli.CliError, match="unrecognized arguments"):
+            cli.parser().parse_args(["deploy", subcommand, *flags, "--namespace", "kube-system"])
 
 
 def deployment_preview_arguments(teardown=False):
@@ -1630,3 +1649,56 @@ def test_deployment_create_requires_explicit_review_and_identity(flag):
     del argv[offset : offset + 2]
     with pytest.raises(cli.CliError, match="required"):
         cli.parser().parse_args(argv)
+
+
+def test_workspace_explicit_operation_survives_entire_local_receipt_loss(tmp_path):
+    operation = "d03af966-58ed-4d9b-8bf9-cc9ae17fbcad"
+    argv = ["workspace", "create", "--name", "owned-workspace", "--operation-id", operation, "--yes"]
+    committed = {}
+
+    class AcceptedButLost(Recorder):
+        def request(self, method, path, body=None, **kwargs):
+            if (method, path) == ("POST", cli.API_BASE + "/workspaces"):
+                self.sent.append((method, path, body))
+                committed.update(operation_id=body["operation_id"], body=dict(body), resource_id=WORKSPACE_ID)
+                raise cli.CliError("reply lost", "gateway_unavailable")
+            return super().request(method, path, body, **kwargs)
+
+    with pytest.raises(cli.CliError, match="delivery is uncertain"):
+        cli.run(cli.parser().parse_args(argv), AcceptedButLost())
+    # Recreated local state, as after replacing the client/instance. The caller's
+    # retained operation argument must determine identity, not a local UUID.
+    common.write_state(cli.STATE, {})
+    retry, result = run(argv)
+    assert retry.body("POST", cli.API_BASE + "/workspaces") == committed["body"]
+    assert result["detail"]["id"] == committed["resource_id"]
+    assert cli.create_recoveries()[operation]["resource_id"] == WORKSPACE_ID
+
+
+def test_workspace_explicit_operation_preview_and_invalid_uuid_are_read_only():
+    operation = "d03af966-58ed-4d9b-8bf9-cc9ae17fbcad"
+    api, result = run(["workspace", "create", "--name", "owned", "--operation-id", operation, "--dry-run"])
+    assert result["detail"]["operation_id"] == operation
+    assert not any(method == "POST" for method, _, _ in api.sent)
+    api = Recorder()
+    with pytest.raises(cli.CliError):
+        cli.run(cli.parser().parse_args(["workspace", "create", "--name", "owned", "--operation-id", "invalid", "--yes"]), api)
+    assert not api.sent
+
+
+def test_workspace_explicit_operation_refuses_changed_request_or_principal(monkeypatch):
+    operation = "d03af966-58ed-4d9b-8bf9-cc9ae17fbcad"
+    argv = ["workspace", "create", "--name", "owned", "--operation-id", operation, "--yes"]
+    run(argv)
+    for replacement in ([*argv[:3], "different", *argv[4:]], argv):
+        if replacement == argv:
+            monkeypatch.setattr(
+                cli,
+                "current_recovery_context",
+                lambda api=None: {"deployment_id": "test", "gateway": "test", "principal": "foreign", "tenant": "org"},
+            )
+        api = Recorder()
+        with pytest.raises(cli.CliError) as raised:
+            cli.run(cli.parser().parse_args(replacement), api)
+        assert raised.value.code == "create_identity_conflict"
+        assert not any(method == "POST" for method, _, _ in api.sent)

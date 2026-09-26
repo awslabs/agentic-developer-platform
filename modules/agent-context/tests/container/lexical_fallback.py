@@ -1,7 +1,7 @@
 """Offline S15 acceptance against reviewed ingestion source and real image tools.
 
 Run in the ingestion image with latest module mounted read-only at /reviewed,
-network disabled, UID1001, read-only root and private /tmp. Only cloud/source
+network disabled, UID10001, read-only root and private /tmp. Only cloud/source
 transport, ACL registration, backend availability and optional telemetry are
 replaced. Git, Zoekt, code analysis, SCIP selection, scope routing, output
 serialization and scratch cleanup are real.
@@ -42,7 +42,7 @@ def run() -> dict:
             INGESTION_SCOPE_OWNER_SUB="",
             SCIP_ENABLED="true",
         )
-        assert os.getuid() == 1001, "acceptance requires the reviewed non-root identity"
+        assert os.getuid() == 10001, "acceptance requires the reviewed non-root identity"
         assert not any(
             os.environ.get(k)
             for k in (

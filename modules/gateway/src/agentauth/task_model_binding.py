@@ -18,82 +18,26 @@ from src.admin.persona_models.catalogue_service import (
     lookup_evidence,
 )
 from src.agentauth.model_policy import ModelPolicyError, _resolve_active_allowlist_policy
+from src.agentauth.task_responses_contract import TASK_RESPONSES_PROBE_BODY, TASK_RESPONSES_REQUEST_SHAPE  # noqa: F401 -- public probe contract
+from src.agentauth.task_responses_tools_contract import (  # noqa: F401 -- public probe contract
+    TASK_RESPONSES_TOOLS_PROBE_BODY,
+    TASK_RESPONSES_TOOLS_REQUEST_SHAPE,
+)
 from src.budget.pricing_v2_reader import get_rate_state
 from src.proxy.bedrock_routing import bedrock_routing_resolver
 from src.shared.config import get_settings
 from src.shared.models.persona_models import PersonaModelPreference
+from src.tasks.personas import TASK_PERSONAS
 
 TASK_PERSONA = "agent-task-investigator"
 TASK_TRANSPORT = "anthropic_messages"
-TASK_CONTRACT_REVISION = "task-messages-v1"
-TASK_PROBE_BODY = {
-    "anthropic_version": "bedrock-2023-05-31",
-    "max_tokens": 16,
-    "system": "Reply briefly.",
-    "messages": [{"role": "user", "content": [{"type": "text", "text": "Reply OK."}]}],
-}
-TASK_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
+TASK_CONTRACT_REVISION = TASK_PERSONAS[TASK_PERSONA].harness_contract_revision
+TASK_PROBE_BODY = TASK_PERSONAS[TASK_PERSONA].probe_body
+TASK_REQUEST_SHAPE = TASK_PERSONAS[TASK_PERSONA].request_shape_sha256
 TASK_CYBER_PERSONA = "agent-task-cyber"
-TASK_CYBER_CONTRACT_REVISION = "task-cyber-sdk-messages-v1"
-TASK_CYBER_PROBE_BODY = {
-    "anthropic_version": "bedrock-2023-05-31",
-    "max_tokens": 64,
-    "messages": [{"role": "user", "content": [{"type": "text", "text": "Call task_probe with value OK."}]}],
-    "tools": [
-        {
-            "name": "task_probe",
-            "description": "Return probe evidence.",
-            "input_schema": {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"], "additionalProperties": False},
-        }
-    ],
-    "tool_choice": {"type": "tool", "name": "task_probe"},
-}
-TASK_CYBER_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_CYBER_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-# Probe the gateway-normalized text transport, not the legacy reviewer's direct
-# SDK/proxy grant. Full tool/reasoning history will require a new contract probe.
-TASK_RESPONSES_PROBE_BODY = {
-    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Reply OK."}]}],
-    "reasoning": {"effort": "medium"},
-    "max_output_tokens": 64,
-}
-TASK_RESPONSES_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_RESPONSES_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-# Distinct evidence is required for namespace calls and their continuation. A
-# text/reviewer probe cannot certify this wire shape.
-TASK_RESPONSES_TOOLS_PROBE_BODY = {
-    "input": "Call task_probe with value OK.",
-    "reasoning": {"effort": "medium"},
-    "max_output_tokens": 128,
-    "parallel_tool_calls": False,
-    "tools": [
-        {
-            "type": "namespace",
-            "name": "mcp__adp",
-            "description": "Authorized ADP tools.",
-            "tools": [
-                {
-                    "type": "function",
-                    "name": "task_probe",
-                    "description": "Return probe evidence.",
-                    "strict": False,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"value": {"type": "string"}},
-                        "required": ["value"],
-                        "additionalProperties": False,
-                    },
-                }
-            ],
-        }
-    ],
-}
-TASK_RESPONSES_TOOLS_REQUEST_SHAPE = hashlib.sha256(
-    json.dumps(TASK_RESPONSES_TOOLS_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()
-).hexdigest()
+TASK_CYBER_CONTRACT_REVISION = TASK_PERSONAS[TASK_CYBER_PERSONA].harness_contract_revision
+TASK_CYBER_PROBE_BODY = TASK_PERSONAS[TASK_CYBER_PERSONA].probe_body
+TASK_CYBER_REQUEST_SHAPE = TASK_PERSONAS[TASK_CYBER_PERSONA].request_shape_sha256
 
 
 async def resolve_task_model(
@@ -102,28 +46,30 @@ async def resolve_task_model(
     from src.agentauth.task_responses_contract import TASK_RESPONSES_REVISION, TASK_RESPONSES_TRANSPORT
 
     responses = persona.startswith("agent-task-") and persona_compatibility_class(persona) == "codex-sdk"
-    if persona not in {TASK_PERSONA, TASK_CYBER_PERSONA} and not responses:
+    profile = TASK_PERSONAS.get(persona)
+    if profile is None and not responses:
         raise ModelPolicyError("task_model_transport_unsupported")
     transport = TASK_RESPONSES_TRANSPORT if responses else TASK_TRANSPORT
     compatibility = "codex-sdk" if responses else TASK_TRANSPORT
-    revision = TASK_RESPONSES_REVISION if responses else TASK_CYBER_CONTRACT_REVISION if persona == TASK_CYBER_PERSONA else TASK_CONTRACT_REVISION
-    shape = TASK_RESPONSES_REQUEST_SHAPE if responses else TASK_CYBER_REQUEST_SHAPE if persona == TASK_CYBER_PERSONA else TASK_REQUEST_SHAPE
+    revision = TASK_RESPONSES_REVISION if responses else profile.harness_contract_revision
+    shape = TASK_RESPONSES_REQUEST_SHAPE if responses else profile.request_shape_sha256
     if responses_tools:
         from src.agentauth.task_responses_tools_contract import TASK_RESPONSES_TOOLS_REVISION
 
         if not responses:
             raise ModelPolicyError("task_model_transport_unsupported")
         revision, shape = TASK_RESPONSES_TOOLS_REVISION, TASK_RESPONSES_TOOLS_REQUEST_SHAPE
-    policy = await _resolve_active_allowlist_policy(
-        db, tenant_id=tenant, principal_kind="service_account", principal_id=principal, expires_at=deadline
-    )
-    if policy.principal_status != "active" or policy.service_policy_unavailable_reason:
+    from src.tasks.human_authority import require_current_owner
+
+    principal_kind, owner_id = await require_current_owner(db, tenant=tenant, principal=principal)
+    policy = await _resolve_active_allowlist_policy(db, tenant_id=tenant, principal_kind=principal_kind, principal_id=owner_id, expires_at=deadline)
+    if (principal_kind == "service_account" and policy.principal_status != "active") or policy.service_policy_unavailable_reason:
         raise ModelPolicyError("task_model_policy_unavailable")
     preference = await db.scalar(
         select(PersonaModelPreference).where(
             PersonaModelPreference.org_id == tenant,
-            PersonaModelPreference.principal_kind == "service_account",
-            PersonaModelPreference.principal_id == principal,
+            PersonaModelPreference.principal_kind == principal_kind,
+            PersonaModelPreference.principal_id == owner_id,
             PersonaModelPreference.persona_key == persona,
         )
     )

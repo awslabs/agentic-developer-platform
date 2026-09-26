@@ -363,6 +363,162 @@ def setup(api, args, interactive):
     return import_app(api, args, interactive) if mode == "existing" else create_app(api, args, interactive)
 
 
+def maintain_app(args, api):
+    import http.client
+    import uuid
+
+    command = "admin github " + args.command
+    current = api.request("GET", APP + "/maintenance")
+    if not isinstance(current, dict) or current.get("contract") != "app-maintenance-v1" or not current.get("key_version"):
+        raise CliError("Server does not support revision-bound App maintenance.", "unavailable", 5)
+    if args.command == "status":
+        return common.envelope(
+            "ok",
+            command,
+            {key: current[key] for key in ("app_id", "key_version", "contract")},
+            "This is credential configuration, not OAuth/webhook acceptance.",
+        )
+    if current.get("app_id") != args.expect_app_id or (
+        current["key_version"] != args.expect_key_version and not (args.command == "rotate-key" and current["key_version"] == args.operation_id)
+    ):
+        raise CliError("App/key revision changed. Read status --maintenance and review the current object.", "conflict", 4)
+    body = {"expected_app_id": args.expect_app_id, "expected_key_version": args.expect_key_version}
+    if args.command == "rotate-key":
+        try:
+            body["operation_id"] = str(uuid.UUID(args.operation_id))
+        except ValueError:
+            raise CliError("Use a UUID operation ID and retain it for reconciliation.", "usage_error", 1) from None
+    impact = {
+        "app_id": args.expect_app_id,
+        "key_version": args.expect_key_version,
+        "operation_id": body.get("operation_id"),
+        "effect": "Verify supplied key, activate it, retain previous secret version and GitHub key. OAuth/webhook settings remain as configured."
+        if args.command == "rotate-key"
+        else "Deregister this deployment's App credentials. Sign-in, repository integrations and agents may stop. Does not delete the App on GitHub.",
+    }
+    if args.dry_run:
+        return common.envelope("dry_run", command, impact)
+    if not args.yes:
+        raise CliError("Review --dry-run then pass --yes for this App and key revision.", "confirmation_required", 1)
+    if args.command == "rotate-key":
+        raw = sys.stdin.read(65537) if args.credentials_stdin else read_private_text(args.credentials_file)
+        if len(raw) > 65536:
+            raise CliError("Credential input exceeds 64 KiB.", "usage_error", 1)
+        try:
+            credentials = json.loads(raw)
+            if not isinstance(credentials, dict) or set(credentials) != {"private_key"} or not isinstance(credentials["private_key"], str):
+                raise ValueError
+            body["private_key"] = credentials["private_key"]
+        except (ValueError, TypeError):
+            raise CliError("Use JSON containing only private_key; credentials are never printed.", "usage_error", 1) from None
+    common.ensure_can_mutate("github.app.admin.maintenance.write", request=api.request)
+    try:
+        value = api.request("POST", APP + "/maintenance/" + args.command, body)
+    except CliError as exc:
+        if exc.exit_code not in {4, 5}:
+            raise
+        raise CliError(
+            "App maintenance outcome is unconfirmed. Read status --maintenance and reconcile the original operation; "
+            "do not rotate again with a new ID.",
+            "unknown_mutation_outcome",
+            4,
+        ) from None
+    except (OSError, http.client.HTTPException):
+        raise CliError(
+            "App maintenance outcome unknown. Read status --maintenance before any further write.", "unknown_mutation_outcome", 4
+        ) from None
+    valid = isinstance(value, dict) and value.get("app_id") == args.expect_app_id
+    if args.command == "rotate-key":
+        valid = (
+            valid
+            and value.get("rotated") is True
+            and value.get("operation_id") == body["operation_id"]
+            and value.get("key_version") == body["operation_id"]
+        )
+    else:
+        valid = valid and value.get("disconnected") is True
+    if not valid:
+        raise CliError("App maintenance acknowledgement mismatch. Reconcile the original operation.", "unknown_mutation_outcome", 4)
+    return common.envelope(
+        "ok",
+        command,
+        {
+            key: value[key]
+            for key in (
+                "app_id",
+                "key_version",
+                "operation_id",
+                "rotated",
+                "replayed",
+                "previous_key_retained",
+                "disconnected",
+                "affected_installations",
+            )
+            if key in value
+        },
+        "Credential state is not proof that OAuth, repositories or webhook agents work; run isolated acceptance separately.",
+    )
+
+
+def org_binding(args, api):
+    """Admin association changes reuse the canonical ownership/revocation service."""
+    import http.client
+    import urllib.parse
+
+    command = "admin github org-binding " + args.action
+    path = "/admin/organizations/" + urllib.parse.quote(args.org, safe="") + "/connections/github"
+    listing = api.request("GET", path)
+    if not isinstance(listing, dict) or not isinstance(listing.get("connections"), list) or listing.get("total") != len(listing["connections"]):
+        raise CliError("Malformed organization binding list.", "invalid_response", 5)
+    if any(not isinstance(row, dict) or row.get("org_id") != args.org for row in listing["connections"]):
+        raise CliError("Organization binding response does not match the requested organization.", "invalid_response", 5)
+    if args.action == "list":
+        return common.envelope("ok", command, listing)
+    if args.installation <= 0:
+        raise CliError("Installation must be positive.", "usage_error", 1)
+    body = {"installation_id": args.installation}
+    if args.action == "add":
+        for name in ("github_org_id", "github_org_login"):
+            if getattr(args, name, None):
+                body[name] = getattr(args, name)
+        body["restore_revoked"] = args.restore_revoked
+    matches = [row for row in listing["connections"] if row.get("installation_id") == str(args.installation)]
+    if args.action == "remove" and len(matches) != 1:
+        raise CliError("Installation is not connected to this organization.", "not_found", 5)
+    effect = {
+        "org_id": args.org,
+        "installation_id": args.installation,
+        "current": matches,
+        "request": body,
+        "impact": "Changes local organization routing for this installation; does not uninstall or delete the GitHub App. "
+        "Removing the binding stops this organization's webhook agents.",
+    }
+    if args.dry_run:
+        return common.envelope("dry_run", command, effect)
+    if not args.yes:
+        raise CliError("Review --dry-run and pass --yes for this exact org/installation.", "confirmation_required", 1)
+    common.ensure_can_mutate("github.org_binding.write", request=api.request)
+    try:
+        value = api.request("POST", path, body) if args.action == "add" else api.request("DELETE", path + "/" + str(args.installation))
+    except CliError as exc:
+        if exc.exit_code not in {4, 5}:
+            raise
+        raise CliError(
+            "Binding outcome unknown; list this organization and reconcile the same installation before retrying.", "unknown_mutation_outcome", 4
+        ) from None
+    except (OSError, http.client.HTTPException):
+        raise CliError("Binding outcome unknown; list this organization before retrying.", "unknown_mutation_outcome", 4) from None
+    if not isinstance(value, dict) or value.get("org_id") != args.org or value.get("installation_id") != str(args.installation):
+        raise CliError("Binding acknowledgement mismatch; reconcile the original organization/installation.", "unknown_mutation_outcome", 4)
+    if args.action == "remove":
+        if type(value.get("detached")) is not bool or not isinstance(value.get("residual"), list):
+            raise CliError("Incomplete detach acknowledgement; reconcile the original installation.", "unknown_mutation_outcome", 4)
+        done = value["detached"] and not value["residual"]
+    else:
+        done = value.get("routable") is True
+    return common.envelope("ok" if done else "pending", command, value, "Routing state is not proof of a successful webhook agent or OAuth login.")
+
+
 def parser():
     root = common.Parser(prog="adp admin github", description="Configure this deployment's GitHub App: sign-in, webhooks and repository access.")
     commands = root.add_subparsers(dest="command", required=True)
@@ -387,13 +543,54 @@ def parser():
     configure.add_argument("--org", help="ADP organization ID or exact name")
     configure.add_argument("--dry-run", action="store_true", help="Report what would change without configuring anything")
     configure.add_argument("--yes", action="store_true", help="Skip confirmation prompts; required credentials are still prompted for")
-    shared(commands.add_parser("status", help="Report sign-in, repository installation and agent integration separately"))
+    shared(commands.add_parser("status", help="Report sign-in, repository installation and agent integration separately")).add_argument(
+        "--maintenance", action="store_true", help="Read App ID and key version for reviewed maintenance"
+    )
     shared(commands.add_parser("revalidate", help="Re-read the App's live configuration on GitHub"))
+    for action in ("rotate-key", "disconnect"):
+        item = shared(commands.add_parser(action))
+        item.add_argument("--expect-app-id", required=True)
+        item.add_argument("--expect-key-version", required=True)
+        item.add_argument("--yes", action="store_true")
+        item.add_argument("--dry-run", action="store_true")
+        if action == "rotate-key":
+            item.add_argument("--operation-id", required=True)
+            source = item.add_mutually_exclusive_group(required=True)
+            source.add_argument("--credentials-file")
+            source.add_argument("--credentials-stdin", action="store_true")
+    bindings = commands.add_parser("org-binding", help="Manage platform-admin organization installation bindings").add_subparsers(
+        dest="action", required=True
+    )
+    for action in ("list", "add", "remove"):
+        item = shared(bindings.add_parser(action))
+        item.add_argument("--org", required=True, help="Exact ADP organization ID")
+        if action != "list":
+            item.add_argument("--installation", required=True, type=int)
+            item.add_argument("--yes", action="store_true")
+            item.add_argument("--dry-run", action="store_true")
+        if action == "add":
+            item.add_argument("--github-org-id")
+            item.add_argument("--github-org-login")
+            item.add_argument(
+                "--restore-revoked",
+                action="store_true",
+                help="Explicitly restore a completed local-only detach; never overrides provider uninstall or pending cleanup",
+            )
     return root
 
 
 def run(args, api, interactive=None):
+    if args.command in {"rotate-key", "disconnect"} or (args.command == "status" and args.maintenance):
+        return maintain_app(args, api)
+    if args.command == "org-binding":
+        return org_binding(args, api)
     interactive = sys.stdin.isatty() and not args.json if interactive is None else interactive
+    mutation_capability = {
+        "setup": "github.app.admin.setup.write",
+        "revalidate": "github.app.admin.revalidate.write",
+    }.get(args.command)
+    if mutation_capability and not getattr(args, "dry_run", False):
+        common.ensure_can_mutate(mutation_capability, request=api.request)
     if args.command == "status":
         return describe(api)
     if args.command == "revalidate":
@@ -414,7 +611,7 @@ def configure(ctx):
     args.dry_run = bool(ctx.get("dry_run"))
     if args.dry_run or not ctx.get("interactive"):
         return describe(ctx["api"])
-    return setup(ctx["api"], args, True)
+    return run(args, ctx["api"], interactive=True)
 
 
 def main(argv=None):

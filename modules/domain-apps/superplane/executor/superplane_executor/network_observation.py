@@ -84,18 +84,26 @@ async def pod_service(
     endpoint,
     cidrs,
     allocation_label,
+    validate_pod=None,
 ):
     path = f"/api/v1/namespaces/{quote(target['namespace'], safe='')}/pods/{quote(pod_name, safe='')}"
     response = await workspace.request(operation, target, "GET", path)
     if response.status_code != 200:
         raise OperationRefused("network probe pod unavailable")
     pod = response.json()
+    if validate_pod is not None:
+        validate_pod(pod)
     if (
         pod.get("metadata", {}).get("uid") != pod_uid
         or pod.get("metadata", {}).get("labels", {}).get("superplane.ai/capacity")
         != allocation_label
         or pod.get("spec", {}).get("nodeName") != node_name
         or pod.get("spec", {}).get("hostNetwork", False)
+        # A matching Service address from /etc/hosts or a custom resolver does
+        # not prove cluster DNS. These checks apply only to the probe workload.
+        or pod.get("spec", {}).get("dnsPolicy", "ClusterFirst") != "ClusterFirst"
+        or pod.get("spec", {}).get("hostAliases", []) != []
+        or pod.get("spec", {}).get("dnsConfig", {}) != {}
         or pod.get("status", {}).get("phase") != "Succeeded"
     ):
         raise OperationRefused(
@@ -114,8 +122,11 @@ async def pod_service(
     if (
         current.status_code != 200
         or current.json().get("metadata", {}).get("uid") != pod_uid
+        or current.json().get("spec") != pod.get("spec")
     ):
         raise OperationRefused("network probe pod replaced during observation")
+    if validate_pod is not None:
+        validate_pod(current.json())
     return {
         "pod_service": result,
         "api_to_kubelet": {

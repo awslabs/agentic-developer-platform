@@ -546,7 +546,7 @@ def test_start_prints_the_session_id_before_waiting_for_a_reply(monkeypatch, ser
 
     assert code == 4, "pending: the conversation is healthy, the agent just has not answered"
     printed_id = next((i for i, (kind, text) in enumerate(events) if kind == "print" and SESSION_ID in text), None)
-    first_poll = next((i for i, (kind, _) in enumerate(events) if kind == "poll"), None)
+    first_poll = next((i for i, (kind, path) in enumerate(events) if kind == "poll" and "/intake/sessions/" in path), None)
     assert printed_id is not None, "the session id was never printed"
     assert first_poll is not None, "the CLI never waited, so the ordering was not exercised"
     assert printed_id < first_poll, "the session id must be printed BEFORE the first wait, not after it"
@@ -711,7 +711,8 @@ def test_an_answered_question_becomes_a_new_turn_in_the_same_conversation(monkey
     original_do_get = server.do_GET
 
     def do_GET(handler):  # noqa: N802 - matches BaseHTTPRequestHandler
-        route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", next_state())
+        if "/orchestration/intake/sessions/" in handler.path:
+            route(server, "GET", f"/api/orchestration/intake/sessions/{SESSION_ID}", next_state())
         original_do_get(handler)
 
     monkeypatch.setattr(server, "do_GET", do_GET)
@@ -760,7 +761,7 @@ def test_resume_without_an_id_finds_the_callers_newest_conversation(server):
 
     assert code == 0
     assert result["detail"]["session_id"] == SESSION_ID
-    assert "/latest" in [path for _, path, _ in server.received][0]
+    assert any("/latest" in path for _, path, _ in server.received)
 
 
 def test_resuming_when_there_is_nothing_to_resume_is_an_actionable_error(server):
@@ -2608,3 +2609,116 @@ def test_wave_preview_displays_metadata_and_preserves_legacy_fallback():
     text = "\n".join(cli.wave_lines(waves))
     assert "stage 0 (concurrent): Contracts (epic-1/wave-1), epic-2/wave-1" in text
     assert "Freeze contracts." in text
+
+
+def test_unavailable_discovery_is_retained_in_successful_flow_output(server):
+    _conversation_done(server)
+    code, result = run_cli(["start", "Improve checkout", "--refine-only", "--json"])
+    assert code == 0
+    assert result["capability_preflight"]["flows.draft.write"]["source"] == "unavailable"
+    assert any(method == "POST" for method, _path, _body in server.received)
+
+
+def _recovery_snapshot():
+    return {
+        "contract": "node-recovery-v1",
+        "flow_id": FLOW_ID,
+        "node_id": GATE_ID,
+        "revision": CURRENT_HASH,
+        "state": "failed",
+        "kind": "eval",
+        "attempts": 1,
+        "bound_pull_request": None,
+    }
+
+
+@pytest.mark.parametrize("bad", [None, [], {}, {"revision": "bad"}])
+def test_recovery_refuses_malformed_readback_without_post(server, bad):
+    route(server, "GET", f"/api/orchestration/nodes/{GATE_ID}/recovery", bad)
+    code, _ = run_cli(
+        [
+            "node",
+            "resume",
+            GATE_ID,
+            "--flow",
+            FLOW_ID,
+            "--reason",
+            "repair",
+            "--yes",
+            "--expect-revision",
+            CURRENT_HASH,
+            "--operation-id",
+            "3f8c1d64-1c1e-4a5f-9b2a-77c0d3a1b2e5",
+        ]
+    )
+    assert code != 0
+    assert all(method != "POST" for method, _, _ in server.received)
+
+
+def test_recovery_preview_dry_run_wins_over_yes(server):
+    route(server, "GET", f"/api/orchestration/nodes/{GATE_ID}/recovery", _recovery_snapshot())
+    code, result = run_cli(["node", "resume", GATE_ID, "--flow", FLOW_ID, "--reason", "repair", "--dry-run", "--yes"])
+    assert code == 0 and result["status"] == "dry_run"
+    assert result["detail"]["request"]["reconciled"] is False
+    assert all(method != "POST" for method, _, _ in server.received)
+
+
+def test_recovery_real_transport_schema_and_replay(server, monkeypatch, tmp_path):
+    from src.orchestration.controls import ResumeRequest, ResumeResponse
+
+    monkeypatch.setattr(common, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(common, "authenticated_scope", lambda: {"tenant": "test", "user": "test"})
+    monkeypatch.setattr(common, "ensure_can_mutate", lambda *a, **k: None)
+    route(server, "GET", f"/api/orchestration/nodes/{GATE_ID}/recovery", _recovery_snapshot())
+    answer = ResumeResponse(node_id=GATE_ID, from_state="failed", state="ready", decision_id="d1", actor_kind="human").model_dump()
+    route(server, "POST", f"/api/orchestration/nodes/{GATE_ID}/resume", answer)
+    args = [
+        "node",
+        "resume",
+        GATE_ID,
+        "--flow",
+        FLOW_ID,
+        "--reason",
+        "repair",
+        "--yes",
+        "--expect-revision",
+        CURRENT_HASH,
+        "--operation-id",
+        "3f8c1d64-1c1e-4a5f-9b2a-77c0d3a1b2e5",
+    ]
+    _, result = run_cli(args)
+    assert result["detail"]["acknowledgement"] == answer
+    posts = [body for method, _, body in server.received if method == "POST"]
+    assert len(posts) == 1
+    parsed = ResumeRequest.model_validate(posts[0])
+    assert parsed.expected_revision == CURRENT_HASH and parsed.expected_flow_id == FLOW_ID
+    _, replay = run_cli(args)
+    assert replay["detail"]["replayed_without_write"] is True
+    assert len([m for m, _, _ in server.received if m == "POST"]) == 1
+
+
+@pytest.mark.parametrize("status", [403, 409])
+def test_recovery_preserves_definite_server_refusal(server, monkeypatch, tmp_path, status):
+    monkeypatch.setattr(common, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(common, "authenticated_scope", lambda: {"tenant": "test"})
+    monkeypatch.setattr(common, "ensure_can_mutate", lambda *a, **k: None)
+    route(server, "GET", f"/api/orchestration/nodes/{GATE_ID}/recovery", _recovery_snapshot())
+    route(server, "POST", f"/api/orchestration/nodes/{GATE_ID}/resume", {"detail": "refused"}, status)
+    code, result = run_cli(
+        [
+            "node",
+            "resume",
+            GATE_ID,
+            "--flow",
+            FLOW_ID,
+            "--reason",
+            "repair",
+            "--yes",
+            "--expect-revision",
+            CURRENT_HASH,
+            "--operation-id",
+            "3f8c1d64-1c1e-4a5f-9b2a-77c0d3a1b2e5",
+        ]
+    )
+    assert code != 0 and result["status"] == "failed"
+    assert len(list((tmp_path / "flow-recovery").glob("*.json"))) == 1

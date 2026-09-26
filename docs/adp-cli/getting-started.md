@@ -133,6 +133,42 @@ service so bare `codex` can work; `adp daemon uninstall` removes that service.
 The daemon commands are not supported on Linux. `adp serve` runs the proxy in
 the foreground and stops with Ctrl-C.
 
+### Hermes Agent
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous Research)
+uses the same local authentication proxy as Codex. Install Hermes with support
+for `hermes config set` and `hermes config get --json --raw`, then configure it:
+
+```bash
+adp hermes setup
+adp hermes
+```
+
+Setup uses Hermes' own configuration writer, preserving unrelated settings;
+ADP does not require PyYAML in the system Python. It stores environment references
+for the endpoint and credential. Each `adp hermes` launch supplies the selected
+deployment's verified proxy endpoint through `ADP_HERMES_BASE_URL` and its local
+credential through `ADP_GATEWAY_DUMMY`. It reuses that deployment's Codex proxy
+when available, or starts one. Changing deployments needs no setup rewrite:
+
+```bash
+adp hermes --oneshot "Explain this directory"   # single prompt
+adp hermes --tui                                # full TUI
+adp --deployment dev hermes                     # select the ADP deployment
+```
+
+Always launch with `adp hermes`, including when an ADP daemon is running.
+The launcher rejects stale transport settings and provider/profile overrides.
+For a separate Hermes home, set `HERMES_HOME` to the same directory for both
+setup and launch. Re-run `adp hermes setup` to migrate an older configuration
+that contains a literal proxy port.
+
+Hermes needs `git` to install; on Amazon Linux 2023 also install `libatomic`
+for its bundled Node.js runtime. Model requests through the ADP proxy's
+`/v1/chat/completions` route are budgeted, rate-limited and logged against your
+ADP identity. Setup selects `sonnet45`; use `--model` or `model.default` in the
+Hermes configuration to choose another model exposed by your ADP deployment.
+
 ## Refresh, log out and update
 
 ```bash

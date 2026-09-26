@@ -65,6 +65,9 @@ class TaskAdmission:
             repository_binding = freeze_repository(submit.get("inputs", {}), policy)
         except (TaskRepositoryPolicyError, ValueError, TypeError):
             raise TaskAdmissionError("disallowed_repository", 403) from None
+
+        from src.tasks.repository_authority import CODING_PERSONAS, require_coding_snapshot
+
         digest = payload_digest(submit)
         idem_key = idempotency_partition(tenant=caller.tenant_id, canonical_principal=caller.principal_id, idempotency_key=idempotency_key)
         existing = await run_in_threadpool(self.repository._read_idempotency, idem_key)
@@ -75,11 +78,15 @@ class TaskAdmission:
             if task is None:
                 raise TaskStoreError("accepted task unavailable")
             return self.receipt(task, replayed=True)
+        if submit["persona"] in CODING_PERSONAS:
+            await require_coding_snapshot(caller=caller, submit=submit, policy=policy, db=db)
         now = self.clock()
         deadline = now + timedelta(minutes=int(policy["limits"]["max_duration_minutes"]))
         from src.admin.persona_models.catalogue import persona_compatibility_class
 
         tool_profile = bool(tool_grants) and persona_compatibility_class(submit["persona"]) == "codex-sdk"
+
+        human_owner = caller.principal_id.startswith("human:")
         binding = await self.model_resolver(
             db,
             tenant=caller.tenant_id,
@@ -88,7 +95,13 @@ class TaskAdmission:
             expected_policy_version=policy["model_policy_version"],
             persona=submit["persona"],
             **({"responses_tools": True} if tool_profile else {}),
+            **({"include_context": True} if human_owner else {}),
         )
+        if human_owner:
+            binding, owner_policy, _ = binding
+            from src.tasks.human_authority import require_admission_headroom
+
+            await require_admission_headroom(owner_policy.context, policy["limits"]["max_usd_per_task"])
         refs = []
         total_bytes = 0
         for artifact_id in submit.get("artifact_ids", []):

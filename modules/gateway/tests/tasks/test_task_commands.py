@@ -340,3 +340,24 @@ def test_unconfirmed_tool_receipt_prevents_completion(store, status):
     )
     with pytest.raises(errors.TaskApiError, match="Tool operations"):
         service.finalize(identity, final_body(identity))
+
+@pytest.mark.parametrize("persona", ["agent-task-claude-developer", "agent-task-codex-developer"])
+def test_coding_runtime_refuses_input_without_creating_command_but_allows_cancel(store, persona):
+    from src.tasks.records import task_authority_partition, task_policy_sort_key
+
+    req = _request(persona=persona)
+    store._client.update_item(
+        TableName=store.authority_table_name,
+        Key=_serialize({"pk": task_authority_partition(req.tenant), "sk": task_policy_sort_key(req.canonical_principal)}),
+        UpdateExpression="SET personas = :personas",
+        ExpressionAttributeValues=_serialize({":personas": {persona}}),
+    )
+    store.accept(req)
+    service = TaskCommands(store)
+    with pytest.raises(errors.TaskApiError, match="does not support follow-up input"):
+        admit(service, req)
+    assert service.commands(req.task_id) == []
+    command_id = str(uuid.uuid4())
+    result = admit(service, req, kind="cancel", command_id=command_id)
+    assert admit(service, req, kind="cancel", command_id=command_id) == result
+    assert service.snapshot(req.task_id)["state"] == "cancel_requested"

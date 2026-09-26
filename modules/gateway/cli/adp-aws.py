@@ -282,6 +282,8 @@ def parser():
 
     verification = commands.add_parser("verify", help="Check that a connection still works right now")
     verification.add_argument("connection", help="Connection ID or name")
+    verification.add_argument("--yes", action="store_true", help="Approve updating stored verification evidence without a prompt")
+    verification.add_argument("--dry-run", action="store_true", help="Show which verification evidence would be refreshed without probing or writing")
     verification.add_argument("--json", action="store_true")
 
     removal = commands.add_parser("disconnect", help="Remove an ADP connection; leaves the AWS role in place")
@@ -361,6 +363,13 @@ def existing_for(api, args):
 
 
 def run(args, api):
+    mutation_capability = {
+        "connect": "connections.aws.write",
+        "disconnect": "connections.aws.write",
+        "verify": "connections.aws.verify.write",
+    }.get(args.command)
+    if mutation_capability and not args.dry_run:
+        common.ensure_can_mutate(mutation_capability, request=api.request)
     if args.command == "list":
         saved = common.read_state(NAME)
         pending = saved.get("download_dir") if saved.get("gateway_url") == api.base else None
@@ -373,6 +382,21 @@ def run(args, api):
 
     if args.command == "verify":
         connection = resolve_connection(api, args.connection)
+        plan = {
+            "action": "refresh_verification_evidence",
+            "connection_id": connection["id"],
+            "name": connection["label"],
+            "account_id": account_of(connection),
+            "dry_run": args.dry_run,
+            "effect": "The probe may mark a previously verified connection unavailable.",
+        }
+        if args.dry_run:
+            return plan
+        confirm(
+            args,
+            f"Probe {connection['label']} now and replace its stored verification evidence?",
+            "A failed probe can mark a previously verified connection unavailable.",
+        )
         result = verify(api, connection["id"])
         return {
             "connection_id": connection["id"],
@@ -563,7 +587,11 @@ def display(result, as_json, command):
         if result.get("pending_handoff"):
             print(f"A downloaded setup is waiting in {result['pending_handoff']}. Finish it with adp aws connect --resume.")
     elif result.get("dry_run"):
-        if result["action"] == "disconnect":
+        if result["action"] == "refresh_verification_evidence":
+            print(
+                f"Would probe {result['name']} (AWS account {result['account_id']}) and replace its stored verification evidence. No probe sent."
+            )
+        elif result["action"] == "disconnect":
             print(f"Would disconnect {result['name']} (AWS account {result['account_id']}) from ADP. No changes made.")
             print(f"Would remove {result['removes']}. Would keep {result['keeps']}.")
         else:

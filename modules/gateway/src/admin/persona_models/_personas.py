@@ -59,11 +59,6 @@ PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
     "superplane-researcher": "claude-agent-sdk",
 }
 
-TASK_PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
-    "agent-task-gpt-developer": "codex-sdk",
-    "agent-task-gpt-intent-refinement": "codex-sdk",
-}
-
 COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION: dict[str, str] = {
     "claude-agent-sdk": "0.3.220",
     "codex-sdk": "0.155.1",

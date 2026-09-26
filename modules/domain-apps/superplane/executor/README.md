@@ -88,6 +88,12 @@ Unsupported replicas, model option changes and unbound targets are refused
 before admission. [Batch profiles](BATCH-API.md) use the separate batch producer
 and share quota with serving workloads.
 
+Governed dedicated batch completion and result capture verify the actual Pod's
+Node UID and AWS provider identity against fresh running allocation instances.
+[The placement-proof design](POD-INSTANCE-DESIGN.md) defines the repeated checks
+and recovery behavior. Shared targets require a separate trusted Node observer;
+workspace credentials do not gain fleet access.
+
 `POST /workspaces/{workspace}/deployments/preview` returns the exact approval
 request and revision for a caller-supplied operation UUID/profile. The existing
 operation-approval service records the independent human decision. Deployment
@@ -416,6 +422,17 @@ Workload UI/API reads expose [status and bounded logs](WORKLOAD-OBSERVATIONS.md)
 retains uncertain resources and accounting. These surfaces do not establish
 provider-billed cost or live workload acceptance. Bounded batch text retention is documented in [BATCH-RESULTS.md](BATCH-RESULTS.md).
 
+Allocation accounting includes separate `cost_evidence.categories` for compute,
+storage, network and transfer. Each retains its relevant durable resource handles
+and the shared engine's disposition, including after deletion. The accounting
+timestamp is not a billing interval. Usage quantities and billed amounts remain
+explicitly unknown until allocation-attributed provider evidence is available;
+resource absence and returned reservation do not establish zero charges. Native
+command and Kubernetes identities are cleanup obligations, not extra billable
+machines. [Recovery implementation design](RECOVERY-DESIGN.md) describes the
+cancellation, exact Node cleanup and lost-response boundaries under the main
+[architecture](../DESIGN.md).
+
 ## GPU requirements instead of a fixed machine
 
 An installed workload profile may replace `instance_type` with `accelerators`,
@@ -501,8 +518,8 @@ never tries to associate EKS's service-managed private hosted zone directly.
 
 `Provider` checks every candidate network before launching capacity. Once SkyPilot
 reports the actual compute region, the provider establishes the approved path
-before reporting launch completion. Nodes still join in the separate node-join
-story. Network setup includes VPC attachments, peering acceptance in the receiving
+while the generated native nodeadm setup attempts the approved cluster join.
+Network setup includes VPC attachments, peering acceptance in the receiving
 region, TGW table associations, local/remote TGW routes, VPC routes and scoped
 security rules. Routed pod CIDRs and namespace NetworkPolicy must be supported by
 the selected CNI; this does not certify arbitrary CNI or hybrid-node combinations.
@@ -525,3 +542,32 @@ node placement, pod UID and fresh logs; the API-to-kubelet log read is a separat
 proof. EndpointSlice readiness and Route53 association alone are never traffic
 proof. Package the probe module in the approved immutable workload/bootstrap image
 and record its digest for #5930; no live support is established by fixture tests.
+
+Governed batch completion now requires the original Job's single completed Pod,
+its approved image/command/resources, allocation/workspace ownership, ordinary
+pod networking mode and a successful container exit. Namespace-only observations
+are reread before completion; a Job success counter without retained Pod evidence
+is insufficient. This check does not assert DNS or Service connectivity or replace
+the allocation's separate exact node-identity gate.
+
+An installed `node_bootstrap` profile uses the governed post-launch SSM path in
+[NATIVE-BOOTSTRAP-DESIGN.md](NATIVE-BOOTSTRAP-DESIGN.md): original-instance bootstrap,
+Node/GPU readiness, node DNS/TLS probe, then ordinary workload execution. The fixed
+wrapper supports bounded preflight retries before one durable-latched nodeadm init;
+interrupted initialization is retained for recovery and cannot be blindly rerun.
+Legacy profiles retain their original SkyPilot setup behavior. See the
+[installation assets](node-command/INSTALLATION.md) for the required image, document
+and workspace-scoped IAM grants.
+
+Remaining #5927 acceptance includes actual prepared AMI/runtime/CNI/device-plugin
+compatibility, full interrupted-init re-entry where required, and separate trusted
+shared-cluster Node observation. No live networking or end-to-end GPU join is
+established by these source checks.
+
+An opt-in approved network probe batch profile is specified in
+[NETWORK-PROBE-DESIGN.md](NETWORK-PROBE-DESIGN.md). It binds the existing Service
+UID and destination plus a request-specific nonce into the reviewed invocation,
+then requires matching original-Pod logs and retained termination results. It
+uses the existing workload lifecycle; no extra probe effect is added to existing
+admissions. Image release and exact shared-cluster node-placement observation
+remain pending prerequisites.

@@ -32,6 +32,8 @@ import os
 #: package and its Dockerfile stage; it never changes the queue contract, the
 #: KEDA resources or the legacy command selection.
 TASK_AGENT_COMMANDS: dict[str, tuple[str, ...]] = {
+    "agent-task-codex-developer": ("node", "/app/task-agents/cyber/dist/index.js", "--embedded", "--codex"),
+    "agent-task-claude-developer": ("node", "/app/task-agents/cyber/dist/index.js", "--embedded", "--developer"),
     "agent-task-cyber": ("node", "/app/task-agents/cyber/dist/index.js", "--embedded"),
     "agent-task-investigator": (
         "node",

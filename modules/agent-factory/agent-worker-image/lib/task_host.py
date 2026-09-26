@@ -420,6 +420,14 @@ class TaskHost:
             "task_id": assignment.task_id,
             "turn_id": frame["turn_id"],
             "operation_status": status,
+            **(
+                {"pre_provider_refusal": response["error_code"]}
+                if status == "rejected"
+                and response.get("handoff") == "not_started"
+                and response.get("usage") is None
+                and response.get("error_code") in {"budget_exceeded", "model_access_denied"}
+                else {}
+            ),
             **({"usage": response["usage"]} if isinstance(response.get("usage"), dict) else {}),
             **({"responses_response": response["responses_response"]} if "responses_request" in prepared and status == "confirmed" else {}),
             "content": response.get("content"),
@@ -749,6 +757,8 @@ class TaskHost:
         heartbeat_stopped = False
         sdk = False
         responses = False
+
+        remote_tools = False
         cyber_cleanup_confirmed = False
         repository_context = None
 
@@ -797,7 +807,8 @@ class TaskHost:
                 raise TaskRunClientError("task attempt was not registered")
             artifacts = self._input_artifacts(assignment, bootstrap)
             command = self.command_resolver(bootstrap["persona"])
-            sdk = bootstrap["persona"] == "agent-task-cyber"
+            remote_tools = bootstrap["persona"] == "agent-task-cyber"
+            sdk = bootstrap["persona"] in {"agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"}
             responses = bootstrap["model_binding"]["transport"] == "openai_responses"
             self.work_root.mkdir(parents=True, exist_ok=True)
             workspace = Path(
@@ -859,6 +870,7 @@ class TaskHost:
                     "acceptance_criteria": task_input.get("acceptance_criteria", []),
                     "artifacts": [reference for reference, _ in artifacts],
                     "limits": {
+                        "deadline_at": bootstrap["limits"]["deadline_at"],
                         "max_turns": bootstrap["limits"]["max_turns"],
                         "max_output_tokens_per_turn": bootstrap["limits"][
                             "max_output_tokens_per_turn"
@@ -881,6 +893,7 @@ class TaskHost:
             report_outage_started: float | None = None
             next_report_retry = 0.0
             deferred_model: dict | None = None
+            deferred_tool: dict | None = None
 
             model_job = None
             cyber_job = None
@@ -938,6 +951,24 @@ class TaskHost:
                     cancel_started = time.monotonic()
                 self._deliver_input(assignment, attempt, process, control)
                 _write_frame(process, model_result)
+
+            def deliver_tool(frame: dict) -> None:
+                nonlocal cyber_job, cyber_started
+                if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:
+                    raise TaskProtocolError("cyber operation request identity reused or limit exceeded")
+                control = self._control(assignment, attempt, cursor)
+                if cancel_started is not None or control["cancel_requested"]:
+                    return
+                cyber_ids.add(frame["request_id"])
+                cyber_started = time.monotonic()
+                cyber_job = queue.Queue(maxsize=1)
+                def call_cyber(job=cyber_job, request=frame):
+                    try:
+                        value = self._cyber(assignment, attempt, request)
+                    except Exception as exc:
+                        value = exc
+                    job.put(value)
+                threading.Thread(target=call_cyber, daemon=True, name="task-cyber-broker").start()
 
             def acknowledge_report(frame: dict, receipt: dict) -> None:
                 if frame["type"] == "progress":
@@ -1016,6 +1047,9 @@ class TaskHost:
                             if deferred_model is not None:
                                 deliver_model(deferred_model)
                                 deferred_model = None
+                            if deferred_tool is not None:
+                                deliver_tool(deferred_tool)
+                                deferred_tool = None
                 if process.poll() is None and datetime.now(UTC) >= deadline:
                     raise TaskHostError("Task deadline exceeded", code="deadline_exceeded")
                 if process.poll() is None and now >= next_control:
@@ -1157,7 +1191,7 @@ class TaskHost:
                             threading.Thread(target=call_completion, daemon=True, name="task-completion").start()
                         elif frame["type"] == "model.request":
                             if report_outage_started is not None:
-                                if deferred_model is not None:
+                                if deferred_model is not None or deferred_tool is not None:
                                     raise TaskProtocolError(
                                         "task child emitted concurrent model requests"
                                     )
@@ -1170,26 +1204,17 @@ class TaskHost:
                                 raise TaskProtocolError("Codex tool claim requires Responses profile")
                             if responses and (frame["type"] != "tool.request" or "model_call" not in frame):
                                 raise TaskProtocolError("Responses tools require a confirmed model-call binding")
-                            if (not sdk and not responses) or cyber_job is not None or model_job is not None or deferred_model is not None or report_outage_started is not None:
+                            if (not remote_tools and not responses) or cyber_job is not None or model_job is not None or deferred_model is not None or deferred_tool is not None:
                                 raise TaskProtocolError("cyber operation is not admitted")
-                            if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:
-                                raise TaskProtocolError("cyber operation request identity reused or limit exceeded")
-                            control = self._control(assignment, attempt, cursor)
-                            if cancel_started is not None or control["cancel_requested"]:
-                                continue
-                            cyber_ids.add(frame["request_id"])
-                            cyber_started = time.monotonic()
-                            cyber_job = queue.Queue(maxsize=1)
-                            def call_cyber(job=cyber_job, request=frame):
-                                try:
-                                    value = self._cyber(assignment, attempt, request)
-                                except Exception as exc:
-                                    value = exc
-                                job.put(value)
-                            threading.Thread(target=call_cyber, daemon=True, name="task-cyber-broker").start()
+                            if report_outage_started is not None:
+                                # Progress is asynchronous in the child protocol. Hold one
+                                # serialized tool request until its preceding reports persist.
+                                deferred_tool = frame
+                            else:
+                                deliver_tool(frame)
 
                         elif frame["type"] == "result":
-                            if cancel_started is None and (cyber_job is not None or model_job is not None or deferred_model is not None):
+                            if cancel_started is None and (cyber_job is not None or model_job is not None or deferred_model is not None or deferred_tool is not None):
                                 raise TaskProtocolError("child finished with an operation in flight")
                             if result_report is not None:
                                 raise TaskProtocolError("task child emitted more than one result")
@@ -1206,7 +1231,7 @@ class TaskHost:
                             raise TaskHostError(frame["message"], code=frame["code"])
             exit_code = process.wait()
             stderr_thread.join(timeout=1)
-            if sdk:
+            if remote_tools:
                 self._cancel_cyber_jobs(assignment, attempt)
                 cyber_cleanup_confirmed = True
             if cancel_started is not None:
@@ -1283,7 +1308,7 @@ class TaskHost:
                 else "process_failed"
             )
             try:
-                if sdk and not cyber_cleanup_confirmed:
+                if remote_tools and not cyber_cleanup_confirmed:
                     self._cancel_cyber_jobs(assignment, attempt)
                 self._finalize(
                     assignment,

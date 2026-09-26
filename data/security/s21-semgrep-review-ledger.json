@@ -11,9 +11,10 @@
     "raw_artifact_sha256": "20f1a0521a64c5e4ac7afb84addd2edae693d1d20fd8ebd560991e7bb7a0426d"
   },
   "summary": {
-    "pending-source-review": 4050,
+    "pending-source-review": 4047,
     "informational-technology-detection": 7728,
     "pending-suppression-revalidation": 75,
+    "source-fixed-runtime-open": 3,
     "nonsecurity-localization": 1286
   },
   "rule_semantic_dispositions": {
@@ -35193,7 +35194,9 @@
       "line": 143,
       "suppressed": false,
       "owner_issue": 6119,
-      "disposition": "pending-source-review"
+      "disposition": "source-fixed-runtime-open",
+      "rationale": "Exact original SSRF observation reviewed with native-fetch redirect evidence. Manual validated same-origin redirects prevent off-origin transit; fresh exact-rule scan retains one finding. Runtime rollout remains open under #6119.",
+      "evidence": "docs/security/runs/2026-09-26/reviewer-redirect-boundary/review.json"
     },
     {
       "selector": "semgrep|semgrep-results.sarif|run=0|ri=3082",
@@ -115542,7 +115545,9 @@
       "line": 19,
       "suppressed": false,
       "owner_issue": 6119,
-      "disposition": "pending-source-review"
+      "disposition": "source-fixed-runtime-open",
+      "rationale": "Browser explanation fetch now refuses redirects before transit or accepting redirected events; native Fetch loopback evidence covers same-origin and cross-origin301/302/303/307/308. Native CRITICAL rule metadata retained without asserting server-side SSRF. Runtime/browser rollout remains open under #6119.",
+      "evidence": "docs/security/runs/2026-09-26/explanations-redirect-boundary/review.json"
     },
     {
       "selector": "semgrep|semgrep-results.sarif|run=0|ri=9867",
@@ -115674,7 +115679,9 @@
       "line": 61,
       "suppressed": false,
       "owner_issue": 6119,
-      "disposition": "pending-source-review"
+      "disposition": "source-fixed-runtime-open",
+      "rationale": "Browser SSO fetch now requests server-configured JSON handoff and refuses redirects before transit. Callback navigation never derives from a followed response URL. Separate origins and configured internal HTTP remain supported; runtime acceptance remains open.",
+      "evidence": "docs/security/runs/2026-09-26/gitlab-handoff-boundary/review.json"
     },
     {
       "selector": "semgrep|semgrep-results.sarif|run=0|ri=9879",

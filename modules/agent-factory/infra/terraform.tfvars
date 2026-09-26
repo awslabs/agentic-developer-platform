@@ -52,3 +52,7 @@ persona_model_mapping_enabled = true
 # S14: dedicated identity for the label-triggered developer workflow. Provision
 # this additive pool before routing that workflow to arc-runner-agent.
 enable_agent_workflow_runner = true
+
+# Existing gateway inline policies total 9,604 characters; intake needs 1,098.
+# Use the same policy as a managed attachment, without changing worker IAM.
+gateway_intake_managed_policy = true

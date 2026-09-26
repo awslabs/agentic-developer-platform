@@ -126,6 +126,8 @@ class TaskCommands:
             return receipt(prior)
         if snapshot["state"] in TERMINAL or snapshot["state"] == "cancel_requested":
             raise errors.state_conflict("Task no longer accepts commands.")
+        if kind == "input" and snapshot.get("persona") in {"agent-task-claude-developer", "agent-task-codex-developer"}:
+            raise errors.state_conflict("This coding runtime does not support follow-up input or steering. Cancellation remains available.")
         now = self.repo._clock()
         if expires_at.tzinfo is None or expires_at <= now:
             raise errors.disallowed_scope("Command authority is expired.")

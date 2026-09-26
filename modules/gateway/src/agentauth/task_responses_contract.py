@@ -7,6 +7,8 @@ uses a distinct revision/probe and never borrows Messages or reviewer evidence.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -147,3 +149,13 @@ def normalize_provider_result(document):
                     if isinstance(part, dict) and part.get("logprobs") == []:
                         part.pop("logprobs")
     return result
+
+
+# Probe the gateway-normalized text transport, not the legacy reviewer's direct
+# SDK/proxy grant. Full tool/reasoning history will require a new contract probe.
+TASK_RESPONSES_PROBE_BODY = {
+    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Reply OK."}]}],
+    "reasoning": {"effort": "medium"},
+    "max_output_tokens": 64,
+}
+TASK_RESPONSES_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_RESPONSES_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

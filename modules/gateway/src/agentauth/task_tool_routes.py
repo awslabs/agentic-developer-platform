@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.routes import require_agent_transport
@@ -26,6 +27,7 @@ from src.agentauth.task_runtime_routes import (
 from src.agentauth.task_service_policy import TaskServicePolicyError, TaskServicePolicyStore
 from src.agentauth.task_tool_policy import TOOL_PATTERN, TaskToolPolicyError, persona_tools, valid_tools
 from src.shared.database import get_db
+from src.tasks.human_authority import require_current_owner
 from src.tasks.store import TaskStoreError, WorkBindingError, _protected_grant_digest
 
 router = APIRouter(prefix="/internal/v1/agent/task", tags=["task-api"], dependencies=[Depends(require_agent_transport)])
@@ -113,10 +115,12 @@ def authorize_tool(repo, policies, identity, tool, *, cleanup=False, env=None):
 
 
 @router.post("/tool-authorize")
-async def tool_authorize(body: ToolAuthorizationBody, request: Request):
+async def tool_authorize(body: ToolAuthorizationBody, request: Request, db: AsyncSession = Depends(get_db)):
     authenticate = authenticate_task_settlement if body.cleanup else authenticate_task_attempt
     identity = await authenticate(request)
     require_body_attempt(identity, body.attempt)
+    if not body.cleanup:
+        await require_current_owner(db, tenant=identity.tenant, principal=identity.canonical_principal)
     runtime = get_task_agent_runtime()
     repo = task_runtime(runtime, stop_only=body.cleanup).repository
     policies = TaskServicePolicyStore(table_name=repo.authority_table_name, client=repo._client)

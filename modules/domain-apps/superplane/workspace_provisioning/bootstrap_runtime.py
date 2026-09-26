@@ -13,8 +13,44 @@ from .runtime_config import LifecycleRefused
 
 
 def bootstrap(
-    operation, context, config, request, row, session, process, loop, verify, network
+    operation,
+    context,
+    config,
+    request,
+    row,
+    session,
+    process,
+    loop,
+    verify,
+    network,
+    *,
+    shared_runtime=None,
 ):
+    from .shared_membership import approved_membership
+
+    lease = operation.grant.lease
+    membership = approved_membership(
+        operation.request.parameters,
+        org_id=lease.org_id,
+        workspace_id=lease.workspace_id,
+    )
+    if membership is not None:
+        from .shared_bootstrap_runtime import bootstrap as shared_bootstrap
+
+        return shared_bootstrap(
+            operation,
+            context,
+            config,
+            request,
+            row,
+            session,
+            process,
+            loop,
+            verify,
+            membership,
+            shared_runtime,
+        )
+
     from superplane_bootstrap.adapters import (
         AwsObserver,
         AwsPrerequisiteAccess,

@@ -1,0 +1,26 @@
+{
+  "transcript": [
+    "adp agent status --run <redacted> --json",
+    "adp agent pause --run <redacted> --command-id <redacted> --reason <redacted> --yes --json",
+    "adp agent pause --run <redacted> --command-id <redacted> --reason <redacted> --yes --json",
+    "adp agent resume --run <redacted> --command-id <redacted> --yes --reason <redacted> --json",
+    "adp agent abort --run <redacted> --command-id <redacted> --yes --reason <redacted> --json",
+    "adp agent steer --run <redacted> --command-id <redacted> --yes --instruction <redacted> --json",
+    "adp agent logs --run <redacted> --follow --timeout <redacted> --json",
+    "adp agent status --run <redacted> --json"
+  ],
+  "client_kind": "dev-box source CLI; not served installed EC2 acceptance",
+  "run_id": "eda71c62-723c-5726-9424-13d03d4355a7",
+  "before_status": "aborted",
+  "after_status": "aborted",
+  "command_id": "52461766-edde-4063-8254-ffe4efcb700b",
+  "cases": [
+    "concurrent-terminal-pause",
+    "terminal-resume",
+    "terminal-steer",
+    "terminal-abort",
+    "terminal-stream"
+  ],
+  "qualification": "terminal CLI diagnostic only; active pause/steering/tenant acceptance remains open",
+  "helper_sha256": "67f18deec3f90642bd1bf2d3a8111864132de9c99a844d8ded52fa98b8cc97a2"
+}

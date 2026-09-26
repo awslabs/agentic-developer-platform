@@ -149,3 +149,9 @@ variable "runner_gateway_execution_arns" {
   default     = null
   description = "Reviewed exact gateway routes. Null derives the existing environment's API/stage from its operator-owned SSM endpoint when gateway_deployed; [] disables transport."
 }
+
+variable "gateway_intake_managed_policy" {
+  description = "Use an identically scoped managed intake policy when gateway inline-policy quota is exhausted."
+  type        = bool
+  default     = false
+}

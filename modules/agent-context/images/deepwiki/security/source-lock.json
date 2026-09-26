@@ -1,0 +1,14 @@
+{
+  "upstream_commit": "d92819a9c9f3b99416e3580ff235fc9d3adf8b89",
+  "archive_sha256": "2a6f3d7feba176d7700a0a069b2c6c8a720e06f58ce37ffecdaf8a1093f0abbe",
+  "files": {
+    "package.json": {
+      "before": "352373d2ae3fa8b2db506665a16022601530cec4184246847994a1da32a114ae",
+      "after": "208561392cb763506c6953c231bada1ef0cb03ee91db2d91f81d53684e969f30"
+    },
+    "package-lock.json": {
+      "before": "001bebb6c5d6d80c0af2bd3d4c7c5503c868fd89839ee164bc28dce8494a6431",
+      "after": "9560bfcfbc9e6a2dfb9e72a5e39c6bab203b51479afc98ce501fa321b4d83f79"
+    }
+  }
+}

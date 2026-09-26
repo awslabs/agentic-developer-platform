@@ -29,6 +29,7 @@ class Plan:
     cluster_name: str
     steps: tuple
     network: dict | None = None
+    node_bootstrap: dict | None = None
 
     @classmethod
     def read(cls, operation, target):
@@ -255,11 +256,13 @@ class Plan:
             )
             # Exact actions use the shared reviewed AWS effect vocabulary. Creating
             # steps remain blocked by allocation seals; delete_cluster cannot create.
-            actions = (
-                ["launch", "status", "deploy", "status"]
-                if request.action == "provision"
-                else ["delete_cluster"]
+            from .node_command_plan import (
+                actions as node_actions,
+                read as read_node_bootstrap,
             )
+
+            node_bootstrap = read_node_bootstrap(request.parameters, data, target)
+            actions = node_actions(request.action, node_bootstrap is not None)
             expected = tuple(
                 {
                     "step_id": str(index + 1),
@@ -374,7 +377,18 @@ class Plan:
                 "cluster_id"
             ):
                 raise ValueError("approved network cluster identity changed")
-            return cls(data, name, expected, network)
+            from .network_probe_contract import read as probe_contract
+
+            probe_contract(
+                data,
+                org_id=org_id,
+                workspace_id=workspace_id,
+                request_id=request.idempotency_key
+                if request.action == "provision"
+                else None,
+                allocation_id=allocation,
+            )
+            return cls(data, name, expected, network, node_bootstrap)
         except (KeyError, TypeError, ValueError, AttributeError, ssl.SSLError):
             raise OperationRefused(
                 "approved controller plan is invalid or unsupported"
@@ -434,7 +448,7 @@ class Plan:
             "SKYPILOT_USER": "superplane-executor",
         }
 
-    def task(self, operation):
+    def node_config(self, operation):
         data = self.data
         config = {
             "apiVersion": "node.eks.aws/v1alpha1",
@@ -459,6 +473,11 @@ class Plan:
                 },
             },
         }
+        return config
+
+    def task(self, operation):
+        data = self.data
+        config = self.node_config(operation)
         # JSON is YAML-compatible. This generated nodeadm configuration contains
         # only public EKS discovery data. Node auth uses the existing instance role;
         # no hybrid activation code or service credential enters SkyPilot task state.
@@ -479,6 +498,16 @@ class Plan:
             + str(int(operation.grant.lease.runtime_deadline.timestamp()))
             + ' - $(date +%s))); if [ "$remaining" -gt 0 ]; then sleep "$remaining"; fi',
         }
+        if self.node_bootstrap is not None:
+            # SSM is the sole bootstrap owner for this explicitly approved path.
+            # Neither public NodeConfig nor bootstrap invocation enters SkyPilot.
+            task["setup"] = "true"
+            task["resources"]["labels"].update(
+                {
+                    "superplane-org": operation.grant.lease.org_id,
+                    "superplane-workspace": operation.grant.lease.workspace_id,
+                }
+            )
         if data["version"] == 4:
             # Eligible region x GPU alternatives for this allocation. SkyPilot
             # performs the actual selection; every candidate retains its own

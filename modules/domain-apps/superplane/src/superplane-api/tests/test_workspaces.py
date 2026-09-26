@@ -123,6 +123,64 @@ class TestListWorkspaces:
         assert response.status_code in (401, 403)
 
 
+class TestListEligibleClusters:
+    """Test GET /workspaces?view=eligible-clusters — issue #6048."""
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, client):
+        response = await client.get("/workspaces?view=eligible-clusters")
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.asyncio
+    async def test_legacy_org_token_cannot_discover_shared_clusters(self, client):
+        from app.models.cluster import Cluster
+        from app.models.organization import Organization
+
+        org_id = uuid.uuid4()
+        other_org_id = uuid.uuid4()
+        shared_cluster_id = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add_all(
+                [
+                    Organization(id=org_id, name="org-eligible"),
+                    Organization(id=other_org_id, name="org-other-eligible"),
+                ]
+            )
+            await session.flush()
+            session.add_all(
+                [
+                    Cluster(
+                        id=shared_cluster_id,
+                        org_id=org_id,
+                        name="shared-eligible",
+                        status="Ready",
+                        sharing_enabled=True,
+                        eks_cluster_arn="arn:aws:eks:us-east-1:000000000000:cluster/shared-eligible",
+                    ),
+                    Cluster(
+                        id=uuid.uuid4(),
+                        org_id=org_id,
+                        name="dedicated-not-eligible",
+                        status="Ready",
+                        sharing_enabled=False,
+                    ),
+                    Cluster(
+                        id=uuid.uuid4(),
+                        org_id=other_org_id,
+                        name="other-org-shared",
+                        status="Ready",
+                        sharing_enabled=True,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        response = await client.get(
+            "/workspaces?view=eligible-clusters", headers=_auth_header(org_id)
+        )
+        assert response.status_code == 403
+
+
 class TestGetWorkspace:
     """Test GET /workspaces/{id}."""
 
@@ -305,6 +363,106 @@ class TestWorkspaceSchemas:
             operation_id=uuid.uuid4(), name="my-ws", isolation_mode="namespace"
         )
         assert req.account is None
+
+
+class TestClusterPlacementChoice:
+    """Issue #6048: the explicit dedicated/shared placement choice at creation."""
+
+    def test_default_placement_is_dedicated(self):
+        """An old client that never heard of shared placement keeps dedicated behavior."""
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        req = CreateWorkspaceRequest(operation_id=uuid.uuid4(), name="my-workspace")
+        assert req.cluster_placement == "dedicated"
+        assert req.shared_cluster_id is None
+
+    def test_shared_placement_requires_a_cluster_id(self):
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError, match="shared_cluster_id"):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="shared",
+            )
+
+    def test_dedicated_placement_forbids_a_cluster_id(self):
+        """Naming a cluster on the dedicated path must not silently opt into sharing it."""
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError, match="cluster_placement=shared"):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="dedicated",
+                shared_cluster_id=uuid.uuid4(),
+            )
+
+    def test_shared_placement_with_a_cluster_id_is_valid(self):
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        cluster_id = uuid.uuid4()
+        req = CreateWorkspaceRequest(
+            operation_id=uuid.uuid4(),
+            name="my-workspace",
+            cluster_placement="shared",
+            shared_cluster_id=cluster_id,
+        )
+        assert req.cluster_placement == "shared"
+        assert req.shared_cluster_id == cluster_id
+
+    def test_invalid_placement_value_rejected(self):
+        from pydantic import ValidationError
+
+        from app.schemas.workspace import CreateWorkspaceRequest
+
+        with pytest.raises(ValidationError):
+            CreateWorkspaceRequest(
+                operation_id=uuid.uuid4(),
+                name="my-workspace",
+                cluster_placement="borrowed",
+            )
+
+
+class TestSharedPlacementPreviewIsExplicitlyUnavailable:
+    """Issue #6048: preview must fail closed for shared placement, not fall
+
+    through to dedicated resolution. The schema, `cluster_sharing.py`'s
+    eligibility resolver and canonical bootstrap registration all support
+    shared placement; `onboarding.py::preview`'s execution-step generation does
+    not yet resolve a shared target. Silently proceeding with dedicated
+    resolution would hand back a plan for a cluster the caller never asked
+    for — this checks the explicit refusal that prevents that.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shared_placement_is_refused_before_touching_the_database_or_principal(
+        self, monkeypatch
+    ):
+        from app.schemas.workspace import CreateWorkspaceRequest
+        from app.services import onboarding
+        from app.services.provisioning import ProvisioningUnavailable
+
+        # `route_preview` (autouse, module-level) replaces `onboarding.preview`
+        # with a mock for every other test in this file. Undo that here — this
+        # test's whole point is the REAL function's early refusal, which the
+        # mock does not implement and would otherwise mask.
+        monkeypatch.undo()
+
+        body = CreateWorkspaceRequest(
+            name="my-workspace",
+            cluster_placement="shared",
+            shared_cluster_id=uuid.uuid4(),
+        )
+        # `db=None` and no acting principal set: if the refusal did not run
+        # before the first database/principal access, this would raise a
+        # different, less specific error (or hang), not `ProvisioningUnavailable`.
+        with pytest.raises(ProvisioningUnavailable, match="not yet executable"):
+            await onboarding.preview(None, uuid.uuid4(), body)
 
 
 class TestWorkspaceDisplayName:
@@ -1305,6 +1463,7 @@ def connection_security(request, monkeypatch, domain_signing_keys):
     """
     if not request.cls or request.cls.__name__ not in {
         "TestRegistrationRefusesSecretMaterial",
+        "TestProviderRegistrationOperationRecovery",
         "TestTheTwoChecksAreIndependent",
         "TestFourSeparateReadings",
         "TestRotationIsAtomicAndKeepsTheOldCredential",
@@ -1313,6 +1472,7 @@ def connection_security(request, monkeypatch, domain_signing_keys):
         "TestMalformedBodiesAreRefusedAsBadRequests",
         "TestTrustedCredentialEvidence",
         "TestConnectionLifecycleIntegrity",
+        "TestCliLifecycleRevision",
     }:
         yield None
         return
@@ -3568,3 +3728,202 @@ class TestConnectionLifecycleIntegrity:
             f"/vault/credentials/{row_id}", headers=_auth_header(org)
         )
         assert response.status_code == 409, response.text
+
+
+class TestCliLifecycleRevision:
+    async def test_revision_fences_rotation_and_revoke(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        path = f"{CONNECTIONS.format(ws=workspace)}/{connection_id}"
+        initial = (await client.get(path, headers=headers)).json()
+        assert len(initial["revision"]) == 64
+        body = {
+            "replacement": {
+                "credential_id": CRED_B,
+                "service": "nebius",
+                "label": "next",
+            },
+            "validation": _passing_report(observed_capacity=2),
+        }
+        stale = await client.post(
+            path + "/rotation?expected_revision=" + "0" * 64, headers=headers, json=body
+        )
+        assert stale.status_code == 409
+        changed = await client.post(
+            path + "/rotation?expected_revision=" + initial["revision"],
+            headers=headers,
+            json=body,
+        )
+        assert changed.status_code == 200, changed.text
+        current = (await client.get(path, headers=headers)).json()
+        assert (
+            current["revision"] != initial["revision"]
+            and current["credential"]["credential_id"] == CRED_B
+        )
+        stale = await client.delete(
+            path + "?expected_revision=" + initial["revision"], headers=headers
+        )
+        assert stale.status_code == 409
+        disabled = await client.delete(
+            path + "?expected_revision=" + current["revision"], headers=headers
+        )
+        assert disabled.status_code == 200 and disabled.json()["status"] == "disabled"
+        assert disabled.json()["limitation"]
+
+    async def test_workspace_review_readonly_foreign_refused(self, client):
+        from app.services.cli_lifecycle import workspace_snapshot
+        from fastapi import HTTPException
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        async with async_session_test() as db:
+            first = (await workspace_snapshot(db, org, workspace))[1]
+            second = (await workspace_snapshot(db, org, workspace))[1]
+            assert first == second and first["billing_state"] == "unconfirmed"
+            assert not db.new and not db.dirty and not db.deleted
+            with pytest.raises(HTTPException) as foreign:
+                await workspace_snapshot(db, uuid.uuid4(), workspace)
+            assert foreign.value.status_code == 404
+
+    async def test_workspace_events_stable_scope_bound(self, client):
+        from datetime import datetime, timezone
+        from app.models.event import Event
+
+        org, workspace, other = await _seed_org_workspace_credentials(
+            CRED_A, workspaces=2
+        )
+        instant = datetime.now(timezone.utc)
+        async with async_session_test() as db:
+            for selected in (workspace, workspace, other):
+                db.add(
+                    Event(
+                        id=uuid.uuid4(),
+                        org_id=org,
+                        action="read",
+                        resource_type="workspace",
+                        resource_id=selected,
+                        event_type="api_call",
+                        created_at=instant,
+                    )
+                )
+            await db.commit()
+        headers = _auth_header(org)
+        path = f"/events/workspaces/{workspace}?limit=1"
+        first = await client.get(path, headers=headers)
+        assert first.status_code == 200, first.text
+        data = first.json()
+        assert len(data["events"]) == 1 and data["has_more"]
+        second = await client.get(
+            path + "&after=" + data["next_cursor"], headers=headers
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["events"][0]["id"] != data["events"][0]["id"]
+        assert not second.json()["has_more"]
+        foreign = await client.get(
+            f"/events/workspaces/{other}?after=" + data["next_cursor"], headers=headers
+        )
+        assert foreign.status_code == 422
+
+    async def test_workspace_delete_stale_revision_refused(self, client):
+        from fastapi import HTTPException
+        from app.routers.workspaces import delete_workspace
+        from app.services.cli_lifecycle import workspace_snapshot
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        async with async_session_test() as db:
+            reviewed = (await workspace_snapshot(db, org, workspace))[1]
+            with pytest.raises(HTTPException) as refused:
+                await delete_workspace(workspace, org, db, expected_revision="0" * 64)
+            assert refused.value.status_code == 409
+            after = (await workspace_snapshot(db, org, workspace))[1]
+            assert after == reviewed
+
+
+class TestProviderRegistrationOperationRecovery:
+    @pytest.mark.asyncio
+    async def test_exact_operation_replays_and_existing_get_recovers(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers, operation = _auth_header(org), str(uuid.uuid4())
+        first = await _register(client, headers, workspace, operation_id=operation)
+        assert first.status_code == 201, first.text
+        assert first.json()["connection_id"] == operation
+        second = await _register(client, headers, workspace, operation_id=operation)
+        assert second.status_code == 201, second.text
+        assert second.json() == first.json()
+        read = await client.get(
+            CONNECTIONS.format(ws=workspace) + "/" + operation, headers=headers
+        )
+        assert read.status_code == 200
+        assert (
+            read.json()["connection_id"] == operation
+            and read.json()["status"] == "pending"
+        )
+
+    @pytest.mark.asyncio
+    async def test_replay_never_reactivates_disabled_connection(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers, operation = _auth_header(org), str(uuid.uuid4())
+        assert (
+            await _register(client, headers, workspace, operation_id=operation)
+        ).status_code == 201
+        removed = await client.delete(
+            CONNECTIONS.format(ws=workspace) + "/" + operation, headers=headers
+        )
+        assert removed.status_code == 200, removed.text
+        replay = await _register(client, headers, workspace, operation_id=operation)
+        assert replay.status_code == 201, replay.text
+        assert replay.json()["status"] == "disabled"
+        assert (
+            not replay.json()["admits_new_work"] and not replay.json()["allows_renewal"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_changed_reference_and_cross_tenant_collision_conflict(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        operation = str(uuid.uuid4())
+        assert (
+            await _register(
+                client, _auth_header(org), workspace, operation_id=operation
+            )
+        ).status_code == 201
+        changed = await _register(
+            client, _auth_header(org), workspace, CRED_B, operation_id=operation
+        )
+        assert changed.status_code == 409, changed.text
+        other_org, other_workspace = await _seed_org_workspace_credentials(CRED_A)
+        foreign = await _register(
+            client, _auth_header(other_org), other_workspace, operation_id=operation
+        )
+        assert foreign.status_code == 409 and foreign.json() == changed.json()
+        read = await client.get(
+            CONNECTIONS.format(ws=other_workspace) + "/" + operation,
+            headers=_auth_header(other_org),
+        )
+        assert read.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_current_grant_revocation_blocks_replay(self, client):
+        from sqlalchemy import update
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers, operation = _auth_header(org), str(uuid.uuid4())
+        assert (
+            await _register(client, headers, workspace, operation_id=operation)
+        ).status_code == 201
+        async with async_session_test() as db:
+            await db.execute(
+                update(WorkspaceGrantRecord)
+                .where(WorkspaceGrantRecord.workspace_id == workspace)
+                .values(permissions="workspace:read")
+            )
+            await db.commit()
+        refused = await _register(client, headers, workspace, operation_id=operation)
+        assert refused.status_code == 403, refused.text
+
+    @pytest.mark.asyncio
+    async def test_malformed_operation_is_refused(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        result = await _register(
+            client, _auth_header(org), workspace, operation_id="not-a-uuid"
+        )
+        assert result.status_code == 400

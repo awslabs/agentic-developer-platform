@@ -376,7 +376,9 @@ class AgentRegistryService:
             last_key=next_key,
         )
 
-    async def update_agent(self, agent_id: str, request: AgentRegistryUpdateRequest) -> AgentRegistryResponse:
+    async def update_agent(
+        self, agent_id: str, request: AgentRegistryUpdateRequest, *, expected_updated_at: str | None = None
+    ) -> AgentRegistryResponse:
         """
         Update agent attributes.
 
@@ -484,6 +486,9 @@ class AgentRegistryService:
                 "ExpressionAttributeValues": expression_values,
                 "ReturnValues": "ALL_NEW",
             }
+            if expected_updated_at is not None:
+                kwargs["ConditionExpression"] = "attribute_exists(agent_id) AND updated_at = :expected_updated_at"
+                expression_values[":expected_updated_at"] = {"S": expected_updated_at}
             if expression_names:
                 kwargs["ExpressionAttributeNames"] = expression_names
 

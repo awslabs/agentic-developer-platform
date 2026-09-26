@@ -40,6 +40,25 @@ class Workspace:
             cluster, context, user = (
                 data[name][0] for name in ("clusters", "contexts", "users")
             )
+            membership = target.get("membership_credential")
+            if membership is not None:
+                if (
+                    membership["workspace_id"] != operation.grant.lease.workspace_id
+                    or membership["org_id"] != operation.grant.lease.org_id
+                    or membership["cluster_id"] != target["cluster_id"]
+                    or membership["cluster_arn"] != target["cluster_arn"]
+                    or membership["namespace"] != target["namespace"]
+                    or membership["scope"] != "mutator"
+                    or datetime.fromisoformat(membership["expires_at"])
+                    <= datetime.now(UTC)
+                    or data.get("extensions")
+                    != [
+                        {"name": "superplane.aws-e/membership", "extension": membership}
+                    ]
+                ):
+                    raise ValueError("shared workspace credential identity mismatch")
+            elif data.get("extensions"):
+                raise ValueError("shared credential lacks current membership authority")
             if (
                 data["current-context"] != target["cluster_arn"]
                 or context["name"] != data["current-context"]
@@ -53,7 +72,13 @@ class Workspace:
                 or set(user["user"]) != {"token"}
                 or not user["user"]["token"]
                 or cluster["cluster"]["server"] != target["endpoint"]
-                or target["endpoint"].rstrip("/") == self.management_endpoint
+                or (
+                    target["endpoint"].rstrip("/") == self.management_endpoint
+                    and not (
+                        membership is not None
+                        and target.get("platform_eligible") is True
+                    )
+                )
             ):
                 raise ValueError("workspace credential boundary mismatch")
             ca = base64.b64decode(
@@ -86,18 +111,55 @@ class Workspace:
 
     async def verify(self, operation, target):
         ns = quote(target["namespace"], safe="")
-        response = await self.request(
-            operation, target, "GET", "/api/v1/namespaces/" + ns
-        )
-        if (
-            response.status_code != 200
-            or response.json().get("status", {}).get("phase") != "Active"
-        ):
-            raise OperationRefused("workspace namespace unavailable")
+        membership = target.get("membership_credential")
+        if membership is not None:
+            # Kubernetes validates the token and attests the actual SA UID. This
+            # is not a locally decoded JWT claim. The issuer's pinned namespace
+            # UID and this unique SA UID bind a recreated namespace to a different
+            # revision without granting a tenant credential cluster-wide reads.
+            response = await self.request(
+                operation,
+                target,
+                "POST",
+                "/apis/authentication.k8s.io/v1/selfsubjectreviews",
+                body={
+                    "apiVersion": "authentication.k8s.io/v1",
+                    "kind": "SelfSubjectReview",
+                },
+            )
+            account = (
+                f"sp-mutator-{membership['generation'][:24]}-{membership['revision']}"
+            )
+            identity = (
+                response.json().get("status", {}).get("userInfo", {})
+                if response.status_code in {200, 201}
+                else {}
+            )
+            if (
+                identity.get("uid") != membership["service_account_uid"]
+                or identity.get("username")
+                != f"system:serviceaccount:{target['namespace']}:{account}"
+            ):
+                raise OperationRefused("workspace credential identity unavailable")
+        else:
+            response = await self.request(
+                operation, target, "GET", "/api/v1/namespaces/" + ns
+            )
+            if (
+                response.status_code != 200
+                or response.json().get("status", {}).get("phase") != "Active"
+            ):
+                raise OperationRefused("workspace namespace unavailable")
         for resource, root in (
             ("nodepools", "/apis/superplane.ai/v1"),
             ("superplanenodes", f"/apis/superplane.ai/v1/namespaces/{ns}"),
         ):
+            if (
+                resource == "nodepools"
+                and target.get("membership_credential") is not None
+            ):
+                # Fleet inventory requires separate cluster observation authority.
+                continue
             response = await self.request(
                 operation,
                 target,
@@ -242,12 +304,27 @@ class Workspace:
             },
         ]
 
-    async def apply(self, operation, target, plan, authorize, *, record_created=None):
+    async def apply(
+        self,
+        operation,
+        target,
+        plan,
+        authorize,
+        *,
+        record_created=None,
+        record_submission=None,
+    ):
         governed = "controller_deployment_id" in operation.request.parameters
         if governed and record_created is None:
             raise OperationRefused("governed workload requires durable UID capture")
+        if governed and not callable(record_submission):
+            raise OperationRefused(
+                "governed workload requires original submission evidence"
+            )
         references = []
         for obj in self.objects(operation, target, plan):
+            if record_submission is not None:
+                await record_submission(obj)
             await authorize()
             response = await self.request(
                 operation, target, "POST", self.path(target, obj["kind"]), body=obj
@@ -284,36 +361,195 @@ class Workspace:
             (kind, metadata["namespace"], metadata["name"], metadata["uid"])
         )
 
-    async def ready_nodes(self, operation, target, plan, instance_ids):
+    @staticmethod
+    def require_dedicated_node_authority(target):
+        if (
+            target.get("membership_credential") is not None
+            or target.get("shared_membership")
+            or target.get("shared_cluster_id")
+            or target.get("cluster_placement") == "shared"
+        ):
+            raise OperationRefused(
+                "shared placement requires separate trusted Node observation authority"
+            )
+
+    async def ready_nodes(self, operation, target, plan, instances):
+        return bool(await self.verified_nodes(operation, target, plan, instances))
+
+    async def verified_nodes(self, operation, target, plan, instances):
+        from .node_inventory import enabled, node_identity
+
+        self.require_dedicated_node_authority(target)
+        # Preserve provider-observed location, not merely the instance-ID suffix.
+        # A label selector is a query hint, not evidence of node ownership.
+        import re
+
+        try:
+            workspace_id = operation.grant.lease.workspace_id
+            approved_regions = {binding["region"] for binding in plan.region_bindings}
+            expected = {}
+            for instance in instances:
+                instance_id = instance["InstanceId"]
+                region = instance["SuperplaneRegion"]
+                zone = instance["Placement"]["AvailabilityZone"]
+                if (
+                    not re.fullmatch(r"i-(?:[0-9a-f]{8}|[0-9a-f]{17})", instance_id)
+                    or region not in approved_regions
+                    or not re.fullmatch(
+                        re.escape(region) + r"(?:[a-z]|-[a-z0-9-]+)", zone
+                    )
+                ):
+                    return None
+                provider_id = f"aws:///{zone}/{instance_id}"
+                if provider_id in expected:
+                    return None
+                expected[provider_id] = (region, zone)
+            if (
+                len(expected) != plan.data["node_count"]
+                or len({region for region, _ in expected.values()}) != 1
+            ):
+                return None
+        except (KeyError, TypeError, AttributeError):
+            return None
         selector = quote("superplane.ai/capacity=" + plan.cluster_name, safe="")
         response = await self.request(
-            operation, target, "GET", "/api/v1/nodes?labelSelector=" + selector
+            operation,
+            target,
+            "GET",
+            "/api/v1/nodes?labelSelector=" + selector + "&limit=17",
         )
         if response.status_code != 200:
-            return False
-        nodes = response.json().get("items", [])
-        if len(nodes) != plan.data["node_count"]:
-            return False
-        provider_ids = {
-            node.get("spec", {}).get("providerID", "").rsplit("/", 1)[-1]
-            for node in nodes
-        }
-        if not provider_ids or "" in provider_ids or provider_ids != set(instance_ids):
-            return False
-        if len(provider_ids) != len(nodes):
-            return False
-        return all(
-            node.get("spec", {}).get("providerID", "").rsplit("/", 1)[-1]
-            in instance_ids
-            and any(
-                c.get("type") == "Ready" and c.get("status") == "True"
-                for c in node.get("status", {}).get("conditions", [])
-            )
-            for node in nodes
+            return None
+        try:
+            listing = response.json()
+            if not isinstance(listing, dict) or listing.get("metadata", {}).get(
+                "continue"
+            ):
+                return None
+        except (ValueError, TypeError, AttributeError):
+            return None
+        nodes = listing.get("items", [])
+        if not isinstance(nodes, list) or len(nodes) != plan.data["node_count"]:
+            return None
+        # A joined, Ready node is not yet a usable GPU node: the device plugin
+        # publishes allocatable nvidia.com/gpu only once the driver/runtime/CNI
+        # stack on that node is actually working. Requiring it here, in the same
+        # check that gates workload admission, is what turns "the node registered"
+        # into "the node can run the requested GPU workload" -- a CPU-only batch
+        # workload (gpu_count 0) is unaffected.
+        required_gpus = plan.data["workload"]["gpu_count"] or 0
+        observed, names, uids = set(), {}, set()
+        try:
+            for node in nodes:
+                if enabled(operation):
+                    node_identity(node, target, plan, workspace_id, expected)
+                provider_id = node["spec"]["providerID"]
+                if provider_id not in expected or provider_id in observed:
+                    return None
+                region, zone = expected[provider_id]
+                metadata = node["metadata"]
+                name, uid = metadata.get("name"), metadata.get("uid")
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or not isinstance(uid, str)
+                    or not uid
+                    or name in names
+                    or uid in uids
+                    or metadata.get("deletionTimestamp") is not None
+                ):
+                    return None
+                labels = metadata["labels"]
+                if any(
+                    labels.get(key) != value
+                    for key, value in {
+                        "superplane.ai/capacity": plan.cluster_name,
+                        "superplane.ai/workspace": workspace_id,
+                        "topology.kubernetes.io/region": region,
+                        "topology.kubernetes.io/zone": zone,
+                    }.items()
+                ):
+                    return None
+                if not any(
+                    c.get("type") == "Ready" and c.get("status") == "True"
+                    for c in node.get("status", {}).get("conditions", [])
+                ) or (
+                    required_gpus > 0 and self._allocatable_gpus(node) < required_gpus
+                ):
+                    return None
+                observed.add(provider_id)
+                uids.add(uid)
+                names[name] = (
+                    uid,
+                    provider_id,
+                    region,
+                    zone,
+                    provider_id.rsplit("/", 1)[1],
+                )
+            return names if observed == set(expected) else None
+        except (KeyError, TypeError, AttributeError, OperationRefused):
+            return None
+
+    @staticmethod
+    def _allocatable_gpus(node):
+        import re
+        from decimal import Decimal, DecimalException
+
+        status = node.get("status")
+        allocatable = status.get("allocatable") if isinstance(status, dict) else None
+        raw = (
+            allocatable.get("nvidia.com/gpu", "0")
+            if isinstance(allocatable, dict)
+            else "0"
         )
+        if type(raw) not in {str, int} or len(str(raw)) > 64:
+            return 0
+        match = re.fullmatch(
+            r"([+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?",
+            str(raw),
+        )
+        if match is None:
+            return 0
+        try:
+            number, unit = match.groups()
+            value = Decimal(number)
+            if unit:
+                if unit.endswith("i"):
+                    value *= Decimal(1024) ** ("KMGTPE".index(unit[0]) + 1)
+                elif unit[0] in "eE" and len(unit) > 1:
+                    value *= Decimal(10) ** int(unit[1:])
+                else:
+                    value *= (
+                        Decimal(10)
+                        ** {
+                            "n": -9,
+                            "u": -6,
+                            "m": -3,
+                            "k": 3,
+                            "M": 6,
+                            "G": 9,
+                            "T": 12,
+                            "P": 15,
+                            "E": 18,
+                        }[unit]
+                    )
+            return (
+                int(value)
+                if 0 <= value <= 2**63 - 1 and value == value.to_integral_value()
+                else 0
+            )
+        except (DecimalException, ValueError, OverflowError):
+            return 0
 
     async def workload_ready(
-        self, operation, target, plan, *, known_references=None, authorize=None
+        self,
+        operation,
+        target,
+        plan,
+        *,
+        known_references=None,
+        authorize=None,
+        verify_placement=None,
     ):
         spec = plan.data["workload"]
         kind = "Job" if spec["kind"] == "batch" else "Deployment"
@@ -378,7 +614,21 @@ class Workspace:
         ):
             return False
         if kind == "Job":
-            return obj.get("status", {}).get("succeeded", 0) == 1
+            if obj.get("status", {}).get("succeeded", 0) != 1:
+                return False
+            if governed:
+                from .workload_observation import completed_batch
+
+                return await completed_batch(
+                    self,
+                    operation,
+                    target,
+                    plan,
+                    obj,
+                    authorize,
+                    verify_placement=verify_placement,
+                )
+            return True
         status = obj.get("status", {})
         if (
             status.get("observedGeneration", 0)

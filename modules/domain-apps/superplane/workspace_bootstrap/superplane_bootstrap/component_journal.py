@@ -112,15 +112,21 @@ class ComponentJournal:
                 "cluster_arn": self.journal.target.cluster_arn,
             },
         )
-        records = [
-            record
-            for row in rows
+        records = []
+        for row in rows:
+            progress = json.loads(row["progress_json"])
+            # Shared bootstrap recovery may positively remove this exact member
+            # component before releasing its claim. A new attempt creates a new
+            # UID; it must not adopt a deleted predecessor's credential identity.
             if (
-                record := json.loads(row["progress_json"])
-                .get("components", {})
-                .get(key)
-            )
-        ]
+                progress.get("phase") == "revoked"
+                and progress.get("complete")
+                and progress.get("component_cleanup", {}).get(key) == "absent"
+            ):
+                continue
+            previous = progress.get("components", {}).get(key)
+            if previous:
+                records.append(previous)
         return merge_component_records(records)
 
     def ensure(self, desired):

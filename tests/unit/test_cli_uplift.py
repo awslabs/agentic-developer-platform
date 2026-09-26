@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import base64
 import calendar
+import hashlib
 import copy
 import json
+import io
 import os
 import pathlib
 import re
@@ -438,16 +440,18 @@ def config_fixture(**overrides):
 
 
 def test_every_case_present_with_owners():
-    """#5199's fifteen, plus #5413's two.
+    """#5199's fifteen, #5413's two, and #5621's capability case.
 
     Derived from the registry's own numbering rather than a hardcoded range, so
     adding a case to a later story does not have to edit an arithmetic expression
     whose only job was to spell out "consecutive". What the assertion still
-    enforces is the property that mattered: the ids are E01..En with no gap and no
-    duplicate, so a case cannot be added under an id another already uses.
+    enforces stable, unique, numerically ordered IDs. Gaps are allowed because
+    parallel stories reserve their IDs before merging; no case may reuse one.
     """
     identifiers = [case.id for case in cases.CASES]
-    assert identifiers == [f"E{n:02d}" for n in range(1, len(identifiers) + 1)]
+    assert len(identifiers) == len(set(identifiers))
+    assert identifiers == sorted(identifiers, key=lambda value: int(value[1:]))
+    assert all(re.fullmatch(r"E[0-9]{2}", value) for value in identifiers)
     assert all(case.owner for case in cases.CASES)
     assert all(case.suite in cases.SUITES for case in cases.CASES)
 
@@ -467,6 +471,124 @@ def test_the_multi_deployment_cases_are_owned_by_5413_and_need_three_deployments
     assert {case.owner for case in multi} == {"#5413"}
     assert all(cases.THREE_DEPLOYMENTS in case.requires for case in multi)
     assert all(cases.EC2 in case.requires for case in multi)
+
+
+def test_the_capability_case_cannot_pass_without_a_contrasting_deployment():
+    """#5621's E19 is inside the matrix, and its fixture is never assumed.
+
+    The criterion is a CONTRAST — an available operation, a switched-off one and
+    an unpermitted one, told apart. A fully-enabled platform with only an admin
+    identity would answer "available" to all three, so the case would pass with
+    all four capability axes collapsed into one boolean: the exact defect it
+    exists to catch. Its own fixture class is therefore required, and while that
+    is absent E19 blocks and keeps `full` red.
+    """
+    case = cases.BY_ID["E19"]
+
+    assert case.owner == "#5621"
+    assert cases.CAPABILITY_CONTRAST in case.requires
+    assert cases.EC2 in case.requires, "the criterion is live, on a freshly served CLI"
+
+    # Granting every OTHER fixture class must not make it runnable.
+    everything_else = {
+        cases.PLATFORM,
+        cases.EC2,
+        cases.COGNITO,
+        cases.DESTINATION,
+        cases.SECOND_DESTINATION,
+        cases.GITHUB_APP,
+        cases.GITHUB_REPO,
+        cases.HOSTED,
+        cases.THREE_DEPLOYMENTS,
+        cases.MULTI_DEPLOYMENT_MODEL_LIMITS,
+    }
+    matrix = cases.new_matrix(FULL)
+    blocked = cases.block_missing_fixtures(matrix, everything_else)
+
+    assert blocked["E19"] == [cases.CAPABILITY_CONTRAST]
+    assert matrix["E19"]["status"] == cases.BLOCKED
+
+
+def capability_contrast_config():
+    return config.validate(
+        config_fixture(
+            capability_contrast={
+                "disabled_feature": "FEATURE_AGENT_MODELS_ENABLED",
+                "enabled_feature": "FEATURE_CONNECTIONS_ENABLED",
+                "disabled_operation": "models.catalog.read",
+                "enabled_operation": "connections.aws.read",
+                "denied_operation": "logs.request.read",
+                "foreign_request_id": "request-from-another-tenant",
+                "ordinary_fixture_name": "adp/cli-uplift-eval/ordinary-fixture",
+            }
+        )
+    )
+
+
+def test_capability_contrast_fixture_requires_live_preflight_proof():
+    configured = capability_contrast_config()
+
+    assert cases.CAPABILITY_CONTRAST in config.fixture_classes(configured)
+    assert cases.CAPABILITY_CONTRAST not in preflight.evaluate_fixtures(configured)
+    assert cases.CAPABILITY_CONTRAST in preflight.evaluate_fixtures(
+        configured, capability_contrast_available=True
+    )
+
+
+def test_e18_has_a_shipped_remote_driver_and_nightly_purpose():
+    assert stages.JOURNEY_DRIVERS["E19"] == "capability_contrast"
+    assert "capability_contrast" in bundle.purposes()
+    bundle.require_purpose("capability_contrast")
+
+
+E19_REVISION = "91ae8043125c990a349b9acf68b1c604cfdbf18e"
+
+
+def test_e18_accepts_only_the_expected_cli_version_and_gateway_revision(tmp_path):
+    module, _common = shipped_script(tmp_path, "capability_contrast")
+    expected = E19_REVISION
+    config_value = {"expected_revision": expected, "expected_cli_version": "1.0.0"}
+    capabilities = {"detail": {"gateway": {"state": "yes", "release": expected[:12]}}}
+
+    module._validate_release_evidence(config_value, "adp 1.0.0\n", capabilities)
+
+
+@pytest.mark.parametrize(
+    ("version", "gateway"),
+    [
+        ("adp 0.9.0", {"state": "yes", "release": E19_REVISION}),
+        ("adp 1.0.0", {"state": "unknown", "release": ""}),
+        ("adp 1.0.0", {"state": "yes", "release": "deadbee"}),
+        ("adp 1.0.0", {"state": "yes", "release": E19_REVISION[:6]}),
+    ],
+)
+def test_e18_rejects_cli_or_gateway_revision_mismatches(tmp_path, version, gateway):
+    module, common = shipped_script(tmp_path, "capability_contrast")
+    with pytest.raises(common.RemoteError):
+        module._validate_release_evidence(
+            {"expected_revision": E19_REVISION, "expected_cli_version": "1.0.0"},
+            version,
+            {"detail": {"gateway": gateway}},
+        )
+
+
+def test_a_blocked_capability_case_keeps_full_acceptance_red():
+    """BLOCKED is not PASSED — the rule that makes an honest hold possible.
+
+    Everything else green and E19 blocked must still fail, naming it. Otherwise
+    the story could be reported complete with its live criterion never run.
+    """
+    matrix = cases.new_matrix(FULL)
+    # Only E19's own fixture is withheld; every case it does not gate is free to pass.
+    cases.block_missing_fixtures(matrix, {cases.EC2, cases.PLATFORM})
+    for case_id, entry in matrix.items():
+        if entry["status"] == cases.NOT_RUN:
+            cases.record(matrix, case_id, cases.PASSED, {})
+
+    status, reasons = cases.accept(matrix, FULL)
+
+    assert status == cases.FAILED
+    assert any("E19" in reason for reason in reasons)
 
 
 def test_the_superplane_case_is_owned_by_5637_and_needs_a_deployed_domain():
@@ -885,8 +1007,14 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E16",
         "E17",
         "E18",
+        "E19",
+        "E39",
+        "E42",
+        "E25",
+        "E27",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
+    assert matrix["E28"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
     assert blocked["E11"] == ["github_app", "github_repo"]
     # #5413: three real deployments are a fixture like any other, so their absence
@@ -1045,6 +1173,10 @@ def test_github_fixtures_absent_blocks_only_github_cases():
     assert cases.GITHUB_APP not in available
     assert cases.GITHUB_REPO not in available
     assert {cases.EC2, cases.PLATFORM, cases.DESTINATION, cases.COGNITO} <= available
+    # Maintenance reads/previews discover the selected deployment's App. Only
+    # the separate mutating journeys require a disposable external App fixture.
+    assert set(cases.BY_ID["E28"].requires) <= available
+    assert cases.GITHUB_APP in cases.BY_ID["E10"].requires
 
 
 def test_github_fixtures_present_enables_github_cases():
@@ -1608,6 +1740,41 @@ def test_a_real_report_satisfies_the_published_schema():
     assert report.validate(published_report()) == []
 
 
+@pytest.mark.parametrize("suite", cases.SUITES)
+@pytest.mark.parametrize(
+    "status", (cases.PASSED, cases.FAILED, cases.BLOCKED, cases.NOT_RUN)
+)
+def test_every_supported_suite_and_case_can_be_published(tmp_path, suite, status):
+    """Partial diagnostics must publish the same JSON/JUnit contract as full runs."""
+    import xml.etree.ElementTree as ET
+
+    matrix = cases.new_matrix((suite,))
+    for case_id in matrix:
+        cases.record(matrix, case_id, status)
+    document = published_report(matrix=matrix, suites=(suite,))
+    assert report.validate(document) == []
+    paths = report.write(tmp_path, document, matrix, document["evaluation_id"])
+    assert json.loads(Path(paths["report"]).read_text()) == document
+    assert len(ET.parse(paths["junit"]).findall(".//testcase")) == len(matrix)
+
+
+@pytest.mark.parametrize("diagnostic", ("D01", "D02", "D03", "D04", "D05", "D06"))
+def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
+    # D04's guarded source is separately reviewed; schema support must land
+    # before its harness so completed remote mutations remain reportable.
+    document = published_report()
+    document["suites"] = ["knowledge-lifecycle"]
+    document["cases"][0]["id"] = diagnostic
+    assert report.validate(document) == []
+
+
+@pytest.mark.parametrize("invalid_id", ("D00", "D07", "E43", "C02", "diagnostic"))
+def test_schema_still_rejects_unknown_case_identifiers(invalid_id):
+    document = published_report()
+    document["cases"][0]["id"] = invalid_id
+    assert report.validate(document)
+
+
 def test_schema_accepts_every_status_the_harness_can_emit():
     """Each of the four verdicts must round-trip; a rejected one is unreportable."""
     for status in (cases.PASSED, cases.FAILED, cases.BLOCKED, cases.NOT_RUN):
@@ -1810,6 +1977,39 @@ def test_misrouted_release_returning_the_spa_is_rejected(monkeypatch):
     with pytest.raises(preflight.PreflightError) as excinfo:
         preflight.check_served_cli_hashes(VALID, {"adp": "0" * 64}, {})
     assert "did not return a script" in str(excinfo.value)
+
+
+def test_release_manifest_accepts_the_checked_json_contract_as_a_data_artifact():
+    revision = "a" * 40
+    blobs = {
+        f"{release.CLI_DIR}/install.sh": b'#!/bin/sh\nCLI_FILES="adp command-manifest.json"\n',
+        f"{release.CLI_DIR}/adp": b'#!/bin/sh\nreadonly ADP_VERSION="1.2.3"\n',
+        f"{release.CLI_DIR}/command-manifest.json": b'{"schema_version":"test","commands":[]}',
+    }
+
+    def read(_revision, path, **_kwargs):
+        return blobs[path]
+
+    result = release.manifest(revision, read=read)
+
+    assert set(result) == {"adp", "command-manifest.json", "install.sh"}
+    assert release.cli_version(revision, read=read) == "1.2.3"
+
+
+def test_served_json_release_artifact_must_be_valid_json(monkeypatch):
+    payload = b"not-json"
+    monkeypatch.setattr(
+        preflight.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: FakeResponse(payload),
+    )
+
+    with pytest.raises(preflight.PreflightError, match="JSON release artifact"):
+        preflight.check_served_cli_hashes(
+            VALID,
+            {"command-manifest.json": hashlib.sha256(payload).hexdigest()},
+            {},
+        )
 
 
 def test_contaminated_config_dir_aborts_the_run():
@@ -3285,8 +3485,7 @@ class FakeSsm:
         self.session_reads += 1
         if self.instance_terminated:
             raise ports.PortError(
-                "the session vault was read after the instance was terminated; "
-                "there is no instance left to read it from"
+                "the session vault was read after the instance was terminated; there is no instance left to read it from"
             )
         return {
             "Status": "Success",
@@ -3345,8 +3544,7 @@ class FakeSsm:
         found = self._find_purpose(joined)
         assert found, f"no dispatcher invocation in the {purpose!r} command"
         assert self.installed, (
-            f"{found!r} was invoked before the bundle was installed; on a real "
-            "instance this runs a file that does not exist"
+            f"{found!r} was invoked before the bundle was installed; on a real instance this runs a file that does not exist"
         )
         assert found in bundle.purposes(), f"{found!r} is not a shipped purpose"
         self.purposes_run.append(found)
@@ -3629,8 +3827,7 @@ def live_doubles(
             "cognito-idp.admin_set_user_password": {},
             "secretsmanager.create_secret": lambda **kwargs: {
                 "ARN": (
-                    f"arn:aws:secretsmanager:us-east-1:{cfg['platform_account']}"
-                    f":secret:{kwargs['Name']}-AbCdEf"
+                    f"arn:aws:secretsmanager:us-east-1:{cfg['platform_account']}:secret:{kwargs['Name']}-AbCdEf"
                 )
             },
             "secretsmanager.put_resource_policy": {},
@@ -5037,17 +5234,23 @@ def shipped_script(tmp_path, name):
 
     remote = extracted_bundle(tmp_path) / "remote"
     module = {}
-    for target in ("common", name):
-        spec = importlib.util.spec_from_file_location(
-            f"shipped_{target}", remote / f"{target}.py"
-        )
-        loaded = importlib.util.module_from_spec(spec)
-        # The scripts do `import common`, and the dispatcher puts its own directory
-        # first on the path, which is what makes that work on the instance.
-        # Mirrored here rather than worked around.
-        sys.modules["common" if target == "common" else f"shipped_{target}"] = loaded
-        spec.loader.exec_module(loaded)
-        module[target] = loaded
+    sys.path.insert(0, str(remote))
+    try:
+        for target in ("common", name):
+            spec = importlib.util.spec_from_file_location(
+                f"shipped_{target}", remote / f"{target}.py"
+            )
+            loaded = importlib.util.module_from_spec(spec)
+            # The scripts do `import common`, and the dispatcher puts its own directory
+            # first on the path, which is what makes that work on the instance.
+            # Mirrored here rather than worked around.
+            sys.modules["common" if target == "common" else f"shipped_{target}"] = (
+                loaded
+            )
+            spec.loader.exec_module(loaded)
+            module[target] = loaded
+    finally:
+        sys.path.remove(str(remote))
     return module[name], module["common"]
 
 
@@ -5641,8 +5844,7 @@ def test_the_exported_session_document_carries_no_token_at_all(tmp_path):
         assert key not in session
 
     assert common.redact(session) == session, (
-        "the exported session reference is itself redacted, so the handoff would "
-        "carry a placeholder exactly as the tokens did"
+        "the exported session reference is itself redacted, so the handoff would carry a placeholder exactly as the tokens did"
     )
 
 
@@ -6470,8 +6672,7 @@ def test_the_account_is_registered_before_setup_and_every_later_journey(tmp_path
     assert onboard != -1, "execute() never registers the run's ADP account at all"
     assert setup != -1, "execute() no longer runs setup; this test needs rewriting"
     assert onboard < setup, (
-        "the ADP account is registered after setup, so setup still runs as an "
-        "identity the gateway cannot resolve"
+        "the ADP account is registered after setup, so setup still runs as an identity the gateway cannot resolve"
     )
 
 
@@ -6582,16 +6783,14 @@ def test_the_session_token_is_read_before_the_sweep_terminates_the_instance(tmp_
     ssm.terminated = True
     token = live._vault_token(ssm, "i-0eval", ctx["document"]["session"])
     assert token == "", (
-        "the double must model a terminated instance as unreadable, or this test "
-        "cannot distinguish an eager read from a lucky one"
+        "the double must model a terminated instance as unreadable, or this test cannot distinguish an eager read from a lucky one"
     )
     # The ADP-account deleter is the kind that always needs it. It must not be
     # refusing to act for want of a token at this point.
     with pytest.raises(ports.PortError) as raised:
         deleters["adp_user"]("not-an-org-slash-id-shape")
     assert "No authenticated session" not in str(raised.value), (
-        "the deleter had no token after the instance was terminated, which is the "
-        "live failure this guards"
+        "the deleter had no token after the instance was terminated, which is the live failure this guards"
     )
 
 
@@ -7735,8 +7934,7 @@ def test_recovery_sweep_converts_launch_time_in_the_library_not_inline():
         line for line in body.splitlines() if not line.strip().startswith("#")
     )
     assert "mktime" not in code, (
-        "time.mktime reads EC2's UTC LaunchTime as local time; ages skew by the "
-        "runner's offset and negative ages never expire"
+        "time.mktime reads EC2's UTC LaunchTime as local time; ages skew by the runner's offset and negative ages never expire"
     )
 
 
@@ -7787,8 +7985,7 @@ def test_recovery_sweep_does_not_abort_before_verifying_a_refused_terminate():
     terminate_call = sweep[sweep.index("terminate-instances") :]
     guard = terminate_call[: terminate_call.index("describe-instances")]
     assert "check=True" not in guard, (
-        "check=True aborts the sweep before the state re-read; a refused "
-        "termination must still be observed and reported"
+        "check=True aborts the sweep before the state re-read; a refused termination must still be observed and reported"
     )
 
 
@@ -8268,13 +8465,47 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E12",
         "E16",
         "E17",
+        # #5621: E19 needs a deployment exhibiting a disabled module and a
+        # non-admin identity. A checked-in example file describes no such
+        # environment, so it blocks here exactly as the GitHub cases do.
         "E18",
+        "E19",
+        "E39",
+        "E42",
+        "E25",
+        "E27",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.
     assert {
         case_id for case_id, entry in matrix.items() if entry["status"] == cases.NOT_RUN
-    } == {"E01", "E02", "E03", "E13", "E14", "E15"}
+    } == {
+        "E01",
+        "E02",
+        "E03",
+        "E13",
+        "E14",
+        "E15",
+        "E20",
+        "E21",
+        "E22",
+        "E23",
+        "E24",
+        "E33",
+        "E28",
+        "E29",
+        "E31",
+        "E26",
+        "E40",
+        "E41",
+        "E36",
+        "E35",
+        "E38",
+        "E34",
+        "E32",
+        "E37",
+        "E30",
+    }
 
 
 # --------------------------------------------------------------------------
@@ -10053,3 +10284,3395 @@ def test_observer_artifacts_grant_only_two_named_reads():
         policy["Statement"][0]["Resource"]
         == "arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster"
     )
+
+
+def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
+    selected = cases.resolve_suites(("nightly",))
+    assert {case.id for case in selected} == {
+        "E01",
+        "C01",
+        "E20",
+        "E21",
+        "E22",
+        "E23",
+        "E24",
+        "E33",
+        "E31",
+        "E25",
+        "E26",
+        "E27",
+        "E40",
+        "E41",
+        "E28",
+        "E39",
+        "E42",
+        "E36",
+        "E29",
+        "E35",
+        "E38",
+        "E34",
+        "E32",
+        "E37",
+        "E30",
+    }
+    assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
+        "#5621",
+        "#5628",
+        "#5629",
+        "#5622",
+    }
+    assert not cases.is_full(("nightly",))
+    assert all(
+        stages.JOURNEY_DRIVERS[key] in bundle.purposes()
+        for key in ("E20", "E21", "E22", "E23")
+    )
+    matrix = cases.new_matrix(("nightly",))
+    for key in matrix:
+        cases.record(matrix, key, cases.PASSED)
+    cases.record(matrix, "E21", cases.FAILED)
+    assert cases.accept(matrix, ("nightly",))[0] == cases.FAILED
+
+
+@pytest.mark.parametrize("status", [401, 403, 500, None])
+def test_story_activity_does_not_mistake_other_errors_for_missing_run(tmp_path, status):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {"status": "ok", "detail": {"items": [], "complete": True}}
+    cli.run.return_value = (5, {"status": "failed", "error": {"http_status": status}})
+    with pytest.raises(common.RemoteError, match="structured HTTP 404"):
+        module.activity(cli, {})
+
+
+@pytest.mark.parametrize(
+    "code,complete,cursor", [(0, False, "next"), (4, True, None), (4, False, None)]
+)
+def test_story_usage_rejects_false_export_success_and_missing_cursor(
+    tmp_path, code, complete, cursor
+):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {"scope": {"kind": "own"}, "items": []},
+    }
+    cli.run.return_value = (
+        code,
+        {
+            "status": "ok" if complete else "pending",
+            "detail": {
+                "scope": {"kind": "own"},
+                "items": [],
+                "complete": complete,
+                "next_cursor": cursor,
+            },
+        },
+    )
+    with pytest.raises(common.RemoteError):
+        module.usage(cli, {})
+
+
+def test_story_capabilities_rejects_unknown_auth_readiness(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"operations": [{"id": "agent.list"}]}},
+        {
+            "status": "ok",
+            "detail": {
+                "checks": {"auth": {"state": "unknown"}, "api": {"state": "ok"}}
+            },
+        },
+    ]
+    with pytest.raises(common.RemoteError, match="readiness"):
+        module.capabilities(cli, {})
+
+
+@pytest.mark.parametrize("mode", ["capabilities", "usage", "activity"])
+def test_story_read_success_requires_no_inference_or_control_write(
+    tmp_path, mode, monkeypatch
+):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    if mode == "capabilities":
+        cli.json.side_effect = [
+            {"status": "ok", "detail": {"operations": [{"id": "agent.list"}]}},
+            {
+                "status": "ok",
+                "detail": {"checks": {"auth": {"state": "ok"}, "api": {"state": "ok"}}},
+            },
+        ]
+    elif mode == "usage":
+        cli.binary, cli.env, cli.timeout, cli.transcript = "/isolated/adp", {}, 30, []
+        exporter = module.exercise_usage_exports.__globals__
+
+        def raw_export(argv, **kwargs):
+            assert argv[1:3] == ["logs", "export"]
+            meta = {
+                "scope": {"kind": "own"},
+                "complete": True,
+                "next_cursor": None,
+                "start": argv[argv.index("--start") + 1],
+                "end": argv[argv.index("--end") + 1],
+            }
+            continuation = json.dumps(
+                {"type": "continuation", "status": "ok", "detail": meta}
+            )
+            if argv[argv.index("--format") + 1] == "ndjson":
+                return 0, continuation + "\n", ""
+            return 0, ",".join(exporter["COLUMNS"]) + "\n", continuation
+
+        monkeypatch.setattr(exporter["common"], "bounded", raw_export)
+        cli.json.return_value = {
+            "status": "ok",
+            "detail": {"scope": {"kind": "own"}, "items": []},
+        }
+        cli.run.return_value = (
+            0,
+            {
+                "status": "ok",
+                "detail": {"scope": {"kind": "own"}, "items": [], "complete": True},
+            },
+        )
+    else:
+        cli.json.return_value = {
+            "status": "ok",
+            "detail": {"items": [], "complete": True},
+        }
+        cli.run.return_value = (5, {"status": "failed", "error": {"http_status": 404}})
+    module.SCENARIOS[mode](cli, {})
+    for call in cli.method_calls:
+        assert not set(call.args[0]) & {
+            "pause",
+            "resume",
+            "steer",
+            "abort",
+            "submit",
+            "chat",
+        }
+
+
+def test_vault_nightly_rejects_secret_bearing_metadata(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {"items": [{"id": "owned", "value": "synthetic-secret"}]},
+    }
+    with pytest.raises(common.RemoteError, match="secret fields"):
+        module.vault(cli, {})
+
+
+def test_vault_nightly_is_selected_and_shipped():
+    assert cases.BY_ID["E24"].owner == "#5631"
+    assert "E24" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E24"] in bundle.purposes()
+
+
+def test_hierarchy_reads_are_wired_to_existing_nightly(tmp_path):
+    assert cases.BY_ID["E29"].owner == "#5623"
+    assert "E29" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E29"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"items": [{"id": "org"}]}},
+        *[
+            {"status": "ok", "detail": {"org_id": "org", "kind": kind, "items": []}}
+            for kind in ("department", "team", "member")
+        ],
+    ]
+    evidence = {}
+    module.hierarchy(cli, evidence)
+    assert evidence["org_id"] == "org"
+    cli.run.assert_not_called()
+
+
+def test_hierarchy_read_refuses_foreign_row(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"items": [{"id": "org"}]}},
+        {
+            "status": "ok",
+            "detail": {
+                "org_id": "org",
+                "kind": "department",
+                "items": [{"org_id": "foreign"}],
+            },
+        },
+    ]
+    with pytest.raises(common.RemoteError, match="Foreign hierarchy"):
+        module.hierarchy(cli, {})
+
+
+def test_machine_story_reads_are_wired_to_existing_nightly(tmp_path):
+    assert cases.BY_ID["E31"].owner == "#5624"
+    assert "E31" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E31"] in bundle.purposes()
+    module, _common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"tenant_id": "org"}},
+        *[
+            {"status": "ok", "detail": {"identity_type": kind, "items": []}}
+            for kind in ("sql-iam", "iam-registry", "cognito-client")
+        ],
+    ]
+    evidence = {}
+    module.machine(cli, evidence)
+    assert evidence["org_id"] == "org"
+    assert cli.json.call_count == 4
+
+
+def test_story_budget_reads_all_periods_without_writes(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "period": {"period_type": p},
+                "lines": [
+                    {"cap_status": "uncapped", "cap_usd": None, "remaining_usd": None}
+                ],
+            },
+        }
+        for p in ("daily", "weekly", "monthly")
+    ]
+    evidence = {}
+    module.budget(cli, evidence)
+    assert [c.args[0] for c in cli.json.call_args_list] == [
+        ["budget", "me", "--period", p] for p in ("daily", "weekly", "monthly")
+    ]
+    cli.run.assert_not_called()
+
+
+def test_story_budget_rejects_uncapped_zero(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "period": {"period_type": "daily"},
+            "lines": [
+                {
+                    "cap_status": "uncapped",
+                    "cap_usd": "0.00",
+                    "remaining_usd": "0.000000",
+                }
+            ],
+        },
+    }
+    with pytest.raises(common.RemoteError, match="zero headroom"):
+        module.budget(cli, {})
+
+
+def test_budget_story_is_wired_into_nightly():
+    assert cases.BY_ID["E26"].owner == "#5589"
+    assert "E26" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E26"] in bundle.purposes()
+
+
+def test_github_maintenance_nightly_is_read_and_preview_only(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "contract": "app-maintenance-v1",
+                "app_id": "123",
+                "key_version": "revision",
+            },
+        },
+        {"status": "dry_run"},
+        {"status": "dry_run"},
+    ]
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.github_maintenance(cli, evidence)
+    for call in cli.method_calls:
+        argv = call.args[0]
+        assert "--yes" not in argv
+        if any(action in argv for action in ("disconnect", "rotate-key")):
+            assert "--dry-run" in argv
+    assert "live_acceptance_hold" in evidence
+    assert cases.BY_ID["E28"].owner == "#5634"
+    assert "E28" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E28"] in bundle.purposes()
+
+
+def test_bedrock_lifecycle_nightly_preview_has_no_probes_or_writes(tmp_path):
+    assert cases.BY_ID["E34"].owner == "#5633"
+    assert "E34" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E34"] in bundle.purposes()
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.side_effect = [
+        (
+            0,
+            {
+                "status": "dry_run",
+                "detail": {
+                    "before": {"revision": "a" * 64, "effective": {"rung": "org"}}
+                },
+            },
+        ),
+        (1, {"status": "failed", "error": {"code": "usage_error"}}),
+    ]
+    evidence = {}
+    module.bedrock_lifecycle(cli, evidence)
+    assert evidence["live_acceptance"].startswith("held:")
+    for call in cli.method_calls:
+        assert not {"--yes", "verify", "connect", "submit"}.intersection(call.args[0])
+
+
+def test_bedrock_lifecycle_nightly_does_not_hide_missing_server(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = (
+        5,
+        {"status": "failed", "error": {"code": "unsupported_operation"}},
+    )
+    with pytest.raises(common.RemoteError, match="Unexpected personal Bedrock refusal"):
+        module.bedrock_lifecycle(cli, {})
+
+
+def test_gitlab_nightly_does_not_claim_live_delivery_or_write(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "contract": "gitlab_cli_v1",
+            "providers": [],
+            "identity_linked": False,
+            "webhook_delivery": "unverified",
+            "agent_runtime": "unverified",
+        },
+    }
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.gitlab(cli, evidence)
+    assert evidence["provider_count"] == 0
+    assert "live_acceptance_hold" in evidence
+    assert all("--yes" not in call.args[0] for call in cli.method_calls)
+    assert cases.BY_ID["E30"].owner == "#5635"
+    assert "E30" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E30"] in bundle.purposes()
+
+
+@pytest.mark.parametrize("bad_group", [False, True])
+def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
+    tmp_path, bad_group
+):
+    launches = []
+    group_id = "sg-0123456789abcdef0"
+
+    def doubles(cfg):
+        ports_double = live_doubles(cfg)
+        ports_double["aws"].replies["ec2.describe_security_groups"] = {
+            "SecurityGroups": [
+                {
+                    "GroupId": group_id,
+                    "VpcId": "vpc-foreign" if bad_group else cfg["vpc_id"],
+                    "IpPermissions": [],
+                    "IpPermissionsEgress": [
+                        {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443}
+                    ],
+                }
+            ]
+        }
+
+        def launch(**kwargs):
+            launches.append(kwargs)
+            return {"Instances": [{"InstanceId": "i-0abc"}]}
+
+        ports_double["aws"].replies["ec2.run_instances"] = launch
+        return ports_double
+
+    run_live_stages(tmp_path, doubles=doubles, instance_security_group_id=group_id)
+    if bad_group:
+        assert launches == []
+    else:
+        assert len(launches) == 1
+        assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_ratelimit_story_wired_and_read_only(tmp_path):
+    assert cases.BY_ID["E36"].owner == "#5627"
+    assert "E36" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E36"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "runtime": {
+                "tpm": "unavailable_actual_usage_not_reconciled",
+                "worker_convergence": "unknown",
+                "state": "configured_not_probed",
+            },
+            "lines": [
+                {"effective": {"rpm": 60}, "sources": {"rpm": "account_type_default"}}
+            ],
+        },
+    }
+    evidence = {}
+    module.ratelimit(cli, evidence)
+    assert cli.json.call_args.args[0] == ["ratelimit", "me"]
+    assert evidence["enforcement_qualification"] == "not_run"
+    cli.run.assert_not_called()
+    cli.json.return_value["detail"]["runtime"]["tpm"] = "enforced"
+    with pytest.raises(common.RemoteError, match="TPM gap"):
+        module.ratelimit(cli, {})
+
+
+def test_person_budget_story_is_wired_into_nightly():
+    assert cases.BY_ID["E35"].owner == "#5626"
+    assert "E35" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E35"] in bundle.purposes()
+
+
+def test_person_budget_story_retains_authority_and_refusal(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "configuration": {
+                    "period_type": p,
+                    "cap_status": "uncapped",
+                    "cap_usd": None,
+                },
+                "authority": "platform_admin",
+            },
+        }
+        for p in ("daily", "weekly", "monthly")
+    ]
+    cli.run.return_value = (
+        3,
+        {"status": "failed", "error": {"code": "permission_denied"}},
+    )
+    evidence = {}
+    module.person_budget(cli, evidence)
+    assert cli.json.call_count == 3
+    assert cli.run.call_count == 2
+    assert evidence["self_write_refusals"] == 2
+    assert "spend-through-and-restoration" in evidence["live_holds"]
+
+
+def test_model_policy_e38_is_wired_and_retains_live_holds(tmp_path):
+    assert cases.BY_ID["E38"].owner == "#5636"
+    assert "E38" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E38"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {"tenant_id": "org", "persona_key": "architect", "models": []},
+        },
+        {
+            "status": "ok",
+            "detail": {
+                "tenant_id": "org",
+                "selected_persona": "architect",
+                "entries": [],
+                "status": "unknown",
+                "aggregate_scope": "all_personas_for_selected_owner_and_chain",
+            },
+        },
+    ]
+    evidence = {}
+    module.model_policy(cli, evidence)
+    assert "posture-rollback" in evidence["live_holds"]
+    cli.run.assert_not_called()
+
+
+def test_knowledge_nightly_is_selected_and_has_no_dispatch(tmp_path):
+    assert cases.BY_ID["E32"].owner == "#5632"
+    assert "E32" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E32"] in bundle.purposes()
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.side_effect = [
+        (0, {"status": "ok", "detail": {"items": []}}),
+        (1, {"status": "failed", "error": {"code": "usage_error"}}),
+    ]
+    cli.json.return_value = {
+        "status": "preview",
+        "detail": {"effect": "soft removal; index artifacts retained"},
+    }
+    evidence = {}
+    module.knowledge(cli, evidence)
+    assert evidence["live_acceptance"].startswith("held:")
+    assert evidence["discovery"] == "available"
+    assert all(
+        not {"--yes", "reindex", "add", "commit", "submit"}.intersection(call.args[0])
+        for call in cli.method_calls
+    )
+
+
+@pytest.mark.parametrize("status", [401, 429, 500])
+def test_knowledge_nightly_does_not_hide_unexpected_errors(tmp_path, status):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = (
+        5,
+        {"status": "failed", "error": {"message": f"HTTP {status}"}},
+    )
+    with pytest.raises(common.RemoteError, match="Unexpected knowledge discovery"):
+        module.knowledge(cli, {})
+
+
+def test_recovery_nightly_reads_and_refuses_without_mutation(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {"status": "ok", "detail": {"flows": []}}
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.recovery(cli, evidence)
+    assert evidence["malformed_target_refused"] is True
+    assert "live_acceptance_hold" in evidence
+    assert all("--yes" not in call.args[0] for call in cli.method_calls)
+    assert cases.BY_ID["E37"].owner == "#5630"
+    assert stages.JOURNEY_DRIVERS["E37"] in bundle.purposes()
+
+
+def test_platform_e41_is_read_only_and_retains_live_holds(tmp_path):
+    assert cases.BY_ID["E41"].owner == "#5641"
+    assert "E41" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E41"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "full_deployment_verified": False,
+            "environment_verified": False,
+            "artifact_verification": "unknown",
+            "components": dict.fromkeys(
+                ["gateway", "factory", "webhook", "models", "github_wiring"], {}
+            ),
+        },
+    }
+    evidence = {}
+    module.platform(cli, evidence)
+    assert "authorized-teardown-cleanup" in evidence["live_holds"]
+    assert cli.json.call_args.args[0] == ["platform", "status", "--environment", "dev"]
+    cli.run.assert_not_called()
+
+
+def test_superplane_lifecycle_story_is_bounded_preview(tmp_path):
+    assert cases.BY_ID["E39"].owner == "#5638"
+    assert cases.SUPERPLANE_DOMAIN in cases.BY_ID["E39"].requires
+    assert "E39" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E39"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"workspaces": [{"id": "workspace"}]}},
+        {
+            "status": "dry_run",
+            "detail": {
+                "before": {"workspace_id": "workspace", "billing_state": "unconfirmed"}
+            },
+        },
+        {"status": "ok", "detail": {"workspace_id": "workspace", "events": []}},
+    ]
+    evidence = {}
+    module.superplane_lifecycle(cli, evidence)
+    assert evidence["mutations"] == 0
+    assert cli.json.call_args_list[1].args[0][-1] == "--dry-run"
+    cli.run.assert_not_called()
+
+
+def test_chat_read_scenario_is_nightly_and_read_only(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "tenant_id": "tenant",
+                "user_id": "user",
+                "enabled": True,
+                "history_configured": True,
+                "history_ready": "unknown",
+                "general_turns_supported": False,
+                "authorized_personas": [],
+            },
+        },
+        {
+            "status": "ok",
+            "detail": {"tenant_id": "tenant", "user_id": "user", "items": []},
+        },
+    ]
+    module.chat(cli, {})
+    assert cli.json.call_args_list[1].args[0] == ["chat", "list", "--page-size", "1"]
+    assert stages.JOURNEY_DRIVERS["E40"] in bundle.purposes()
+
+
+def test_coding_nightly_fixture_is_explicit_and_defaults_blocked(tmp_path):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    assert not module.fixture_valid({})
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo"},
+        instructions="bounded issue",
+    )
+    assert module.fixture_valid(fixture)
+    for changes in (
+        {"max_dispatches": 2},
+        {"max_task_usd": 1.01},
+        {"enrollment_verified": False},
+        {"shared_budget_authorized": False},
+        {"instructions": "x" * 4097},
+        {"instructions": "eyJabcdefgh.abcdefgh.abcdefgh"},
+    ):
+        assert not module.fixture_valid({**fixture, **changes})
+    assert "E42" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert cases.HUMAN_TASK_CODING not in config.fixture_classes(VALID)
+
+
+def test_coding_lost_cli_receipt_recovers_owned_task_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    import json
+
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    task_id = "tsk_12345678-1234-4123-8123-123456789abc"
+    calls = []
+    work = tmp_path / "run"
+    work.mkdir()
+
+    class Cli:
+        def __init__(self, executable, env, transcript, **kwargs):
+            self.home = Path(env["HOME"])
+
+        def json(self, argv, **kwargs):
+            if argv == ["models", "mappings", "list"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "principal_id": "fixture-human",
+                    }
+                }
+            if "--dry-run" in argv:
+                return {"status": "dry_run"}
+            journal = self.home / ".adp/state/hosted-tasks"
+            journal.mkdir(parents=True)
+            (journal / "receipt.json").write_text(
+                json.dumps(
+                    {
+                        "artifact_id": "art-fixture",
+                        "task_id": task_id,
+                        "fingerprint": "exact",
+                    }
+                )
+            )
+            raise RuntimeError("CLI stdout lost after durable acceptance")
+
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 0, {
+                "detail": {"status": "cancelled" if "wait" in argv else "accepted"}
+            }
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {})
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo", "issue": 42},
+        instructions="bounded edit",
+    )
+    evidence = {"transcript": []}
+    with pytest.raises(RuntimeError, match="stdout lost"):
+        module.execute(
+            coding_remote_config(module, fixture, work),
+            evidence,
+        )
+    assert evidence["task_id"] == task_id
+    assert evidence["acceptance_reconciled"] is True
+    assert evidence["cleanup_status"] == "cancelled"
+    assert [argv[1] for argv in calls] == ["abort", "wait"]
+    recovery = Path(evidence["recovery_path"])
+    assert recovery.exists() and recovery.stat().st_mode & 0o777 == 0o600
+    record = json.loads(recovery.read_text())
+    assert (
+        record["task_id"] == task_id
+        and record["journal"]["artifact_id"] == "art-fixture"
+    )
+    assert record["phase"] == "cancelled"
+    assert "access_token" not in record
+
+
+@pytest.mark.parametrize("namespace", ["", "tenants/" + "a" * 24 + "/"])
+def test_coding_acceptance_replay_keeps_same_key_and_retains_unknown(
+    tmp_path, namespace
+):
+    import json
+
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    journal = tmp_path / (".adp/state/" + namespace + "hosted-tasks")
+    journal.mkdir(parents=True)
+    (journal / "receipt.json").write_text(
+        json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"})
+    )
+    task_id = "tsk_12345678-1234-4123-8123-123456789abc"
+    trigger = ["agent", "trigger", "--request-id", "stable-request"]
+    calls = []
+
+    class Cli:
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 4, {"detail": {"task_id": task_id}}
+
+    assert module.reconcile_acceptance(Cli(), trigger, tmp_path) == task_id
+    assert calls == [[*trigger, "--yes"]]
+
+    class Broken:
+        def run(self, argv, **kwargs):
+            raise RuntimeError("still unavailable")
+
+    assert module.reconcile_acceptance(Broken(), trigger, tmp_path) is None
+    assert module.local_receipt(tmp_path)["artifact_id"] == "art-fixture"
+
+
+@pytest.mark.parametrize("journal_mode", ["legacy", "tenant", "missing"])
+def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(
+    tmp_path, monkeypatch, capsys, journal_mode
+):
+    import shutil
+
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    work = tmp_path / "worker-run"
+    work.mkdir()
+    calls = []
+
+    class Cli:
+        def __init__(self, executable, env, transcript, **kwargs):
+            self.home = Path(env["HOME"])
+
+        def json(self, argv, **kwargs):
+            if argv == ["models", "mappings", "list"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "principal_id": "fixture-human",
+                    }
+                }
+            if "--dry-run" in argv:
+                return {"status": "dry_run"}
+            if journal_mode != "missing":
+                suffix = "tenants/" + "b" * 24 + "/" if journal_mode == "tenant" else ""
+                journal = self.home / (".adp/state/" + suffix + "hosted-tasks")
+                journal.mkdir(parents=True)
+                (journal / "receipt.json").write_text(
+                    json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"})
+                )
+            return {
+                "status": "failed",
+                "error": {
+                    "code": "task_http_error",
+                    "http_status": 422,
+                    "message": "private-response-must-not-escape",
+                },
+            }
+
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 5, None
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(
+        remote_common,
+        "session_tokens",
+        lambda cfg: {"access_token": "session-must-not-escape"},
+    )
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo", "issue": 42},
+        instructions="Fix exactly this issue.\nPreserve this input.",
+    )
+    evidence = {"success": False, "transcript": []}
+    with pytest.raises(remote_common.RemoteError, match="acceptance is unknown"):
+        module.execute(
+            coding_remote_config(module, fixture, work),
+            evidence,
+        )
+    remote_common.emit(evidence)
+    emitted = capsys.readouterr().out
+    assert (
+        len(emitted.encode()) < 24000
+    )  # SSM inline output limit; no full repository snapshot.
+    assert "session-must-not-escape" not in emitted
+    assert "private-response-must-not-escape" not in emitted
+    assert evidence["detail"]["trigger_outcome"] == {
+        "status": "failed",
+        "code": "task_http_error",
+        "http_status": 422,
+    }
+    document = json.loads(emitted)
+    matrix = {"E42": {"status": cases.NOT_RUN}}
+    ctx = {
+        "document": {"instance_id": "i-fixture"},
+        "matrix": matrix,
+        "transcript": [],
+        "correlation": {},
+        "fault": "none",
+        "record": lambda case_id, status, detail: cases.record(
+            matrix, case_id, status, detail
+        ),
+    }
+    stages.journeys_stage(
+        {}, {"journey": lambda purpose: lambda instance, ctx: document}
+    )(ctx)
+    assert matrix["E42"]["status"] == cases.FAILED
+    paths = report.write(
+        tmp_path / "published",
+        published_report(matrix=matrix),
+        matrix,
+        "adp-e2e-20260915-143022-a1b2c3",
+    )
+    shutil.rmtree(work)  # Model the disposable EC2 instance disappearing.
+    retained = json.loads(Path(paths["report"]).read_text())["cases"][0]["detail"][
+        "recovery"
+    ]
+    assert retained["phase"] == "acceptance_unknown"
+    assert retained["task_id"] is None
+    assert retained["gateway"] == "https://gateway"
+    if journal_mode == "missing":
+        assert retained["submit_body"] is None
+        assert retained["journal"] == {}
+        assert calls == []
+        return
+    assert retained["submit_body"] == {
+        "schema_version": "1.0",
+        "persona": fixture["persona"],
+        "instructions": fixture["instructions"],
+        "inputs": {"repository_snapshot_artifact": "art-fixture"},
+        "artifact_ids": ["art-fixture"],
+        "external_reference": "owner/repo#42",
+    }
+    assert retained["request_id"] == evidence["request_id"]
+    assert calls[0][calls[0].index("--request-id") + 1] == retained["request_id"]
+
+
+def test_coding_marks_success_only_after_execute_returns_and_exports_details(
+    tmp_path, monkeypatch
+):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    monkeypatch.setattr(
+        module,
+        "_execute",
+        lambda cfg, evidence: evidence.update(
+            task_id="tsk-fixture", terminal_status="completed"
+        ),
+    )
+    evidence = {"success": False}
+    module.execute({}, evidence)
+    assert evidence["success"] is True
+    assert evidence["detail"]["task_id"] == "tsk-fixture"
+    assert evidence["detail"]["terminal_status"] == "completed"
+
+
+@pytest.mark.parametrize("outcome", ["absent", "owned", "foreign", "denied"])
+def test_pending_launch_cleanup_discovers_only_exact_attempt(outcome):
+    attempt = "adp-e2e-20260926-012131-df70e8-a1"
+    owner = attempt.rsplit("-a", 1)[0]
+
+    def describe(**kwargs):
+        if "InstanceIds" in kwargs:
+            assert kwargs["InstanceIds"] == ["i-0abc"]
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"InstanceId": "i-0abc", "State": {"Name": "terminated"}}
+                        ]
+                    }
+                ]
+            }
+        assert kwargs["Filters"] == [
+            {"Name": "tag:" + cleanup.OWNER_TAG, "Values": [owner]},
+            {"Name": "tag:Name", "Values": ["cli-uplift-eval-" + attempt]},
+        ]
+        if outcome == "denied":
+            raise ports.PortError(
+                "ec2.describe_instances failed: UnauthorizedOperation"
+            )
+        if outcome == "absent":
+            return {"Reservations": []}
+        return {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": "i-0abc",
+                            "Tags": [
+                                {
+                                    "Key": cleanup.OWNER_TAG,
+                                    "Value": owner
+                                    if outcome == "owned"
+                                    else "another-evaluation",
+                                },
+                                {"Key": "Name", "Value": "cli-uplift-eval-" + attempt},
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+
+    aws = FakeAws({"ec2.describe_instances": describe, "ec2.terminate_instances": {}})
+    delete = live._deleters(aws, VALID)(VALID)["ec2_instance"]
+    if outcome in {"foreign", "denied"}:
+        with pytest.raises(ports.PortError):
+            delete("pending:" + attempt)
+    else:
+        delete("pending:" + attempt)
+    mutations = [
+        kw for service, operation, kw in aws.calls if operation == "terminate_instances"
+    ]
+    assert mutations == ([{"InstanceIds": ["i-0abc"]}] if outcome == "owned" else [])
+
+
+@pytest.mark.parametrize("foreign_last_page", [False, True])
+def test_pending_launch_cleanup_finishes_discovery_before_any_termination(
+    foreign_last_page,
+):
+    attempt = "adp-e2e-20260926-012131-df70e8-a1"
+    owner = attempt.rsplit("-a", 1)[0]
+    discovered = []
+
+    def describe(**kwargs):
+        if "InstanceIds" in kwargs:
+            return {
+                "Reservations": [{"Instances": [{"State": {"Name": "terminated"}}]}]
+            }
+        page = 2 if kwargs.get("NextToken") == "page-two" else 1
+        discovered.append(page)
+        instance = {
+            "InstanceId": "i-0ab" + str(page),
+            "Tags": [
+                {
+                    "Key": cleanup.OWNER_TAG,
+                    "Value": "foreign" if page == 2 and foreign_last_page else owner,
+                },
+                {"Key": "Name", "Value": "cli-uplift-eval-" + attempt},
+            ],
+        }
+        return {
+            "Reservations": [{"Instances": [instance]}],
+            **({"NextToken": "page-two"} if page == 1 else {}),
+        }
+
+    def terminate(**kwargs):
+        assert discovered == [1, 2], "Never delete before complete discovery"
+        return {}
+
+    aws = FakeAws(
+        {"ec2.describe_instances": describe, "ec2.terminate_instances": terminate}
+    )
+    delete = live._deleters(aws, VALID)(VALID)["ec2_instance"]
+    if foreign_last_page:
+        with pytest.raises(ports.PortError, match="foreign identity"):
+            delete("pending:" + attempt)
+    else:
+        delete("pending:" + attempt)
+    terminated = [
+        kwargs["InstanceIds"]
+        for _, operation, kwargs in aws.calls
+        if operation == "terminate_instances"
+    ]
+    assert terminated == ([] if foreign_last_page else [["i-0ab1"], ["i-0ab2"]])
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_story_read_script_reports_real_completion(
+    tmp_path, monkeypatch, capsys, fails
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    payload = tmp_path / "read.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "mode": "capabilities",
+                "org_id": "native-tenant",
+                "cli_path": "/served/adp",
+                "gateway_url": "https://adp.example",
+                "region": "us-east-1",
+                "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+            }
+        )
+    )
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+    monkeypatch.setattr(common, "load_session", lambda _: {"org_id": "native-tenant"})
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    monkeypatch.setattr(common, "Cli", lambda *args, **kwargs: object())
+
+    def scenario(cli, evidence):
+        if fails:
+            raise common.RemoteError("actual CLI assertion failed")
+        evidence["operation_count"] = 65
+
+    monkeypatch.setitem(script.SCENARIOS, "capabilities", scenario)
+    code = common.run_script(script.execute, [str(payload)])
+    emitted = json.loads(capsys.readouterr().out)
+    assert code == int(fails)
+    assert emitted["success"] is not fails
+    if not fails:
+        assert emitted["stage"] == "complete"
+        assert emitted["detail"]["operation_count"] == 65
+        assert "not full story acceptance" in emitted["detail"]["qualification"]
+    else:
+        assert emitted["error"] == "actual CLI assertion failed"
+
+
+def test_remote_exception_after_success_cannot_emit_green(
+    tmp_path, monkeypatch, capsys
+):
+    _, common = shipped_script(tmp_path, "story_reads")
+    payload = tmp_path / "failure.json"
+    payload.write_text("{}")
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+
+    def execute(config, evidence):
+        evidence["success"] = True
+        raise common.RemoteError("cleanup failed")
+
+    assert common.run_script(execute, [str(payload)]) == 1
+    assert json.loads(capsys.readouterr().out)["success"] is False
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_tenant_script_completion_requires_session_preservation(
+    tmp_path, monkeypatch, capsys, cleanup_fails
+):
+    script, common = shipped_script(tmp_path, "tenant_isolation")
+    payload = tmp_path / "tenant.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "mode": "smoke",
+                "cli_path": "/served/adp",
+                "gateway_url": "https://adp.example",
+                "region": "us-east-1",
+                "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+                "session_ref": str(tmp_path / "session.json"),
+            }
+        )
+    )
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+    monkeypatch.setattr(common, "load_session", lambda _: {})
+    monkeypatch.setattr(common, "session_tokens", lambda _: {})
+
+    def write_session(home, *args):
+        target = home / ".bedrock-gateway"
+        target.mkdir()
+        (target / "tokens.json").write_text("{}")
+
+    monkeypatch.setattr(script, "_write_session", write_session)
+    monkeypatch.setattr(common, "Cli", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        script, "smoke", lambda cli, evidence: evidence.update(tenant_count=2)
+    )
+
+    def save(*args, **kwargs):
+        if cleanup_fails:
+            raise common.RemoteError("session preservation failed")
+
+    monkeypatch.setattr(common, "save_session", save)
+    assert common.run_script(script.execute, [str(payload)]) == int(cleanup_fails)
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["success"] is not cleanup_fails
+    if not cleanup_fails:
+        assert emitted["detail"]["tenant_count"] == 2
+
+
+def test_recovery_negative_scenario_accepts_actual_cli_nonzero_exit(
+    tmp_path, monkeypatch
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    replies = iter(
+        [
+            (0, json.dumps({"status": "ok", "detail": {"flows": []}}), ""),
+            (1, json.dumps({"status": "failed", "error": {"code": "usage_error"}}), ""),
+        ]
+    )
+    monkeypatch.setattr(common, "bounded", lambda *args, **kwargs: next(replies))
+    evidence = {}
+    cli = common.Cli("adp", {}, [])
+    script.recovery(cli, evidence)
+    assert evidence["malformed_target_refused"] is True
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [None, "lost_first_receipt", "unknown_second", "wrong_fixture", "watch_pending"],
+)
+def test_shipped_hosted_chat_two_turns_and_durable_unknown(
+    tmp_path, monkeypatch, fault
+):
+    module, remote_common = shipped_script(tmp_path, "hosted_chat")
+    work = tmp_path / "worker"
+    work.mkdir()
+    requests = {}
+    attempts = []
+    sid = "chat-fixture"
+    marker = [None]
+    all_messages = []
+    cleanup_calls = []
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+            assert env["ADP_TENANT"] == "fixture-tenant"
+
+        def json(self, argv, **kwargs):
+            if argv[:2] == ["chat", "status"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "user_id": "other"
+                        if fault == "wrong_fixture"
+                        else "fixture-user",
+                        "general_turns_supported": True,
+                        "authorized_personas": ["agent-task-investigator"],
+                    }
+                }
+            if "--dry-run" in argv:
+                return {
+                    "status": "dry_run",
+                    "detail": {"session_id": sid, "dispatched": False},
+                }
+            if argv[:2] == ["chat", "watch"]:
+                if fault == "watch_pending":
+                    raise remote_common.RemoteError(
+                        "Task did not finish before timeout"
+                    )
+                task_id = argv[argv.index("--task-id") + 1]
+                return {
+                    "detail": {
+                        "session_id": sid,
+                        "matched_task_id": task_id,
+                        "answer_completion_verified": True,
+                        "messages": list(all_messages),
+                    }
+                }
+            if argv[:2] == ["chat", "show"]:
+                return {"detail": {"session_id": sid, "messages": list(all_messages)}}
+            raise AssertionError(argv)
+
+        def run(self, argv, **kwargs):
+            if argv[0] == "agent":
+                cleanup_calls.append(argv)
+                return 0, {"detail": {"status": "cancelled"}}
+            if argv[:2] == ["chat", "show"]:
+                return 0, {
+                    "detail": {"session_id": sid, "messages": list(all_messages)}
+                }
+            assert argv[:2] in (["chat", "start"], ["chat", "resume"])
+            request_id = argv[argv.index("--request-id") + 1]
+            attempts.append(request_id)
+            if fault == "unknown_second" and argv[1] == "resume":
+                return 4, {"detail": {"request_id": request_id, "outcome": "unknown"}}
+            if request_id not in requests:
+                index = len(requests)
+                task_id = f"tsk_12345678-1234-4123-8123-{index:012d}"
+                flag = "--message-file" if index == 0 else "--answer-file"
+                content = Path(argv[argv.index(flag) + 1]).read_text()
+                if index == 0:
+                    marker[0] = re.search(r"memory-[0-9a-f]+", content).group()
+                else:
+                    assert (
+                        marker[0] not in content
+                    )  # Recall must come from earlier context.
+                all_messages.extend(
+                    [
+                        {"role": "user", "content": content, "task_id": task_id},
+                        {
+                            "role": "assistant",
+                            "content": "NOTED" if index == 0 else marker[0],
+                            "task_id": task_id,
+                        },
+                    ]
+                )
+                requests[request_id] = {
+                    "request_id": request_id,
+                    "session_id": sid,
+                    "task_id": task_id,
+                }
+                if fault == "lost_first_receipt" and index == 0:
+                    return 4, None
+            return 4, {"detail": requests[request_id]}
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(
+        remote_common, "session_tokens", lambda cfg: {"access_token": "must-not-escape"}
+    )
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    cfg = {
+        "gateway_url": "https://gateway",
+        "cli_path": "/installed/adp",
+        "work_dir": str(work),
+        "test_user_id": "fixture-login",
+        "evaluation_id": "stable-chat-evaluation",
+        "human_task_chat": {
+            "enrollment_verified": True,
+            "shared_budget_authorized": True,
+            "max_tasks": 2,
+            "max_task_usd": 0.25,
+            "login_user_id": "fixture-login",
+            "canonical_user_id": "fixture-user",
+            "tenant_id": "fixture-tenant",
+        },
+    }
+    cfg["recovery_plan"] = module.recovery_plan(cfg)
+    evidence = {"success": False, "transcript": []}
+    if fault in {"unknown_second", "wrong_fixture", "watch_pending"}:
+        with pytest.raises(remote_common.RemoteError):
+            module.execute(cfg, evidence)
+        assert evidence["success"] is False
+        if fault == "wrong_fixture":
+            assert not attempts
+            return
+        if fault == "watch_pending":
+            assert len(requests) == 1 and len(evidence["detail"]["turns"]) == 1
+            assert [args[1] for args in cleanup_calls] == ["abort", "wait"]
+            assert all(
+                args[args.index("--run") + 1]
+                == evidence["detail"]["turns"][0]["task_id"]
+                for args in cleanup_calls
+            )
+            assert evidence["detail"]["turns"][0]["phase"] == "cancelled"
+            return
+        record = evidence["detail"]["turns"][1]
+        assert record["phase"] == "acceptance_unknown"
+        assert record["endpoint"] == "/chat/sessions/chat-fixture/turns"
+        assert record["body"]["request_id"] == record["request_id"]
+        assert record["body"]["message"].startswith("What label")
+        assert len(set(attempts)) == 2  # Never start a replacement turn.
+        import shutil
+
+        shutil.rmtree(work)
+        retained = json.loads(json.dumps(remote_common.redact(evidence)))
+        assert retained["detail"]["turns"][1] == record
+    else:
+        module.execute(cfg, evidence)
+        assert evidence["success"] is True
+        assert evidence["detail"]["context_recalled"] is True
+        assert len(requests) == 2 and len(set(attempts)) == 2
+        assert attempts[0].startswith("chatdiag-") and attempts[0].endswith("-0")
+        assert all(row["phase"] == "completed" for row in evidence["detail"]["turns"])
+        rerun = {"success": False, "transcript": []}
+        module.execute(cfg, rerun)
+        assert (
+            rerun["success"] is True and len(requests) == 2 and len(set(attempts)) == 2
+        )
+        assert [row["request_id"] for row in rerun["detail"]["turns"]] == [
+            row["request_id"] for row in evidence["detail"]["turns"]
+        ]
+    encoded = json.dumps(remote_common.redact(evidence))
+    assert "must-not-escape" not in encoded and len(encoded.encode()) < 24000
+
+
+def test_hosted_chat_fixture_is_explicit_and_not_e40(tmp_path):
+    module, _ = shipped_script(tmp_path, "hosted_chat")
+    assert not module.valid_fixture({})
+    assert stages.JOURNEY_DRIVERS["E40"] == "story_chat"
+    assert stages.JOURNEY_DRIVERS["D01"] == "hosted_chat"
+    assert "hosted_chat" in bundle.purposes()
+
+
+@pytest.mark.parametrize(
+    "fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"]
+)
+def test_hosted_chat_intent_precedes_ssm_and_survives_instance_loss(tmp_path, fault):
+    from tests.e2e.cli_uplift.remote.chat_plan import recovery_plan
+
+    cfg = {
+        "evaluation_id": "durable-chat",
+        "gateway_url": "https://gateway",
+        "test_user_id": "login",
+        "human_task_chat": {
+            "tenant_id": "tenant",
+            "canonical_user_id": "human",
+            "max_tasks": 2,
+            "max_task_usd": 0.25,
+        },
+    }
+    cfg["recovery_plan"] = recovery_plan(cfg)
+    durable = []
+    calls = []
+
+    def push(document, *, critical):
+        assert critical is True
+        if fault == "sink_failure":
+            raise RuntimeError("durable sink unavailable")
+        durable.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "chat", on_change=push)
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            calls.append("ssm")
+            assert durable[-1]["diagnostic_intents"][
+                "hosted_chat:durable-chat"
+            ] == recovery_plan(cfg)
+            raise RuntimeError("EC2 terminated after acceptance, before any result")
+
+    worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
+    if fault == "changed_plan":
+        cfg["recovery_plan"]["turns"][0]["message"] = "replacement paid request"
+    with pytest.raises((RuntimeError, ValueError, PortError)):
+        worker(
+            "i-owned",
+            "hosted_chat",
+            cfg,
+            manifest=None if fault == "no_manifest" else manifest,
+        )
+    if fault == "instance_loss":
+        assert calls == ["install", "ssm"]
+        # Worker state and output are absent. An independent caller can still
+        # reconstruct exactly the original requests from the external snapshot.
+        import shutil
+
+        shutil.rmtree(tmp_path)
+        retained = durable[-1]["diagnostic_intents"]["hosted_chat:durable-chat"]
+        assert retained["turns"] == recovery_plan(cfg)["turns"]
+        assert len({turn["request_id"] for turn in retained["turns"]}) == 2
+    else:
+        assert calls == []
+
+
+def test_diagnostic_manifest_refuses_replacement_request_and_local_only_sink(tmp_path):
+    plan = {"evaluation_id": "same", "turns": [{"request_id": "original"}]}
+    local = cleanup.Manifest(tmp_path / "local" / "manifest.json", "chat")
+    with pytest.raises(ValueError, match="external durable"):
+        local.record_diagnostic("hosted_chat", plan)
+    manifest = cleanup.Manifest(
+        tmp_path / "durable" / "manifest.json", "chat", on_change=lambda *a, **k: None
+    )
+    manifest.record_diagnostic("hosted_chat", plan)
+    manifest.record_diagnostic("hosted_chat", plan)
+    with pytest.raises(ValueError, match="different inputs"):
+        manifest.record_diagnostic(
+            "hosted_chat", {**plan, "turns": [{"request_id": "replacement"}]}
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "lost_create_receipt",
+        "stale_write_accepted",
+        "unlink_unavailable",
+        "externally_verified",
+        "wrong_fixture",
+    ],
+)
+def test_shipped_vault_lifecycle_owns_mutations_and_retains_recovery(
+    tmp_path, monkeypatch, fault
+):
+    script, remote_common = shipped_script(tmp_path, "vault_lifecycle")
+    work = tmp_path / "worker"
+    work.mkdir()
+    vault = {
+        "unrelated": {
+            "id": "unrelated",
+            "service": "existing",
+            "label": "retain",
+            "scope": "user",
+            "revision": "old",
+        }
+    }
+    links = {
+        "unrelated-link": {
+            "id": "unrelated-link",
+            "provider": "github",
+            "provider_user_id": "existing",
+            "verification_method": "oauth",
+            "verified_at": "then",
+        }
+    }
+    mutations = []
+    synthetic_values = []
+    operation = [None]
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+            assert env["ADP_TENANT"] == "fixture-tenant"
+
+        def json(self, args, **kwargs):
+            if args[:3] == ["models", "mappings", "list"]:
+                return {
+                    "detail": {
+                        "principal_id": "wrong"
+                        if fault == "wrong_fixture"
+                        else "fixture-user",
+                        "tenant_id": "fixture-tenant",
+                    }
+                }
+            if args[1] == "list":
+                rows = vault if args[0] == "credential" else links
+                return {
+                    "detail": {
+                        "items": [dict(row) for row in rows.values()],
+                        "complete": True,
+                    }
+                }
+            assert "--dry-run" in args
+            return {"status": "dry_run"}
+
+        def run(self, args, **kwargs):
+            area, action = args[:2]
+            if action == "update" and "--value-stdin" in args:
+                return 1, {"error": {"code": "usage_error"}}
+            if action == "link" and "--resume" in args:
+                row = next(
+                    row
+                    for row in links.values()
+                    if row.get("provider_user_id")
+                    == args[args.index("--provider-user-id") + 1]
+                )
+                return 4, {"detail": dict(row)}
+            mutations.append(list(args))
+            if area == "credential":
+                if action == "add":
+                    value = kwargs["stdin_text"]
+                    synthetic_values.append(value)
+                    assert value.startswith("ADP_SYNTHETIC_NOT_A_PROVIDER_CREDENTIAL_")
+                    key = args[args.index("--operation-id") + 1]
+                    operation[0] = key
+                    new = key not in vault
+                    vault.setdefault(
+                        key,
+                        {
+                            "id": key,
+                            "service": args[args.index("--service") + 1],
+                            "label": args[args.index("--label") + 1],
+                            "scope": "user",
+                            "revision": "r1",
+                        },
+                    )
+                    if fault == "lost_create_receipt" and new:
+                        return 5, None
+                    return 0, {"detail": dict(vault[key])}
+                key = args[2]
+                assert key != "unrelated"
+                if action == "delete":
+                    vault.pop(key, None)
+                    return 0, {"detail": {"id": key}}
+                assert action == "update"
+                revision = args[args.index("--expected-revision") + 1]
+                if (
+                    revision != vault[key]["revision"]
+                    and fault != "stale_write_accepted"
+                ):
+                    return 4, {"error": {"http_status": 409}}
+                vault[key].update(label=args[args.index("--label") + 1], revision="r2")
+                return 0, {"detail": dict(vault[key])}
+            if action == "link":
+                links["owned-link"] = {
+                    "id": "owned-link",
+                    "provider": "discord",
+                    "provider_user_id": args[args.index("--provider-user-id") + 1],
+                    "verification_method": "oauth"
+                    if fault == "externally_verified"
+                    else "self_asserted",
+                    "verified_at": "now" if fault == "externally_verified" else None,
+                }
+                return 4, {"detail": {"identity_id": "owned-link"}}
+            assert action == "unlink" and args[2] == "owned-link"
+            if fault == "unlink_unavailable":
+                return 5, None
+            links.pop("owned-link")
+            return 0, {"detail": {"id": "owned-link"}}
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(
+        remote_common, "session_tokens", lambda cfg: {"access_token": "do-not-persist"}
+    )
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    cfg = {
+        "evaluation_id": "stable-vault-run",
+        "gateway_url": "https://gateway",
+        "cli_path": "/installed/adp",
+        "work_dir": str(work),
+        "test_user_id": "fixture-login",
+        "vault_lifecycle": {
+            "owned_mutations_authorized": True,
+            "login_user_id": "fixture-login",
+            "canonical_user_id": "fixture-user",
+            "tenant_id": "fixture-tenant",
+        },
+    }
+    cfg["recovery_plan"] = script.recovery_plan(cfg)
+    evidence = {"success": False, "transcript": []}
+    if fault in {
+        "stale_write_accepted",
+        "unlink_unavailable",
+        "externally_verified",
+        "wrong_fixture",
+    }:
+        with pytest.raises(remote_common.RemoteError):
+            script.execute(cfg, evidence)
+        assert evidence["success"] is False
+    else:
+        script.execute(cfg, evidence)
+        assert evidence["success"] is True
+        assert evidence["detail"]["entry_phase"] == "metadata_absent"
+        assert evidence["detail"]["identity_phase"] == "absent"
+        assert "stale-update-refused" in evidence["detail"]["checks"]
+        assert len(synthetic_values) == 2 and synthetic_values[0] == synthetic_values[1]
+    assert "unrelated" in vault and "unrelated-link" in links
+    if fault == "wrong_fixture":
+        assert not mutations
+        return
+    assert (
+        operation[0] not in vault
+    )  # Cleanup proceeds even when the link cannot be removed.
+    durable = evidence["detail"]
+    assert durable["operation_id"] == operation[0]
+    assert durable["provider_user_id"].startswith("adp-evaluation-")
+    if fault in {"unlink_unavailable", "externally_verified"}:
+        assert durable["identity_phase"] == "cleanup_pending"
+        if fault == "externally_verified":
+            assert not any(args[:2] == ["identity", "unlink"] for args in mutations)
+    import shutil
+
+    shutil.rmtree(work)
+    published = json.dumps(remote_common.redact(evidence))
+    assert "do-not-persist" not in published and all(
+        value not in published for value in synthetic_values
+    )
+    assert json.loads(published)["detail"]["operation_id"] == operation[0]
+    assert len(published.encode()) < 24000
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_vault_lifecycle_requires_exact_predeclared_plan_before_any_access(
+    tmp_path, monkeypatch, changed
+):
+    script, remote_common = shipped_script(tmp_path, "vault_lifecycle")
+    cfg = {
+        "evaluation_id": "stable-run",
+        "gateway_url": "https://gateway",
+        "cli_path": "/installed/adp",
+        "work_dir": str(tmp_path / "work"),
+        "test_user_id": "fixture-login",
+        "vault_lifecycle": {
+            "owned_mutations_authorized": True,
+            "login_user_id": "fixture-login",
+            "canonical_user_id": "fixture-user",
+            "tenant_id": "fixture-tenant",
+        },
+    }
+    plan = script.recovery_plan(cfg)
+    assert script.recovery_plan(cfg) == plan
+    assert set(plan).isdisjoint({"password", "token", "value", "secret"})
+    if changed:
+        cfg["recovery_plan"] = {**plan, "operation_id": "changed"}
+    monkeypatch.setattr(
+        remote_common,
+        "session_tokens",
+        lambda _: pytest.fail("No fixture auth before plan verification"),
+    )
+    with pytest.raises(remote_common.RemoteError, match="durably recorded"):
+        script.execute(cfg, {"success": False, "transcript": []})
+    assert not Path(cfg["work_dir"]).exists()
+
+
+@pytest.mark.parametrize(
+    "fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"]
+)
+def test_vault_plan_durable_before_dispatch(tmp_path, fault):
+    from tests.e2e.cli_uplift.remote.vault_lifecycle_plan import recovery_plan
+
+    payload = {
+        "evaluation_id": "vault-run",
+        "gateway_url": "https://gateway",
+        "vault_lifecycle": {
+            "tenant_id": "tenant",
+            "canonical_user_id": "owner",
+            "login_user_id": "login",
+        },
+    }
+    payload["recovery_plan"] = recovery_plan(payload)
+    snapshots, calls = [], []
+
+    def push(document, *, critical):
+        assert critical
+        if fault == "sink_failure":
+            raise RuntimeError("External sink unavailable")
+        snapshots.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "vault", on_change=push)
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            calls.append("ssm")
+            assert snapshots[-1]["diagnostic_intents"][
+                "vault_lifecycle:vault-run"
+            ] == recovery_plan(payload)
+            raise RuntimeError("Lost instance before any output")
+
+    if fault == "changed_plan":
+        payload["recovery_plan"]["operation_id"] = "different-target"
+    worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
+    with pytest.raises((RuntimeError, ValueError, PortError)):
+        worker(
+            "i-owned",
+            "vault_lifecycle",
+            payload,
+            manifest=None if fault == "no_manifest" else manifest,
+        )
+    if fault == "instance_loss":
+        assert calls == ["install", "ssm"]
+        import shutil
+
+        shutil.rmtree(tmp_path)
+        retained = snapshots[-1]["diagnostic_intents"]["vault_lifecycle:vault-run"]
+        assert retained == recovery_plan(payload)
+        assert retained["operation_id"] and retained["provider_user_id"]
+    else:
+        assert calls == []
+
+
+def diagnostic_fixture(name="human_task_chat"):
+    identity = {
+        "login_user_id": "fixture-login",
+        "canonical_user_id": "fixture-human",
+        "tenant_id": "fixture-tenant",
+    }
+    if name == "vault_lifecycle":
+        return {**identity, "owned_mutations_authorized": True}
+    paid = {
+        **identity,
+        "enrollment_verified": True,
+        "shared_budget_authorized": True,
+        "max_task_usd": 0.25,
+    }
+    if name == "human_task_chat":
+        return {**paid, "max_tasks": 2}
+    return {
+        **paid,
+        "max_dispatches": 1,
+        "scenario": "complete",
+        "persona": "agent-task-claude-developer",
+        "instructions": "Fix the requested CLI behavior.",
+        "snapshot": {
+            "schema_version": "1.0",
+            "repository_id": 42,
+            "repository": "owner/repo",
+            "issue": 123,
+            "commit_sha": "a" * 40,
+            "files": [
+                {
+                    "path": "cli/main.py",
+                    "blob_sha": "b" * 40,
+                    "content": "print('hello')\n",
+                }
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "name", ["human_task_coding", "human_task_chat", "vault_lifecycle"]
+)
+def test_workflow_fixture_overlay_same_for_evaluate_and_recover(name):
+    from tests.e2e.cli_uplift import fixtures
+
+    value = {name: diagnostic_fixture(name)}
+    env = {"CLI_UPLIFT_EVAL_FIXTURES": json.dumps(value)}
+    first = config.from_environment(env, base=dict(VALID))
+    second = config.from_environment(env, base=dict(VALID))
+    assert first == second and first[name] == value[name]
+    assert fixtures.parse(json.dumps(value)) == value
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "override",
+        "unknown",
+        "secret",
+        "budget",
+        "tasks",
+        "missing_identity",
+        "snapshot",
+        "duplicate",
+    ],
+)
+def test_workflow_fixture_overlay_refuses_unbounded_or_secret_inputs(fault):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    value = {"human_task_chat": diagnostic_fixture()}
+    if fault == "override":
+        value["gateway_url"] = "https://other"
+    elif fault == "unknown":
+        value["human_task_chat"]["skip_checks"] = True
+    elif fault == "secret":
+        value["human_task_chat"]["password"] = "not-allowed"
+    elif fault == "budget":
+        value["human_task_chat"]["max_task_usd"] = 2
+    elif fault == "tasks":
+        value["human_task_chat"]["max_tasks"] = 3
+    elif fault == "missing_identity":
+        del value["human_task_chat"]["login_user_id"]
+    elif fault == "snapshot":
+        value = {"human_task_coding": diagnostic_fixture("human_task_coding")}
+        value["human_task_coding"]["snapshot"]["files"][0]["path"] = "../other"
+    raw = (
+        json.dumps(value)
+        if fault != "duplicate"
+        else '{"human_task_chat": {}, "human_task_chat": {}}'
+    )
+    with pytest.raises(config.ConfigError):
+        parse(raw)
+
+
+def test_owned_diagnostics_are_explicit_and_missing_fixtures_block():
+    assert {
+        row.id
+        for row in cases.resolve_suites(["login", "hosted-chat", "vault-lifecycle"])
+    } == {"E01", "C01", "D01", "D02"}
+    assert not {"D01", "D02"}.intersection(
+        row.id for row in cases.suite_cases("nightly")
+    )
+    assert not {"D01", "D02"}.intersection(row.id for row in cases.suite_cases("full"))
+    matrix = cases.new_matrix(["hosted-chat", "vault-lifecycle"])
+    blocked = cases.block_missing_fixtures(matrix, config.fixture_classes(VALID))
+    assert set(blocked) == {"D01", "D02"}
+    cfg = {
+        **VALID,
+        "human_task_chat": diagnostic_fixture(),
+        "vault_lifecycle": diagnostic_fixture("vault_lifecycle"),
+    }
+    assert {cases.HUMAN_TASK_CHAT, cases.VAULT_LIFECYCLE} <= config.fixture_classes(cfg)
+
+
+@pytest.mark.parametrize(
+    "purpose,key",
+    [
+        ("hosted_coding", "human_task_coding"),
+        ("hosted_chat", "human_task_chat"),
+        ("vault_lifecycle", "vault_lifecycle"),
+    ],
+)
+def test_diagnostic_journey_passes_manifest_and_records_plan_before_ssm(
+    tmp_path, monkeypatch, purpose, key
+):
+    payload = {
+        "evaluation_id": "workflow-fixture",
+        "gateway_url": "https://gateway",
+        "test_user_id": "fixture-login",
+        key: diagnostic_fixture(key),
+    }
+    snapshots = []
+    manifest = cleanup.Manifest(
+        tmp_path / "manifest.json",
+        "fixture",
+        on_change=lambda doc, **kw: snapshots.append(json.loads(json.dumps(doc))),
+    )
+    monkeypatch.setattr(live, "_journey_payload", lambda cfg, ctx: dict(payload))
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            assert (
+                snapshots[-1]["diagnostic_intents"][purpose + ":workflow-fixture"][
+                    "evaluation_id"
+                ]
+                == "workflow-fixture"
+            )
+            return "command-id", {"success": True, "detail": {"cleanup": "complete"}}
+
+    driver = live._journey(Ssm(), {}, lambda *args: None)(purpose)
+    assert driver("i-owned", {"manifest": manifest})["success"] is True
+
+
+def coding_remote_config(module, fixture, work):
+    fixture = {
+        **fixture,
+        "login_user_id": "fixture-login",
+        "canonical_user_id": "fixture-human",
+        "tenant_id": "fixture-tenant",
+    }
+    cfg = {
+        "evaluation_id": "stable-coding-run",
+        "test_user_id": "fixture-login",
+        "human_task_coding": fixture,
+        "cli_path": "/fixture/adp",
+        "gateway_url": "https://gateway",
+        "work_dir": str(work),
+    }
+    cfg["recovery_plan"] = module.recovery_plan(cfg)
+    return cfg
+
+
+@pytest.mark.parametrize(
+    "fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"]
+)
+def test_coding_workflow_intent_durable_before_dispatch(tmp_path, fault):
+    from tests.e2e.cli_uplift.remote.coding_plan import recovery_plan
+
+    payload = {
+        "evaluation_id": "coding-run",
+        "gateway_url": "https://gateway",
+        "human_task_coding": diagnostic_fixture("human_task_coding"),
+    }
+    payload["recovery_plan"] = recovery_plan(payload)
+    snapshots, calls = [], []
+
+    def push(document, *, critical):
+        assert critical
+        if fault == "sink_failure":
+            raise RuntimeError("External sink unavailable")
+        snapshots.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "coding", on_change=push)
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            calls.append("ssm")
+            assert snapshots[-1]["diagnostic_intents"][
+                "hosted_coding:coding-run"
+            ] == recovery_plan(payload)
+            raise RuntimeError("Lost instance before any output")
+
+    if fault == "changed_plan":
+        payload["recovery_plan"]["request_id"] = "replacement-request"
+    worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
+    with pytest.raises((RuntimeError, ValueError, PortError)):
+        worker(
+            "i-owned",
+            "hosted_coding",
+            payload,
+            manifest=None if fault == "no_manifest" else manifest,
+        )
+    if fault == "instance_loss":
+        assert calls == ["install", "ssm"]
+        import shutil
+
+        shutil.rmtree(tmp_path)
+        retained = snapshots[-1]["diagnostic_intents"]["hosted_coding:coding-run"]
+        assert retained == recovery_plan(payload)
+        assert retained["request_id"] == recovery_plan(payload)["request_id"]
+    else:
+        assert calls == []
+
+
+def test_coding_requires_original_plan_before_fixture_session_access(
+    tmp_path, monkeypatch
+):
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    cfg = coding_remote_config(
+        module, diagnostic_fixture("human_task_coding"), tmp_path / "absent"
+    )
+    cfg["recovery_plan"]["request_id"] = "changed"
+    monkeypatch.setattr(
+        remote_common,
+        "session_tokens",
+        lambda _: pytest.fail("No fixture access before recovery guard"),
+    )
+    with pytest.raises(remote_common.RemoteError, match="exact coding recovery"):
+        module.execute(cfg, {"transcript": []})
+    assert not Path(cfg["work_dir"]).exists()
+
+
+def test_fixture_input_exposed_identically_to_evaluate_and_recover():
+    import yaml
+
+    workflow = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[2]
+            / ".github/workflows/eval-cli-uplift.yml"
+        ).read_text()
+    )
+    events = workflow.get("on", workflow.get(True))
+    for trigger in ("workflow_dispatch", "workflow_call"):
+        assert events[trigger]["inputs"]["fixtures_json"]["default"] == "{}"
+    for job in ("evaluate", "recover"):
+        assert (
+            workflow["jobs"][job]["env"]["CLI_UPLIFT_EVAL_FIXTURES"]
+            == "${{ inputs.fixtures_json }}"
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "lost_create_reply",
+        "foreign_baseline",
+        "wrong_actor",
+        "revoked_still_allowed",
+        "restore_failure",
+        "cleanup_failure",
+        "changed_default",
+        "wrong_parentage",
+        "ordinary_read_allowed",
+        "ordinary_write_allowed",
+        "name_selector_accepted",
+        "duplicate_create_accepted",
+        "delete_retry_accepted",
+    ],
+)
+def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
+    tmp_path, monkeypatch, fault
+):
+    script, remote_common = shipped_script(tmp_path, "hierarchy_lifecycle")
+    fixture = {
+        "owned_mutations_authorized": True,
+        "login_user_id": "admin-native",
+        "canonical_user_id": "admin-tenant",
+        "tenant_id": "aws-e",
+        "ordinary_login_user_id": "ordinary-native",
+        "ordinary_canonical_user_id": "ordinary-tenant",
+        "ordinary_native_tenant": "native",
+    }
+    cfg = {
+        "evaluation_id": "hierarchy-test",
+        "test_user_id": "admin-native",
+        "gateway_url": "https://gateway",
+        "cli_path": "/served/adp",
+        "hierarchy_lifecycle": fixture,
+    }
+    cfg["recovery_plan"] = script.recovery_plan(cfg)
+    plan = cfg["recovery_plan"]
+    resources, mutations = {}, []
+    member = {
+        "role": "member",
+        "team_id": "",
+        "teams": [],
+        "membership_status": "active",
+    }
+    if fault == "foreign_baseline":
+        member["teams"] = [
+            {"team_id": "unrelated", "role": "member", "is_primary": True}
+        ]
+    revision = [0]
+
+    def snapshot():
+        return {"revision": str(revision[0]), "resource": copy.deepcopy(member)}
+
+    class Cli:
+        def __init__(self, binary, env, *args, **kwargs):
+            self.admin = pathlib.Path(env["HOME"]).name == "admin"
+            self.tenant = env["ADP_TENANT"]
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+
+        def json(self, argv, **kwargs):
+            code, result = self.run(argv, **kwargs)
+            if code != 0:
+                raise remote_common.RemoteError("CLI failed")
+            return result
+
+        def run(self, argv, **kwargs):
+            def option(name):
+                return argv[argv.index(name) + 1]
+
+            if argv[:3] == ["models", "mappings", "list"]:
+                if (
+                    not self.admin
+                    and self.tenant == "aws-e"
+                    and member["membership_status"] == "revoked"
+                    and fault != "revoked_still_allowed"
+                ):
+                    return 3, {"error": {"code": "tenant_not_visible"}}
+                actor = (
+                    "admin-tenant"
+                    if self.admin
+                    else "ordinary-tenant"
+                    if self.tenant == "aws-e"
+                    else "ordinary-native"
+                )
+                if fault == "wrong_actor" and not self.admin:
+                    actor = "foreign"
+                return 0, {"detail": {"principal_id": actor, "tenant_id": self.tenant}}
+            if argv[:2] == ["admin", "login"]:
+                return 3, {"error": {"code": "permission_denied"}}
+            if argv[:1] == ["--tenant"]:
+                return 3, {"error": {"code": "tenant_not_visible"}}
+            assert argv[0] == "admin"
+            if not self.admin:
+                if fault == "ordinary_read_allowed" and argv[2] == "show":
+                    return 0, {"detail": {}}
+                if fault == "ordinary_write_allowed" and argv[2] == "update":
+                    return 0, {"detail": {}}
+                return 5, {"error": {"http_status": 403}}
+            if argv[1:3] == ["team", "show"] and "--name" in argv:
+                return (
+                    (0, {})
+                    if fault == "name_selector_accepted"
+                    else (1, {"error": {"code": "usage_error"}})
+                )
+            kind, action = argv[1:3]
+            if kind == "member" and action == "remove" and "--dry-run" in argv:
+                return 0, {"status": "dry_run", "detail": {"before": snapshot()}}
+            if "--dry-run" in argv:
+                return 0, {"status": "dry_run"}
+            org = option("--org") if "--org" in argv else option("--id")
+            key = org if kind == "org" else option("--id") if "--id" in argv else None
+            if action == "show":
+                row = resources.get((kind, key, org))
+                return (
+                    (0, {"detail": copy.deepcopy(row)})
+                    if row
+                    else (5, {"error": {"http_status": 404}})
+                )
+            if (
+                kind == "org"
+                and action == "update"
+                and option("--expected-revision")
+                != resources[(kind, key, org)]["revision"]
+            ):
+                return 4, {"error": {"code": "stale_revision"}}
+            if (
+                kind == "department"
+                and action == "delete"
+                and any(k[0] == "team" and k[2] == org for k in resources)
+            ):
+                return 4, {"error": {"code": "hierarchy_has_dependencies"}}
+            if action == "create" and (kind, key, org) in resources:
+                return (
+                    (0, {})
+                    if fault == "duplicate_create_accepted"
+                    else (5, {"error": {"http_status": 409}})
+                )
+            if (
+                action == "delete"
+                and (kind, key, org) not in resources
+                and kind != "member"
+            ):
+                return (
+                    (0, {})
+                    if fault == "delete_retry_accepted"
+                    else (5, {"error": {"http_status": 404}})
+                )
+            mutations.append(argv)
+            revision[0] += 1
+            if kind == "member":
+                if action == "remove":
+                    member.update(membership_status="revoked", team_id="", teams=[])
+                else:
+                    if fault == "restore_failure":
+                        return 5, {}
+                    member["membership_status"] = "active"
+                return 0, {"detail": snapshot()}
+            if kind == "team" and action == "members":
+                team = option("--team")
+                if argv[3] == "add":
+                    member["teams"].append(
+                        {
+                            "team_id": team,
+                            "role": "member",
+                            "is_primary": not member["teams"],
+                        }
+                    )
+                else:
+                    member["teams"] = [
+                        r for r in member["teams"] if r["team_id"] != team
+                    ]
+                member["team_id"] = (
+                    member["teams"][0]["team_id"] if member["teams"] else ""
+                )
+                if member["teams"]:
+                    member["teams"][0]["is_primary"] = True
+                return 0, {"detail": snapshot()}
+            resource_key = (kind, key, org)
+            if action == "create":
+                resources[resource_key] = {
+                    "id": key,
+                    "revision": str(revision[0]),
+                    "resource": {
+                        "name": key,
+                        "org_id": org,
+                        "department_id": "foreign-department"
+                        if fault == "wrong_parentage"
+                        else plan["department_id"],
+                    },
+                }
+                if kind == "org":
+                    for child_kind, child_id in (
+                        ("department", plan["default_department_id"]),
+                        ("team", plan["default_team_id"]),
+                    ):
+                        resources[(child_kind, child_id, org)] = {
+                            "id": child_id,
+                            "revision": str(revision[0]),
+                            "resource": {
+                                "org_id": org,
+                                "name": "Default",
+                                "description": "Default " + child_kind,
+                                "department_id": plan["default_department_id"],
+                            },
+                        }
+                if kind == "org" and fault == "changed_default":
+                    resources[("team", plan["default_team_id"], org)]["resource"][
+                        "name"
+                    ] = "Changed by another actor"
+                if fault == "lost_create_reply":
+                    raise remote_common.RemoteError("Accepted create lost reply")
+            elif action == "update":
+                resources[resource_key]["revision"] = str(revision[0])
+                resources[resource_key]["resource"]["name"] = option("--name")
+            else:
+                assert action == "delete"
+                if fault == "cleanup_failure":
+                    return 5, {}
+                resources.pop(resource_key, None)
+            return 0, {"detail": {}}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def __init__(self, value):
+            self.value = value
+
+        def read(self):
+            return json.dumps(self.value).encode()
+
+    def urlopen(request, **kwargs):
+        if request.full_url.endswith("/workspaces/context"):
+            return Response(
+                {
+                    "canonical_user_id": "ordinary-tenant",
+                    "tenant_id": "aws-e",
+                    "context_token": "private-ordinary-lease",
+                }
+            )
+        if request.full_url.endswith("/me/persona-models"):
+            raise script.urllib.error.HTTPError(
+                request.full_url, 403, "revoked", {}, None
+            )
+        return Response({"access_token": "private-ordinary-token"})
+
+    monkeypatch.setattr(script.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(
+        remote_common,
+        "session_tokens",
+        lambda cfg: {"access_token": "private-admin-token"},
+    )
+    monkeypatch.setattr(
+        remote_common,
+        "fixture_secret",
+        lambda cfg, env, key: "private-ordinary-password"
+        if key.endswith("password")
+        else "owned-ordinary",
+    )
+    monkeypatch.setattr(script, "_write_session", lambda *a: None)
+    evidence = {"success": False, "transcript": []}
+    if fault:
+        with pytest.raises(remote_common.RemoteError):
+            script.execute(cfg, evidence)
+        assert evidence["success"] is False
+    else:
+        script.execute(cfg, evidence)
+        assert evidence["success"] is True
+        assert "revoked-tenant-denied-native-preserved" in evidence["detail"]["checks"]
+        assert {
+            "explicit-department-team-parentage",
+            "ordinary-hierarchy-read-write-refused",
+            "canonical-id-required-name-selector-refused",
+            "same-id-create-conflict-original-unchanged",
+            "same-id-delete-retry-reports-absence",
+        } <= set(evidence["detail"]["checks"])
+        assert (
+            evidence["detail"]["parentage"][plan["team_ids"][0]]["department_id"]
+            == plan["department_id"]
+        )
+        assert not any(
+            "--role" in argv and argv[argv.index("--role") + 1] != "member"
+            for argv in mutations
+        )
+    if fault in {"wrong_actor", "foreign_baseline"}:
+        assert mutations == []
+    if fault not in {"cleanup_failure", "changed_default", "wrong_parentage"}:
+        assert not resources
+    if fault == "wrong_parentage":
+        assert ("team", plan["team_ids"][0], fixture["tenant_id"]) in resources
+        assert evidence["detail"]["cleanup"][plan["team_ids"][0]] == "pending"
+    if fault == "changed_default":
+        assert ("team", plan["default_team_id"], plan["org_id"]) in resources
+        assert evidence["detail"]["cleanup"][plan["default_team_id"]] == "pending"
+    if fault not in {"foreign_baseline", "restore_failure"}:
+        assert member == plan["restore"]
+    if fault == "restore_failure":
+        assert evidence["detail"]["membership_restoration"] == "pending"
+    serialized = json.dumps(remote_common.redact(evidence))
+    assert "private-ordinary" not in serialized and "private-admin" not in serialized
+
+
+def test_hierarchy_plan_precedes_instance_loss_and_rejects_changed_inputs(tmp_path):
+    from tests.e2e.cli_uplift.remote.hierarchy_plan import recovery_plan
+
+    payload = {
+        "evaluation_id": "owned",
+        "gateway_url": "https://gateway",
+        "hierarchy_lifecycle": {"tenant_id": "aws-e"},
+    }
+    payload["recovery_plan"] = recovery_plan(payload)
+    saved = []
+    manifest = cleanup.Manifest(
+        tmp_path / "manifest.json",
+        "hierarchy",
+        on_change=lambda doc, **kw: saved.append(copy.deepcopy(doc)),
+    )
+    ssm = Mock()
+    ssm.json_result.side_effect = RuntimeError("Instance lost")
+    worker = live._run_worker(ssm, {}, lambda *a: None)
+    with pytest.raises(RuntimeError):
+        worker("i-owned", "hierarchy_lifecycle", payload, manifest=manifest)
+    assert saved[-1]["diagnostic_intents"][
+        "hierarchy_lifecycle:owned"
+    ] == recovery_plan(payload)
+    assert ssm.json_result.call_count == 1
+    payload["recovery_plan"]["team_ids"] = ["foreign"]
+    with pytest.raises(PortError):
+        worker("i-owned", "hierarchy_lifecycle", payload, manifest=manifest)
+    assert ssm.json_result.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "lost_create_reply",
+        "lost_client",
+        "sink_failure",
+        "changed_scope",
+        "changed_payload",
+    ],
+)
+def test_workspace_create_intent_is_external_and_immutable_before_transport(
+    tmp_path, fault
+):
+    from tests.e2e.cli_uplift.workspace_recovery import create_intent, dispatch_create
+
+    plan = create_intent(
+        evaluation_id="stable-workspace-run",
+        gateway_url="https://gateway",
+        tenant_id="tenant",
+        principal_id="ordinary",
+        session_secret_name="adp/eval/ordinary",
+        operation_id="d03af966-58ed-4d9b-8bf9-cc9ae17fbcad",
+        name="owned-workspace",
+    )
+    retained, calls = [], []
+
+    def push(document, *, critical):
+        assert critical
+        if fault == "sink_failure":
+            raise RuntimeError("No durable sink")
+        retained.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "workspace", on_change=push)
+
+    def dispatch(original):
+        calls.append(original)
+        assert (
+            retained[-1]["diagnostic_intents"][
+                "superplane_workspace:stable-workspace-run"
+            ]
+            == plan
+        )
+        raise RuntimeError("Accepted create but transport output lost")
+
+    with pytest.raises(RuntimeError):
+        dispatch_create(manifest, plan, dispatch)
+    if fault == "sink_failure":
+        assert calls == []
+        return
+    assert len(calls) == 1
+    recovered = retained[-1]["diagnostic_intents"][
+        "superplane_workspace:stable-workspace-run"
+    ]
+    import shutil
+
+    shutil.rmtree(tmp_path)
+    replacement = cleanup.Manifest(
+        tmp_path / "replacement.json", "workspace", on_change=push
+    )
+    replacement.record_diagnostic("superplane_workspace", recovered)
+    if fault == "changed_scope":
+        recovered = {**recovered, "principal_id": "foreign"}
+    if fault == "changed_payload":
+        recovered = {**recovered, "argv": ["replacement"]}
+    if fault in {"changed_scope", "changed_payload"}:
+        with pytest.raises(ValueError):
+            dispatch_create(
+                replacement,
+                recovered,
+                lambda _: pytest.fail("No foreign or changed dispatch"),
+            )
+    else:
+        result = dispatch_create(
+            replacement,
+            recovered,
+            lambda p: {
+                "operation_id": p["operation_id"],
+                "resource_id": "exact-created-id",
+            },
+        )
+        assert result["operation_id"] == plan["operation_id"]
+        assert recovered["request"] == plan["request"]
+    assert "access_token" not in json.dumps(retained)
+
+
+@pytest.mark.parametrize(
+    "states,expected",
+    [
+        (["queued", "running"], "running"),
+        (["completed"], "completed"),
+        (["queued"] * 4, "queued"),
+    ],
+)
+def test_coding_control_records_actual_state_with_bounded_same_task_poll(
+    tmp_path, monkeypatch, states, expected
+):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    calls = []
+    ticks = iter(range(10))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    pending = iter(states)
+
+    class Cli:
+        def json(self, argv):
+            calls.append(argv)
+            return {"detail": {"task_id": "tsk-owned", "status": next(pending)}}
+
+    evidence = {}
+    assert (
+        module.observe_before_control(
+            Cli(),
+            "tsk-owned",
+            {"control_when": "running", "running_wait_seconds": 2},
+            evidence,
+        )
+        == expected
+    )
+    assert evidence["pre_control_status"] == expected
+    assert all(argv == ["agent", "status", "--run", "tsk-owned"] for argv in calls)
+
+
+@pytest.mark.parametrize(
+    "status,task_id,command_id",
+    [
+        ("error", "tsk-owned", "command"),
+        ("pending", "tsk-other", "command"),
+        ("pending", "tsk-owned", "other"),
+    ],
+)
+def test_coding_control_does_not_mistake_exit_four_for_receipt(
+    tmp_path, status, task_id, command_id
+):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    with pytest.raises(common.RemoteError, match="acceptance unconfirmed"):
+        module.require_control_receipt(
+            {
+                "status": status,
+                "detail": {"task_id": task_id, "command_id": command_id},
+            },
+            "tsk-owned",
+            "command",
+        )
+    module.require_control_receipt(
+        {
+            "status": "pending",
+            "detail": {"task_id": "tsk-owned", "command_id": "command"},
+        },
+        "tsk-owned",
+        "command",
+    )
+
+
+def test_coding_terminal_before_control_fails_without_replacement_or_abort(
+    tmp_path, monkeypatch
+):
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    task_id = "tsk_12345678-1234-4123-8123-123456789abc"
+    calls = []
+
+    class Cli:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def json(self, argv, **kwargs):
+            calls.append(argv)
+            if argv == ["models", "mappings", "list"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "principal_id": "fixture-human",
+                    }
+                }
+            if "--dry-run" in argv:
+                return {"status": "dry_run"}
+            return {
+                "status": "pending" if argv[:2] == ["agent", "trigger"] else "ok",
+                "detail": {"task_id": task_id, "status": "completed"},
+            }
+
+        def run(self, *args, **kwargs):
+            pytest.fail("Terminal Task must not be cancelled or replaced")
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {})
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        control_when="running",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo", "issue": 42},
+        instructions="bounded edit",
+    )
+    evidence = {"transcript": []}
+    with pytest.raises(remote_common.RemoteError, match="terminal before cancellation"):
+        module.execute(coding_remote_config(module, fixture, tmp_path), evidence)
+    assert evidence["pre_control_status"] == "completed"
+    assert not any(argv[1] in {"abort", "steer"} for argv in calls)
+    triggers = [argv for argv in calls if argv[1] == "trigger" and "--yes" in argv]
+    assert len(triggers) == 2 and triggers[0] == triggers[1]
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "missing_native", "missing_vault_native", "different_native"]
+)
+def test_story_reads_pin_verified_native_tenant_with_multiple_memberships(
+    tmp_path, monkeypatch, fault
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    cfg = {
+        "mode": "capabilities",
+        "cli_path": "/served/adp",
+        "gateway_url": "https://gateway.example",
+        "region": "us-east-1",
+        "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+        "org_id": "native-tenant",
+    }
+    session = {"org_id": "native-tenant"}
+    if fault == "missing_native":
+        cfg.pop("org_id")
+    elif fault == "missing_vault_native":
+        session.pop("org_id")
+    elif fault == "different_native":
+        session["org_id"] = "another-tenant"
+    monkeypatch.setattr(common, "load_session", lambda _: session)
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    calls = []
+    memberships = ["another-tenant", "native-tenant"]
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            calls.append(env)
+            # CLI deliberately refuses ambiguous sessions without a selection.
+            assert env["ADP_TENANT"] == memberships[1]
+            assert env["ADP_TENANT"] != memberships[0]
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+
+    monkeypatch.setattr(common, "Cli", Cli)
+    monkeypatch.setitem(script.SCENARIOS, "capabilities", lambda cli, evidence: None)
+    evidence = {"transcript": []}
+    if fault:
+        with pytest.raises(
+            common.RemoteError, match="verified login session native tenant"
+        ):
+            script.execute(cfg, evidence)
+        assert calls == []
+    else:
+        script.execute(cfg, evidence)
+        assert len(calls) == 1
+        assert evidence["detail"]["tenant_id"] == "native-tenant"
+        assert evidence["detail"]["tenant_selection"] == "verified_native_login_session"
+
+
+def test_capability_contrast_can_be_selected_without_unrelated_parity_mutations():
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    fixture = capability_contrast_config()["capability_contrast"]
+    assert (
+        parse(json.dumps({"capability_contrast": fixture}))["capability_contrast"]
+        == fixture
+    )
+    assert [case.id for case in cases.suite_cases("capability-contrast")] == ["E19"]
+    with pytest.raises(config.ConfigError):
+        parse(
+            json.dumps({"capability_contrast": {**fixture, "access_token": "private"}})
+        )
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_capability_ordinary_fixture_login_uses_existing_secret_without_token_store(
+    tmp_path, monkeypatch, fails
+):
+    module, common = shipped_script(tmp_path, "capability_contrast")
+    cfg = {
+        "gateway_url": "https://gateway/api",
+        "region": "us-east-1",
+        "sts_endpoint": "https://sts",
+    }
+    contrast = {"ordinary_fixture_name": "owned-fixture"}
+
+    def secret(config, env, key, **kwargs):
+        assert config["credential_secret"] == "owned-fixture"
+        return {
+            "ordinary_session": None,
+            "non_admin_username": "ordinary",
+            "non_admin_password": "private-password",
+        }[key]
+
+    monkeypatch.setattr(common, "fixture_secret", secret)
+
+    def open_request(request, timeout):
+        assert request.full_url == "https://gateway/api/auth/cli/password"
+        assert json.loads(request.data) == {
+            "username": "ordinary",
+            "password": "private-password",
+        }
+        assert timeout == 45
+        if fails:
+            raise RuntimeError("private-password private-token")
+        return io.BytesIO(json.dumps({"access_token": "private-token"}).encode())
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", open_request)
+    if fails:
+        with pytest.raises(
+            common.RemoteError, match="^Ordinary fixture authentication failed$"
+        ):
+            module.ordinary_session(cfg, contrast)
+    else:
+        assert module.ordinary_session(cfg, contrast) == {
+            "access_token": "private-token"
+        }
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "foreign_task",
+        "foreign_invocation",
+        "stale_status",
+        "missing_source",
+        "missing_id",
+    ],
+)
+def test_coding_activity_readback_requires_exact_task_identity(tmp_path, fault):
+    from unittest.mock import MagicMock
+
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    task = {
+        "task_id": "tsk-owned",
+        "invocation_id": "invocation-owned",
+        "status": "cancelled",
+    }
+    activity = {
+        "source_type": "task",
+        "task_id": "tsk-owned",
+        "invocation_id": "invocation-owned",
+        "task_snapshot": dict(task),
+        "transcript_status": "available",
+    }
+    if fault == "foreign_task":
+        activity["task_id"] = "foreign"
+    elif fault == "foreign_invocation":
+        activity["task_snapshot"]["invocation_id"] = "foreign"
+    elif fault == "stale_status":
+        activity["task_snapshot"]["status"] = "running"
+    elif fault == "missing_source":
+        activity.pop("source_type")
+    elif fault == "missing_id":
+        task.pop("invocation_id")
+    cli = MagicMock()
+    cli.json.return_value = {"detail": activity}
+    if fault:
+        with pytest.raises(common.RemoteError):
+            module.activity_readback(cli, task)
+    else:
+        evidence = module.activity_readback(cli, task)
+        assert evidence["task_status"] == "cancelled"
+        cli.json.assert_called_once_with(
+            ["agent", "status", "--run", "invocation-owned"]
+        )
+
+
+def coding_stream_frame(task, sequence, kind="progress.updated"):
+    cursor = f"{task}:{sequence}"
+    return {
+        "type": "event",
+        "data": {
+            "event": "event",
+            "id": cursor,
+            "data": {
+                "task_id": task,
+                "sequence": sequence,
+                "event_id": cursor,
+                "type": kind,
+            },
+        },
+    }
+
+
+def test_coding_stream_ignores_wrapped_snapshot_and_rejects_foreign_cursor(tmp_path):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    snapshot = {
+        "type": "event",
+        "data": {"event": "snapshot", "data": {"task_id": "tsk-owned"}},
+    }
+    frames, events = module.durable_events(json.dumps(snapshot), "tsk-owned")
+    assert len(frames) == 1 and events == []
+    foreign = coding_stream_frame("tsk-foreign", 1)
+    with pytest.raises(common.RemoteError):
+        module.durable_events(json.dumps(foreign), "tsk-owned")
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "gap", "duplicate", "changed", "missing_terminal"]
+)
+def test_coding_terminal_replay_requires_exact_suffix(tmp_path, monkeypatch, fault):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    task = "tsk-owned"
+    initial = [
+        coding_stream_frame(task, 1),
+        coding_stream_frame(task, 2),
+        coding_stream_frame(task, 3, "task.cancelled"),
+    ]
+    _, events = module.durable_events(
+        "\n".join(json.dumps(frame) for frame in initial), task
+    )
+    replayed = copy.deepcopy(initial[1:])
+    if fault == "gap":
+        replayed = replayed[1:]
+    if fault == "duplicate":
+        replayed.insert(0, copy.deepcopy(replayed[0]))
+    if fault == "changed":
+        replayed[0]["data"]["data"]["type"] = "changed"
+    if fault == "missing_terminal":
+        replayed[-1]["data"]["data"]["type"] = "progress.updated"
+    calls = []
+
+    def bounded(argv, **kwargs):
+        calls.append(argv)
+        return 0, "\n".join(json.dumps(frame) for frame in replayed), ""
+
+    monkeypatch.setattr(common, "bounded", bounded)
+    detail = {
+        "task_id": task,
+        "status": "cancelled",
+        "latest_event_cursor": task + ":3",
+        "oldest_event_cursor": task + ":1",
+    }
+    if fault:
+        with pytest.raises(common.RemoteError):
+            module.verify_replay({"cli_path": "/served/adp"}, {}, detail, events)
+    else:
+        result = module.verify_replay({"cli_path": "/served/adp"}, {}, detail, events)
+        assert result["event_count"] == 2 and result["through"] == task + ":3"
+    assert calls[0][calls[0].index("--last-event-id") + 1] == task + ":1"
+    assert not any(command in calls[0] for command in ("trigger", "abort", "steer"))
+
+
+@pytest.mark.parametrize("fault", [None, "absent", "duplicate", "foreign_invocation"])
+def test_coding_owner_list_verifies_one_exact_new_task(tmp_path, fault):
+    from unittest.mock import MagicMock
+
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    detail = {"task_id": "tsk-owned", "invocation_id": "owned", "status": "cancelled"}
+    item = {**detail, "source_type": "task", "task_snapshot": dict(detail)}
+    items = [item]
+    if fault == "absent":
+        items = []
+    elif fault == "duplicate":
+        items.append(dict(item))
+    elif fault == "foreign_invocation":
+        item["invocation_id"] = "foreign"
+    cli = MagicMock()
+    cli.json.return_value = {"detail": {"items": items}}
+    if fault:
+        with pytest.raises(common.RemoteError):
+            module.activity_list_readback(cli, detail)
+    else:
+        assert module.activity_list_readback(cli, detail) == detail
+    cli.json.assert_called_once_with(
+        ["agent", "list", "--tasks", "--page-size", "20", "--max-pages", "5"]
+    )
+
+
+@pytest.mark.parametrize("fault", ["duplicate", "gap", "truncated"])
+def test_coding_replay_refuses_incomplete_or_duplicate_initial_history(
+    tmp_path, monkeypatch, fault
+):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    task = "tsk-owned"
+    frames = [
+        coding_stream_frame(task, 1),
+        coding_stream_frame(task, 2),
+        coding_stream_frame(task, 3, "task.cancelled"),
+    ]
+    if fault == "duplicate":
+        frames.insert(0, frames[0])
+    elif fault == "gap":
+        frames.pop(1)
+    else:
+        frames.pop(0)
+    _, events = module.durable_events(
+        "\n".join(json.dumps(frame) for frame in frames), task
+    )
+    monkeypatch.setattr(
+        common,
+        "bounded",
+        lambda *args, **kwargs: pytest.fail("Do not reconnect a known invalid history"),
+    )
+    detail = {
+        "task_id": task,
+        "status": "cancelled",
+        "latest_event_cursor": task + ":3",
+        "oldest_event_cursor": task + ":1",
+    }
+    with pytest.raises(common.RemoteError):
+        module.verify_replay({"cli_path": "/served/adp"}, {}, detail, events)
+
+
+def test_tenant_isolation_dispatch_fixture_reaches_evaluate_and_recovery():
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    value = {"tenant_isolation": {"tenant_ids": ["adp-platform", "aws-e"]}}
+    env = {"CLI_UPLIFT_EVAL_FIXTURES": json.dumps(value)}
+    evaluated = config.from_environment(env, base=dict(VALID))
+    recovered = config.from_environment(env, base=dict(VALID))
+    assert evaluated == recovered
+    assert evaluated["tenant_isolation"] == value["tenant_isolation"]
+    assert parse(json.dumps(value)) == value
+    assert cases.TENANT_ISOLATION in preflight.evaluate_fixtures(evaluated)
+    assert {row.id for row in cases.resolve_suites(["tenant-isolation"])} == {"E27"}
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        {},
+        {"tenant_ids": []},
+        {"tenant_ids": ["one"]},
+        {"tenant_ids": ["one", "two", "three"]},
+        {"tenant_ids": ["same", "same"]},
+        {"tenant_ids": "one,two"},
+        {"tenant_ids": ["one", 2]},
+        {"tenant_ids": ["one", {}]},
+        {"tenant_ids": ["one", ""]},
+        {"tenant_ids": ["one", "a" * 129]},
+        {"tenant_ids": ["one", "https://other"]},
+        {"tenant_ids": ["one", "two"], "gateway_url": "https://other"},
+        {"tenant_ids": ["one", "two"], "password": "not-allowed"},
+        {"tenant_ids": ["one", "two"], "owned_mutations_authorized": True},
+    ],
+)
+def test_tenant_isolation_dispatch_refuses_invalid_or_extra_fields(fixture):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    with pytest.raises(config.ConfigError):
+        parse(json.dumps({"tenant_isolation": fixture}))
+
+
+@pytest.mark.parametrize("running_at,expected", [(88, "running"), (181, "queued")])
+def test_coding_running_control_allows_recovery_delay_but_stays_bounded(
+    tmp_path, monkeypatch, running_at, expected
+):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    elapsed = [0]
+    calls = []
+    monkeypatch.setattr(module.time, "monotonic", lambda: elapsed[0])
+
+    def sleep(seconds):
+        elapsed[0] += seconds
+
+    monkeypatch.setattr(module.time, "sleep", sleep)
+
+    class Cli:
+        def json(self, argv):
+            calls.append(argv)
+            return {
+                "detail": {
+                    "task_id": "tsk-owned",
+                    "status": "running" if elapsed[0] >= running_at else "queued",
+                }
+            }
+
+    evidence = {}
+    assert (
+        module.observe_before_control(
+            Cli(),
+            "tsk-owned",
+            {"control_when": "running", "running_wait_seconds": 180},
+            evidence,
+        )
+        == expected
+    )
+    assert elapsed[0] == min(running_at, 180)
+    assert evidence["observed_states"][60] == "queued"
+    assert evidence["pre_control_status"] == expected
+    assert all(argv == ["agent", "status", "--run", "tsk-owned"] for argv in calls)
+
+
+@pytest.mark.parametrize(
+    "seconds,valid",
+    [(1, True), (180, True), (181, False), (0, False), (True, False), (180.0, False)],
+)
+def test_coding_running_wait_validation_matches_worker(tmp_path, seconds, valid):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    fixture = {
+        **diagnostic_fixture("human_task_coding"),
+        "scenario": "cancel",
+        "control_when": "running",
+        "running_wait_seconds": seconds,
+    }
+    assert module.fixture_valid(fixture) is valid
+    payload = json.dumps({"human_task_coding": fixture})
+    if valid:
+        assert parse(payload)["human_task_coding"] == fixture
+    else:
+        with pytest.raises(config.ConfigError, match="Running wait"):
+            parse(payload)
+
+
+def cancellation_cli_response(status="accepted"):
+    return {
+        "type": "abort_receipt",
+        "data": {
+            "terminal_cancellation_confirmed": False,
+            "receipt": {
+                "command_id": "owned-command",
+                "kind": "cancel",
+                "status": status,
+                "handoff": "not_started",
+                "command_sequence": 3,
+                "accepted_at": "2026-09-26T05:00:00Z",
+            },
+        },
+    }
+
+
+def test_coding_cancellation_replays_one_command_and_conflicts_changed_payload(
+    tmp_path,
+):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    calls = []
+
+    class Cli:
+        def json(self, argv, expected):
+            calls.append((argv, expected))
+            if len(calls) == 1:
+                return {
+                    "status": "pending",
+                    "detail": {
+                        "task_id": "tsk-owned",
+                        **cancellation_cli_response()["data"]["receipt"],
+                    },
+                }
+            if len(calls) == 4:
+                return {"status": "failed", "error": {"code": "task_conflict"}}
+            return cancellation_cli_response(
+                "cancelled" if len(calls) > 1 else "accepted"
+            )
+
+    result = module.cancel_with_replay(Cli(), "tsk-owned", "owned-command")
+    assert result["same_payload_replay"] == "confirmed"
+    assert result["changed_payload"] == "task_conflict"
+    assert calls[1] == calls[2] == calls[4]
+    assert calls[0][0][:4] == ["agent", "abort", "--run", "tsk-owned"]
+    assert calls[0][0][calls[0][0].index("--reason") + 1] == module.CANCEL_REASON
+    assert result["initial_cli"] == "adp agent abort"
+    assert all(
+        argv[:4] == ["task", "abort", "tsk-owned", "--human-login"]
+        for argv, _ in calls[1:]
+    )
+    assert all(
+        argv[argv.index("--command-id") + 1] == "owned-command" for argv, _ in calls
+    )
+    assert calls[3][0][calls[3][0].index("--reason") + 1] != module.CANCEL_REASON
+    assert calls[3][1] == 5
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "preflight_success",
+        "foreign_command",
+        "different_sequence",
+        "conflict_success",
+        "unrelated_error",
+    ],
+)
+def test_coding_cancellation_replay_rejects_false_proof(tmp_path, fault):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    calls = []
+
+    class Cli:
+        def json(self, argv, expected):
+            calls.append(argv)
+            if len(calls) == 1:
+                return {
+                    "status": "pending",
+                    "detail": {
+                        "task_id": "tsk-owned",
+                        **cancellation_cli_response()["data"]["receipt"],
+                    },
+                }
+            response = cancellation_cli_response()
+            if len(calls) == 3:
+                if fault == "preflight_success":
+                    response = {
+                        "type": "abort_confirmed",
+                        "data": {"terminal_cancellation_confirmed": True},
+                    }
+                elif fault == "foreign_command":
+                    response["data"]["receipt"]["command_id"] = "foreign"
+                elif fault == "different_sequence":
+                    response["data"]["receipt"]["command_sequence"] = 4
+            if len(calls) == 4:
+                if fault == "conflict_success":
+                    return response
+                return {"status": "failed", "error": {"code": "task_access_denied"}}
+            return response
+
+    with pytest.raises(common.RemoteError):
+        module.cancel_with_replay(Cli(), "tsk-owned", "owned-command")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "missing_receipt",
+        "duplicate_receipt",
+        "wrong_status",
+        "wrong_kind",
+        "wrong_sequence",
+        "child_running",
+        "recovery",
+        "queue_pending",
+        "foreign_task",
+        "completed",
+    ],
+)
+def test_coding_cancellation_requires_terminal_command_and_queue_ack(
+    tmp_path, monkeypatch, fault
+):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    receipt = cancellation_cli_response("cancelled")["data"]["receipt"]
+    original = {
+        key: receipt[key]
+        for key in ("command_id", "kind", "command_sequence", "accepted_at")
+    }
+    detail = {
+        "task_id": "tsk-owned",
+        "status": "cancelled",
+        "queue_ack_status": "confirmed",
+        "recovery_required": False,
+        "error": {"child_exit_confirmed": True, "recovery_required": False},
+        "command_receipts": [receipt],
+    }
+    if fault == "missing_receipt":
+        detail["command_receipts"] = []
+    if fault == "duplicate_receipt":
+        detail["command_receipts"] *= 2
+    if fault == "wrong_status":
+        receipt["status"] = "accepted"
+    if fault == "wrong_kind":
+        receipt["kind"] = "input"
+    if fault == "wrong_sequence":
+        receipt["command_sequence"] += 1
+    if fault == "child_running":
+        detail["error"]["child_exit_confirmed"] = False
+    if fault == "recovery":
+        detail["recovery_required"] = True
+    if fault == "queue_pending":
+        detail["queue_ack_status"] = "pending"
+    if fault == "foreign_task":
+        detail["task_id"] = "tsk-foreign"
+    if fault == "completed":
+        detail["status"] = "completed"
+    ticks = iter([0, 31])
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+
+    class Cli:
+        def json(self, argv, expected):
+            assert argv == module.cancellation_command("tsk-owned", "owned-command")
+            assert expected == 4
+            return cancellation_cli_response("cancelled")
+
+    if fault:
+        with pytest.raises(common.RemoteError):
+            module.confirm_cancellation(
+                Cli(), detail, "tsk-owned", "owned-command", original
+            )
+    else:
+        _, evidence = module.confirm_cancellation(
+            Cli(), detail, "tsk-owned", "owned-command", original
+        )
+        assert evidence["queue_ack_status"] == "confirmed"
+        assert evidence["terminal_same_payload_replay"] == "confirmed"
+
+
+@pytest.mark.parametrize("fault", ["foreign_task", "missing_ack", "different_identity"])
+def test_coding_agent_cancel_must_bind_initial_task_and_replayed_receipt(
+    tmp_path, fault
+):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    calls = []
+
+    class Cli:
+        def json(self, argv, expected):
+            calls.append(argv)
+            if len(calls) == 1:
+                detail = {
+                    "task_id": "tsk-owned",
+                    **cancellation_cli_response()["data"]["receipt"],
+                }
+                if fault == "foreign_task":
+                    detail["task_id"] = "tsk-foreign"
+                if fault == "different_identity":
+                    detail["command_sequence"] = 99
+                return {
+                    "status": "failed" if fault == "missing_ack" else "pending",
+                    "detail": detail,
+                }
+            return cancellation_cli_response()
+
+    with pytest.raises(common.RemoteError):
+        module.cancel_with_replay(Cli(), "tsk-owned", "owned-command")
+    assert len(calls) == (2 if fault == "different_identity" else 1)
+    assert calls[0][:2] == ["agent", "abort"]
+
+
+@pytest.mark.parametrize("fault", [None, "login", "owner", "tenant", "membership"])
+@pytest.mark.parametrize("selected_run", [False, True])
+def test_usage_tenant_fixture_checks_identity_before_exports(
+    tmp_path, monkeypatch, fault, selected_run
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    cfg = {
+        "mode": "usage",
+        "cli_path": "/served/adp",
+        "gateway_url": "https://gateway.example",
+        "region": "us-east-1",
+        "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+        "org_id": "native",
+        "test_user_id": "login",
+        "usage_tenant": {
+            "login_user_id": "login",
+            "canonical_user_id": "owner",
+            "tenant_id": "selected",
+        },
+    }
+    if selected_run:
+        cfg["usage_tenant"]["usage_run_id"] = "57e3ed64-0794-4df0-828f-565479f9ddac"
+    if fault == "login":
+        cfg["test_user_id"] = "wrong"
+    monkeypatch.setattr(common, "load_session", lambda _: {"org_id": "native"})
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    observed = []
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            assert env["ADP_TENANT"] == "selected"
+            assert "ADP_TENANT_ID" not in env
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+
+        def json(self, args):
+            observed.append(args)
+            if fault == "membership":
+                raise common.RemoteError("Membership refused")
+            return {
+                "status": "ok",
+                "detail": {
+                    "principal_id": "wrong" if fault == "owner" else "owner",
+                    "tenant_id": "wrong" if fault == "tenant" else "selected",
+                },
+            }
+
+    monkeypatch.setattr(common, "Cli", Cli)
+    monkeypatch.setitem(
+        script.SCENARIOS, "usage", lambda cli, ev: observed.append("exports")
+    )
+    evidence = {"transcript": []}
+    if fault:
+        with pytest.raises(common.RemoteError):
+            script.execute(cfg, evidence)
+        assert "exports" not in observed
+    else:
+        script.execute(cfg, evidence)
+        assert observed == [["models", "mappings", "list"], "exports"]
+        assert evidence["tenant_selection"] == "verified_existing_membership_fixture"
+        assert evidence["usage_owner"] == {"org_id": "selected", "user_id": "owner"}
+        assert evidence.get("usage_run_id") == cfg["usage_tenant"].get("usage_run_id")
+    assert cfg["org_id"] == "native"
+
+
+@pytest.mark.parametrize("fault", [None, "missing", "extra", "secret"])
+def test_usage_tenant_fixture_allows_only_explicit_identity(fault):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    fixture = {
+        "login_user_id": "login",
+        "canonical_user_id": "owner",
+        "tenant_id": "selected",
+    }
+    if fault == "missing":
+        fixture.pop("canonical_user_id")
+    elif fault == "extra":
+        fixture["org_id"] = "override"
+    elif fault == "secret":
+        fixture["access_token"] = "value"
+    if fault:
+        with pytest.raises(config.ConfigError):
+            parse(json.dumps({"usage_tenant": fixture}))
+    else:
+        assert parse(json.dumps({"usage_tenant": fixture}))["usage_tenant"] == fixture
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"org_id": "wrong", "user_id": "owner"},
+        {"org_id": "selected", "user_id": "wrong"},
+    ],
+)
+def test_usage_verified_owner_refuses_scope_drift(tmp_path, scope):
+    script, common = shipped_script(tmp_path, "story_reads")
+    with pytest.raises(common.RemoteError, match="verified owner"):
+        script.require_usage_owner(
+            {"scope": scope},
+            {"usage_owner": {"org_id": "selected", "user_id": "owner"}},
+        )
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "57e3ed64-0794-4df0-828f-565479f9ddac",
+        "",
+        "not-a-uuid",
+        "tsk_123",
+        "57E3ED64-0794-4DF0-828F-565479F9DDAC",
+        None,
+    ],
+)
+def test_usage_run_fixture_requires_exact_invocation_uuid(run_id):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    fixture = {
+        "login_user_id": "login",
+        "canonical_user_id": "owner",
+        "tenant_id": "tenant",
+        "usage_run_id": run_id,
+    }
+    if run_id == "57e3ed64-0794-4df0-828f-565479f9ddac":
+        assert parse(json.dumps({"usage_tenant": fixture}))["usage_tenant"] == fixture
+    else:
+        with pytest.raises(config.ConfigError):
+            parse(json.dumps({"usage_tenant": fixture}))
+
+
+@pytest.mark.parametrize("fault", [None, "coverage", "request_row", "export_row"])
+def test_usage_run_filters_every_read_and_refuses_unrelated_rows(
+    tmp_path, monkeypatch, fault
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    monkeypatch.setitem(script.require_selected_run.__globals__, "common", common)
+    run = "57e3ed64-0794-4df0-828f-565479f9ddac"
+    calls = []
+
+    def reply(args, export=False):
+        calls.append(args)
+        assert args[args.index("--run") + 1] == run
+        row = args[:2] in (["usage", "requests"], ["logs", "list"], ["logs", "export"])
+        wrong = (export and fault == "export_row") or (
+            not export and fault == "request_row"
+        )
+        return {
+            "status": "ok",
+            "detail": {
+                "scope": {
+                    "kind": "own",
+                    "org_id": "tenant",
+                    "user_id": "owner",
+                    "coverage": "direct_identity_records"
+                    if fault == "coverage"
+                    else "selected_run",
+                },
+                "items": [{"invocation_id": "other" if wrong else run}]
+                if row
+                else [{"count": 1}],
+                "complete": True,
+            },
+        }
+
+    cli = Mock()
+    cli.json.side_effect = reply
+    cli.run.side_effect = lambda args, **kwargs: (0, reply(args, export=True))
+    serialized = []
+    monkeypatch.setattr(
+        script,
+        "exercise_usage_exports",
+        lambda cli, flags, evidence: serialized.append(flags),
+    )
+    evidence = {
+        "usage_run_id": run,
+        "usage_owner": {"org_id": "tenant", "user_id": "owner"},
+    }
+    if fault:
+        with pytest.raises(common.RemoteError):
+            script.usage(cli, evidence)
+        assert not serialized
+    else:
+        script.usage(cli, evidence)
+        assert len(calls) == 6
+        assert serialized[0][serialized[0].index("--run") + 1] == run
+
+
+def test_coding_command_ids_match_task_uuid4_contract_and_retain_identity():
+    import uuid
+    from tests.e2e.cli_uplift.remote.coding_plan import recovery_plan
+
+    config = {
+        "evaluation_id": "coding-command-contract",
+        "gateway_url": "https://gateway",
+        "human_task_coding": diagnostic_fixture("human_task_coding"),
+    }
+    plan = recovery_plan(config)
+    assert plan == recovery_plan(config)
+    assert plan["schema"] == "hosted-coding-recovery-v2"
+    for key in ("command_id", "cleanup_command_id"):
+        value = uuid.UUID(plan[key])
+        assert value.version == 4 and value.variant == uuid.RFC_4122
+        assert str(value) == plan[key]
+    assert plan["command_id"] != plan["cleanup_command_id"]
+    different = recovery_plan({**config, "evaluation_id": "another-run"})
+    assert different["command_id"] != plan["command_id"]
+    assert different["cleanup_command_id"] != plan["cleanup_command_id"]
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_artifact_download_recovers_bounded_transient_edge_error(monkeypatch, status):
+    import io
+    import urllib.error
+    from tests.e2e.cli_uplift import ports
+
+    attempts, delays = [], []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    def download(url, **kwargs):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise urllib.error.HTTPError(
+                url,
+                status,
+                "edge unavailable",
+                {},
+                io.BytesIO(b"private provider body"),
+            )
+        return Response(b"immutable CLI artifact")
+
+    monkeypatch.setattr(ports.urllib.request, "urlopen", download)
+    monkeypatch.setattr(ports.time, "sleep", delays.append)
+    assert (
+        ports.HttpPort().get_bytes("https://gateway/cli/adp")
+        == b"immutable CLI artifact"
+    )
+    assert len(attempts) == 2 and delays == [1]
+
+
+@pytest.mark.parametrize(
+    "status,expected_attempts",
+    [(502, 3), (503, 3), (504, 3), (403, 1), (404, 1), (500, 1)],
+)
+def test_artifact_download_persistent_failure_stays_failed(
+    monkeypatch, status, expected_attempts
+):
+    import io
+    import urllib.error
+    from tests.e2e.cli_uplift import ports
+
+    attempts, delays = [], []
+
+    def download(url, **kwargs):
+        attempts.append(url)
+        raise urllib.error.HTTPError(
+            url, status, "edge unavailable", {}, io.BytesIO(b"private provider body")
+        )
+
+    monkeypatch.setattr(ports.urllib.request, "urlopen", download)
+    monkeypatch.setattr(ports.time, "sleep", delays.append)
+    with pytest.raises(ports.PortError, match=f"HTTP {status}") as error:
+        ports.HttpPort().get_bytes("https://gateway/cli/adp")
+    assert len(attempts) == expected_attempts
+    assert delays == ([1, 2] if expected_attempts == 3 else [])
+    assert "private provider body" not in str(error.value)

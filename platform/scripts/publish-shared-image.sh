@@ -40,7 +40,7 @@ case "$SHARED_REPO" in
   adp-gateway)
     bash modules/gateway/scripts/stage-contracts.sh
     cd modules/gateway
-    docker build "${SHARED_BUILD_OPTIONS[@]}" -t "$SHARED_IMAGE" .
+    docker build "${SHARED_BUILD_OPTIONS[@]}" --build-arg "GATEWAY_RELEASE=$ADP_SOURCE_SHA" -t "$SHARED_IMAGE" .
     docker run --rm --entrypoint python "$SHARED_IMAGE" -m pricing_policy.selfcheck
     docker run --rm --entrypoint python "$SHARED_IMAGE" -m src.orchestration.review_contract_selfcheck
     docker run --rm --entrypoint python "$SHARED_IMAGE" -m src.orchestration.evaluation_contract_selfcheck
@@ -54,6 +54,11 @@ case "$SHARED_REPO" in
     docker build "${SHARED_BUILD_OPTIONS[@]}" -f agent/Dockerfile -t "$SHARED_IMAGE" .
     ;;
   adp-agent-gateway)
+    # Older immutable source revisions predate this build input. New revisions
+    # must stage from their own archived canonical sources, never the checkout.
+    if grep -Fq 'COPY security/stdlib/' modules/agent-factory/gateway/Dockerfile; then
+      bash modules/agent-factory/scripts/stage-security-bundles.sh
+    fi
     cd modules/agent-factory
     docker build "${SHARED_BUILD_OPTIONS[@]}" -f gateway/Dockerfile -t "$SHARED_IMAGE" .
     ;;

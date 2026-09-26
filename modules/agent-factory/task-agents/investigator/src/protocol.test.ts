@@ -445,3 +445,14 @@ describe('report shape', () => {
     }
   });
 });
+
+test('host deadline survives start parsing without inventing a fresh deadline', () => {
+  const fixture = loadFixture('valid', 'process-start-frame.json');
+  const deadline_at = '2026-09-26T05:00:00.123Z';
+  const frame = parseHostFrame(JSON.stringify({ ...fixture.body, limits: { deadline_at } }));
+  assert.equal(frame.type, 'start');
+  if (frame.type === 'start') assert.equal(frame.limits?.deadline_at, deadline_at);
+  for (const invalid of [null, 123, 'later', '2026-99-99T25:00:00Z']) {
+    assert.throws(() => parseHostFrame(JSON.stringify({ ...fixture.body, limits: { deadline_at: invalid } })), ProtocolViolation);
+  }
+});

@@ -1,4 +1,7 @@
 import { context, metrics, trace, TraceFlags, isSpanContextValid, ROOT_CONTEXT, SpanStatusCode } from "@opentelemetry/api";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { LoggerProvider, BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { randomBytes } from "node:crypto";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
@@ -13,11 +16,31 @@ export function activeTraceparent(): string | undefined {
   return span && isSpanContextValid(span) ? `00-${span.traceId}-${span.spanId}-${span.traceFlags & TraceFlags.SAMPLED ? "01" : "00"}` : undefined;
 }
 
+
+/** Content-free operation boundaries. Names are internal constants; callers
+ * must never pass task text, arguments, provider errors or output as attributes. */
+export async function observeOperation<T>(kind: "model" | "tool" | "completion", callback: () => Promise<T>): Promise<T> {
+  return trace.getTracer("adp.codex-harness").startActiveSpan(`adp.codex.${kind}`, async span => {
+    const started = performance.now();
+    let outcome = "failed";
+    try { const result = await callback(); outcome = "completed"; span.setStatus({ code: SpanStatusCode.OK }); return result; }
+    catch (error) { span.setStatus({ code: SpanStatusCode.ERROR }); span.setAttribute("error.type", "operation_failed"); throw error; }
+    finally {
+      const duration = (performance.now() - started) / 1000;
+      metrics.getMeter("adp.codex-harness").createHistogram("adp.agent.operation.duration", { unit: "s" }).record(duration, { kind, outcome });
+      logs.getLogger("adp.codex-harness").emit({ severityNumber: outcome === "completed" ? SeverityNumber.INFO : SeverityNumber.ERROR,
+        body: `adp.codex.${kind}.settled`, attributes: { "adp.operation.kind": kind, "adp.operation.outcome": outcome, "adp.operation.duration_seconds": duration } });
+      span.end();
+    }
+  });
+}
+
 /** Trusted runtime configuration only. No automatic instrumentation, environment
  * resource discovery, content capture, exporter headers or arbitrary attributes. */
 export function startTelemetry(options: { endpoint?: string; traceparent?: string; runId: string; persona: string }) {
   let tracerProvider: NodeTracerProvider | undefined;
   let meterProvider: MeterProvider | undefined;
+  let loggerProvider: LoggerProvider | undefined;
   if (options.endpoint) {
     const endpoint = new URL(options.endpoint);
     if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
@@ -37,6 +60,11 @@ export function startTelemetry(options: { endpoint?: string; traceparent?: strin
       exportIntervalMillis: 1000, exportTimeoutMillis: 600,
     })] });
     metrics.setGlobalMeterProvider(meterProvider);
+    loggerProvider = new LoggerProvider({ resource, processors: [new BatchLogRecordProcessor({
+      exporter: new OTLPLogExporter({ url: base + "/v1/logs", timeoutMillis: 500 }),
+      maxQueueSize: 256, maxExportBatchSize: 32, scheduledDelayMillis: 1000, exportTimeoutMillis: 600,
+    })] });
+    logs.setGlobalLoggerProvider(loggerProvider);
   }
   let parent = ROOT_CONTEXT;
   if (options.traceparent !== undefined) {
@@ -52,7 +80,11 @@ export function startTelemetry(options: { endpoint?: string; traceparent?: strin
       }, async span => {
         try { const value = await callback(); span.setStatus({ code: SpanStatusCode.OK }); return value; }
         catch (error) { span.setStatus({ code: SpanStatusCode.ERROR }); span.setAttribute("error.type", "run_failed"); throw error; }
-        finally { span.end(); }
+        finally {
+          logs.getLogger("adp.codex-harness").emit({ severityNumber: SeverityNumber.INFO, body: "adp.codex.run.terminal",
+            attributes: { "adp.run.id": options.runId, "adp.persona.key": options.persona } });
+          span.end();
+        }
       }));
     },
     async shutdown(): Promise<void> {
@@ -62,7 +94,7 @@ export function startTelemetry(options: { endpoint?: string; traceparent?: strin
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
-          Promise.allSettled([tracerProvider?.shutdown(), meterProvider?.shutdown({ timeoutMillis: 650 })]),
+          Promise.allSettled([tracerProvider?.shutdown(), meterProvider?.shutdown({ timeoutMillis: 650 }), loggerProvider?.shutdown()]),
           new Promise<void>(resolve => { timer = setTimeout(resolve, 750); }),
         ]);
       } finally { if (timer) clearTimeout(timer); }

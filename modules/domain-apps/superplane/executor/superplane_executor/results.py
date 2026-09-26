@@ -62,10 +62,19 @@ async def capture(provider, operation, target, plan, known_references, authorize
     Neither a UI GET nor cleanup invents a result that the executor never captured.
     """
     workspace = provider.workspace
+    workspace.require_dedicated_node_authority(target)
     spec = plan.data["workload"]
+    from .network_probe_contract import for_operation, verify_result
+
+    probe = for_operation(operation, plan)
     lease = operation.grant.lease
     job_path = workspace.path(target, "Job", spec["name"])
     await authorize()
+
+    if plan.node_bootstrap is not None:
+        from .node_command_inventory import require_completed
+
+        await require_completed(provider, operation, plan, authorize)
 
     async def get(path):
         response = await workspace.request(operation, target, "GET", path)
@@ -150,20 +159,38 @@ async def capture(provider, operation, target, plan, known_references, authorize
     if len(completed) > 1:
         raise OperationRefused("batch result Pod identity is ambiguous")
     if not completed:
+        if probe is not None:
+            raise OperationRefused("approved probe Pod evidence unavailable")
         return  # No retained output is claimed, including after external Pod GC.
     pod = completed[0]
     metadata = pod["metadata"]
+    placement = await provider.verify_pod_allocation(
+        operation, target, plan, pod, authorize
+    )
     message = pod["status"]["containerStatuses"][0]["state"]["terminated"].get(
         "message", ""
     )
     content = result_text(message)
     if content is None:
+        if probe is not None:
+            raise OperationRefused("approved probe result unavailable")
         return
+    if probe is not None:
+        await verify_result(
+            workspace, operation, target, plan, probe, pod, content[0], authorize
+        )
     fresh_pod = await get(workspace.path(target, "Pod", metadata["name"]))
     fresh_job = await get(job_path)
     # Exact read documents, not just names, bind the output to one completed Pod.
     if fresh_pod != pod or fresh_job != job:
         raise OperationRefused("batch result source changed while reading")
+    if (
+        await provider.verify_pod_allocation(operation, target, plan, pod, authorize)
+        != placement
+    ):
+        raise OperationRefused("batch result placement changed during observation")
+    if plan.node_bootstrap is not None:
+        await require_completed(provider, operation, plan, authorize)
     await authorize()
     text, redacted = content
     digest = hashlib.sha256(text.encode()).hexdigest()

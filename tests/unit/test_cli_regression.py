@@ -162,7 +162,7 @@ def test_suites_are_serial_but_failure_does_not_skip_later_suites():
         assert "!cancelled()" in job["if"]
         assert "needs.prepare.result == 'success'" in job["if"]
         assert "continue-on-error" not in job
-    assert jobs["ec2"]["with"]["suites"] == "${{ inputs.ec2_scope || 'login' }}"
+    assert jobs["ec2"]["with"]["suites"] == "${{ inputs.ec2_scope || 'nightly' }}"
     assert jobs["ec2"]["with"]["resolve_revision"] is True
     assert "needs.onboarding.outputs.cleanup_ok == 'true'" in jobs["budgets"]["if"]
     assert "needs.budgets.outputs.cleanup_ok == 'true'" in jobs["ec2"]["if"]
@@ -187,7 +187,8 @@ def test_prs_cannot_reach_live_jobs_and_standalone_refs_are_guarded():
         assert (
             job["outputs"]["cleanup_ok"] == "${{ steps.cleanup.outcome == 'success' }}"
         )
-        assert job["if"] == "github.event_name != 'pull_request'"
+        assert "github.event_name != 'pull_request'" in job["if"]
+        assert "github.ref == 'refs/heads/main'" in job["if"]
         assert job["steps"][0]["name"] == "Refuse an untrusted ref"
         assert "refs/heads/main|refs/tags/*)" in job["steps"][0]["run"]
         cleanup = next(
@@ -208,7 +209,7 @@ def test_only_non_secret_job_outcomes_are_sent_to_combined_summary():
         "CLI_REGRESSION_JOBS": "${{ toJSON(needs) }}",
         "CLI_REGRESSION_REVISION": "${{ needs.prepare.outputs.revision }}",
         "CLI_REGRESSION_EC2_REVISION": "${{ needs.ec2.outputs.revision }}",
-        "CLI_REGRESSION_EC2_SCOPE": "${{ inputs.ec2_scope || 'login' }}",
+        "CLI_REGRESSION_EC2_SCOPE": "${{ inputs.ec2_scope || 'nightly' }}",
     }
     assert "python -m tests.e2e.cli_regression.report" in step["run"]
 
@@ -353,9 +354,11 @@ def test_ec2_must_publish_its_own_verified_revision(revision):
 def test_key_scenarios_pass_without_claiming_full_acceptance():
     text, code = report.render(outcomes(), SHA, "b" * 40)
     assert code == 0
-    assert "E02–E17 are outside this nightly gate" in text
+    assert "E20 capabilities/doctor" in text
+    assert "E21 usage/export" in text
+    assert "E22 Activity" in text
     assert "not a single-revision acceptance run" in text
-    assert "Full CLI acceptance is not established" in text
+    assert "Full CLI story acceptance is not established" in text
 
 
 def test_unknown_scope_cannot_go_green():
@@ -853,3 +856,69 @@ pass() { :; }
         timeout=10,
     )
     assert (result.returncode == 0) is allowed, result.stdout + result.stderr
+
+
+def test_reusable_callers_forward_the_child_oidc_permission():
+    """GitHub rejects the entire workflow if a child exceeds caller grants."""
+    parent = workflow("nightly-cli-regression.yml")[0]
+    assert parent["permissions"] == {"contents": "read"}
+    for name, filename in zip(("onboarding", "budgets", "ec2"), CHILDREN):
+        child = workflow(filename)[0]
+        assert any(
+            job.get("permissions", {}).get("id-token") == "write"
+            for job in child["jobs"].values()
+        )
+        assert parent["jobs"][name]["permissions"] == {
+            "contents": "read",
+            "id-token": "write",
+        }
+        assert "needs.prepare.result == 'success'" in parent["jobs"][name]["if"]
+
+
+def test_nightly_forwards_optional_fixtures_without_changing_scheduled_scope():
+    parent, triggers = workflow("nightly-cli-regression.yml")
+    field = triggers["workflow_dispatch"]["inputs"]["fixtures_json"]
+    assert field["type"] == "string"
+    assert field["required"] is False
+    assert field["default"] == "{}"
+    ec2 = parent["jobs"]["ec2"]
+    assert ec2["with"]["fixtures_json"] == (
+        "${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}"
+    )
+    assert ec2["with"]["suites"] == "${{ inputs.ec2_scope || 'nightly' }}"
+    assert triggers["schedule"] == [{"cron": "0 5 * * *"}]
+    child, child_triggers = workflow("eval-cli-uplift.yml")
+    assert (
+        child_triggers["workflow_call"]["inputs"]["fixtures_json"]["type"] == "string"
+    )
+    for job in ("evaluate", "recover"):
+        assert (
+            child["jobs"][job]["env"]["CLI_UPLIFT_EVAL_FIXTURES"]
+            == "${{ inputs.fixtures_json }}"
+        )
+
+
+@pytest.mark.parametrize(
+    "raw,valid",
+    [
+        ("{}", True),
+        (
+            '{"usage_tenant":{"login_user_id":"login","canonical_user_id":"owner","tenant_id":"tenant"}}',
+            True,
+        ),
+        (
+            '{"usage_tenant":{"login_user_id":"login","canonical_user_id":"owner","tenant_id":"tenant","access_token":"forbidden"}}',
+            False,
+        ),
+        ('{"gateway_url":"https://different.example"}', False),
+        ('{"usage_tenant":', False),
+    ],
+)
+def test_forwarded_nightly_fixture_uses_existing_strict_child_validation(raw, valid):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    if valid:
+        assert parse(raw) == json.loads(raw)
+    else:
+        with pytest.raises(config.ConfigError):
+            parse(raw)

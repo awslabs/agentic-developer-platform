@@ -201,12 +201,14 @@ def preflight_stage(cfg, ports):
         # installer's own CLI_FILES at that revision, so the set cannot silently
         # shrink back to a subset.
         expected_hashes = release.manifest(cfg["expected_revision"])
+        expected_cli_version = release.cli_version(cfg["expected_revision"])
         require(
             len(expected_hashes) >= 2,
             "The release manifest at the revision under test lists too few files to be a CLI release",
         )
         record["expected_release"] = {
             "revision": cfg["expected_revision"],
+            "cli_version": expected_cli_version,
             "files": dict(sorted(expected_hashes.items())),
         }
         # One comparison, in the reviewed helper, against hashes the gateway
@@ -217,6 +219,7 @@ def preflight_stage(cfg, ports):
         # Carried into the instance payload so "the gateway serves the release"
         # and "the instance installed the release" are the same assertion.
         ctx["expected_hashes"] = expected_hashes
+        ctx["expected_cli_version"] = expected_cli_version
 
         # E13's other consumer. Read from the same git object store, at the same
         # revision, for the same reason the hashes are: a contract the deployment
@@ -270,6 +273,31 @@ def preflight_stage(cfg, ports):
             "the disposable instance could not be launched with it",
         )
         record["instance_profile"] = profile.get("InstanceProfileName")
+        group_id = cfg.get("instance_security_group_id")
+        if group_id:
+            groups = aws.call(
+                "ec2", "describe_security_groups", GroupIds=[group_id]
+            ).get("SecurityGroups", [])
+            require(
+                len(groups) == 1 and groups[0].get("VpcId") == cfg["vpc_id"],
+                "Evaluation security group is not in the approved VPC",
+            )
+            require(
+                not groups[0].get("IpPermissions"),
+                "Evaluation security group must not allow inbound connections",
+            )
+            require(
+                any(
+                    rule.get("IpProtocol") == "-1"
+                    or (
+                        rule.get("IpProtocol") == "tcp"
+                        and rule.get("FromPort", 0) <= 443 <= rule.get("ToPort", 0)
+                    )
+                    for rule in groups[0].get("IpPermissionsEgress", [])
+                ),
+                "Evaluation security group has no HTTPS egress for SSM",
+            )
+            record["instance_security_group_id"] = group_id
 
         # SSM reachability, so an EC2 stage failure later is not a mystery.
         require(
@@ -286,6 +314,12 @@ def preflight_stage(cfg, ports):
             # more gateway reads and every other suite runs one deployment. The
             # check itself is read-only and never aborts: an unreachable binding
             # blocks E16/E17 and leaves the rest of the matrix to run.
+            capability_contrast_available=ports["capability_contrast_available"]()
+            if any(
+                cases.CAPABILITY_CONTRAST in cases.BY_ID[case_id].requires
+                for case_id in ctx["matrix"]
+            )
+            else None,
             deployments_available=preflight.check_deployment_bindings(
                 cfg, record, fetch=_deployment_discovery(http)
             )
@@ -380,10 +414,16 @@ def ec2_stage(cfg, ports):
             "ec2",
             "run_instances",
             ImageId=ami,
+            ClientToken=ctx["attempt_id"],
             InstanceType=cfg.get("instance_type", "t3.small"),
             MinCount=1,
             MaxCount=1,
             SubnetId=cfg["private_subnet_id"],
+            **(
+                {"SecurityGroupIds": [cfg["instance_security_group_id"]]}
+                if cfg.get("instance_security_group_id")
+                else {}
+            ),
             IamInstanceProfile={"Name": cfg["instance_profile"]},
             UserData=user_data(cfg, ctx["evaluation_id"]),
             # Belt and braces with the in-guest timer: a stop from any cause
@@ -738,6 +778,13 @@ def personal_aws_stage(cfg, ports):
 # The dispatcher purpose each case is driven by. A purpose with no shipped script
 # is an implementation gap: the case fails naming the module that must be written.
 JOURNEY_DRIVERS = {
+    "D01": "hosted_chat",
+    "D02": "vault_lifecycle",
+    "D03": "hierarchy_lifecycle",
+    "D04": "knowledge_lifecycle",
+    "D05": "machine_lifecycle",
+    "D06": "budget_lifecycle",
+    "E42": "hosted_coding",
     "E06": "bedrock_routing",
     "E07": "bedrock_rungs",
     "E08": "personal_inference",
@@ -758,6 +805,29 @@ JOURNEY_DRIVERS = {
     # this run created, and splitting them would mean either creating two
     # workspaces or making one case depend on the other's leftovers.
     "E18": "superplane_domain",
+    "E19": "capability_contrast",
+    "E20": "story_capabilities",
+    "E21": "story_usage",
+    "E22": "story_activity",
+    "E25": "story_research",
+    "E40": "story_chat",
+    "E23": "tenant_smoke",
+    "E27": "tenant_isolation",
+    "E29": "story_hierarchy",
+    "E24": "story_vault",
+    "E28": "story_github_maintenance",
+    "E33": "story_access",
+    "E31": "story_machine",
+    "E32": "story_knowledge",
+    "E30": "story_gitlab",
+    "E26": "story_budget",
+    "E36": "story_ratelimit",
+    "E35": "story_person_budget",
+    "E38": "story_model_policy",
+    "E34": "story_bedrock_lifecycle",
+    "E37": "story_recovery",
+    "E41": "story_platform",
+    "E39": "story_superplane_lifecycle",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

@@ -17,6 +17,7 @@ def test_all_tables_registered():
         "controller_network_effects",
         "organizations",
         "organization_grants",
+        "organization_grant_cluster_scopes",
         "workspaces",
         "clusters",
         "node_pools",
@@ -77,10 +78,20 @@ def test_all_tables_registered():
         # Governed controller assignments, async handles and accounting (018).
         "controller_deployment_operations",
         "controller_batch_results",
+        "controller_cleanup_bindings",
+        "controller_workload_submissions",
+        "controller_node_commands",
         "controller_executions",
         "controller_provider_requests",
         "controller_capacity",
         "controller_execution_accounting",
+        # Per-workspace binding to a cluster, separate from the cluster's own
+        # ownership (issue #6048). Lets two workspaces share one cluster while
+        # keeping distinct namespaces, registrations and credential scope.
+        "cluster_memberships",
+        "membership_credentials",
+        "cluster_credential_authorities",
+        "membership_credential_components",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (
@@ -116,6 +127,49 @@ def test_cluster_has_heartbeat_fields():
     table = Base.metadata.tables["clusters"]
     col_names = {c.name for c in table.columns}
     assert {"endpoint", "health_status", "last_heartbeat"} <= col_names
+
+
+def test_cluster_sharing_eligibility_is_explicit_and_defaults_off():
+    """Issue #6048: sharing/platform eligibility are explicit flags, default false.
+
+    Neither column may default to a value that makes an existing cluster shareable
+    just because this migration ran — see DESIGN.md's "never inferred" rule.
+    """
+    table = Base.metadata.tables["clusters"]
+    col_names = {c.name for c in table.columns}
+    assert {"sharing_enabled", "platform_eligible"} <= col_names
+    for name in ("sharing_enabled", "platform_eligible"):
+        column = table.columns[name]
+        assert column.default.arg is False
+        assert not column.nullable
+
+
+def test_cluster_membership_table_columns():
+    """Issue #6048: per-workspace membership carries its own namespace and generation.
+
+    This is the record that lets two workspaces share a cluster with distinct
+    namespaces, registrations and credential scope — see
+    `app/models/cluster_membership.py` for why it is a separate table rather than
+    a second column on `workspaces` or `clusters`.
+    """
+    table = Base.metadata.tables["cluster_memberships"]
+    col_names = {c.name for c in table.columns}
+    assert {
+        "id",
+        "org_id",
+        "workspace_id",
+        "cluster_id",
+        "generation",
+        "namespace",
+        "namespace_uid",
+        "state",
+        "operation_id",
+        "credential_reference_id",
+        "removal_reason",
+        "created_at",
+        "updated_at",
+        "removed_at",
+    } <= col_names
 
 
 class TestCredentialRecordsHoldAReferenceNotSecretMaterial:

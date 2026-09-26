@@ -17,7 +17,7 @@ IMAGE = (
     "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion"
     "@sha256:0de0c4e65ce0810fd00bd0ed2dbb6fa85311490bc52eea115f27d34bd636368d"
 )
-MODES = ["allow-other", "uid=1001", "gid=1001", "file-mode=0640", "dir-mode=0750"]
+MODES = ["allow-other", "uid=10001", "gid=10001", "file-mode=0640", "dir-mode=0750"]
 PROBE = r"""
 import errno
 import json
@@ -62,7 +62,7 @@ for protected in ('/app/s15-probe-marker', '/etc/s15-probe-marker'):
 expected = b'{"schema":1,"kind":"s15-synthetic-mount-probe"}\n'
 file = mount / 'roundtrip.json'
 if mode == 'writer':
-    assert os.getuid() == 1001 and os.getgid() == 1001
+    assert os.getuid() == 10001 and os.getgid() == 10001
     # Full-object write/close followed by full-object truncate/overwrite/close.
     with open(file, 'wb') as out:
         out.write(b'initial disposable synthetic value\n')
@@ -74,11 +74,11 @@ if mode == 'writer':
     with open(shards / 'reader-fixture.txt', 'wb') as out:
         out.write(expected)
     st = file.stat()
-    assert (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)) == (1001, 1001, 0o640)
+    assert (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode)) == (10001, 10001, 0o640)
     directory = mount.stat()
     assert stat.S_IMODE(directory.st_mode) == 0o750
 elif mode == 'reader':
-    assert os.getuid() == 0 and 1001 in {os.getgid(), *os.getgroups()}
+    assert os.getuid() == 0 and 10001 in {os.getgid(), *os.getgroups()}
     assert file.read_bytes() == expected
     assert (mount / 'zoekt-shards/reader-fixture.txt').read_bytes() == expected
     try:
@@ -89,7 +89,7 @@ elif mode == 'reader':
     else:
         raise AssertionError('reader mount was writable')
 elif mode == 'outsider':
-    assert os.getuid() == os.getgid() == 2002 and 1001 not in os.getgroups()
+    assert os.getuid() == os.getgid() == 2002 and 10001 not in os.getgroups()
     try:
         file.read_bytes()
     except OSError as exc:
@@ -243,7 +243,7 @@ def plan(run: str, account: str, bucket: str, oidc: str) -> dict:
         },
     ]
     jobs = {}
-    for mode, uid, gid in (("writer", 1001, 1001), ("reader", 0, 1001), ("outsider", 2002, 2002)):
+    for mode, uid, gid in (("writer", 10001, 10001), ("reader", 0, 10001), ("outsider", 2002, 2002)):
         jobs[mode] = {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -346,7 +346,7 @@ def plan(run: str, account: str, bucket: str, oidc: str) -> dict:
     denied_job = deepcopy(jobs["reader"])
     denied_job["metadata"]["name"] = "probe-denied-prefix"
     denied_pod = denied_job["spec"]["template"]["spec"]
-    denied_pod["securityContext"]["runAsUser"] = 1001
+    denied_pod["securityContext"]["runAsUser"] = 10001
     denied_pod["containers"][0]["securityContext"]["runAsNonRoot"] = True
     denied_pod["volumes"][0]["persistentVolumeClaim"]["claimName"] = "probe-denied"
     denied_pod["containers"][0]["command"] = [

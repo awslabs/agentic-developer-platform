@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 
 import boto3
@@ -37,12 +38,33 @@ class Provider:
         # session is not region-pinned -- every call below passes its own
         # explicit region_name, since a multi-region plan has more than one.
         role = await self.registry.authority.delivery_role(operation)
+        account = plan.data["provider_account_id"]
+        role_arn = role.get("role_arn")
+        if not isinstance(role_arn, str) or not re.fullmatch(
+            r"arn:aws:iam::" + re.escape(account) + r":role/[A-Za-z0-9+=,.@_/-]+",
+            role_arn,
+        ):
+            raise OperationRefused("delivered AWS role does not match approved account")
+        expected = (
+            rf"arn:aws:sts::{re.escape(account)}:assumed-role/"
+            + re.escape(role_arn.rsplit("/", 1)[-1])
+            + r"/[A-Za-z0-9+=,.@_-]+"
+        )
+
+        def matches(identity):
+            return re.fullmatch(expected, identity.get("Arn", "")) is not None
+
+        def verify(identity):
+            if identity.get("Account") != account or not matches(identity):
+                raise OperationRefused(
+                    "AWS session identity does not match approved role"
+                )
 
         def resolve():
             sts = self.session.client("sts", region_name=plan.cluster_region)
             identity = sts.get_caller_identity()
-            expected = f"arn:aws:sts::{plan.data['provider_account_id']}:assumed-role/{role['role_arn'].rsplit('/', 1)[-1]}/"
-            if identity.get("Arn", "").startswith(expected):
+            if matches(identity):
+                verify(identity)
                 return self.session
             arguments = {
                 "RoleArn": role["role_arn"],
@@ -55,12 +77,20 @@ class Provider:
             if role.get("external_id"):
                 arguments["ExternalId"] = role["external_id"]
             credentials = sts.assume_role(**arguments)["Credentials"]
-            return boto3.Session(
+            session = boto3.Session(
                 aws_access_key_id=credentials["AccessKeyId"],
                 aws_secret_access_key=credentials["SecretAccessKey"],
                 aws_session_token=credentials["SessionToken"],
                 region_name=plan.cluster_region,
             )
+            # Verify the exact credential session returned to inventory/effects,
+            # not the ambient caller or just the requested AssumeRole ARN.
+            verify(
+                session.client(
+                    "sts", region_name=plan.cluster_region
+                ).get_caller_identity()
+            )
+            return session
 
         return await asyncio.to_thread(resolve), role["role_arn"]
 
@@ -157,15 +187,16 @@ class Provider:
                         raise OperationRefused(
                             "regional network/image prerequisites mismatch"
                         )
-                if region == cluster_region:
-                    access = eks.describe_access_entry(
-                        clusterName=cluster["name"],
-                        principalArn=profile["Roles"][0]["Arn"],
-                    )["accessEntry"]
-                    if access["type"] != "EC2_LINUX":
-                        raise OperationRefused(
-                            "approved AWS/EKS prerequisites do not match provider truth"
-                        )
+                # Every regional machine joins this one fixed EKS. A remote
+                # region is not an exception to its node authentication boundary.
+                access = eks.describe_access_entry(
+                    clusterName=cluster["name"],
+                    principalArn=profile["Roles"][0]["Arn"],
+                )["accessEntry"]
+                if access["type"] != "EC2_LINUX":
+                    raise OperationRefused(
+                        "approved AWS/EKS prerequisites do not match provider truth"
+                    )
 
         await asyncio.to_thread(inspect)
         sky_identity = await self.sky.identity()
@@ -233,6 +264,48 @@ class Provider:
             found.extend(await asyncio.to_thread(inspect, binding["region"]))
         return found
 
+    async def verify_pod_allocation(self, operation, target, plan, pod, authorize):
+        """Observe stable dedicated placement under current original operation authority."""
+        self.workspace.require_dedicated_node_authority(target)
+        await authorize()
+        instances = await self.instances(operation, plan)
+        await authorize()
+        nodes = await self.workspace.verified_nodes(operation, target, plan, instances)
+        await authorize()
+        try:
+            node_name = pod["spec"]["nodeName"]
+            pod_uid = pod["metadata"]["uid"]
+            if not isinstance(pod_uid, str) or not pod_uid or not nodes:
+                raise ValueError()
+            node_uid, provider_id, region, zone, instance_id = nodes[node_name]
+            selected = [
+                instance
+                for instance in instances
+                if instance["InstanceId"] == instance_id
+                and instance["SuperplaneRegion"] == region
+                and instance["Placement"]["AvailabilityZone"] == zone
+            ]
+            if (
+                len(selected) != 1
+                or selected[0].get("State", {}).get("Name") != "running"
+            ):
+                raise ValueError()
+            return (
+                target["cluster_arn"],
+                pod_uid,
+                node_name,
+                node_uid,
+                provider_id,
+                plan.data["provider_account_id"],
+                region,
+                zone,
+                instance_id,
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise OperationRefused(
+                "original Pod does not resolve to a running allocated AWS instance"
+            ) from None
+
     async def remember(self, call, plan, request_id=None, region=None):
         # A separate domain journal supplements the shared, already committed
         # intent with the asynchronous handle BEFORE waiting for SkyPilot. A kill
@@ -282,7 +355,8 @@ class Provider:
             ):
                 raise OperationRefused("provider call binding mismatch")
             if (
-                call.operation_kind in ("launch", "deploy")
+                call.operation_kind
+                in ("launch", "deploy", "run-node-bootstrap", "run-node-probe")
                 and operation.reservation_state != "confirmed"
             ):
                 raise OperationRefused("creating work requires confirmed budget")
@@ -332,7 +406,39 @@ class Provider:
                 # during either must be visible before the provider mutation.
                 self.registry.check_handoff(current, handoff)
 
+            from .network_probe_contract import for_operation, service as probe_service
+
+            probe = for_operation(operation, plan)
+            if probe is not None and call.operation_kind in {"launch", "deploy"}:
+                await authorize()
+                await probe_service(self.workspace, operation, target, probe)
+                await authorize()
             await self.cloud(operation, plan)
+            if plan.node_bootstrap is not None:
+                from .node_command import (
+                    execute as execute_node,
+                    preflight as node_preflight,
+                )
+                from .node_command_plan import KINDS
+
+                if call.operation_kind == "launch":
+                    await node_preflight(self, operation, plan, authorize)
+                if call.operation_kind in KINDS:
+                    request_id = "native-command:" + call.operation_kind
+                    await self.remember(call, plan, request_id)
+                    node_reference = await execute_node(
+                        self, operation, target, plan, call, authorize
+                    )
+                    await authorize()
+                    return (
+                        CallOutcome.SUCCEEDED,
+                        "original native node command verified",
+                        node_reference,
+                    )
+                if call.operation_kind == "deploy":
+                    from .node_command_inventory import require_completed
+
+                    await require_completed(self, operation, plan, authorize)
             networking = None
             if plan.network is not None:
                 from .network_runtime import Network
@@ -437,7 +543,7 @@ class Provider:
                     await networking.establish(next(iter(regions_used)))
                 return (
                     CallOutcome.SUCCEEDED,
-                    "SkyPilot launch and approved network completed; join remains a separate step",
+                    "SkyPilot launch and approved network completed; native node bootstrap is subject to readiness verification",
                     plan.resource_reference(
                         "instance",
                         instances[0]["InstanceId"],
@@ -470,12 +576,20 @@ class Provider:
                             ),
                         )
 
+                async def record_submission(obj):
+                    from .workload_submissions import record
+
+                    await record(self, operation, call, obj, authorize)
+
                 references = await self.workspace.apply(
                     operation,
                     target,
                     plan,
                     authorize,
                     record_created=record_created
+                    if "controller_deployment_id" in operation.request.parameters
+                    else None,
+                    record_submission=record_submission
                     if "controller_deployment_id" in operation.request.parameters
                     else None,
                 )
@@ -488,8 +602,10 @@ class Provider:
                 async with asyncio.timeout(800):
                     while True:
                         await authorize()
+                        self.workspace.require_dedicated_node_authority(target)
                         instances = await self.instances(operation, plan)
-                        if selected.step_id == "2":
+                        readiness_step = "3" if plan.node_bootstrap is not None else "2"
+                        if selected.step_id == readiness_step:
                             # Native EKS provider IDs must resolve to this allocation's
                             # actual EC2 instances, not merely Ready nodes in the cluster.
                             ready = len(instances) == plan.data[
@@ -498,7 +614,7 @@ class Provider:
                                 operation,
                                 target,
                                 plan,
-                                {i["InstanceId"] for i in instances},
+                                instances,
                             )
                         else:
                             known_references = None
@@ -519,16 +635,23 @@ class Provider:
                                 known_references = frozenset(
                                     row["provider_reference"] for row in rows
                                 )
+
+                            async def verify_placement(pod):
+                                return await self.verify_pod_allocation(
+                                    operation, target, plan, pod, authorize
+                                )
+
                             ready = await self.workspace.workload_ready(
                                 operation,
                                 target,
                                 plan,
                                 known_references=known_references,
                                 authorize=authorize,
+                                verify_placement=verify_placement,
                             )
                         if ready:
                             if (
-                                selected.step_id != "2"
+                                selected.step_id != readiness_step
                                 and plan.data["workload"]["kind"] == "batch"
                                 and "controller_deployment_id"
                                 in operation.request.parameters
@@ -582,13 +705,30 @@ class Provider:
                     known_references = frozenset(
                         row["provider_reference"] for row in rows
                     )
-                await self.workspace.delete(
-                    operation,
-                    target,
-                    plan,
-                    authorize,
-                    known_references=known_references,
-                )
+                from . import node_cleanup, node_inventory
+
+                cleanup_nodes = cleanup_resources = None
+                if node_inventory.enabled(operation):
+                    cleanup_nodes, cleanup_resources = await node_cleanup.prepare(
+                        self, operation, target, plan, authorize
+                    )
+                    await node_cleanup.drain(
+                        self,
+                        operation,
+                        target,
+                        plan,
+                        cleanup_nodes,
+                        known_references or frozenset(),
+                        authorize,
+                    )
+                else:
+                    await self.workspace.delete(
+                        operation,
+                        target,
+                        plan,
+                        authorize,
+                        known_references=known_references,
+                    )
                 await self.remember(call, plan)
                 await authorize()
                 request_id = await self.sky.submit(
@@ -607,6 +747,20 @@ class Provider:
                     request_id, authorize
                 ) or await self.instances(operation, plan):
                     return CallOutcome.UNKNOWN, None, reference
+                if cleanup_nodes is not None:
+                    terminated_instances = await node_cleanup.terminated(
+                        self, operation, plan, cleanup_resources, authorize
+                    )
+                    await node_cleanup.remove(
+                        self,
+                        operation,
+                        target,
+                        plan,
+                        cleanup_nodes,
+                        cleanup_resources,
+                        terminated_instances,
+                        authorize,
+                    )
                 if networking is not None:
                     await networking.cleanup()
                 # Success records the approved removal call, not allocation release.

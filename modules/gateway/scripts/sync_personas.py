@@ -95,9 +95,6 @@ def _generate_output(module: object) -> tuple[str, int]:
     automatic_personas = set(getattr(module, "AUTOMATIC_PERSONAS", set()))
     valid_personas = set(module.VALID_PERSONAS)
     persona_compatibility_class = dict(module.PERSONA_COMPATIBILITY_CLASS)
-    task_classes = dict(getattr(module, "TASK_PERSONA_COMPATIBILITY_CLASS", {}))
-    if any(not key.startswith("agent-task-") for key in task_classes) or set(task_classes) & valid_personas:
-        raise ValueError("Task-only personas must not enter legacy dispatch")
     harness_revisions = _load_harness_revisions()
 
     # The staged copy recomputes VALID_PERSONAS from the three emitted mappings, so if
@@ -120,7 +117,7 @@ def _generate_output(module: object) -> tuple[str, int]:
         )
     if set(persona_compatibility_class) != valid_personas:
         raise ValueError("PERSONA_COMPATIBILITY_CLASS keys must exactly match VALID_PERSONAS")
-    missing_revisions = (set(persona_compatibility_class.values()) | set(task_classes.values())) - set(harness_revisions)
+    missing_revisions = set(persona_compatibility_class.values()) - set(harness_revisions)
     if missing_revisions:
         raise ValueError(f"No exact harness revision is registered for compatibility classes: {sorted(missing_revisions)}")
 
@@ -151,8 +148,6 @@ def _generate_output(module: object) -> tuple[str, int]:
         persona_compatibility_class,
         "dict[str, str]",
     )
-    output += "\n\n"
-    output += _format_dict("TASK_PERSONA_COMPATIBILITY_CLASS", task_classes, "dict[str, str]")
     output += "\n\n"
     output += _format_dict(
         "COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION",

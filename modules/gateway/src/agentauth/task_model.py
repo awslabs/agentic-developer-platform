@@ -72,7 +72,10 @@ def _valid_response_block(block, request):
 async def invoke_task_messages(db, *, identity, binding, target, request, operation_id):
     credentials = None
     if not target.is_platform:
-        credentials = await bedrock_destination_signer.get_credentials(db, target, user_id=identity.canonical_principal)
+        from src.tasks.human_authority import principal_owner
+
+        _, owner_id = principal_owner(identity.canonical_principal)
+        credentials = await bedrock_destination_signer.get_credentials(db, target, user_id=owner_id)
     kwargs = {
         "region_name": target.region or get_settings().aws_region,
         "config": Config(connect_timeout=5, read_timeout=120, retries={"total_max_attempts": 1}),
@@ -388,8 +391,8 @@ class TaskModel:
         if payload_digest(request) != request_digest:
             raise TaskStoreError("model request digest mismatch")
         task = await run_in_threadpool(self._current, identity)
-        if sdk_request and task["persona"] != "agent-task-cyber":
-            raise TaskStoreError("SDK model request requires cyber persona")
+        if sdk_request and task["persona"] not in {"agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"}:
+            raise TaskStoreError("SDK model request requires an SDK Task persona")
         if len(json.dumps(request, ensure_ascii=False).encode()) > 65536:
             raise TaskStoreError("model request exceeds task frame bound")
         existing = await run_in_threadpool(self._read, identity.task_id, turn_id)
@@ -459,7 +462,21 @@ class TaskModel:
             persona=task["persona"],
             **({"responses_tools": True} if tool_profile else {}),
         )
-        if binding != grant["model_binding"]:
+        # Admission records the then-current pricing evidence. A validated
+        # pricing refresh may reach gateway processes between admission and a
+        # model turn; it must not change the authorized model or policy. Each
+        # operation below still quotes current rates and reserves that quote
+        # against the original Task cap before any provider handoff.
+        current_pricing = binding.get("pricing_evidence_version")
+        admitted_pricing = grant["model_binding"].get("pricing_evidence_version")
+        expected_binding = {**grant["model_binding"], "pricing_evidence_version": current_pricing}
+        if (
+            not isinstance(admitted_pricing, str)
+            or not admitted_pricing
+            or not isinstance(current_pricing, str)
+            or not current_pricing
+            or binding != expected_binding
+        ):
             raise TaskStoreError("task model binding changed")
         operation, owned = await run_in_threadpool(
             self._claim,

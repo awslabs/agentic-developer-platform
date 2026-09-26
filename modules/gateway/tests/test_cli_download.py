@@ -34,6 +34,7 @@ ADP_SCRIPT = "adp"
 INSTALL_SCRIPT = "install.sh"
 HELPER_SCRIPT = "bg-cognito-auth.sh"
 PROXY_SCRIPT = "bg-gateway-proxy.py"
+COMMAND_MANIFEST = "command-manifest.json"
 
 # Resolved independently of the route module so a wrong path in ALLOWED_SCRIPTS
 # cannot make these tests pass. tests/ -> <gateway> -> cli/
@@ -46,8 +47,10 @@ SERVEABLE = [
     (INSTALL_SCRIPT, "text/x-shellscript"),
     (HELPER_SCRIPT, "text/x-shellscript"),
     (PROXY_SCRIPT, "text/x-python"),
+    (COMMAND_MANIFEST, "application/json"),
 ]
-SCRIPT_NAMES = [name for name, _ in SERVEABLE]
+ARTIFACT_NAMES = [name for name, _ in SERVEABLE]
+SCRIPT_NAMES = [name for name in ARTIFACT_NAMES if name != COMMAND_MANIFEST]
 
 
 @pytest.mark.unit
@@ -69,14 +72,14 @@ class TestCliScriptDownload:
         assert disposition.startswith("attachment")
         assert script_name in disposition
 
-    @pytest.mark.parametrize("script_name", SCRIPT_NAMES)
+    @pytest.mark.parametrize("script_name", ARTIFACT_NAMES)
     def test_no_authorization_header_required(self, script_name):
         """window.open sends no Authorization header — auth would 401 the download."""
         resp = client.get(f"/cli/{script_name}", headers={})
 
         assert resp.status_code == 200
 
-    @pytest.mark.parametrize("script_name", SCRIPT_NAMES)
+    @pytest.mark.parametrize("script_name", ARTIFACT_NAMES)
     def test_served_bytes_equal_the_on_disk_script(self, script_name):
         """Guards against serving a stale vendored copy of either file."""
         resp = client.get(f"/cli/{script_name}")
@@ -109,11 +112,36 @@ class TestCliScriptDownload:
             # point of the story, so publishing it exposes nothing.
             "adp-superplane.py",
             "adp-models.py",
+            "adp-model-policy.py",
             # Issue #5331: `adp flow`. Same property — it reads the session
             # `adp login` already wrote and adds no credential store of its own,
             # so serving it publicly exposes nothing. Added in the PR that ships
             # the helper, never before it.
             "adp-flow.py",
+            # Issue #5621: `adp capabilities` / `adp doctor`. Both are reads that
+            # go through the session `adp login` already wrote, so serving the
+            # file exposes nothing — the capability document itself is on an
+            # AUTHENTICATED, tenant-scoped route (/me/cli-capabilities), not here.
+            "adp-doctor.py",
+            # Issue #5621: checked, versioned inventory of real CLI parser leaves.
+            # Static JSON only; it cannot dispatch a command or expose tenant data.
+            COMMAND_MANIFEST,
+            # Task commands and reusable protocol code; no embedded credentials.
+            "adp-task.py",
+            "adp-tenant.py",
+            "adp-hierarchy.py",
+            "adp-vault.py",
+            "adp-access.py",
+            "adp-machine.py",
+            "adp-gitlab.py",
+            "adp-usage.py",
+            "adp-agent.py",
+            "adp-knowledge.py",
+            "adp-budget.py",
+            "adp-ratelimit.py",
+            "adp-platform.py",
+            "adp-chat.py",
+            "adp_task_client.py",
             # Issue #5730: `adp superplane onboarding`. A sibling helper rather
             # than more verbs inside adp-superplane.py, so it stays separable
             # from the concurrent CLI transport work on that file. Carries no
@@ -121,6 +149,8 @@ class TestCliScriptDownload:
             # any credential-shaped flag before parsing, and moves credential
             # references only — never values.
             "adp-superplane-onboarding.py",
+            "adp-superplane-research.py",
+            "adp-superplane-lifecycle.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

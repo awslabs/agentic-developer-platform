@@ -57,6 +57,7 @@ def request_document(body):
     return {
         "name": body.name,
         "profile_id": body.profile_id,
+        **({"expected_namespace":body.expected_namespace} if body.expected_namespace is not None else {}),
         **{key: getattr(body, key) for key in MODEL_FIELDS},
     }
 
@@ -67,7 +68,9 @@ async def preview_create(db, org_id, workspace_id, body):
             "select an installed controller deployment profile"
         )
     workspace, _ = await get_workspace_cluster(workspace_id, org_id, db)
-    resolve_workspace_namespace(workspace)
+    namespace = resolve_workspace_namespace(workspace)
+    if getattr(body, "expected_namespace", None) is not None and body.expected_namespace != namespace:
+        raise ProvisioningRefused("Requested namespace does not match the workspace-owned namespace")
     return await preview_controller_deployment(
         db,
         policy_path=settings.superplane_controller_profiles_file,
@@ -137,6 +140,9 @@ def require_target(deployment, workspace, cluster):
 
 
 async def create(request, db, org_id, workspace_id, body):
+    from app.operation_activation import require_admission_enabled
+
+    require_admission_enabled()
     owner = composition(request)
     if not body.approval_id or not body.plan_revision:
         raise ProvisioningRefused(
@@ -146,6 +152,8 @@ async def create(request, db, org_id, workspace_id, body):
         workspace_id, org_id, db, for_update=True
     )
     namespace = resolve_workspace_namespace(workspace)
+    if getattr(body, "expected_namespace", None) is not None and body.expected_namespace != namespace:
+        raise ProvisioningRefused("Requested namespace does not match the workspace-owned namespace")
     intent = await db.scalar(
         select(Deployment)
         .where(
@@ -287,25 +295,24 @@ async def preview_delete(
     original = stored_preview(intent)
     require_target(intent, workspace, cluster)
     async with owner.operation_connect() as connection:
-        source = await connection.fetchrow(
-            "SELECT o.*,l.closed_at FROM controller_deployment_operations r "
-            "JOIN harness_operations o ON o.operation_id=r.operation_id AND o.org_id=r.org_id "
-            "AND o.workspace_id=r.workspace_id AND o.plan_digest=r.plan_digest "
-            "JOIN harness_operation_leases l ON l.operation_id=o.operation_id "
-            "WHERE r.deployment_id=$1 AND r.org_id=$2 AND r.workspace_id=$3 AND r.action='provision'",
-            str(deployment_id),
-            str(org_id),
-            str(workspace_id),
+        from superplane_executor.cleanup_binding import source_for, validate
+
+        source = await source_for(
+            connection,
+            org_id=str(org_id),
+            workspace_id=str(workspace_id),
+            deployment_id=str(deployment_id),
         )
-        if (
-            source is None
-            or source["closed_at"] is None
-            or source["state"] not in {"succeeded", "failed", "cancelled"}
-            or decode_payload(source["request_payload"]) != original.request
-        ):
-            raise ProvisioningRefused(
-                "original deployment operation must settle before teardown can be reviewed"
-            )
+        if decode_payload(source["request_payload"]) != original.request:
+            raise ProvisioningRefused("original deployment source request changed")
+        planned = teardown_request(
+            original.request,
+            org_id=str(org_id),
+            workspace_id=str(workspace_id),
+            request_id=str(body.operation_id),
+            source_operation_id=source["operation_id"],
+        )
+        await validate(connection, source, planned)
         await registration_values(
             connection,
             operation_id=source["operation_id"],
@@ -331,6 +338,9 @@ async def preview_delete(
 async def delete(
     request, db, org_id, workspace_id, deployment_id, body, *, workload_kind="serving"
 ):
+    from app.operation_activation import require_admission_enabled
+
+    require_admission_enabled()
     owner = composition(request)
     if body is None or not body.approval_id or not body.plan_revision:
         raise ProvisioningRefused(

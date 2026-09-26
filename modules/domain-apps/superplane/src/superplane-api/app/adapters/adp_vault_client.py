@@ -69,7 +69,10 @@ class AdpVaultClient:
             client_cm = self._client_factory()
         else:
             client_cm = httpx.AsyncClient(
-                base_url=self._base_url, timeout=self._timeout
+                base_url=self._base_url,
+                timeout=self._timeout,
+                trust_env=False,
+                follow_redirects=False,
             )
         async with client_cm as client:
             response = await client.post(

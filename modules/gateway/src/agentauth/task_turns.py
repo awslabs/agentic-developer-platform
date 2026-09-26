@@ -24,6 +24,10 @@ def task_turn_limit(repository, task_id):
         raise TaskStoreError("Task turn limit invalid")
     return maximum
 
+class _TurnVersionConflictError(TaskStoreError):
+    pass
+
+
 class TaskTurnStore:
     def __init__(self, repository, *, clock=None):
         self.repository = repository
@@ -58,6 +62,19 @@ class TaskTurnStore:
         }
 
     def commit(self, *, identity, request_id, expected_transcript_version, allow_autonomous=False):
+        for attempt in range(3):
+            try:
+                return self._commit_once(
+                    identity=identity,
+                    request_id=request_id,
+                    expected_transcript_version=expected_transcript_version,
+                    allow_autonomous=allow_autonomous,
+                )
+            except _TurnVersionConflictError:
+                if attempt == 2:
+                    raise TaskStoreError("task turn contention did not settle") from None
+
+    def _commit_once(self, *, identity, request_id, expected_transcript_version, allow_autonomous):
         task = self.repository.read_task(identity.task_id)
         if task is None or (task["invocation_id"], int(task["generation"]), task.get("runtime_attempt_id")) != (
             identity.invocation_id,
@@ -67,7 +84,7 @@ class TaskTurnStore:
             raise TaskStoreError("task attempt changed")
         if type(allow_autonomous) is not bool:
             raise TaskStoreError("invalid autonomous turn flag")
-        if allow_autonomous and task["persona"] != "agent-task-cyber":
+        if allow_autonomous and task["persona"] not in {"agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"}:
             from src.admin.persona_models.catalogue import persona_compatibility_class
 
             if persona_compatibility_class(task["persona"]) != "codex-sdk" or not task["persona"].startswith("agent-task-"):
@@ -221,5 +238,14 @@ class TaskTurnStore:
             existing = next((turn for turn in self.list_turns(identity.task_id) if turn["turn_id"] == request_id), None)
             if existing:
                 return self.response(existing, existing=True)
+            reasons = exc.response.get("CancellationReasons", [])
+            # Only the task metadata compare-and-swap raced. A fresh attempt
+            # re-reads all authority, state, deadline and turn-count fences.
+            if (
+                len(reasons) == len(transaction)
+                and reasons[1].get("Code") == "ConditionalCheckFailed"
+                and all(reason.get("Code", "None") == "None" for index, reason in enumerate(reasons) if index != 1)
+            ):
+                raise _TurnVersionConflictError("task metadata changed") from None
             raise TaskStoreError("task turn fence changed") from None
         return self.response(turn, pending=pending - len(commands))

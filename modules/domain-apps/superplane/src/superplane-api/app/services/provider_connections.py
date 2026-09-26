@@ -384,6 +384,55 @@ async def _commit_authorized(
         raise
 
 
+class RegistrationConflict(Exception):
+    """The immutable registration identity does not name this exact request."""
+
+
+async def replay_registration(
+    db: AsyncSession,
+    *,
+    operation_id: uuid.UUID,
+    org_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    reference: CredentialReference,
+    provider: str,
+    owner_principal: str,
+    bound_by: str,
+    verify_authority: Callable[[], Awaitable[None]],
+) -> tuple[ProviderConnection, ProviderConnectionBinding] | None:
+    row = (
+        await db.execute(
+            select(ProviderConnection, ProviderConnectionBinding)
+            .join(
+                ProviderConnectionBinding,
+                ProviderConnectionBinding.connection_id == ProviderConnection.id,
+            )
+            .where(
+                ProviderConnection.id == operation_id,
+                ProviderConnection.org_id == org_id,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    connection, binding = row
+    # Current grant/registry/vault evidence is required even for a read-only replay.
+    # Do not reactivate disabled records or restore references after rotation.
+    await verify_authority()
+    if (
+        binding.workspace_id != workspace_id
+        or binding.bound_by != bound_by
+        or connection.owner_principal != owner_principal
+        or connection.provider != provider
+        or to_reference(connection) != reference
+        or binding.adp_credential_id != reference.credential_id
+    ):
+        raise RegistrationConflict()
+    return connection, binding
+
+
 async def register(
     db: AsyncSession,
     *,
@@ -394,6 +443,7 @@ async def register(
     owner_principal: str,
     bound_by: str,
     verify_authority: Callable[[], Awaitable[None]],
+    operation_id: uuid.UUID | None = None,
 ) -> tuple[ProviderConnection, ProviderConnectionBinding]:
     """Record a connection and its single workspace binding.
 
@@ -406,7 +456,22 @@ async def register(
     as live authority on subsequent mutations. ``bound_by`` records the verified
     caller who performed the binding, including an explicitly authorized delegate.
     """
+    if operation_id is not None:
+        existing = await replay_registration(
+            db,
+            operation_id=operation_id,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            reference=reference,
+            provider=provider,
+            owner_principal=owner_principal,
+            bound_by=bound_by,
+            verify_authority=verify_authority,
+        )
+        if existing is not None:
+            return existing
     connection = ProviderConnection(
+        **({"id": operation_id} if operation_id is not None else {}),
         org_id=org_id,
         provider=provider,
         adp_credential_id=reference.credential_id,

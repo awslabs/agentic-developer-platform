@@ -156,6 +156,7 @@ DEFAULTS = {
     # launch call with a bare KeyError -- preflight verifies the name exists.
     "instance_profile": "adp-cli-uplift-eval-instance",
     "instance_type": "t3.small",
+    "instance_security_group_id": "",
 }
 
 
@@ -302,6 +303,13 @@ def validate(config):
             str(result[key]).startswith("https://"), f"{key} must be an HTTPS endpoint"
         )
 
+    group = result.get("instance_security_group_id")
+    require(
+        not group
+        or (isinstance(group, str) and re.fullmatch(r"sg-[0-9a-f]{8,17}", group)),
+        "instance_security_group_id must be a security group ID",
+    )
+
     for key in ("instance_profile", "instance_type"):
         require(
             isinstance(result[key], str) and result[key],
@@ -364,6 +372,63 @@ def validate(config):
                     f"github.{key} must be a non-empty string",
                 )
     result["github"] = github
+
+    contrast = result.get("capability_contrast") or {}
+    require(isinstance(contrast, dict), "capability_contrast must be an object")
+    if contrast:
+        required = (
+            "disabled_feature",
+            "enabled_feature",
+            "disabled_operation",
+            "enabled_operation",
+            "denied_operation",
+            "foreign_request_id",
+            "ordinary_fixture_name",
+        )
+        missing_contrast = [
+            key
+            for key in required
+            if not isinstance(contrast.get(key), str) or not contrast.get(key)
+        ]
+        require(
+            not missing_contrast,
+            "capability_contrast is missing: " + ", ".join(missing_contrast),
+        )
+        for key in ("disabled_operation", "enabled_operation", "denied_operation"):
+            require(
+                re.fullmatch(r"[a-z][a-z0-9_.]{2,127}", contrast[key]),
+                f"capability_contrast.{key} is not an operation ID",
+            )
+        require(
+            re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", contrast["disabled_feature"]),
+            "capability_contrast.disabled_feature is not a feature name",
+        )
+        require(
+            re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", contrast["enabled_feature"]),
+            "capability_contrast.enabled_feature is not a feature name",
+        )
+        require(
+            re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", contrast["foreign_request_id"]),
+            "capability_contrast.foreign_request_id is not a request ID",
+        )
+        require(
+            not contrast["ordinary_fixture_name"].startswith("arn:")
+            and "://" not in contrast["ordinary_fixture_name"],
+            "capability_contrast.ordinary_fixture_name must be a Secrets Manager name",
+        )
+    result["capability_contrast"] = contrast
+    tenant_fixture = result.get("tenant_isolation") or {}
+    require(isinstance(tenant_fixture, dict), "tenant_isolation must be an object")
+    if tenant_fixture:
+        tenant_ids = tenant_fixture.get("tenant_ids")
+        require(
+            isinstance(tenant_ids, list)
+            and len(tenant_ids) == 2
+            and all(isinstance(t, str) and 0 < len(t) <= 255 for t in tenant_ids)
+            and len(set(tenant_ids)) == 2,
+            "tenant_isolation.tenant_ids must name two distinct existing memberships",
+        )
+    result["tenant_isolation"] = tenant_fixture
 
     # #5413: the three deployment bindings E16/E17 run against. Absent means those
     # two cases BLOCK (see `fixture_classes`), which is the honest state until a
@@ -473,6 +538,12 @@ def validate(config):
             "superplane.aws_connection_id must be an opaque ADP credential ID, not an ARN or URL",
         )
     result["superplane"] = superplane
+    research = result.get("research_readback", False)
+    require(
+        type(research) is bool,
+        "research_readback must be a boolean fixture declaration",
+    )
+    result["research_readback"] = research
 
     return result
 
@@ -549,6 +620,7 @@ EXAMPLE_PATH = Path(__file__).resolve().parent / "config.example.json"
 # env var -> config key. A dotted key lands inside `github`.
 OVERLAY = {
     "CLI_UPLIFT_EVAL_INSTANCE_PROFILE": "instance_profile",
+    "CLI_UPLIFT_EVAL_SECURITY_GROUP_ID": "instance_security_group_id",
     "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "expected_revision",
     "CLI_UPLIFT_EVAL_GITHUB_ORG": "github.org",
     "CLI_UPLIFT_EVAL_GITHUB_REPO": "github.repo",
@@ -559,6 +631,13 @@ OVERLAY = {
     "CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN": "destination_role_arn",
     "CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN": "provisioner_role_arn",
     "CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME": "credential_secret_name",
+    "CLI_UPLIFT_EVAL_CAP_DISABLED_FEATURE": "capability_contrast.disabled_feature",
+    "CLI_UPLIFT_EVAL_CAP_ENABLED_FEATURE": "capability_contrast.enabled_feature",
+    "CLI_UPLIFT_EVAL_CAP_DISABLED_OPERATION": "capability_contrast.disabled_operation",
+    "CLI_UPLIFT_EVAL_CAP_ENABLED_OPERATION": "capability_contrast.enabled_operation",
+    "CLI_UPLIFT_EVAL_CAP_DENIED_OPERATION": "capability_contrast.denied_operation",
+    "CLI_UPLIFT_EVAL_CAP_FOREIGN_REQUEST_ID": "capability_contrast.foreign_request_id",
+    "CLI_UPLIFT_EVAL_CAP_ORDINARY_FIXTURE": "capability_contrast.ordinary_fixture_name",
 }
 
 # #5413. The three deployment bindings, as a JSON array, because they are a list
@@ -661,6 +740,11 @@ def from_environment(env, *, base=None):
         # pasted into the variable fails here rather than inside the run config.
         no_secrets(parsed, DEPLOYMENTS_VARIABLE)
         document["deployments"] = parsed
+    raw_fixtures = str(env.get("CLI_UPLIFT_EVAL_FIXTURES") or "").strip()
+    if raw_fixtures:
+        from .fixtures import parse
+
+        document.update(parse(raw_fixtures))
     return validate(document)
 
 
@@ -673,6 +757,10 @@ def fixture_classes(config):
     from . import cases
 
     available = {cases.PLATFORM, cases.EC2, cases.COGNITO}
+    # Explicitly identifies an existing domain for read-only regression. This
+    # does not assert readiness: actual authenticated CLI reads decide that.
+    if config.get("research_readback") is True:
+        available.add(cases.SUPERPLANE_RESEARCH)
     # The destination class is exactly "we hold a cross-account session", so it
     # depends on both role bindings the same way SECOND_DESTINATION depends on
     # its account. Claiming it unconditionally made the cross-account cases
@@ -692,11 +780,30 @@ def fixture_classes(config):
         available.add(cases.GITHUB_REPO)
     if config.get("hosted_tasks_queue_url") and config.get("websocket_url"):
         available.add(cases.HOSTED)
+    from .fixtures import validate_fixture
+
+    for key, fixture_class in (
+        ("human_task_coding", cases.HUMAN_TASK_CODING),
+        ("human_task_chat", cases.HUMAN_TASK_CHAT),
+        ("vault_lifecycle", cases.VAULT_LIFECYCLE),
+        ("hierarchy_lifecycle", cases.HIERARCHY_LIFECYCLE),
+        ("knowledge_lifecycle", cases.KNOWLEDGE_LIFECYCLE),
+        ("machine_lifecycle", cases.MACHINE_LIFECYCLE),
+        ("budget_lifecycle", cases.BUDGET_LIFECYCLE),
+    ):
+        if config.get(key):
+            try:
+                validate_fixture(key, config[key])
+            except ConfigError:
+                continue
+            available.add(fixture_class)
     # #5413. `validate()` has already refused a binding set that is too small, or
     # that reuses a URL or a credential reference, so reaching the required count
     # here means three genuinely distinct deployments were configured.
     if len(config.get("deployments") or []) >= REQUIRED_DEPLOYMENTS:
         available.add(cases.THREE_DEPLOYMENTS)
+    if config.get("capability_contrast"):
+        available.add(cases.CAPABILITY_CONTRAST)
     # #5637. Configured is not the same as reachable here either, and preflight
     # discards this class again if the domain does not answer through the gateway —
     # a 404 from the proxy means nothing is mounted behind the allowlist, which

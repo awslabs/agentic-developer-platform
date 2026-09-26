@@ -2082,3 +2082,60 @@ async def test_member_budgets_source_labels_are_third_person(session, seeded, ru
     # The defect class being pinned: prose addressed to the member shown to a third
     # party. No label on this surface may speak in the second person.
     assert "you" not in person["source_label"].lower()
+
+
+@pytest.mark.parametrize("kind", ["person-cap", "person-default"])
+async def test_cli_person_revision_crud(session, seeded, kind):
+    """Real HTTP/DB conditional writes preserve later writers and absent state."""
+    path = f"/budget/{kind}/" + (PERSON_ANCHOR if kind == "person-cap" else "platform")
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        created = await client.put(path, params={"expected_revision": "absent"}, json={"budget_amount_usd": "1.00"})
+        assert created.status_code == 200, created.text
+        revision = (await client.get(path)).json()["updated_at"]
+        conflict = await client.put(path, params={"expected_revision": "absent"}, json={"budget_amount_usd": "9.00"})
+        assert conflict.status_code == 409
+        changed = await client.put(path, params={"expected_revision": revision}, json={"budget_amount_usd": "2.00"})
+        assert changed.status_code == 200, changed.text
+        assert (await client.delete(path, params={"expected_revision": revision})).status_code == 409
+        current = await client.get(path)
+        assert current.json()["cap_usd"] == "2.00"
+        removed = await client.delete(path, params={"expected_revision": current.json()["updated_at"]})
+        assert removed.status_code == 204, removed.text
+        assert (await client.get(path)).json()["cap_status"] == "uncapped"
+
+
+@pytest.mark.parametrize("kind", ["person-cap", "person-default"])
+@pytest.mark.parametrize("method", ["put", "delete"])
+async def test_cli_revision_detects_commit_between_read_and_write(session, engine, seeded, monkeypatch, kind, method):
+    """A separate committed writer wins after review, before conditional DML."""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy.sql.dml import Delete, Update
+
+    model = PersonBudgetConfig if kind == "person-cap" else PersonBudgetDefault
+    path = f"/budget/{kind}/" + (PERSON_ANCHOR if kind == "person-cap" else "platform")
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        assert (await client.put(path, json={"budget_amount_usd": "1.00"})).status_code == 200
+        revision = (await client.get(path)).json()["updated_at"]
+        original_execute = session.execute
+        raced = False
+
+        async def execute(statement, *args, **kwargs):
+            nonlocal raced
+            if not raced and isinstance(statement, Update | Delete) and statement.table.name == model.__tablename__:
+                raced = True
+                async with async_sessionmaker(engine, expire_on_commit=False)() as other:
+                    await other.execute(
+                        sa.update(model).values(budget_amount_usd=Decimal("7.00"), updated_at=datetime.now(UTC) + timedelta(seconds=1))
+                    )
+                    await other.commit()
+            return await original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "execute", execute)
+        kwargs = dict(params={"expected_revision": revision})
+        if method == "put":
+            kwargs["json"] = {"budget_amount_usd": "9.00"}
+        response = await getattr(client, method)(path, **kwargs)
+        assert response.status_code == 409, response.text
+        assert raced
+        assert (await client.get(path)).json()["cap_usd"] == "7.00"

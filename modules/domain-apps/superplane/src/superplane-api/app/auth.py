@@ -182,9 +182,39 @@ class _JWKSCache:
         # path never runs, and the module must import cleanly in test and
         # offline environments regardless.
         import json
-        from urllib.request import urlopen
+        from urllib.parse import urlsplit
+        from urllib.request import HTTPRedirectHandler, build_opener
 
-        with urlopen(url, timeout=5) as response:  # noqa: S310 - fixed https config value
+        try:
+            parsed = urlsplit(url)
+            valid_endpoint = (
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname
+                and parsed.username is None
+                and parsed.password is None
+                and not parsed.fragment
+                and "\\" not in url
+                and not any(
+                    character.isspace() or ord(character) < 32 or ord(character) == 127
+                    for character in url
+                )
+            )
+            parsed.port  # Validate the port before invoking any URL handler.
+        except ValueError:
+            valid_endpoint = False
+        if not valid_endpoint:
+            raise TokenPolicyError(
+                "JWKS URL must be an HTTP(S) endpoint without credentials or fragment"
+            )
+
+        class RefuseJWKSRedirect(HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                # Only the configured endpoint may supply authentication keys.
+                # A redirect must not expand that authority to another location.
+                return None
+
+        opener = build_opener(RefuseJWKSRedirect())
+        with opener.open(url, timeout=5) as response:
             document = json.loads(response.read())
         self.load(document.get("keys", []))
 
@@ -388,15 +418,26 @@ def _grant_to_policy_object(record: WorkspaceGrantRecord) -> WorkspaceGrant:
 
 
 async def load_workspace_authorization(
-    db: AsyncSession, workspace_id: uuid.UUID, principal: str
+    db: AsyncSession, workspace_id: uuid.UUID, principal: str, account_type: str
 ) -> tuple[WorkspaceAuthorizationModel, str | None]:
-    """Read the live grant for one (workspace, principal) from the server.
+    """Read the live grant for one (workspace, principal, account_type) from the server.
 
     Returns the populated model and the workspace's stored org id. Read per
     operation rather than cached on the session: caching the result is authority
     inherited from sign-in, which is the thing R6 removes. A revoked grant is
     simply absent from the model, so revocation between admission and execution
     denies the operation.
+
+    ``account_type`` is required and filtered on, matching
+    ``GrantBackedAuthority._workspace_permissions``
+    (``app/adapters/operation_authority_source.py``), which already filters on
+    ``WorkspaceGrantRecord.principal_type``. Before this parameter existed, this
+    function — the one every real `/workspaces/...` HTTP request goes through —
+    read a grant by ``principal`` alone: a service-issued grant and a
+    human-issued grant sharing a workspace and subject string were
+    interchangeable here, which is exactly the "service credential usable on a
+    human route and vice versa" case R5 acc. 6-7 refuses. The internal path
+    already enforced this; this call site did not.
     """
     workspace = (
         await db.execute(select(Workspace).where(Workspace.id == workspace_id))
@@ -409,6 +450,7 @@ async def load_workspace_authorization(
             select(WorkspaceGrantRecord).where(
                 WorkspaceGrantRecord.workspace_id == workspace_id,
                 WorkspaceGrantRecord.principal == principal,
+                WorkspaceGrantRecord.principal_type == account_type,
                 WorkspaceGrantRecord.revoked_at.is_(None),
             )
         )
@@ -435,7 +477,7 @@ async def authorize_workspace_operation(
     not one.
     """
     model, workspace_org_id = await load_workspace_authorization(
-        db, workspace_id, caller.principal.subject
+        db, workspace_id, caller.principal.subject, caller.principal.account_type
     )
     # One message for every "this workspace is not yours to see" case:
     # nonexistent, owned by another organization, or existing with no grant for
@@ -576,6 +618,7 @@ async def authorize_organization_operation(
                 select(WorkspaceGrantRecord).where(
                     WorkspaceGrantRecord.org_id == _as_uuid(org_id),
                     WorkspaceGrantRecord.principal == caller.principal.subject,
+                    WorkspaceGrantRecord.principal_type == caller.principal.account_type,
                     WorkspaceGrantRecord.revoked_at.is_(None),
                 )
             )
@@ -622,6 +665,8 @@ async def authorized_workspace_ids(
                 select(WorkspaceGrantRecord).where(
                     WorkspaceGrantRecord.org_id == _as_uuid(caller.principal.org_id),
                     WorkspaceGrantRecord.principal == caller.principal.subject,
+                    WorkspaceGrantRecord.principal_type
+                    == caller.principal.account_type,
                     WorkspaceGrantRecord.revoked_at.is_(None),
                 )
             )

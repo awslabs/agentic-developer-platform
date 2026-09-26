@@ -38,8 +38,14 @@ def test_supplied_managed_runtime_refuses_before_authority_or_worker_state(
     monkeypatch.setattr(runtime, "current_operation", forbidden)
     monkeypatch.setattr(runtime, "delivery_session", forbidden)
     context = SimpleNamespace(state_root=tmp_path / "never-created")
+    operation = SimpleNamespace(
+        request=SimpleNamespace(parameters={"lifecycle_inputs": "{}"}),
+        grant=SimpleNamespace(
+            lease=SimpleNamespace(org_id="org", workspace_id="workspace")
+        ),
+    )
     with pytest.raises(LifecycleRefused, match="requires owned networking"):
-        asyncio.run(runtime.run_lifecycle(object(), context))
+        asyncio.run(runtime.run_lifecycle(operation, context))
     assert list(tmp_path.iterdir()) == []
 
 

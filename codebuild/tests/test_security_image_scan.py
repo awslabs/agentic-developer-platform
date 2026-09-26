@@ -118,11 +118,24 @@ def test_all_scope_inventory_uses_production_contexts_and_preparation():
     expected = {
         "modules/agent-context/images/context-mcp/Dockerfile": (
             "modules/agent-context/images/context-mcp",
-            {"door/", "personal_context/"},
+            {"door/", "personal_context/", "security-stdlib/"},
         ),
         "modules/agent-context/images/ingestion/Dockerfile": (
             "modules/agent-context/images/ingestion",
-            {"pipeline/", "alembic/", "personal_context/"},
+            {"pipeline/", "alembic/", "personal_context/", "security-build/", "security-stdlib/"},
+        ),
+        "modules/agent-context/images/codegraph-context/Dockerfile": (
+            "modules/agent-context/images/codegraph-context",
+            {"security-build/", "security-stdlib/"},
+        ),
+        "modules/agent-context/images/litellm-proxy/Dockerfile": (
+            "modules/agent-context/images/litellm-proxy", {"security-stdlib/"},
+        ),
+        "modules/agent-context/images/deepwiki/Dockerfile": (
+            "modules/agent-context/images/deepwiki", {"security-stdlib/"},
+        ),
+        "modules/agent-context/images/parser/Dockerfile": (
+            "modules/agent-context/images/ingestion", {"security-stdlib/"},
         ),
         "modules/gateway/Dockerfile": ("modules/gateway", {"contracts/"}),
         "modules/research/gbrain/docker/Dockerfile": (

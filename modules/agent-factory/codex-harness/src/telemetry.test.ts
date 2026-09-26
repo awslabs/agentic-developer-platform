@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { logs } from "@opentelemetry/api-logs";
 import { metrics, trace } from "@opentelemetry/api";
-import { startTelemetry, activeTraceparent } from "./telemetry.js";
+import { startTelemetry, activeTraceparent, observeOperation } from "./telemetry.js";
 
 test("OTLP exports correlated spans and bounded metrics without task content", async () => {
   const documents: { path: string; body: string }[] = [];
@@ -24,6 +25,7 @@ test("OTLP exports correlated spans and bounded metrics without task content", a
       await trace.getTracer("test").startActiveSpan("adp.codex.turn", async span => {
         await Promise.resolve(); assert.ok(activeTraceparent()); span.end();
       });
+      await observeOperation("model", async () => {});
       metrics.getMeter("test").createCounter("adp.codex.turns").add(1, { outcome: "completed" });
     });
     await telemetry.shutdown();
@@ -34,12 +36,14 @@ test("OTLP exports correlated spans and bounded metrics without task content", a
     assert.equal(run.parentSpanId, parent.split("-")[2]);
     assert.equal(turn.parentSpanId, run.spanId);
     assert.ok(documents.some(d => d.path === "/v1/metrics"));
+    const records = documents.filter(d => d.path === "/v1/logs").flatMap(d => JSON.parse(d.body).resourceLogs.flatMap((r: any) => r.scopeLogs.flatMap((s: any) => s.logRecords)));
+    assert.ok(records.some((record: any) => record.body.stringValue === "adp.codex.model.settled" && record.traceId === run.traceId && record.spanId));
     assert.doesNotMatch(JSON.stringify(documents), /authorization|prompt|api_key|access_token/i);
     assert.equal(activeTraceparent(), undefined);
   } finally {
     await telemetry.shutdown();
     await new Promise<void>(resolve => server.close(() => resolve()));
-    trace.disable(); metrics.disable();
+    trace.disable(); metrics.disable(); logs.disable();
   }
 });
 
@@ -55,6 +59,6 @@ test("unresponsive collector cannot delay shutdown beyond its bound", async () =
   } finally {
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
-    trace.disable(); metrics.disable();
+    trace.disable(); metrics.disable(); logs.disable();
   }
 });
