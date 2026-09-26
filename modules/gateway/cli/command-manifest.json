@@ -6383,6 +6383,363 @@
         "tests/cli/test_adp_ratelimit.py",
         "tests/admin/test_ratelimit_cli.py"
       ]
+    },
+    {
+      "command": "adp admin budget member-report",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.person.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size",
+        "--period"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/member-budgets"
+        ],
+        "schema": "MemberBudgetListResponse"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.read"
+      ]
+    },
+    {
+      "command": "adp admin budget person-cap delete",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.person.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--person",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/budget/person-cap/{target}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.write"
+      ]
+    },
+    {
+      "command": "adp admin budget person-cap set",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.person.write",
+      "flags": [
+        "--amount-usd",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--person",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/budget/person-cap/{target}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.write"
+      ]
+    },
+    {
+      "command": "adp admin budget person-cap show",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.person.read",
+      "flags": [
+        "--json",
+        "--period",
+        "--person"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/budget/person-cap/{target}"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.read"
+      ]
+    },
+    {
+      "command": "adp admin budget person-default delete",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.person.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--scope",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/budget/person-default/{target}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.write"
+      ]
+    },
+    {
+      "command": "adp admin budget person-default set",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.person.write",
+      "flags": [
+        "--amount-usd",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--scope",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/budget/person-default/{target}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.write"
+      ]
+    },
+    {
+      "command": "adp admin budget person-default show",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.person.read",
+      "flags": [
+        "--json",
+        "--period",
+        "--scope"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/budget/person-default/{target}"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.read"
+      ]
+    },
+    {
+      "command": "adp budget person-cap delete",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.self.read",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Admin-governed policy refusal; no HTTP request"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp budget person-cap set",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.self.read",
+      "flags": [
+        "--amount-usd",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Admin-governed policy refusal; no HTTP request"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp budget person-cap show",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.self.read",
+      "flags": [
+        "--json",
+        "--period"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/budget/person-cap"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.self.read"
+      ]
     }
   ]
 }

@@ -259,6 +259,8 @@ OPERATIONS = (
         "budget.self.read",
         summary="Read your own cap and settled spend",
     ),
+    Operation("budget.person.read", summary="Read person caps, defaults and member budgets", platform_admin=True),
+    Operation("budget.person.write", summary="Change admin-governed person caps and defaults", platform_admin=True, mutates=True),
     Operation(
         "budget.managed.read",
         summary="Read budgets for entities you administer",

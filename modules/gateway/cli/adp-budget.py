@@ -47,6 +47,28 @@ def parser():
             p.add_argument("--expect-absent", action="store_true", help="Create only if the inspected exact cap is absent")
             p.add_argument("--amount-usd", required=True)
             p.add_argument("--mode", choices=["hard", "soft"], required=True)
+    for namespace, families in ((own, ("person-cap",)), (managed, ("person-cap", "person-default"))):
+        for family in families:
+            commands = namespace.add_parser(family).add_subparsers(dest="person_action", required=True)
+            for action in ("show", "set", "delete"):
+                p = commands.add_parser(action)
+                p.add_argument("--json", action="store_true")
+                p.add_argument("--period", choices=PERIODS, default="monthly")
+                if namespace is managed:
+                    p.add_argument("--person" if family == "person-cap" else "--scope", required=True)
+                if action in {"set", "delete"}:
+                    p.add_argument("--dry-run", action="store_true")
+                    p.add_argument("--yes", action="store_true")
+                    p.add_argument("--expected-revision", help="Exact revision from show/preview, or absent")
+                if action == "set":
+                    p.add_argument("--amount-usd", required=True)
+    p = managed.add_parser("member-report")
+    p.add_argument("--org", required=True)
+    p.add_argument("--period", choices=PERIODS, default="monthly")
+    p.add_argument("--page", type=int, choices=range(1, 10001), default=1)
+    p.add_argument("--page-size", type=int, choices=range(1, 51), default=20)
+    p.add_argument("--max-pages", type=int, choices=range(1, 101), default=1)
+    p.add_argument("--json", action="store_true")
     return root
 
 
@@ -117,7 +139,201 @@ def config(value, org, kind, period, key=None, canonical=None):
     return value
 
 
+def person_scope(value):
+    parts = value.split(":")
+    if not (parts == ["platform"] or len(parts) == 2 and parts[0] == "org" or len(parts) == 3 and parts[0] == "team"):
+        raise common.CliError("Use platform, org:ORG, or team:ORG:TEAM.", "usage_error", 1)
+    for part in parts:
+        identifier(part)
+    return parts[0], parts[1] if len(parts) > 1 else None, parts[2] if len(parts) > 2 else None
+
+
+def person_row(value, args):
+    def malformed():
+        raise common.CliError("Malformed person limit or mismatched target/period.", "invalid_response", 5)
+
+    if not isinstance(value, dict) or value.get("period_type") != args.period or value.get("cap_status") not in {"capped", "uncapped"}:
+        malformed()
+    if args.action == "person-default":
+        if tuple(value.get(k) for k in ("scope_type", "scope_id_org", "scope_id_team")) != person_scope(args.scope):
+            malformed()
+    else:
+        anchor = value.get("person_anchor")
+        if not isinstance(anchor, str) or not anchor or ":" not in anchor:
+            malformed()
+        if args.area == "admin" and anchor != args.person:
+            malformed()
+        if value.get("source") not in {None, "own", "admin", "team_default", "org_default", "platform_default"}:
+            malformed()
+    if value["cap_status"] == "uncapped":
+        if any(value.get(k) is not None for k in ("cap_usd", "enforcement_mode", "updated_at")):
+            malformed()
+        if args.action == "person-cap" and value.get("source") is not None:
+            malformed()
+    else:
+        try:
+            if not isinstance(value.get("cap_usd"), str) or not Decimal(value["cap_usd"]).is_finite() or Decimal(value["cap_usd"]) < 0:
+                malformed()
+            if value.get("enforcement_mode") not in {"hard", "soft"}:
+                malformed()
+            if args.action == "person-cap" and value.get("source") is None:
+                malformed()
+            if args.area == "admin" and not isinstance(value.get("updated_at"), str):
+                malformed()
+            if value.get("updated_at") is not None:
+                if not isinstance(value["updated_at"], str) or datetime.fromisoformat(value["updated_at"].replace("Z", "+00:00")).tzinfo is None:
+                    malformed()
+        except (ValueError, InvalidOperation):
+            malformed()
+    return value
+
+
+def member_report(args, client):
+    path = "/admin/organizations/" + identifier(args.org) + "/member-budgets?"
+    items, seen, page = [], set(), args.page
+    for _ in range(args.max_pages):
+        value = client.request("GET", path + urlencode(dict(period_type=args.period, page=page, page_size=args.page_size)))
+        if (
+            not isinstance(value, dict)
+            or not isinstance(value.get("items"), list)
+            or type(value.get("has_more")) is not bool
+            or value.get("page") != page
+            or value.get("page_size") != args.page_size
+            or value.get("period_type") != args.period
+            or type(value.get("total")) is not int
+            or value["total"] < 0
+            or len(value["items"]) > args.page_size
+            or not isinstance(value.get("period_start"), str)
+        ):
+            raise common.CliError("Malformed member budget page.", "invalid_response", 5)
+        try:
+            datetime.fromisoformat(value["period_start"])
+            for row in value["items"]:
+                if not isinstance(row, dict) or not isinstance(row.get("user_id"), str) or not row["user_id"] or row["user_id"] in seen:
+                    raise ValueError
+                seen.add(row["user_id"])
+                if not isinstance(row.get("spend_usd"), str) or not Decimal(row["spend_usd"]).is_finite() or Decimal(row["spend_usd"]) < 0:
+                    raise ValueError
+                if row.get("limit_status") not in {"capped", "uncapped"}:
+                    raise ValueError
+                if row["limit_status"] == "capped":
+                    if not isinstance(row.get("limit_usd"), str) or not Decimal(row["limit_usd"]).is_finite() or Decimal(row["limit_usd"]) < 0:
+                        raise ValueError
+                    if row.get("source") not in {"own", "admin", "team_default", "org_default", "platform_default"}:
+                        raise ValueError
+                elif row.get("limit_usd") is not None or row.get("source") is not None:
+                    raise ValueError
+                items.append(row)
+        except (ValueError, InvalidOperation):
+            raise common.CliError("Malformed or repeated member budget row.", "invalid_response", 5) from None
+        if not value["has_more"]:
+            break
+        if not value["items"]:
+            raise common.CliError("Incomplete empty member budget page.", "invalid_response", 5)
+        page += 1
+    value.update(
+        items=items,
+        org_id=args.org,
+        complete=not value["has_more"],
+        next_page=page if value["has_more"] else None,
+        snapshot=False,
+        usage_kind="settled_selected_org",
+        cross_org_headroom="unknown",
+    )
+    return common.envelope(
+        "ok",
+        "adp admin budget member-report",
+        value,
+        "Person caps govern cross-tenant totals; this report contains only selected-org settled spend. It cannot establish global headroom.",
+    )
+
+
+def person_execute(args, client):
+    command = "adp " + ("admin " if args.area == "admin" else "") + "budget " + args.action + " " + args.person_action
+    if args.area != "admin" and args.person_action != "show":
+        raise common.CliError(
+            "Person limits are admin-governed. Self set/delete is unavailable; ask a platform admin. No request was sent.", "permission_denied", 3
+        )
+    if args.action == "person-default":
+        person_scope(args.scope)
+        path = "/budget/person-default/" + identifier(args.scope)
+    elif args.area == "admin":
+        # Require the canonical anchor, not tenant user IDs or ledger root_user IDs.
+        if not args.person.startswith("github:") or not args.person[7:].isdigit():
+            raise common.CliError("Use the canonical github:NUMERIC_ID person anchor.", "usage_error", 1)
+        path = "/budget/person-cap/" + identifier(args.person)
+    else:
+        path = "/me/budget/person-cap"
+    path += "?" + urlencode({"period_type": args.period})
+    desired = amount(args.amount_usd) if args.person_action == "set" else None
+    before = person_row(client.request("GET", path), args)
+    if args.person_action == "show":
+        return common.envelope(
+            "ok",
+            command,
+            {"configuration": before, "authority": "platform_admin", "usage": "unknown", "headroom": "unknown"},
+            "Use budget me for your settled person envelope and blockers. Admin show reads the explicit row; absence may inherit a default.",
+        )
+    revision = before["updated_at"] if before["cap_status"] == "capped" else "absent"
+    effect = (
+        "Individual rows override defaults. Deleting an individual row restores applicable team/org/platform defaults, or uncapped if none applies. "
+        "Default changes govern current and future members without a more specific rule; deleting a default restores broader rules. "
+        "Usage is preserved. Other budgets still apply; person-limit cache refresh can take 60 seconds."
+    )
+    if args.dry_run:
+        return common.envelope(
+            "dry_run",
+            command,
+            dict(
+                before=before,
+                amount_usd=desired,
+                enforcement_mode="hard" if desired else None,
+                expected_revision=revision,
+                effect=effect,
+                resolved_after="unknown_until_person_readback",
+            ),
+        )
+    if not args.yes or not args.expected_revision:
+        raise common.CliError("Inspect --dry-run, then pass --yes --expected-revision REV (or absent).", "confirmation_required", 1)
+    if args.expected_revision != revision:
+        raise common.CliError("Person limit changed since review; inspect again.", "conflict", 4)
+    common.ensure_can_mutate("budget.person.write", request=client.api.request, token=client.token)
+    route = path + "&" + urlencode({"expected_revision": args.expected_revision})
+    method = "PUT" if args.person_action == "set" else "DELETE"
+    unknown = False
+    try:
+        ack = client.request(method, route, {"budget_amount_usd": desired} if method == "PUT" else None)
+        if method == "PUT":
+            person_row(ack, args)
+            if ack["cap_status"] != "capped" or Decimal(ack["cap_usd"]) != Decimal(desired) or ack["enforcement_mode"] != "hard":
+                raise common.CliError("Mismatched person limit acknowledgement.", "invalid_response", 5)
+        elif ack != {}:
+            raise common.CliError("Malformed person limit delete acknowledgement.", "invalid_response", 5)
+    except common.CliError as exc:
+        if exc.code not in {"unknown_mutation_outcome", "invalid_response"} and not (exc.status_code and exc.status_code >= 500):
+            raise
+        unknown = True
+    except (http.client.HTTPException, OSError, ValueError):
+        unknown = True
+    try:
+        observed = person_row(client.request("GET", path), args)
+    except (common.CliError, http.client.HTTPException, OSError, ValueError):
+        observed = None
+        unknown = True
+    matches = not unknown and observed is not None and (observed["cap_status"] == "uncapped" if method == "DELETE" else observed == ack)
+    return common.envelope(
+        "ok" if matches else "pending",
+        command,
+        dict(configuration=observed, readback_matches=bool(matches), outcome="unknown" if unknown else "acknowledged"),
+        "No mutation replayed. " + effect + " Saved configuration is not live enforcement evidence.",
+    )
+
+
 def execute(args, client):
+    if args.action in {"person-cap", "person-default"}:
+        return person_execute(args, client)
+    if args.action == "member-report":
+        return member_report(args, client)
     command = "adp " + ("budget me" if args.action == "me" else "admin budget " + args.action)
     if args.action == "me":
         value = client.request("GET", "/me/budget?" + urlencode({"period_type": args.period}))
@@ -296,7 +512,7 @@ def main(argv=None):
         args = parser().parse_args(argv)
         if args.action == "set":
             amount(args.amount_usd)
-        if args.action not in {"me", "list"}:
+        if args.action not in {"me", "list", "person-cap", "person-default", "member-report"}:
             target(args)
         return common.emit(execute(args, Client()), args.json)
     except (common.CliError, OSError, ValueError, TypeError, http.client.HTTPException) as exc:

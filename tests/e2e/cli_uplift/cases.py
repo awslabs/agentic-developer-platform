@@ -316,6 +316,13 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
+        "E35",
+        "#5626",
+        "story-reads",
+        "Own person limits retain source and self-write refusal; no spend-through or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
         "E29",
         "#5623",
         "story-reads",
@@ -328,7 +335,6 @@ CASES = (
         "story-reads",
         "Own rate-limit hierarchy and unavailable TPM are explicit; no inference or saved-limit mutation",
         (EC2, PLATFORM, COGNITO),
-    ),
     ),
     Case(
         "E33",
