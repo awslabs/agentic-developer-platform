@@ -408,3 +408,22 @@ async def retained(connection, source, snapshot):
     # Current provider enumeration and query generations intentionally not read:
     # cleanup must advance them. This snapshot never authorizes allocation release.
     return value
+
+
+async def select(connection, source, graph=None):
+    """Read-only selection of source-owned evidence; no capture or fencing."""
+    snapshot = await connection.fetchrow(
+        "SELECT * FROM controller_cleanup_snapshots WHERE source_operation_id=$1 AND org_id=$2 AND workspace_id=$3",
+        source["operation_id"],
+        source["org_id"],
+        source["workspace_id"],
+    )
+    if snapshot is None:
+        raise OperationRefused(
+            "staged cleanup requires a retained original source snapshot"
+        )
+    value = await retained(connection, source, snapshot)
+    expected = header(value)
+    if graph is not None and graph != expected:
+        raise OperationRefused("cleanup graph differs from its original snapshot")
+    return expected, value

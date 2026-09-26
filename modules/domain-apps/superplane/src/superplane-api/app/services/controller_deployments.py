@@ -397,7 +397,11 @@ async def admit_controller_deployment(
             ) != request or intent["controller_approval_id"] != str(approval_id):
                 raise ProvisioningRefused("original reviewed deployment intent changed")
         else:
-            from superplane_executor.cleanup_binding import source_for, validate
+            from superplane_executor.cleanup_binding import (
+                source_for,
+                validate,
+                validated_graph,
+            )
 
             try:
                 source = await source_for(
@@ -424,6 +428,7 @@ async def admit_controller_deployment(
                 source_operation_id=request.parameters[
                     "controller_source_operation_id"
                 ],
+                cleanup_graph=await validated_graph(raw, source, request),
             )
             if expected != request:
                 raise ProvisioningRefused(

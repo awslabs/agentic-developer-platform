@@ -213,7 +213,11 @@ Stage postconditions:
 Fresh discovery outside approved snapshot identities refuses before further
 mutations; it does not add a new graph stage. Read-only recovery may confirm
 fenced journal evidence after an exact completed provider effect but cannot call
-mutation-capable network release. Prior non-successful shared intents are never
+mutation-capable network release. If an exact immutable original native network
+identity is freshly observed absent, recovery may atomically record that absence
+and release only its original membership under the current fence, even when no
+delete was dispatched. It never creates a delete effect to explain preexisting
+absence. Unknown native identities remain UNKNOWN. Prior non-successful shared intents are never
 redispatched. Prefix continuation uses the existing paid dispatch path unchanged.
 
 ## 5. Explicit remaining obstacles / coverage limits

@@ -1,7 +1,7 @@
 """Pydantic schemas for proxy, deployment, heartbeat, and cost endpoints."""
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -76,6 +76,7 @@ class DeleteDeploymentRequest(BaseModel):
     operation_id: uuid.UUID
     approval_id: uuid.UUID | None = None
     plan_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    cleanup_mode: Literal["aggregate", "staged-v1"] = "aggregate"
 
 
 class BatchOptions(BaseModel):

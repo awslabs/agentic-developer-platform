@@ -845,6 +845,7 @@ async def worker_runtime(workload, tmp_path):
             if cloud.lose_launch_response:
                 raise httpx.ReadError("simulated response loss")
         elif path == "/down":
+            cloud.downs = getattr(cloud, "downs", 0) + 1
             assert json.loads(request.content)["purge"] is False
             cloud.exists = False
         elif path == "/api/status":
@@ -875,9 +876,13 @@ async def worker_runtime(workload, tmp_path):
     gateway.alter = {"adp_org_id": "adp-test"}
     dispatcher = OperationDispatcher(workload.connections.connect, gateway)
 
-    async def publish(result):
-        # The request here is the actual API admission, delivered by its real outbox.
-        assert (await dispatcher.drain_once()).delivered == 1
+    async def publish(result, *, continuation=False):
+        # Both paths use the real paid dispatcher and original admission.
+        if continuation:
+            assert result.operation_id in await dispatcher.recover_once()
+            assert gateway.calls[-1][1]["mode"] == "execution"
+        else:
+            assert (await dispatcher.drain_once()).delivered == 1
         assert gateway.calls[-1][1]["operation_id"] == result.operation_id
         async with pool.acquire() as connection:
             original = await connection.fetchrow(
@@ -887,8 +892,8 @@ async def worker_runtime(workload, tmp_path):
             lease = await acquire(
                 connection,
                 operation_id=result.operation_id,
-                holder="real-invocation#1",
-                attempt_id=original["attempt_id"],
+                holder="real-invocation#" + uuid.uuid4().hex,
+                attempt_id=uuid.uuid4().hex if continuation else original["attempt_id"],
             )
         principal = ResolvedPrincipal(
             lease.org_id,
@@ -907,7 +912,7 @@ async def worker_runtime(workload, tmp_path):
             original["max_cost_micros"],
         )
         verified[result.operation_id] = operation
-        directory = tmp_path / result.operation_id
+        directory = tmp_path / (result.operation_id + "-" + str(lease.fence_token))
         directory.mkdir()
         provider = Provider(
             sky=sky,

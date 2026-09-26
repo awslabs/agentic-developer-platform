@@ -102,8 +102,8 @@ async def create(context, body=None):
             )
 
 
-async def stop(context, created):
-    body = DeleteDeploymentRequest(operation_id=uuid.uuid4())
+async def stop(context, created, *, cleanup_mode="aggregate"):
+    body = DeleteDeploymentRequest(operation_id=uuid.uuid4(), cleanup_mode=cleanup_mode)
     with context.actor(workspace_id=context.workload_id):
         async with context.sessions() as db:
             review = await proxy.preview_batch_teardown(
