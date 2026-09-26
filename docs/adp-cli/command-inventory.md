@@ -316,3 +316,11 @@ Superplane lifecycle #5638 adds `workspace delete`, `provider-connection create|
 | `adp chat show` |  | `--json`, `--session` |
 | `adp chat watch` |  | `--interval`, `--json`, `--session`, `--task-id`, `--timeout` |
 | `adp chat export` |  | `--json`, `--output`, `--session` |
+
+Hosted coding (#5516) adds `adp agent trigger --repo --issue --persona
+--snapshot-file --instructions-file --request-id [--dry-run|--yes] [--timeout]
+[--json]`. Both Claude and Codex developer personas submit through the existing
+Task API using the selected human login and standing repository enrollment.
+`agent status|detail|state|ping|logs|wait|steer|abort` also accept canonical `tsk_`
+handles; Task pause/resume are explicitly unavailable. See [hosted coding](hosted-coding.md)
+for repository snapshots, deterministic patch results and E42 qualification limits.

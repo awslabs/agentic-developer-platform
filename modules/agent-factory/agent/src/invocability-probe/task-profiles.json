@@ -1,0 +1,22 @@
+{
+  "agent-task-investigator": {
+    "revision": "task-messages-v1",
+    "body": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":16,\"messages\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"text\"}],\"role\":\"user\"}],\"system\":\"Reply briefly.\"}",
+    "digest": "46e891f50d92e8e113b6017ae643bc668d748eb5dd50fea815613e78ae7b20ae"
+  },
+  "agent-task-cyber": {
+    "revision": "task-cyber-sdk-messages-v1",
+    "body": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"content\":[{\"text\":\"Call task_probe with value OK.\",\"type\":\"text\"}],\"role\":\"user\"}],\"tool_choice\":{\"name\":\"task_probe\",\"type\":\"tool\"},\"tools\":[{\"description\":\"Return probe evidence.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"},\"name\":\"task_probe\"}]}",
+    "digest": "381205c19ec2aa7e8d3485f4d3f3ae8493ba6524baf57dde7ed11cfa89a49860"
+  },
+  "agent-task-claude-developer": {
+    "revision": "task-coding-sdk-messages-v1",
+    "body": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"content\":[{\"text\":\"Call task_probe with value OK.\",\"type\":\"text\"}],\"role\":\"user\"}],\"tool_choice\":{\"name\":\"task_probe\",\"type\":\"tool\"},\"tools\":[{\"description\":\"Return probe evidence.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"},\"name\":\"task_probe\"}]}",
+    "digest": "381205c19ec2aa7e8d3485f4d3f3ae8493ba6524baf57dde7ed11cfa89a49860"
+  },
+  "agent-task-codex-developer": {
+    "revision": "task-codex-responses-compat-v1",
+    "body": "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":64,\"messages\":[{\"content\":[{\"text\":\"Call task_probe with value OK.\",\"type\":\"text\"}],\"role\":\"user\"}],\"tool_choice\":{\"name\":\"task_probe\",\"type\":\"tool\"},\"tools\":[{\"description\":\"Return probe evidence.\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"},\"name\":\"task_probe\"}]}",
+    "digest": "381205c19ec2aa7e8d3485f4d3f3ae8493ba6524baf57dde7ed11cfa89a49860"
+  }
+}

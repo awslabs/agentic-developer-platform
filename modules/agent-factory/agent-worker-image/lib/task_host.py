@@ -723,6 +723,7 @@ class TaskHost:
         finalized = False
         heartbeat_stopped = False
         sdk = False
+        remote_tools = False
         cyber_cleanup_confirmed = False
 
         def stop_heartbeat() -> None:
@@ -769,7 +770,8 @@ class TaskHost:
                 raise TaskRunClientError("task attempt was not registered")
             artifacts = self._input_artifacts(assignment, bootstrap)
             command = self.command_resolver(bootstrap["persona"])
-            sdk = bootstrap["persona"] == "agent-task-cyber"
+            remote_tools = bootstrap["persona"] == "agent-task-cyber"
+            sdk = bootstrap["persona"] in {"agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"}
             self.work_root.mkdir(parents=True, exist_ok=True)
             workspace = Path(
                 tempfile.mkdtemp(prefix=f"task-{assignment.invocation_id[:8]}-", dir=self.work_root)
@@ -1084,7 +1086,7 @@ class TaskHost:
                                 deliver_model(frame)
 
                         elif frame["type"] in {"cyber.request", "tool.request"}:
-                            if not sdk or cyber_job is not None or model_job is not None or deferred_model is not None or report_outage_started is not None:
+                            if not remote_tools or cyber_job is not None or model_job is not None or deferred_model is not None or report_outage_started is not None:
                                 raise TaskProtocolError("cyber operation is not admitted")
                             if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:
                                 raise TaskProtocolError("cyber operation request identity reused or limit exceeded")
@@ -1120,7 +1122,7 @@ class TaskHost:
                             raise TaskHostError(frame["message"], code=frame["code"])
             exit_code = process.wait()
             stderr_thread.join(timeout=1)
-            if sdk:
+            if remote_tools:
                 self._cancel_cyber_jobs(assignment, attempt)
                 cyber_cleanup_confirmed = True
             if cancel_started is not None:
@@ -1197,7 +1199,7 @@ class TaskHost:
                 else "process_failed"
             )
             try:
-                if sdk and not cyber_cleanup_confirmed:
+                if remote_tools and not cyber_cleanup_confirmed:
                     self._cancel_cyber_jobs(assignment, attempt)
                 self._finalize(
                     assignment,

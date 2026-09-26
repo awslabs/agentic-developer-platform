@@ -360,6 +360,7 @@ async def test_routes_forbid_worker_selected_target_and_default_to_no_work(db_se
     assert response.status_code == 200
     assert response.json() == {
         "claimed": False,
+        "task_probe_json": None,
         "reason": "disabled",
         "slot_id": None,
         "lease_token": None,
@@ -567,3 +568,78 @@ async def test_forged_lease_token_cannot_start_or_replay_completion(db_session, 
     with pytest.raises(ProbeConflictError) as replay_exc:
         await complete_probe(db_session, **{**completion, "lease_token": "forged-token" * 4})
     assert replay_exc.value.reason == "invalid_lease_token"
+
+
+def test_task_profiles_match_worker_and_do_not_change_legacy_cycle():
+    import hashlib
+
+    from src.internal.persona_model_probe_service import _cycle_key
+    from src.tasks.personas import TASK_PERSONAS
+
+    worker = Path(__file__).parents[3] / "agent-factory/agent/src/invocability-probe/task-profiles.json"
+    profiles = json.loads(worker.read_text())
+    for persona, profile in TASK_PERSONAS.items():
+        assert profiles[persona] == {
+            "revision": profile.harness_contract_revision,
+            "body": profile.probe_json,
+            "digest": profile.request_shape_sha256,
+        }
+        assert profile.probe_body["max_tokens"] in (16, 64)
+    legacy = json.loads((Path(__file__).parents[2] / "src/admin/persona_models/request-shape-manifest.json").read_text())
+    fingerprint = hashlib.sha256(json.dumps(legacy["models"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert _cycle_key(datetime(2026, 9, 26, tzinfo=UTC)) == f"2026-09-26:{fingerprint}"
+
+
+@pytest.mark.asyncio
+async def test_task_probe_opt_in_shares_legacy_spend_envelope(db_session, monkeypatch):
+    from src.tasks.personas import TASK_PERSONAS
+
+    _enable(monkeypatch, slots=2, cycle_budget="0.02")
+    db_session.add(_destination())
+    await db_session.commit()
+    legacy = await claim_probe(db_session)
+    task = await claim_probe(db_session, task_persona="agent-task-cyber")
+    assert legacy.slot.compatibility_class == "claude-agent-sdk"
+    assert task.slot.compatibility_class == "anthropic_messages"
+    assert task.slot.expected_request_shape_sha256 == TASK_PERSONAS["agent-task-cyber"].request_shape_sha256
+    assert task.slot.cycle_id == legacy.slot.cycle_id
+    assert (await claim_probe(db_session, task_persona="agent-task-investigator")).reason == "cycle_budget_exhausted"
+    cycle = (await db_session.scalars(select(ModelProbeCycle))).one()
+    assert cycle.reserved_usd == Decimal("0.02")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persona", ["agent-task-investigator", "agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"])
+async def test_task_probe_exact_profile_and_deduplication(db_session, monkeypatch, persona):
+    from src.tasks.personas import TASK_PERSONAS
+
+    _enable(monkeypatch)
+    monkeypatch.setenv("BG_MODEL_PROBE_MODEL_ALLOWLIST", '["us.anthropic.claude-sonnet-4-6"]')
+    db_session.add(_destination())
+    await db_session.commit()
+    task = await claim_probe(db_session, task_persona=persona)
+    assert task.slot.harness_contract_revision == TASK_PERSONAS[persona].harness_contract_revision
+    assert (await claim_probe(db_session, task_persona=persona)).reason == "no_candidates"
+
+
+@pytest.mark.asyncio
+async def test_claim_route_explicit_task_profile_returns_exact_body(db_session, monkeypatch):
+    from src.tasks.personas import TASK_PERSONAS
+
+    _enable(monkeypatch)
+    db_session.add(_destination())
+    await db_session.commit()
+    app = FastAPI()
+    app.include_router(router)
+
+    async def _db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _db
+    app.dependency_overrides[verify_model_probe_irsa] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        rejected = await client.post("/internal/v1/persona-model-probes/claim", json={"task_persona": "unknown"})
+        response = await client.post("/internal/v1/persona-model-probes/claim", json={"task_persona": "agent-task-cyber"})
+    assert rejected.status_code == 422
+    assert response.status_code == 200
+    assert response.json()["task_probe_json"] == TASK_PERSONAS["agent-task-cyber"].probe_json

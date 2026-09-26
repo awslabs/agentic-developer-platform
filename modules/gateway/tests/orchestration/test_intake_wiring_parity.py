@@ -232,7 +232,7 @@ class TestTheGrantIsReadOnlyAndNarrow:
         grant = writes[0]
         assert grant.startswith('HostedTaskChatSessionsWrite"')
         assert re.search(r'Action\s*=\s*\["dynamodb:PutItem"\]', grant)
-        assert re.search(r'Resource\s*=\s*\[module.gateway_sessions.table_arn\]', grant)
+        assert re.search(r"Resource\s*=\s*\[module.gateway_sessions.table_arn\]", grant)
         assert re.search(r'"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*\["chat-\*"\]\s*\}', grant)
 
     def test_no_wildcard_resource(self, intake_tf):

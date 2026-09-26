@@ -717,3 +717,19 @@ async def test_generated_html_is_an_authenticated_download_with_inert_headers(cl
     assert "sandbox" in response.headers["content-security-policy"]
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_human_artifact_scope_without_investigator_enrollment(client, caller, store, monkeypatch, allowed):
+    from src.tasks import authz
+
+    caller[0] = authz.Caller(principal_id="human:owner", tenant_id="org-alpha", scopes=frozenset({authz.SCOPE_ARTIFACTS}) if allowed else frozenset())
+
+    def service_policy(**kwargs):
+        raise AssertionError("Human coding upload must not require investigator service enrollment")
+
+    monkeypatch.setattr(store, "require_policy", service_policy)
+    response = await client.post(UPLOAD, **parts())
+    assert response.status_code == (201 if allowed else 403)
+    if allowed:
+        assert store.artifacts[response.json()["artifact_id"]].owner_principal_id == "human:owner"

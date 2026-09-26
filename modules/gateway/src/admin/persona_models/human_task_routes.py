@@ -1,8 +1,10 @@
 """Standing human Task enrollment, administered without service impersonation."""
 
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -15,8 +17,36 @@ from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 from src.tasks.human_authority import human_locator
+from src.tasks.repository_authority import CODING_PERSONAS, safe_path
 
 router = APIRouter(prefix="/human-principals", tags=["human-task-admin"])
+
+
+class RepositoryScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    repository_id: int = Field(gt=0)
+    repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    path_prefixes: list[str] = Field(min_length=1, max_length=32)
+
+    @field_validator("repository_id", mode="before")
+    @classmethod
+    def stored_integer(cls, value):
+        return int(value) if isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value() else value
+
+    @field_validator("path_prefixes")
+    @classmethod
+    def valid_paths(cls, value):
+        if len(set(value)) != len(value) or any(not safe_path(path.rstrip("/")) for path in value):
+            raise ValueError("Use distinct repository paths")
+        return value
+
+
+class HumanTaskPolicyPut(TaskPolicyPutRequest):
+    repository_scopes: list[RepositoryScope] = Field(default_factory=list, max_length=16)
+
+
+class HumanTaskPolicyResponse(TaskPolicyResponse):
+    repository_scopes: list[RepositoryScope] = Field(default_factory=list)
 
 
 async def enrolled_target(db, current_user, user_id):
@@ -30,7 +60,7 @@ async def enrolled_target(db, current_user, user_id):
     return admin, locator
 
 
-@router.get("/{user_id}/task-policy", response_model=TaskPolicyResponse)
+@router.get("/{user_id}/task-policy", response_model=HumanTaskPolicyResponse)
 async def get_policy(
     user_id: str,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
@@ -44,13 +74,13 @@ async def get_policy(
         raise HTTPException(503, "Task policy unavailable") from None
     if policy is None:
         raise HTTPException(404, "Task policy not found")
-    return TaskPolicyResponse.model_validate(policy)
+    return HumanTaskPolicyResponse.model_validate(policy)
 
 
-@router.put("/{user_id}/task-policy", response_model=TaskPolicyResponse)
+@router.put("/{user_id}/task-policy", response_model=HumanTaskPolicyResponse)
 async def put_policy(
     user_id: str,
-    body: TaskPolicyPutRequest,
+    body: HumanTaskPolicyPut,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     policy_store: Annotated[TaskServicePolicyStore, Depends(task_policy_store)],
@@ -58,8 +88,10 @@ async def put_policy(
     admin, locator = await enrolled_target(db, current_user, user_id)
     # Only installed canonical Task executables qualify. Repository developer
     # authority cannot be created by labelling an investigator as a developer.
-    if set(body.allowed_personas) - {"agent-task-investigator", "agent-task-cyber"}:
+    if set(body.allowed_personas) - {"agent-task-investigator", "agent-task-cyber", *CODING_PERSONAS}:
         raise HTTPException(422, "Unsupported Task executable")
+    if CODING_PERSONAS.intersection(body.allowed_personas) and not getattr(body, "repository_scopes", []):
+        raise HTTPException(422, "Coding Tasks require explicit repository scope")
     try:
         policy = await run_in_threadpool(
             policy_store.put,
@@ -71,4 +103,4 @@ async def put_policy(
         )
     except TaskServicePolicyError as exc:
         raise HTTPException({"version_conflict": 409, "invalid_policy": 422}.get(exc.code, 503), "Task policy update refused") from None
-    return TaskPolicyResponse.model_validate(policy)
+    return HumanTaskPolicyResponse.model_validate(policy)

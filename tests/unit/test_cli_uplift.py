@@ -1009,6 +1009,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E19",
         "E28",
         "E39",
+        "E42",
         "E25",
         "E27",
     }
@@ -8431,6 +8432,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E19",
         "E28",
         "E39",
+        "E42",
         "E25",
         "E27",
     }
@@ -10262,6 +10264,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E41",
         "E28",
         "E39",
+        "E42",
         "E36",
         "E29",
         "E35",
@@ -10847,3 +10850,138 @@ def test_chat_read_scenario_is_nightly_and_read_only(tmp_path):
     module.chat(cli, {})
     assert cli.json.call_args_list[1].args[0] == ["chat", "list", "--page-size", "1"]
     assert stages.JOURNEY_DRIVERS["E40"] in bundle.purposes()
+
+
+def test_coding_nightly_fixture_is_explicit_and_defaults_blocked(tmp_path):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    assert not module.fixture_valid({})
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo"},
+        instructions="bounded issue",
+    )
+    assert module.fixture_valid(fixture)
+    for changes in (
+        {"max_dispatches": 2},
+        {"max_task_usd": 1.01},
+        {"enrollment_verified": False},
+        {"shared_budget_authorized": False},
+    ):
+        assert not module.fixture_valid({**fixture, **changes})
+    assert "E42" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert cases.HUMAN_TASK_CODING not in config.fixture_classes(VALID)
+
+
+def test_coding_lost_cli_receipt_recovers_owned_task_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    import json
+
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    task_id = "tsk_12345678-1234-4123-8123-123456789abc"
+    calls = []
+    work = tmp_path / "run"
+    work.mkdir()
+
+    class Cli:
+        def __init__(self, executable, env, transcript, **kwargs):
+            self.home = Path(env["HOME"])
+
+        def json(self, argv, **kwargs):
+            if "--dry-run" in argv:
+                return {"status": "dry_run"}
+            journal = self.home / ".adp/state/hosted-tasks"
+            journal.mkdir(parents=True)
+            (journal / "receipt.json").write_text(
+                json.dumps(
+                    {
+                        "artifact_id": "art-fixture",
+                        "task_id": task_id,
+                        "fingerprint": "exact",
+                    }
+                )
+            )
+            raise RuntimeError("CLI stdout lost after durable acceptance")
+
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 0, {
+                "detail": {"status": "cancelled" if "wait" in argv else "accepted"}
+            }
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {})
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo", "issue": 42},
+        instructions="bounded edit",
+    )
+    evidence = {"transcript": []}
+    with pytest.raises(RuntimeError, match="stdout lost"):
+        module.execute(
+            {
+                "human_task_coding": fixture,
+                "cli_path": "/fixture/adp",
+                "gateway_url": "https://gateway",
+                "work_dir": str(work),
+            },
+            evidence,
+        )
+    assert evidence["task_id"] == task_id
+    assert evidence["acceptance_reconciled"] is True
+    assert evidence["cleanup_status"] == "cancelled"
+    assert [argv[1] for argv in calls] == ["abort", "wait"]
+    recovery = Path(evidence["recovery_path"])
+    assert recovery.exists() and recovery.stat().st_mode & 0o777 == 0o600
+    record = json.loads(recovery.read_text())
+    assert (
+        record["task_id"] == task_id
+        and record["journal"]["artifact_id"] == "art-fixture"
+    )
+    assert record["phase"] == "cancelled"
+    assert "access_token" not in record
+
+
+def test_coding_acceptance_replay_keeps_same_key_and_retains_unknown(tmp_path):
+    import json
+
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    journal = tmp_path / ".adp/state/hosted-tasks"
+    journal.mkdir(parents=True)
+    (journal / "receipt.json").write_text(
+        json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"})
+    )
+    task_id = "tsk_12345678-1234-4123-8123-123456789abc"
+    trigger = ["agent", "trigger", "--request-id", "stable-request"]
+    calls = []
+
+    class Cli:
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 4, {"detail": {"task_id": task_id}}
+
+    assert module.reconcile_acceptance(Cli(), trigger, tmp_path) == task_id
+    assert calls == [[*trigger, "--yes"]]
+
+    class Broken:
+        def run(self, argv, **kwargs):
+            raise RuntimeError("still unavailable")
+
+    assert module.reconcile_acceptance(Broken(), trigger, tmp_path) is None
+    assert module.local_receipt(tmp_path)["artifact_id"] == "art-fixture"

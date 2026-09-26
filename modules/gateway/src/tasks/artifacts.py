@@ -252,7 +252,8 @@ async def upload_artifact(request: Request, db: AsyncSession = Depends(get_db)):
 
     try:
         store = get_store()
-        store.require_policy(tenant=caller.tenant_id, principal=caller.principal_id, persona="agent-task-investigator")
+        if not caller.principal_id.startswith("human:"):
+            store.require_policy(tenant=caller.tenant_id, principal=caller.principal_id, persona="agent-task-investigator")
         stored = store.put_artifact(record=record, content=content)
     except TaskStoreError:
         logger.warning("Task API artifact upload failed: storage unavailable", exc_info=True)

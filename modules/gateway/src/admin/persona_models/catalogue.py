@@ -66,8 +66,10 @@ def persona_compatibility_class(persona_key: str) -> str | None:
     # The staged copy is asserted to match the authoritative source by a
     # parity test — see tests/admin/persona_models/test_persona_parity.py.
     from src.admin.persona_models._personas import PERSONA_COMPATIBILITY_CLASS
+    from src.tasks.personas import TASK_PERSONAS
 
-    return PERSONA_COMPATIBILITY_CLASS.get(persona_key)
+    profile = TASK_PERSONAS.get(persona_key)
+    return profile.compatibility_class if profile else PERSONA_COMPATIBILITY_CLASS.get(persona_key)
 
 
 def compatibility_class_harness_contract_revision(compatibility_class: str) -> str | None:
@@ -86,6 +88,10 @@ def persona_harness_contract_revision(persona_key: str) -> str:
     targets.  A newly registered compatibility class therefore cannot borrow
     another class's revision or silently emit a null revision.
     """
+    from src.tasks.personas import TASK_PERSONAS
+
+    if persona_key in TASK_PERSONAS:
+        return TASK_PERSONAS[persona_key].harness_contract_revision
     compatibility_class = persona_compatibility_class(persona_key)
     if compatibility_class is None:
         raise ValueError(f"Unknown persona key '{persona_key}'.")
