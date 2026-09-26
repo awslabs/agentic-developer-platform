@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,25 @@ class ExperimentStep(BaseModel):
 class ProposalCreateRequest(BaseModel):
     """Request to create a research proposal manually."""
 
+    request_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def exact_persisted_amounts(self):
+        if self.request_id is not None:
+            from decimal import Decimal
+
+            for name in ("estimated_cost_usd", "estimated_duration_hours"):
+                amount = getattr(self, name)
+                if amount is not None:
+                    value = Decimal(str(amount))
+                    if not value.is_finite() or value != value.quantize(
+                        Decimal("0.01")
+                    ):
+                        raise ValueError(
+                            "Idempotent proposal amounts require at most two decimal places"
+                        )
+        return self
+
     workspace_id: UUID | None = Field(
         default=None,
         description="Workspace to associate the proposal with.",
@@ -169,8 +188,9 @@ class ProposalGenerateRequest(BaseModel):
 class ProposalApproveRequest(BaseModel):
     """Request to approve a research proposal."""
 
-    approved_by: str = Field(
-        ...,
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    approved_by: str | None = Field(
+        None,
         min_length=1,
         description="User ID or username of the approver.",
     )
@@ -179,8 +199,9 @@ class ProposalApproveRequest(BaseModel):
 class ProposalRejectRequest(BaseModel):
     """Request to reject a research proposal."""
 
-    rejected_by: str = Field(
-        ...,
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    rejected_by: str | None = Field(
+        None,
         min_length=1,
         description="User ID or username of the rejector.",
     )
@@ -211,6 +232,18 @@ class ResearchProposalResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @computed_field
+    @property
+    def revision(self) -> str:
+        """Bind the reviewed content, decision state and update timestamp."""
+        import hashlib
+        import json
+
+        value = self.model_dump(mode="json", exclude={"revision"})
+        return hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
 
 class ResearchProposalsList(BaseModel):

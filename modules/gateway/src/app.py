@@ -28,6 +28,7 @@ logger = logging.getLogger("bedrockgateway")
 UNIT_MODULES = [
     "src.domain_proxy.superplane",
     "src.auth.routes",
+    "src.auth.session_admin",
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
     "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
@@ -190,6 +191,7 @@ UNIT_MODULES = [
     "src.knowledge.routes",  # Issue #2045: Knowledge-assets registry CRUD
     "src.knowledge.github_repos",  # Issue #2045: GitHub repo picker
     "src.features.routes",  # Issue #3566: Feature-flag endpoint
+    "src.gitlab.routes",
     "src.auth.gitlab_sso",  # Issue #3775: GitLab SSO JWT minting + JWKS
     "src.cli_download.routes",  # Issue #4146: /setup page CLI helper-script download
     # Issue #5621 (CLI-08): own-scope CLI capability discovery. Read-only, and

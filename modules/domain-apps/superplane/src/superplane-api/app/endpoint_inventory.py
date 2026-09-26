@@ -424,6 +424,7 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ),
     ("GET", "/api/v1/research/stats"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/sources"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/api/v1/research/cli-support"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/proposals"): (Scope.ORGANIZATION, Permission.READ),
     ("GET", "/api/v1/research/proposals/stats"): (
         Scope.ORGANIZATION,

@@ -1779,3 +1779,40 @@ class TestLegacyLaneAdoptionThroughResume:
         claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
         assert (claim.state, claim.generation, claim.active_run_id) == (ClaimState.HELD.value, receipt.generation, "legacy-run")
         assert self._blocks(await decisions_for(session, flow.id))[-1][1]["block_code"] == "authority_unverifiable"
+
+
+@pytest.mark.parametrize("change", ["unchanged", "attempt", "flow", "foreign"])
+async def test_cli_resume_fences_exact_reviewed_node(app_with_router, session, change):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, kind="eval", state="failed")
+    await session.commit()
+    with client_for(app_with_router) as client:
+        before = client.get(f"/orchestration/nodes/{node.id}/recovery", params={"flow_id": flow.id})
+        assert before.status_code == 200
+        body = {"reason": "Retry after repair", "expected_revision": before.json()["revision"], "expected_flow_id": flow.id}
+        if change == "attempt":
+            node.attempts += 1
+            await session.commit()
+        if change == "flow":
+            body["expected_flow_id"] = "other-flow"
+        if change == "foreign":
+            node.org_id = ORG_B
+            await session.commit()
+        response = client.post(resume_route(node.id), json=body)
+    assert response.status_code == {"unchanged": 200, "attempt": 409, "flow": 404, "foreign": 404}[change]
+    if change == "unchanged":
+        assert response.json()["state"] == "ready"
+        with client_for(app_with_router) as client:
+            assert client.post(resume_route(node.id), json=body).status_code == 409
+    else:
+        assert await state_of(session, node.id) == "failed"
+
+
+async def test_cli_recovery_read_rejects_missing_permission_and_foreign_flow(app_with_router, session):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow)
+    await session.commit()
+    with client_for(app_with_router, permitted=False) as client:
+        assert client.get(f"/orchestration/nodes/{node.id}/recovery", params={"flow_id": flow.id}).status_code == 403
+    with client_for(app_with_router) as client:
+        assert client.get(f"/orchestration/nodes/{node.id}/recovery", params={"flow_id": "foreign"}).status_code == 404

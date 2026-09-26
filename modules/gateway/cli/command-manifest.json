@@ -3199,7 +3199,8 @@
       "operation": "models.catalog.read",
       "flags": [
         "--json",
-        "--persona"
+        "--persona",
+        "--service-principal"
       ],
       "arguments": [],
       "request": {
@@ -3209,7 +3210,8 @@
         ],
         "paths": [
           "/me/persona-models/**",
-          "/service-principals/{id}/persona-models/**"
+          "/service-principals/{id}/persona-models/**",
+          "/service-principals/{id}/persona-models/catalog"
         ],
         "schema": "helper parser and server route schemas"
       },
@@ -4933,6 +4935,4455 @@
         "tests/cli/test_adp_tenant.py",
         "tests/auth/test_tenant_context.py",
         "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin department create",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--description",
+        "--dry-run",
+        "--id",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/admin/organizations/{org_id}/departments",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin department delete",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--id",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin department list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin department show",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--id",
+        "--json",
+        "--org"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin department update",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--description",
+        "--dry-run",
+        "--expected-revision",
+        "--id",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin member add",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.platform.write",
+      "flags": [
+        "--dry-run",
+        "--email",
+        "--existing-user",
+        "--json",
+        "--name",
+        "--new-user",
+        "--org",
+        "--role",
+        "--team",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/api/admin/identity/organizations/{org_id}/users",
+          "/admin/organizations/{org_id}/members",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.platform.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin member list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--department",
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin member remove",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin member update",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.member.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--name",
+        "--org",
+        "--role",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.member.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org create",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.platform.write",
+      "flags": [
+        "--dry-run",
+        "--id",
+        "--json",
+        "--name",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/api/admin/identity/organizations",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.platform.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org delete",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org show",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--org"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin org update",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team create",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--department",
+        "--description",
+        "--dry-run",
+        "--id",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/admin/organizations/{org_id}/departments/{department_id}/teams",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team delete",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--id",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--department",
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team members add",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.member.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--primary",
+        "--role",
+        "--team",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.member.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team members list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size",
+        "--team"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team members remove",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.member.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--team",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.member.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team show",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--id",
+        "--json",
+        "--org"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin team update",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.write",
+      "flags": [
+        "--description",
+        "--dry-run",
+        "--expected-revision",
+        "--id",
+        "--json",
+        "--name",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PATCH"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/hierarchy/{kind}/{id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin tenant org-links add",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.platform.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--github-org-id",
+        "--json",
+        "--tenant",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/tenants/{tenant_id}/orgs/{github_org_id}/preview",
+          "/admin/tenants/{tenant_id}/orgs",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.platform.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin tenant org-links list",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "hierarchy.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--page",
+        "--page-size",
+        "--tenant"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/tenants/{tenant_id}/orgs/page"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp admin tenant org-links remove",
+      "helper": "adp-hierarchy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "hierarchy.platform.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--github-org-id",
+        "--json",
+        "--tenant",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/tenants/{tenant_id}/orgs/{github_org_id}/preview",
+          "/admin/tenants/{tenant_id}/orgs/{github_org_id}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped hierarchy snapshot/revision and existing administration schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "hierarchy.platform.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_hierarchy.py",
+        "tests/admin/test_hierarchy.py"
+      ]
+    },
+    {
+      "command": "adp access request",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "access.self.request",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--reason",
+        "--tenant",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.self.request"
+      ]
+    },
+    {
+      "command": "adp access status",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "access.self.read",
+      "flags": [
+        "--json",
+        "--tenant"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.self.read"
+      ]
+    },
+    {
+      "command": "adp admin access-request approve",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "access.managed.decide",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--expected-role",
+        "--expected-scope",
+        "--json",
+        "--operation-id",
+        "--reason",
+        "--request",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.managed.decide"
+      ]
+    },
+    {
+      "command": "adp admin access-request deny",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "access.managed.decide",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--expected-role",
+        "--expected-scope",
+        "--json",
+        "--operation-id",
+        "--reason",
+        "--request",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.managed.decide"
+      ]
+    },
+    {
+      "command": "adp admin access-request list",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "access.managed.read",
+      "flags": [
+        "--cursor",
+        "--json",
+        "--limit"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.managed.read"
+      ]
+    },
+    {
+      "command": "adp admin access-request show",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "access.managed.read",
+      "flags": [
+        "--json",
+        "--request"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.managed.read"
+      ]
+    },
+    {
+      "command": "adp admin session revoke-user",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "auth.session.revoke",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--reason",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "auth.session.revoke"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit delete",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "ratelimit.managed.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "ratelimit.managed.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit list",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "ratelimit.managed.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size",
+        "--scope"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit set",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "ratelimit.managed.write",
+      "flags": [
+        "--concurrent-requests",
+        "--dry-run",
+        "--expect-absent",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--rpm",
+        "--scope",
+        "--target",
+        "--tpm",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "ratelimit.managed.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit show",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "ratelimit.managed.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit status",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "ratelimit.managed.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp ratelimit me",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "ratelimit.self.read",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/ratelimits/me"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin budget member-report",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.person.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size",
+        "--period"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/member-budgets"
+        ],
+        "schema": "MemberBudgetListResponse"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.read"
+      ]
+    },
+    {
+      "command": "adp admin budget person-cap delete",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.person.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--person",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/budget/person-cap/{target}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.write"
+      ]
+    },
+    {
+      "command": "adp admin budget person-cap set",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.person.write",
+      "flags": [
+        "--amount-usd",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--person",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/budget/person-cap/{target}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.write"
+      ]
+    },
+    {
+      "command": "adp admin budget person-cap show",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.person.read",
+      "flags": [
+        "--json",
+        "--period",
+        "--person"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/budget/person-cap/{target}"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.read"
+      ]
+    },
+    {
+      "command": "adp admin budget person-default delete",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.person.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--scope",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/budget/person-default/{target}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.write"
+      ]
+    },
+    {
+      "command": "adp admin budget person-default set",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.person.write",
+      "flags": [
+        "--amount-usd",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--scope",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/budget/person-default/{target}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.write"
+      ]
+    },
+    {
+      "command": "adp admin budget person-default show",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.person.read",
+      "flags": [
+        "--json",
+        "--period",
+        "--scope"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/budget/person-default/{target}"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.person.read"
+      ]
+    },
+    {
+      "command": "adp budget person-cap delete",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.self.read",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Admin-governed policy refusal; no HTTP request"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp budget person-cap set",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.self.read",
+      "flags": [
+        "--amount-usd",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--period",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Admin-governed policy refusal; no HTTP request"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp budget person-cap show",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.self.read",
+      "flags": [
+        "--json",
+        "--period"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/budget/person-cap"
+        ],
+        "schema": "PersonCapResponse or PersonDefaultResponse; optional expected_revision query"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_budget_person.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "budget.self.read"
+      ]
+    },
+    {
+      "command": "adp admin models default show",
+      "helper": "adp-model-policy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "models.policy.read",
+      "flags": [
+        "--compatibility-class",
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/persona-models/default/{compatibility_class}",
+          "/admin/persona-models/posture/{compatibility_class}"
+        ],
+        "schema": "Canonical persona/default/posture schemas; operation UUID replay receipt"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_model_policy_commands.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "models.policy.read"
+      ]
+    },
+    {
+      "command": "adp admin models default set",
+      "helper": "adp-model-policy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "models.policy.write",
+      "flags": [
+        "--compatibility-class",
+        "--dry-run",
+        "--expect-version",
+        "--json",
+        "--model",
+        "--operation-id",
+        "--reason",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/persona-models/default/{compatibility_class}",
+          "/admin/persona-models/posture/{compatibility_class}",
+          "/me/cli-capabilities",
+          "/admin/persona-models/default/{compatibility_class}/preview",
+          "/admin/persona-models/posture/{compatibility_class}/history/{revision}"
+        ],
+        "schema": "Canonical persona/default/posture schemas; operation UUID replay receipt"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_model_policy_commands.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "models.policy.write"
+      ]
+    },
+    {
+      "command": "adp admin models posture show",
+      "helper": "adp-model-policy.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "models.policy.read",
+      "flags": [
+        "--compatibility-class",
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/persona-models/default/{compatibility_class}",
+          "/admin/persona-models/posture/{compatibility_class}"
+        ],
+        "schema": "Canonical persona/default/posture schemas; operation UUID replay receipt"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_model_policy_commands.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "models.policy.read"
+      ]
+    },
+    {
+      "command": "adp admin models posture set",
+      "helper": "adp-model-policy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "models.policy.write",
+      "flags": [
+        "--compatibility-class",
+        "--dry-run",
+        "--expect-version",
+        "--json",
+        "--operation-id",
+        "--posture",
+        "--reason",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/persona-models/default/{compatibility_class}",
+          "/admin/persona-models/posture/{compatibility_class}",
+          "/me/cli-capabilities",
+          "/admin/persona-models/default/{compatibility_class}/preview",
+          "/admin/persona-models/posture/{compatibility_class}/history/{revision}"
+        ],
+        "schema": "Canonical persona/default/posture schemas; operation UUID replay receipt"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_model_policy_commands.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "models.policy.write"
+      ]
+    },
+    {
+      "command": "adp admin models posture rollback",
+      "helper": "adp-model-policy.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "models.policy.write",
+      "flags": [
+        "--compatibility-class",
+        "--dry-run",
+        "--expect-version",
+        "--json",
+        "--operation-id",
+        "--reason",
+        "--to-version",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/persona-models/default/{compatibility_class}",
+          "/admin/persona-models/posture/{compatibility_class}",
+          "/me/cli-capabilities",
+          "/admin/persona-models/default/{compatibility_class}/preview",
+          "/admin/persona-models/posture/{compatibility_class}/history/{revision}",
+          "/admin/persona-models/posture/{compatibility_class}/rollback"
+        ],
+        "schema": "Canonical persona/default/posture schemas; operation UUID replay receipt"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_model_policy_commands.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "models.policy.write"
+      ]
+    },
+    {
+      "command": "adp models costs",
+      "helper": "adp-models.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "models.costs.read",
+      "flags": [
+        "--chain",
+        "--json",
+        "--persona",
+        "--service-principal"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/persona-models",
+          "/me/persona-models/costs",
+          "/service-principals/{id}/persona-models",
+          "/service-principals/{id}/persona-models/costs"
+        ],
+        "schema": "Canonical persona/default/posture schemas; operation UUID replay receipt"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_model_policy_commands.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "models.costs.read"
+      ]
+    },
+    {
+      "command": "adp admin agent deregister",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--identity-type",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.agent.registry.manage",
+        "machine.agent.cognito.manage"
+      ],
+      "capability_variants": [
+        {
+          "identity_type": "iam-registry",
+          "required_capabilities": [
+            "machine.agent.registry.manage"
+          ]
+        },
+        {
+          "identity_type": "cognito-client",
+          "required_capabilities": [
+            "machine.agent.cognito.manage"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "adp admin agent list",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--cursor",
+        "--identity-type",
+        "--json",
+        "--org",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin agent register",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--credential-file",
+        "--dry-run",
+        "--identity-type",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--spec-file",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.agent.registry.manage",
+        "machine.agent.cognito.manage"
+      ],
+      "capability_variants": [
+        {
+          "identity_type": "iam-registry",
+          "required_capabilities": [
+            "machine.agent.registry.manage"
+          ]
+        },
+        {
+          "identity_type": "cognito-client",
+          "required_capabilities": [
+            "machine.agent.cognito.manage"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "adp admin agent show",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--identity-type",
+        "--json",
+        "--org"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin agent update",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--identity-type",
+        "--json",
+        "--org",
+        "--spec-file",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.agent.registry.manage",
+        "machine.agent.cognito.manage"
+      ],
+      "capability_variants": [
+        {
+          "identity_type": "iam-registry",
+          "required_capabilities": [
+            "machine.agent.registry.manage"
+          ]
+        },
+        {
+          "identity_type": "cognito-client",
+          "required_capabilities": [
+            "machine.agent.cognito.manage"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "adp admin service-account create",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.account.manage",
+      "flags": [
+        "--department",
+        "--dry-run",
+        "--identity-type",
+        "--json",
+        "--name",
+        "--operation-id",
+        "--org",
+        "--role-arn",
+        "--team",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.account.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-account delete",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.account.manage",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--identity-type",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.account.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-account list",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--identity-type",
+        "--json",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin service-account show",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--identity-type",
+        "--json",
+        "--org"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin service-account update",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.account.manage",
+      "flags": [
+        "--department",
+        "--dry-run",
+        "--expected-revision",
+        "--identity-type",
+        "--json",
+        "--name",
+        "--org",
+        "--role-arn",
+        "--team",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.account.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-principal alias-add",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.principal.manage",
+      "flags": [
+        "--alias-id",
+        "--alias-source",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.principal.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-principal alias-remove",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.principal.manage",
+      "flags": [
+        "--alias-row-id",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.principal.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-principal register",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.principal.manage",
+      "flags": [
+        "--alias-id",
+        "--alias-source",
+        "--dry-run",
+        "--json",
+        "--name",
+        "--operation-id",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.principal.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-principal show",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--json",
+        "--org"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin service-principal status",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.principal.manage",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--status",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.principal.manage"
+      ]
+    },
+    {
+      "command": "adp bedrock select",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.own.write",
+      "flags": [
+        "--connection",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/me/bedrock-routing/selection",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.own.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock reset",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.own.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/me/bedrock-routing/selection",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.own.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock mappings list",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "routing.bedrock.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--page",
+        "--page-size",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock mappings show",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "routing.bedrock.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock mappings set",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}",
+          "/me/cli-capabilities",
+          "/admin/bedrock-routing/mappings/{scope}",
+          "/admin/bedrock-routing/destinations"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock mappings delete",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}",
+          "/me/cli-capabilities",
+          "/admin/bedrock-routing/mappings/{scope}",
+          "/admin/bedrock-routing/destinations"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock connection-link add",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--connection",
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/connection-links",
+          "/admin/bedrock-routing/destinations",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock connection-link remove",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--connection",
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/connection-links",
+          "/admin/bedrock-routing/destinations",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock select",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.own.write",
+      "flags": [
+        "--connection",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/me/bedrock-routing/selection",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.own.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock reset",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.own.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/me/bedrock-routing/selection",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.own.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock mappings list",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "routing.bedrock.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--page",
+        "--page-size",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock mappings show",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "routing.bedrock.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock mappings set",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}",
+          "/me/cli-capabilities",
+          "/admin/bedrock-routing/mappings/{scope}",
+          "/admin/bedrock-routing/destinations"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock mappings delete",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}",
+          "/me/cli-capabilities",
+          "/admin/bedrock-routing/mappings/{scope}",
+          "/admin/bedrock-routing/destinations"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock connection-link add",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--connection",
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/connection-links",
+          "/admin/bedrock-routing/destinations",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock connection-link remove",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--connection",
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/connection-links",
+          "/admin/bedrock-routing/destinations",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp knowledge add",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--file",
+        "--json",
+        "--key",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/api/agent-context/assets",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge list",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--page",
+        "--page-size",
+        "--scope",
+        "--status",
+        "--type"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/api/agent-context/assets"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge show",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge delete",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--yes"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge status",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}/status"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge watch",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--interval",
+        "--json",
+        "--timeout"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}/status"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "ndjson"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge reindex",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--key",
+        "--yes"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}/reindex?request_id={uuid}",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge bulk preview",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--file",
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/agent-context/assets/bulk/preview-json"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge bulk commit",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--expect-hash",
+        "--json",
+        "--preview-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/api/agent-context/assets/bulk/commit",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp admin indexing list",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/indexing/runs"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp admin indexing show",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/indexing/runs/{run_id}"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp flow node resume",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.recovery.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--flow",
+        "--json",
+        "--operation-id",
+        "--reason",
+        "--reconciled",
+        "--yes"
+      ],
+      "arguments": [
+        "node_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "ResumeRequest / RecoverBindingRequest"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/orchestration/test_controls.py"
+      ],
+      "required_capabilities": [
+        "flows.recovery.write"
+      ]
+    },
+    {
+      "command": "adp flow recover-pr",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.recovery.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--node",
+        "--operation-id",
+        "--request-file",
+        "--yes"
+      ],
+      "arguments": [
+        "flow_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "ResumeRequest / RecoverBindingRequest"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/orchestration/test_controls.py"
+      ],
+      "required_capabilities": [
+        "flows.recovery.write"
+      ]
+    },
+    {
+      "command": "adp admin gitlab configure",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "gitlab.admin.write",
+      "flags": [
+        "--dry-run",
+        "--expect-provider-revision",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--provider",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.admin.write"
+      ]
+    },
+    {
+      "command": "adp admin gitlab revalidate",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "gitlab.admin.read",
+      "flags": [
+        "--credential",
+        "--json",
+        "--repo"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.admin.read"
+      ]
+    },
+    {
+      "command": "adp admin gitlab status",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "gitlab.admin.read",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.admin.read"
+      ]
+    },
+    {
+      "command": "adp gitlab connect",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "gitlab.connection.write",
+      "flags": [
+        "--credential",
+        "--dry-run",
+        "--expect-provider-revision",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--project-id",
+        "--repo",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.connection.write"
+      ]
+    },
+    {
+      "command": "adp gitlab disconnect",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "gitlab.connection.write",
+      "flags": [
+        "--dry-run",
+        "--expect-provider-revision",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--project-id",
+        "--repo",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.connection.write"
+      ]
+    },
+    {
+      "command": "adp gitlab status",
+      "helper": "adp-gitlab.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "gitlab.connection.read",
+      "flags": [
+        "--credential",
+        "--json",
+        "--repo"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/gitlab/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "src/gitlab/routes.py reviewed request schemas"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_gitlab.py",
+        "tests/gitlab/test_human_integration.py"
+      ],
+      "required_capabilities": [
+        "gitlab.connection.read"
+      ]
+    },
+    {
+      "command": "adp superplane research findings list",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page",
+        "--page-size",
+        "--source",
+        "--start",
+        "--workspace"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research findings show",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research proposal list",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page",
+        "--page-size",
+        "--start",
+        "--status",
+        "--workspace"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research proposal show",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research proposal create",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--request-file",
+        "--request-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ]
+    },
+    {
+      "command": "adp superplane research proposal generate",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--request-file",
+        "--request-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Unavailable; no request is sent"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research proposal approve",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ]
+    },
+    {
+      "command": "adp superplane research proposal reject",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--reason",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ]
+    },
+    {
+      "command": "adp superplane research sources",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research stats",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/api/v1/research/**"
+        ],
+        "schema": "Research schemas; scan/generate unavailable without bounded durable backend"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp superplane research scan",
+      "helper": "adp-superplane-research.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--request-file",
+        "--request-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Unavailable; no request is sent"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_research.py"
       ],
       "required_capabilities": []
     }

@@ -769,4 +769,11 @@ Human run discovery, transcripts, explanation streaming and supported controls: 
 
 GitHub maintenance: `adp github disconnect`, `adp admin github status --maintenance`, `rotate-key`, `disconnect`, and `org-binding list|add|remove` are documented in [GitHub maintenance](../../../docs/adp-cli/github-maintenance.md). Preview with `--dry-run`; App writes require reviewed App/key versions and `--yes`.
 
+GitLab: `adp gitlab status|connect|disconnect` and `adp admin gitlab status|configure|revalidate` use deployment-approved providers and owned vault references. See the [GitLab command/API contract](../../../docs/adp-cli/gitlab.md) for operation IDs, exact project scope and live evidence holds.
+
+`adp superplane research` reads findings/sources/stats and reviews proposals through the domain API. See `docs/adp-cli/research.md` for revision-bound decisions and unavailable scan/generation boundaries.
+
 Authorized tenant selection and concurrent terminal isolation: [Tenant CLI](../../../docs/adp-cli/tenant.md).
+
+`adp access`, `adp admin access-request`, and `adp admin session revoke-user` are
+documented in [access and sessions](../../../docs/adp-cli/access-and-sessions.md).

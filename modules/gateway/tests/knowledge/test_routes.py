@@ -300,7 +300,7 @@ class TestReindexAsset:
         db = FakeAsyncSession()
         db.execute_results = [
             FakeResult(rows=[asset_row]),
-            FakeResult(),
+            FakeResult(rows=[asset_row]),
             FakeResult(rows=[updated_row]),
         ]
 

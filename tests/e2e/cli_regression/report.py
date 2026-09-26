@@ -42,8 +42,7 @@ def render(jobs, revision, ec2_revision="", ec2_scope="nightly"):
         lines.extend(
             [
                 "",
-                "Daily EC2 cases: E01 install, C01 login/refresh, E20 capabilities/doctor, "
-                "E21 usage/export reads, E22 Activity reads/missing-run errors, E24 vault metadata/previews, and E26 own budget period reads.",
+                "Daily EC2 cases: E01 install, C01 login/refresh, E20 capabilities/doctor, E21 usage/export, E22 Activity, and E23–E38 story scenarios (except the separate E27 tenant-isolation suite). Missing fixtures remain blocked.",
                 "**Full CLI story acceptance is not established.** Active controls, "
                 "capability contrasts and marked spend reconciliation need their own fixtures.",
             ]

@@ -148,4 +148,29 @@ with a newly triggered agent remains outside this key-scenario regression.
 
 E28 (#5634) runs in `story-reads`/default nightly with an existing GitHub App fixture. It performs App maintenance reads, disconnect/rotation previews (without opening key input), and invalid installation refusal. It never rotates or disconnects the shared App. Isolated live maintenance and OAuth/repository/webhook continuation remain separate acceptance holds.
 
+
+E36 (#5627) runs the served `adp ratelimit me --json` through the existing
+`story-reads` suite. It verifies a bounded own hierarchy, per-dimension sources,
+unknown worker convergence and the named actual-token TPM dependency. It makes
+no inference calls or configuration changes. Passing E36 is metadata regression
+only; real RPM, TPM/concurrency, client retry and cleanup acceptance remain held.
+
+CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
+
+E37 (#5630) checks served-client flow reads and malformed recovery-target refusal.
+It performs no recovery mutation. Full recovery/continuation acceptance requires
+an owned blocked flow plus the canonical inception/amendment and bounded-worker
+fixtures described in [flow recovery](../adp-cli/flow-recovery.md).
+
+E30 (#5635) joins `story-reads`/default nightly: served-CLI GitLab discovery and invalid project refusal, without provider writes. Unconfigured GitLab reports no approved providers. The scenario cannot satisfy real project connect, delivered webhook/agent artifact or cleanup acceptance.
+
+E25 (#5639) adds bounded research findings/proposal/source/stat reads to the existing nightly client. Select `--suite research` for this case alone. An existing-domain fixture must declare `research_readback: true` through the existing run config/binding overlay; absent configuration is blocked. This gate is separate from E18 mutation recovery, and actual authenticated CLI reads must prove service readiness. No scan/generate/approve/reject is run by E25.
+
 E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.
+
+E33 (#5625) uses the served CLI to read current-tenant access status and a bounded
+administrator request page. It never decides requests or revokes a shared user.
+Disposable lifecycle/concurrency and client revocation timing remain separate
+acceptance fixtures.
+
+E29 (#5623) adds bounded administrator organization/department/team/member reads with the served CLI. It performs no mutation or inference; a missing authorized organization cannot pass. Membership lifecycle and cleanup acceptance need separate owned fixtures.

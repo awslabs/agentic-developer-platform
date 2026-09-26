@@ -1918,6 +1918,131 @@ def start_flow(args, api):
 # --- dispatch --------------------------------------------------------------
 
 
+def recovery_read(api, flow_id, node_id):
+    path = query("/orchestration/nodes/" + segment(node_id) + "/recovery", {"flow_id": flow_id})
+    value = api.request("GET", path)
+    if (
+        not isinstance(value, dict)
+        or value.get("contract") != "node-recovery-v1"
+        or value.get("flow_id") != flow_id
+        or value.get("node_id") != node_id
+        or not isinstance(value.get("revision"), str)
+        or not re.fullmatch(r"[a-f0-9]{64}", value["revision"])
+        or type(value.get("attempts")) is not int
+        or not isinstance(value.get("state"), str)
+        or not isinstance(value.get("kind"), str)
+        or not (value.get("bound_pull_request") is None or isinstance(value["bound_pull_request"], dict))
+    ):
+        raise CliError("Gateway lacks valid revision-bound node recovery readback. Upgrade it before recovery.", "invalid_response", 5)
+    return value
+
+
+def recover_node(args, api):
+    node_id = flow_id_argument(args.node_id)
+    flow_id = args.flow_id
+    before = recovery_read(api, flow_id, node_id)
+    if args.command == "node":
+        if not args.reason.strip() or len(args.reason) > 2000:
+            raise CliError("Supply a nonempty reason of at most 2000 characters.", "usage_error", 1)
+        body = {"reason": args.reason, "reconciled": args.reconciled, "expected_flow_id": flow_id}
+        path = "/orchestration/nodes/" + segment(node_id) + "/resume"
+        effect = "Make this engine node eligible again; dispatch and execution remain subject to engine admission."
+    else:
+        if before["kind"] != "story":
+            raise CliError("Only story nodes have recoverable implementation PRs.", "invalid_state", 4)
+        body = common.read_private_json(Path(args.request_file))
+        allowed = {"repo", "pr_number", "provider_repository_id", "provider_pr_node_id", "head_sha", "reason", "replaces_reason", "adopt_delivery"}
+        if not isinstance(body, dict) or set(body) - allowed:
+            raise CliError("Recovery request contains unsupported fields.", "usage_error", 1)
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", str(body.get("repo", "")))
+            or type(body.get("pr_number")) is not int
+            or body["pr_number"] < 1
+            or not isinstance(body.get("reason"), str)
+            or not 10 <= len(body["reason"]) <= 2000
+            or not re.fullmatch(r"[a-fA-F0-9]{40,64}", str(body.get("head_sha", "")))
+        ):
+            raise CliError(
+                "Request requires exact repo, positive PR number, full reviewed head SHA and a reason (10–2000 characters).", "usage_error", 1
+            )
+        path = FLOWS + "/" + segment(flow_id) + "/nodes/" + segment(node_id) + "/pull-request-recovery"
+        effect = "Associate the reviewed PR with this story; canonical merge/check/review verification still applies."
+    command = "flow node resume" if args.command == "node" else "flow recover-pr"
+    plan = {"before": before, "request": body, "expected_revision": before["revision"], "effect": effect}
+    if args.dry_run or not args.yes:
+        return common.envelope("dry_run", command, plan, "Review this state, then pass --yes --expect-revision REV --operation-id UUID.")
+    if not args.expect_revision or not re.fullmatch(r"[a-f0-9]{64}", args.expect_revision) or not args.operation_id:
+        raise CliError("--yes requires the reviewed --expect-revision and a stable --operation-id UUID.", "usage_error", 1)
+    try:
+        operation_id = str(uuid.UUID(args.operation_id))
+    except ValueError:
+        raise CliError("--operation-id must be a UUID.", "usage_error", 1) from None
+    common.ensure_can_mutate("flows.recovery.write", request=api.request)
+    body["expected_revision"] = args.expect_revision
+    binding = {"scope": common.authenticated_scope(), "gateway": common.gateway_url(), "path": path, "body": body}
+    fingerprint = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+    directory = common.private_directory(common.state_dir() / "flow-recovery")
+    target = directory / (operation_id + ".json")
+    with common.file_lock(target.with_suffix(".lock"), "This recovery operation is already running."):
+        if target.exists():
+            receipt = common.read_private_json(target)
+            if receipt.get("fingerprint") != fingerprint:
+                raise CliError("This operation ID belongs to different recovery inputs.", "stale_revision", 4)
+            return common.envelope(
+                "pending",
+                command,
+                {"operation_id": operation_id, "current": before, "acknowledgement": receipt.get("acknowledgement"), "replayed_without_write": True},
+                "No recovery resent. Use flow decisions/show to reconcile the canonical record.",
+            )
+        if before["revision"] != args.expect_revision:
+            raise CliError("Recovery state changed; review the node again before acting.", "stale_revision", 4)
+        if args.command == "node" and before["state"] not in {"failed", "halted", "rejected_at_gate", "awaiting_merge"}:
+            raise CliError("Only failed, halted, rejected or awaiting-merge nodes can be resumed.", "invalid_state", 4)
+        receipt = {"fingerprint": fingerprint, "before": before}
+        common.write_json(target, receipt)
+        try:
+            answer = api.request("POST", path, body)
+            if not isinstance(answer, dict) or answer.get("node_id") != node_id:
+                raise CliError("Recovery acknowledgement names no matching node.", "invalid_response", 5)
+            if args.command == "node":
+                valid = (
+                    answer.get("state") == "ready"
+                    and answer.get("from_state") == before["state"]
+                    and bool(answer.get("decision_id"))
+                    and answer.get("actor_kind") == "human"
+                )
+            else:
+                pr = answer.get("bound_pull_request")
+                valid = (
+                    isinstance(pr, dict)
+                    and pr.get("repo", "").lower() == body["repo"].lower()
+                    and pr.get("pr_number") == body["pr_number"]
+                    and str(pr.get("head_sha", "")).lower() == body["head_sha"].lower()
+                )
+            if not valid:
+                raise CliError("Malformed or mismatched recovery acknowledgement.", "invalid_response", 5)
+            receipt["acknowledgement"] = answer
+            common.write_json(target, receipt)
+            current = recovery_read(api, flow_id, node_id)
+        except (CliError, KeyboardInterrupt) as exc:
+            if "acknowledgement" not in receipt and isinstance(exc, CliError) and getattr(exc, "status_code", None) in {400, 401, 403, 404, 409, 422}:
+                receipt["refusal"] = {"code": exc.code, "http_status": exc.status_code}
+                common.write_json(target, receipt)
+                raise
+            return common.envelope(
+                "pending",
+                command,
+                {"operation_id": operation_id, "outcome": "unknown_or_refused"},
+                "No retry sent. Reconcile flow decisions/show with this operation's reviewed state.",
+            )
+        return common.envelope(
+            "configured",
+            command,
+            {"operation_id": operation_id, "acknowledgement": answer, "current": current},
+            "Recovery recorded; use flow watch to observe eligible continuation. This is not proof of dispatch or completion.",
+        )
+
+
 def parser():
     root = common.Parser(prog="adp flow", description="Follow and control AI-DLC delivery flows.")
     commands = root.add_subparsers(dest="command", required=True)
@@ -2026,10 +2151,29 @@ def parser():
             ),
         )
         answer.add_argument("--yes", action="store_true", help="State approval without a prompt, for scripts")
+    node = commands.add_parser("node", help="Recover an engine node; worker pause/resume lives under activity")
+    nodes = node.add_subparsers(dest="node_action", required=True)
+    resume = nodes.add_parser("resume")
+    resume.add_argument("node_id", metavar="NODE_ID")
+    resume.add_argument("--flow", dest="flow_id", required=True)
+    resume.add_argument("--reason", required=True)
+    resume.add_argument("--reconciled", action="store_true", help="Explicitly attest prior worker effects and credentials were reconciled")
+    recover = commands.add_parser("recover-pr", help="Bind an exact reviewed implementation PR through engine recovery")
+    recover.add_argument("flow_id", metavar="FLOW_ID")
+    recover.add_argument("--node", dest="node_id", required=True)
+    recover.add_argument("--request-file", required=True)
+    for recovery in (resume, recover):
+        recovery.add_argument("--expect-revision")
+        recovery.add_argument("--operation-id")
+        recovery.add_argument("--dry-run", action="store_true")
+        recovery.add_argument("--yes", action="store_true")
+        recovery.add_argument("--json", action="store_true")
     return root
 
 
 HANDLERS = {
+    "node": recover_node,
+    "recover-pr": recover_node,
     "start": start_flow,
     "create": create_flow,
     "draft": revise_draft,

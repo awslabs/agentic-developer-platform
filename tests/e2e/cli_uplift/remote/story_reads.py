@@ -181,6 +181,53 @@ def vault(cli, evidence):
     ]
 
 
+def access(cli, evidence):
+    selected = detail(cli.json(["tenant", "current"]))
+    tenant_id = selected.get("tenant_id")
+    common.require(isinstance(tenant_id, str) and tenant_id, "No current tenant")
+    status = detail(cli.json(["access", "status", "--tenant", tenant_id]))
+    common.require(status.get("tenant_id") == tenant_id, "Access status changed target")
+    common.require(
+        status.get("spend_eligibility") == "not_evaluated",
+        "Membership must not assert spend eligibility",
+    )
+    page = detail(cli.json(["admin", "access-request", "list", "--limit", "5"]))
+    common.require(isinstance(page.get("items"), list), "Access request page missing")
+    evidence["cases"] = ["tenant-access-status", "bounded-admin-review"]
+
+
+def hierarchy(cli, evidence):
+    orgs = detail(cli.json(["admin", "org", "list", "--page-size", "1"]))
+    common.require(
+        isinstance(orgs.get("items"), list), "Organization list is malformed"
+    )
+    common.require(bool(orgs["items"]), "No authorized hierarchy fixture is visible")
+    org = orgs["items"][0].get("id")
+    common.require(isinstance(org, str) and org, "Organization ID is missing")
+    for area in ("department", "team", "member"):
+        result = detail(
+            cli.json(["admin", area, "list", "--org", org, "--page-size", "1"])
+        )
+        common.require(
+            result.get("org_id") == org
+            and result.get("kind") == area
+            and isinstance(result.get("items"), list),
+            "Hierarchy list lost its selected scope",
+        )
+        common.require(
+            all(
+                isinstance(row, dict) and row.get("org_id") == org
+                for row in result["items"]
+            ),
+            "Foreign hierarchy row was returned",
+        )
+    evidence.update(
+        org_id=org,
+        forms=["org", "department", "team", "member"],
+        qualification="bounded administrator reads only; membership and delete lifecycle acceptance remains separate",
+    )
+
+
 def budget(cli, evidence):
     periods = ("daily", "weekly", "monthly")
     for period in periods:
@@ -256,11 +303,340 @@ def github_maintenance(cli, evidence):
     )
 
 
+def ratelimit(cli, evidence):
+    result = detail(cli.json(["ratelimit", "me"]))
+    runtime = result.get("runtime", {})
+    common.require(
+        runtime.get("tpm") == "unavailable_actual_usage_not_reconciled",
+        "TPM gap must remain explicit until actual-token accounting is qualified",
+    )
+    common.require(
+        runtime.get("worker_convergence") == "unknown",
+        "Worker convergence was asserted without proof",
+    )
+    common.require(
+        runtime.get("state") == "configured_not_probed", "Rate limiter is unavailable"
+    )
+    common.require(
+        isinstance(result.get("lines"), list) and 1 <= len(result["lines"]) <= 4,
+        "Missing bounded own hierarchy",
+    )
+    for line in result["lines"]:
+        common.require(
+            isinstance(line.get("effective"), dict)
+            and isinstance(line.get("sources"), dict),
+            "Missing effective dimensions and sources",
+        )
+    evidence.update(
+        dimensions=["rpm", "tpm", "concurrent_requests"],
+        enforcement_qualification="not_run",
+        tpm_dependency="actual usage not reconciled",
+    )
+
+
+def person_budget(cli, evidence):
+    for period in ("daily", "weekly", "monthly"):
+        result = detail(cli.json(["budget", "person-cap", "show", "--period", period]))
+        cap = result.get("configuration")
+        common.require(
+            isinstance(cap, dict) and cap.get("period_type") == period,
+            "Person limit period mismatch",
+        )
+        common.require(
+            cap.get("cap_status") in {"capped", "uncapped"},
+            "Person limit status missing",
+        )
+        common.require(
+            result.get("authority") == "platform_admin",
+            "Person limit authority missing",
+        )
+        if cap["cap_status"] == "uncapped":
+            common.require(
+                cap.get("cap_usd") is None, "Uncapped person limit rendered as zero"
+            )
+        else:
+            common.require(
+                cap.get("source")
+                in {"own", "admin", "team_default", "org_default", "platform_default"},
+                "Person limit source missing",
+            )
+    for action in ("set", "delete"):
+        flags = ["--amount-usd", "1"] if action == "set" else []
+        code, refusal = cli.run(
+            ["budget", "person-cap", action, *flags, "--yes"], expected=None
+        )
+        common.require(
+            code != 0
+            and (refusal.get("error") or {}).get("code") == "permission_denied",
+            "Self person-limit write was not refused",
+        )
+    evidence.update(
+        periods=["daily", "weekly", "monthly"],
+        self_write_refusals=2,
+        live_holds=[
+            "explicit-default-reset",
+            "multi-tenant-privacy",
+            "org-admin-refusal",
+            "spend-through-and-restoration",
+        ],
+    )
+
+
+def model_policy(cli, evidence):
+    persona = "architect"
+    catalog = detail(cli.json(["models", "catalog", "--persona", persona]))
+    common.require(
+        catalog.get("persona_key") == persona
+        and isinstance(catalog.get("models"), list),
+        "Malformed model catalogue",
+    )
+    costs = detail(cli.json(["models", "costs", "--persona", persona]))
+    common.require(
+        costs.get("tenant_id") == catalog.get("tenant_id"),
+        "Cost/catalog tenant mismatch",
+    )
+    common.require(
+        costs.get("selected_persona") == persona
+        and isinstance(costs.get("entries"), list),
+        "Malformed persona costs",
+    )
+    common.require(
+        costs.get("status")
+        in {"known", "none_incurred", "estimated", "partial", "unknown"},
+        "Cost certainty missing",
+    )
+    common.require(
+        costs.get("aggregate_scope") == "all_personas_for_selected_owner_and_chain",
+        "Filtered costs relabelled aggregate",
+    )
+    evidence.update(
+        persona=persona,
+        cost_status=costs["status"],
+        live_holds=[
+            "platform-default-change",
+            "posture-rollback",
+            "concurrent-live-replay",
+            "local-hosted-model-decision-and-restore",
+        ],
+    )
+
+
+def machine(cli, evidence):
+    current = detail(cli.json(["tenant", "current"]))
+    org = current.get("tenant_id")
+    common.require(isinstance(org, str) and org, "Tenant context is absent")
+    for area, kind in (
+        ("service-account", "sql-iam"),
+        ("agent", "iam-registry"),
+        ("agent", "cognito-client"),
+    ):
+        result = detail(
+            cli.json(
+                [
+                    "admin",
+                    area,
+                    "list",
+                    "--org",
+                    org,
+                    "--identity-type",
+                    kind,
+                    "--page-size",
+                    "1",
+                ]
+            )
+        )
+        common.require(
+            result.get("identity_type") == kind
+            and isinstance(result.get("items"), list),
+            "Machine identity type is missing",
+        )
+        common.require(
+            all(row.get("org_id") == org for row in result["items"]),
+            "Machine metadata lost tenant scope",
+        )
+        common.require(
+            all("client_secret" not in row for row in result["items"]),
+            "Credential appeared in metadata",
+        )
+    evidence.update(
+        org_id=org,
+        identity_types=["sql-iam", "iam-registry", "cognito-client"],
+        qualification="bounded metadata reads only; credential delivery and retirement lifecycle need owned mutation fixtures",
+    )
+
+
+def bedrock_lifecycle(cli, evidence):
+    code, preview = cli.run(["bedrock", "reset", "--dry-run"], expected=None)
+    common.require(
+        isinstance(preview, dict), "Bedrock reset preview lacks structured output"
+    )
+    if code == 0:
+        before = (preview.get("detail") or {}).get("before") or {}
+        common.require(
+            preview.get("status") == "dry_run"
+            and before.get("revision")
+            and (before.get("effective") or {}).get("rung")
+            in {"user", "team", "org", "platform"},
+            "Bedrock preview lacks reviewed routing state",
+        )
+        evidence["personal"] = "previewed"
+    else:
+        common.require(
+            code == 3
+            and (preview.get("error") or {}).get("code") == "pinned_by_platform_admin",
+            "Unexpected personal Bedrock refusal",
+        )
+        evidence["personal"] = "admin-pinned-refusal"
+    code, invalid = cli.run(
+        [
+            "admin",
+            "bedrock",
+            "mappings",
+            "show",
+            "--scope",
+            "team",
+            "--target",
+            str(uuid.uuid4()),
+        ],
+        expected=None,
+    )
+    common.require(
+        code == 1 and (invalid.get("error") or {}).get("code") == "usage_error",
+        "An unbound team target was not refused locally",
+    )
+    evidence["cases"] = ["self-reset-preview-or-pin-refusal", "missing-team-parent"]
+    evidence["live_acceptance"] = (
+        "held: routing changes, recorded local/hosted billing, and mapping restoration not exercised"
+    )
+
+
+def knowledge(cli, evidence):
+    # Optional indexing deployments may explicitly refuse discovery. That is
+    # dependency coverage, never evidence that assets were indexed or retrieved.
+    code, envelope = cli.run(["knowledge", "list", "--page-size", "1"], expected=None)
+    common.require(
+        isinstance(envelope, dict), "Knowledge discovery lacks structured output"
+    )
+    if code == 0:
+        common.require(
+            envelope.get("status") == "ok"
+            and isinstance((envelope.get("detail") or {}).get("items"), list),
+            "Malformed knowledge asset list",
+        )
+        evidence["discovery"] = "available"
+    else:
+        message = (envelope.get("error") or {}).get("message", "")
+        common.require(
+            envelope.get("status") == "failed"
+            and any(f"HTTP {status}" in message for status in (403, 404, 503)),
+            "Unexpected knowledge discovery failure",
+        )
+        evidence["discovery"] = "unavailable-or-forbidden"
+    absent = str(uuid.uuid4())
+    preview = cli.json(["knowledge", "delete", absent])
+    common.require(
+        preview.get("status") == "preview"
+        and "artifacts retained" in (preview.get("detail") or {}).get("effect", ""),
+        "Knowledge delete preview omitted retained artifact semantics",
+    )
+    code, invalid = cli.run(["knowledge", "status", "not-a-uuid"], expected=None)
+    common.require(
+        code == 1 and (invalid.get("error") or {}).get("code") == "usage_error",
+        "Invalid knowledge target was not refused locally",
+    )
+    evidence["cases"] = ["discovery", "soft-delete-preview", "invalid-status-target"]
+    evidence["live_acceptance"] = (
+        "held: dedicated indexing fixture, indexed retrieval, task use, and cleanup not exercised"
+    )
+
+
+def recovery(cli, evidence):
+    listing = detail(cli.json(["flow", "list", "--limit", "1"]))
+    common.require(isinstance(listing.get("flows"), list), "Flow listing is malformed")
+    # A malformed identifier must fail before reaching any mutation endpoint.
+    rc, refused = cli.run(
+        [
+            "flow",
+            "node",
+            "resume",
+            "invalid/id",
+            "--flow",
+            "invalid/id",
+            "--reason",
+            "nightly refusal",
+            "--dry-run",
+            "--json",
+        ]
+    )
+    common.require(
+        rc != 0 and isinstance(refused, dict) and refused.get("status") == "failed",
+        "Invalid recovery target was not refused",
+    )
+    evidence.update(
+        listed_flows=len(listing["flows"]),
+        malformed_target_refused=True,
+        live_acceptance_hold="Owned blocked flow and exact human acceptance/amendment fixtures are required for live recovery and continuation; no mutation dispatched.",
+    )
+
+
+def gitlab(cli, evidence):
+    value = detail(cli.json(["gitlab", "status"]))
+    common.require(
+        value.get("contract") == "gitlab_cli_v1"
+        and isinstance(value.get("providers"), list),
+        "GitLab discovery lacks human API contract",
+    )
+    common.require(
+        type(value.get("identity_linked")) is bool,
+        "GitLab identity status is malformed",
+    )
+    common.require(
+        value.get("webhook_delivery") == "unverified"
+        and value.get("agent_runtime") == "unverified",
+        "GitLab discovery falsely claimed delivery or runtime evidence",
+    )
+    code, result = cli.run(
+        [
+            "gitlab",
+            "disconnect",
+            "--repo",
+            "cli-regression/absent",
+            "--project-id",
+            "0",
+            "--operation-id",
+            str(uuid.uuid4()),
+            "--expect-provider-revision",
+            "a" * 64,
+            "--dry-run",
+        ],
+        expected=None,
+    )
+    common.require(
+        code == 1 and result.get("status") == "failed",
+        "Invalid GitLab project was not refused",
+    )
+    evidence.update(
+        provider_count=len(value["providers"]),
+        cases=["gitlab-discovery", "invalid-project-refusal"],
+        live_acceptance_hold="No provider writes or hosted task; real project connect/disconnect and delivery remain unqualified",
+    )
+
+
 SCENARIOS = {
+    "gitlab": gitlab,
+    "recovery": recovery,
+    "knowledge": knowledge,
+    "bedrock_lifecycle": bedrock_lifecycle,
+    "machine": machine,
+    "model_policy": model_policy,
+    "person_budget": person_budget,
+    "ratelimit": ratelimit,
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
+    "access": access,
+    "hierarchy": hierarchy,
     "budget": budget,
     "github_maintenance": github_maintenance,
 }

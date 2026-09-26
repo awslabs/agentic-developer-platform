@@ -538,6 +538,12 @@ def validate(config):
             "superplane.aws_connection_id must be an opaque ADP credential ID, not an ARN or URL",
         )
     result["superplane"] = superplane
+    research = result.get("research_readback", False)
+    require(
+        type(research) is bool,
+        "research_readback must be a boolean fixture declaration",
+    )
+    result["research_readback"] = research
 
     return result
 
@@ -746,6 +752,10 @@ def fixture_classes(config):
     from . import cases
 
     available = {cases.PLATFORM, cases.EC2, cases.COGNITO}
+    # Explicitly identifies an existing domain for read-only regression. This
+    # does not assert readiness: actual authenticated CLI reads decide that.
+    if config.get("research_readback") is True:
+        available.add(cases.SUPERPLANE_RESEARCH)
     # The destination class is exactly "we hold a cross-account session", so it
     # depends on both role bindings the same way SECOND_DESTINATION depends on
     # its account. Claiming it unconditionally made the cross-account cases

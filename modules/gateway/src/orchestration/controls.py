@@ -73,7 +73,7 @@ import json
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from httpx import HTTPError
 from pydantic import BaseModel, ConfigDict, Field
@@ -437,6 +437,9 @@ class ResumeRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    expected_flow_id: str | None = Field(default=None, min_length=1, max_length=36)
+
     reason: str | None = Field(default=None, max_length=2000)
     reconciled: bool = Field(
         default=False,
@@ -755,6 +758,21 @@ async def resume_current_continuation(
         raise HTTPException(404 if str(error) == "node_not_found" else 409, str(error)) from None
 
 
+@router.get("/nodes/{node_id}/recovery")
+async def read_node_recovery(
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    flow_id: Annotated[str, Query(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    from .recovery_snapshot import snapshot
+
+    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=current_user.org_id)
+    _, result = await snapshot(db, org_id=current_user.org_id, node_id=node_id, flow_id=flow_id)
+    return result
+
+
 @router.post("/nodes/{node_id}/resume", response_model=ResumeResponse)
 async def resume_node(
     node_id: Annotated[str, Path(min_length=1, max_length=36)],
@@ -800,6 +818,13 @@ async def resume_node(
     node = await repo.get_node(org_id=org_id, node_id=node_id)
     if node is None:
         raise HTTPException(status_code=404, detail=f"no orchestration node {node_id!r} in this tenant")
+
+    if body.expected_revision is not None:
+        from .recovery_snapshot import require_snapshot
+
+        if body.expected_flow_id is None:
+            raise HTTPException(422, detail="Revision-bound resume requires the reviewed flow ID.")
+        node = await require_snapshot(db, org_id=org_id, node_id=node_id, flow_id=body.expected_flow_id, expected_revision=body.expected_revision)
 
     observed_state = node.state
     actor_role = (await access.get_user_role(current_user))[0].value

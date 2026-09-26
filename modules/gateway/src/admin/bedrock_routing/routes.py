@@ -68,7 +68,7 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,12 +86,13 @@ from src.shared.models.vault import UserCredential
 from src.shared.schemas.auth import TokenContext
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
-from . import service
+from . import revisions, service
 from .schemas import (
     DestinationSetupResponse,
     DestinationSummary,
     EffectiveMappingResponse,
     ExistingAwsConnection,
+    MappingPage,
     MappingSummary,
     MappingUpsertRequest,
     RegisterConnectionDestination,
@@ -128,7 +129,9 @@ def _compose_destination(
     """Render a registry row for the destinations table. No ``role_arn`` — §2.6."""
     return DestinationSummary(
         id=destination.id,
+        revision=revisions.destination_revision(destination),
         connection_id=connection_id,
+        source_connection_id=destination.credential_id,
         account_id=destination.account_id,
         label=destination.label,
         region=destination.region,
@@ -146,6 +149,7 @@ def _compose_mapping(mapping: BedrockAccountMapping, destination: BedrockDestina
     """Render a mapping row for the rules table."""
     return MappingSummary(
         id=mapping.id,
+        revision=revisions.mapping_revision(mapping),
         scope_type=mapping.scope_type,  # type: ignore[arg-type]
         scope_id_org=mapping.scope_id_org,
         scope_id_team=mapping.scope_id_team,
@@ -185,11 +189,14 @@ async def _scope_org_id(db: AsyncSession, scope_type: str, org_id: str | None, u
 # ---------------------------------------------------------------------------
 
 
-@router.get("/mappings", response_model=list[MappingSummary])
+@router.get("/mappings", response_model=list[MappingSummary] | MappingPage)
 async def list_mappings(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> list[MappingSummary]:
+    scope: Annotated[str | None, Query()] = None,
+    page: Annotated[int | None, Query(ge=1)] = None,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[MappingSummary] | MappingPage:
     """Every routing rule on the platform, narrowest rung first. **Platform admin only.**
 
     Ordered ``user`` → ``team`` → ``org`` to match the ladder, so the table reads in
@@ -204,18 +211,28 @@ async def list_mappings(
     """
     AccessControl(db).require_platform_admin(current_user)
 
-    rows = (
-        (
-            await db.execute(
-                select(BedrockAccountMapping, BedrockDestinationRegistry).join(
-                    BedrockDestinationRegistry,
-                    BedrockDestinationRegistry.id == BedrockAccountMapping.destination_id,
-                )
-            )
-        )
-        .tuples()
-        .all()
+    query = select(BedrockAccountMapping, BedrockDestinationRegistry).join(
+        BedrockDestinationRegistry,
+        BedrockDestinationRegistry.id == BedrockAccountMapping.destination_id,
     )
+    if scope is not None:
+        try:
+            kind, org, team, user = service.parse_scope(scope)
+        except service.MappingRejectedError as exc:
+            raise _rejected(exc) from exc
+        query = query.where(
+            BedrockAccountMapping.scope_type == kind,
+            BedrockAccountMapping.scope_id_org == org,
+            BedrockAccountMapping.scope_id_team == team,
+            BedrockAccountMapping.scope_id_user == user,
+        )
+    if page is not None:
+        query = query.order_by(BedrockAccountMapping.scope_type, BedrockAccountMapping.id).offset((page - 1) * page_size).limit(page_size + 1)
+    rows = (await db.execute(query)).tuples().all()
+    if page is not None:
+        return MappingPage(
+            items=[_compose_mapping(m, d) for m, d in rows[:page_size]], page=page, page_size=page_size, has_more=len(rows) > page_size
+        )
     ordered = sorted(rows, key=lambda row: (service.RUNG_ORDER.index(row[0].scope_type), row[0].updated_at))
     return [_compose_mapping(mapping, destination) for mapping, destination in ordered]
 
@@ -227,6 +244,7 @@ async def put_mapping(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     secrets: Annotated[SecretsManagerHelper, Depends(get_secrets_manager)],
+    expected_revision: Annotated[str | None, Query(pattern=r"^(absent|[a-f0-9]{64})$")] = None,
 ) -> MappingSummary:
     """Point one scope's Bedrock traffic at a destination. **Platform admin only.**
 
@@ -270,6 +288,7 @@ async def put_mapping(
             any of those cases, and the detail carries a stable ``reason``.
     """
     AccessControl(db).require_platform_admin(current_user)
+    await revisions.serialize_writes(db)
 
     actor_id = await resolve_canonical_user_id(db, current_user.user_id)
 
@@ -278,8 +297,11 @@ async def put_mapping(
     org_id: str | None = None
     try:
         scope_type, org_id, team_id, user_id = service.parse_scope(scope)
+        current = await service.load_mapping_for_scope(db, scope_type, org_id, team_id, user_id)
+        revisions.require_revision(expected_revision, revisions.mapping_revision(current))
         await service.require_scope_exists(db, scope_type, org_id, team_id, user_id)
         destination = await service.load_destination(db, request.destination_id)
+        revisions.require_revision(request.expected_destination_revision, revisions.destination_revision(destination))
         scope_org = await _scope_org_id(db, scope_type, org_id, user_id)
         await service.validate_mapping_target(
             db,
@@ -352,6 +374,7 @@ async def delete_mapping(
     scope: str,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    expected_revision: Annotated[str | None, Query(pattern=r"^(absent|[a-f0-9]{64})$")] = None,
 ) -> None:
     """Remove one scope's routing rule. **Platform admin only.**
 
@@ -370,9 +393,12 @@ async def delete_mapping(
             ``422`` for a malformed scope.
     """
     AccessControl(db).require_platform_admin(current_user)
+    await revisions.serialize_writes(db)
 
     try:
         scope_type, org_id, team_id, user_id = service.parse_scope(scope)
+        current = await service.load_mapping_for_scope(db, scope_type, org_id, team_id, user_id)
+        revisions.require_revision(expected_revision, revisions.mapping_revision(current))
     except service.MappingRejectedError as exc:
         raise _rejected(exc) from exc
 
@@ -519,6 +545,7 @@ async def link_existing_connection(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     secrets: Annotated[SecretsManagerHelper, Depends(get_secrets_manager)],
+    expected_revision: Annotated[str | None, Query(pattern=r"^(absent|[a-f0-9]{64})$")] = None,
 ) -> RegisterDestinationResponse:
     """Grant one org Bedrock use of an existing connection after a fresh AWS probe.
 
@@ -526,6 +553,7 @@ async def link_existing_connection(
     owner can update their existing role when the capability probe refuses it.
     """
     AccessControl(db).require_platform_admin(current_user)
+    await revisions.serialize_writes(db)
     if await db.get(Organization, request.link_to_org_id) is None:
         raise _rejected(service.MappingRejectedError("scope_not_found", "The organization no longer exists."))
     # Serialize retries for a connection, including different target orgs. The
@@ -547,6 +575,21 @@ async def link_existing_connection(
             BedrockConnectionGrant.credential_id == credential.id, BedrockConnectionGrant.org_id == request.link_to_org_id
         )
     )
+    selected = None
+    if request.destination_id is not None:
+        selected = await service.load_destination(db, request.destination_id)
+        revisions.require_revision(expected_revision, revisions.destination_revision(selected))
+        if (selected.credential_id, selected.owner_org_id, selected.account_id, selected.role_arn) != (
+            credential.id,
+            request.link_to_org_id,
+            account_id,
+            role_arn,
+        ) or selected.is_platform_registered:
+            raise HTTPException(409, detail={"reason": "connection_destination_mismatch"})
+        if grant is not None and grant.destination_id != selected.id:
+            raise HTTPException(409, detail={"reason": "connection_link_exists_elsewhere"})
+    elif expected_revision is not None:
+        raise HTTPException(422, detail={"reason": "destination_required_for_revision"})
     if grant is not None:
         destination = await service.load_destination(db, grant.destination_id)
         if (destination.account_id, destination.role_arn) != (account_id, role_arn):
@@ -554,7 +597,7 @@ async def link_existing_connection(
                 status_code=409, detail="The connection's AWS role has changed. Remove its routing rules and unlink it before linking again."
             )
     else:
-        destination = service.build_destination_from_credential(credential, account_id=account_id, role_arn=role_arn, actor_id=actor_id)
+        destination = selected or service.build_destination_from_credential(credential, account_id=account_id, role_arn=role_arn, actor_id=actor_id)
         destination.owner_org_id = request.link_to_org_id
     capable, reason = await service.test_assume_destination(db, destination, secrets=secrets, probe_user_id=actor_id)
     if not capable:
@@ -601,13 +644,16 @@ async def unlink_existing_connection(
     destination_id: str,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    expected_revision: Annotated[str | None, Query(pattern=r"^(absent|[a-f0-9]{64})$")] = None,
 ) -> None:
     """Remove an unused Bedrock grant, preserving the source connection and AWS role."""
     AccessControl(db).require_platform_admin(current_user)
+    await revisions.serialize_writes(db)
     destination = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.id == destination_id).with_for_update())
     grant = await db.get(BedrockConnectionGrant, destination_id)
     if destination is None or grant is None:
         raise HTTPException(status_code=404, detail="That existing-connection link no longer exists.")
+    revisions.require_revision(expected_revision, revisions.destination_revision(destination))
     if (await service.destination_usage_counts(db, [destination_id])).get(destination_id):
         raise HTTPException(status_code=409, detail="Remove the routing rules that use this destination before unlinking it.")
     actor_id = await resolve_canonical_user_id(db, current_user.user_id)
@@ -657,6 +703,7 @@ async def register_destination(
             is not a verified AWS role.
     """
     AccessControl(db).require_platform_admin(current_user)
+    await revisions.serialize_writes(db)
 
     actor_id = await resolve_canonical_user_id(db, current_user.user_id)
 
@@ -856,6 +903,7 @@ async def verify_destination(
             ``404`` when no such destination exists.
     """
     AccessControl(db).require_platform_admin(current_user)
+    await revisions.serialize_writes(db)
 
     destination = await db.scalar(select(BedrockDestinationRegistry).where(BedrockDestinationRegistry.id == destination_id).with_for_update())
     if destination is None:

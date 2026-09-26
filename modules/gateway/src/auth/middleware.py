@@ -634,7 +634,12 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
         claims = validator.validate_token(token)
 
         # Convert claims to TokenContext
-        return await apply_context(_cognito_claims_to_context(claims), tenant_lease)
+        context = await apply_context(_cognito_claims_to_context(claims), tenant_lease)
+        if tenant_lease is None:
+            from src.admin.membership_revocation import require_not_revoked_context
+
+            await require_not_revoked_context(context)
+        return context
 
     except jwt.ExpiredSignatureError:
         raise HTTPException(

@@ -21,6 +21,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -30,10 +31,13 @@ from src.agentauth.runtime_posture import (
 )
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
+from src.shared.models.audit import AuditLog
 from src.shared.schemas.auth import TokenContext
 
 from . import posture_service
+from .operation_receipts import begin_operation, finish_operation
 from .posture_schemas import (
+    RollbackRuntimePostureRequest,
     RuntimePostureResponse,
     SetRuntimePostureRequest,
 )
@@ -127,6 +131,11 @@ async def set_runtime_posture(
         )
         raise _rejected(exc) from exc
 
+    receipt, replay = await begin_operation(
+        db, actor_id=actor_id, operation_id=request.operation_id, resource="posture:" + compatibility_class, request=request.model_dump(mode="json")
+    )
+    if replay is not None:
+        return RuntimePostureResponse.model_validate(replay)
     try:
         row = await posture_service.set_runtime_posture(
             db,
@@ -157,17 +166,7 @@ async def set_runtime_posture(
         )
         raise _rejected(exc) from exc
 
-    await db.commit()
-    posture_service.finalize_posture_commit(db)
-    logger.info(
-        "Runtime posture changed",
-        extra={
-            "compatibility_class": compatibility_class,
-            "after_posture": row.enforcement_posture,
-            "after_posture_revision": row.posture_revision,
-        },
-    )
-    return RuntimePostureResponse(
+    response = RuntimePostureResponse(
         compatibility_class=row.compatibility_class,
         posture=row.enforcement_posture,
         posture_revision=row.posture_revision,
@@ -176,3 +175,99 @@ async def set_runtime_posture(
         supported_postures=sorted(RUNTIME_POSTURES),
         propagation_bound_seconds=measured_cache_ttl_seconds(),
     )
+
+    finish_operation(receipt, response.model_dump(mode="json"))
+    await db.commit()
+    posture_service.finalize_posture_commit(db)
+    logger.info(
+        "Runtime posture changed",
+        extra={"compatibility_class": compatibility_class, "after_posture": row.enforcement_posture, "after_posture_revision": row.posture_revision},
+    )
+    return response
+
+
+async def _historical_posture(db, compatibility_class: str, revision: int):
+    rows = list(
+        await db.scalars(
+            select(AuditLog).where(
+                AuditLog.org_id == posture_service.PLATFORM_AUDIT_ORG,
+                AuditLog.event_type == posture_service.POSTURE_CHANGED_EVENT,
+                AuditLog.details["compatibility_class"].as_string() == compatibility_class,
+                or_(
+                    AuditLog.details["before_posture_revision"].as_integer() == revision,
+                    AuditLog.details["after_posture_revision"].as_integer() == revision,
+                ),
+            )
+        )
+    )
+    candidates = {}
+    for row in rows:
+        for side in ("before", "after"):
+            if row.details.get(side + "_posture_revision") == revision:
+                candidates[row.details[side + "_posture"]] = row.id
+    if len(candidates) != 1:
+        raise HTTPException(404, detail={"reason": "authoritative_posture_revision_unavailable"})
+    posture, audit_id = next(iter(candidates.items()))
+    return dict(compatibility_class=compatibility_class, posture=posture, posture_revision=revision, audit_id=audit_id)
+
+
+@router.get("/{compatibility_class}/history/{revision}")
+async def get_posture_history(
+    compatibility_class: str,
+    revision: int,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    AccessControl(db).require_platform_admin(current_user)
+    return await _historical_posture(db, compatibility_class, revision)
+
+
+@router.post("/{compatibility_class}/rollback", response_model=RuntimePostureResponse)
+async def rollback_runtime_posture(
+    compatibility_class: str,
+    request: RollbackRuntimePostureRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    AccessControl(db).require_platform_admin(current_user)
+    actor_id = await posture_service.resolve_posture_actor_id(db, current_user.user_id)
+    receipt, replay = await begin_operation(
+        db,
+        actor_id=actor_id,
+        operation_id=request.operation_id,
+        resource="posture-rollback:" + compatibility_class,
+        request=request.model_dump(mode="json"),
+    )
+    if replay is not None:
+        return RuntimePostureResponse.model_validate(replay)
+    historical = await _historical_posture(db, compatibility_class, request.historical_revision)
+    try:
+        row = await posture_service.set_runtime_posture(
+            db,
+            compatibility_class=compatibility_class,
+            posture=historical["posture"],
+            expected_revision=request.expected_revision,
+            actor_id=actor_id,
+            reason=request.reason,
+            rollback_revision=request.historical_revision,
+            rollback_audit_id=historical["audit_id"],
+        )
+    except posture_service.PostureConflictError as exc:
+        await db.rollback()
+        raise _conflict(exc) from exc
+    except posture_service.PostureMutationError as exc:
+        await db.rollback()
+        raise _rejected(exc) from exc
+    response = RuntimePostureResponse(
+        compatibility_class=row.compatibility_class,
+        posture=row.enforcement_posture,
+        posture_revision=row.posture_revision,
+        updated_by=row.updated_by,
+        updated_at=row.updated_at,
+        supported_postures=sorted(RUNTIME_POSTURES),
+        propagation_bound_seconds=measured_cache_ttl_seconds(),
+    )
+    finish_operation(receipt, response.model_dump(mode="json"))
+    await db.commit()
+    posture_service.finalize_posture_commit(db)
+    return response

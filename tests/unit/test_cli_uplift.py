@@ -1008,6 +1008,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E18",
         "E19",
         "E28",
+        "E25",
         "E27",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
@@ -8428,6 +8429,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E18",
         "E19",
         "E28",
+        "E25",
         "E27",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
@@ -8446,7 +8448,17 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E22",
         "E23",
         "E24",
+        "E33",
+        "E29",
+        "E31",
         "E26",
+        "E36",
+        "E35",
+        "E38",
+        "E34",
+        "E32",
+        "E37",
+        "E30",
     }
 
 
@@ -10238,8 +10250,19 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E22",
         "E23",
         "E24",
+        "E33",
+        "E31",
+        "E25",
         "E26",
         "E28",
+        "E36",
+        "E29",
+        "E35",
+        "E38",
+        "E34",
+        "E32",
+        "E37",
+        "E30",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10372,6 +10395,62 @@ def test_vault_nightly_is_selected_and_shipped():
     assert stages.JOURNEY_DRIVERS["E24"] in bundle.purposes()
 
 
+def test_hierarchy_reads_are_wired_to_existing_nightly(tmp_path):
+    assert cases.BY_ID["E29"].owner == "#5623"
+    assert "E29" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E29"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"items": [{"id": "org"}]}},
+        *[
+            {"status": "ok", "detail": {"org_id": "org", "kind": kind, "items": []}}
+            for kind in ("department", "team", "member")
+        ],
+    ]
+    evidence = {}
+    module.hierarchy(cli, evidence)
+    assert evidence["org_id"] == "org"
+    cli.run.assert_not_called()
+
+
+def test_hierarchy_read_refuses_foreign_row(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"items": [{"id": "org"}]}},
+        {
+            "status": "ok",
+            "detail": {
+                "org_id": "org",
+                "kind": "department",
+                "items": [{"org_id": "foreign"}],
+            },
+        },
+    ]
+    with pytest.raises(common.RemoteError, match="Foreign hierarchy"):
+        module.hierarchy(cli, {})
+
+
+def test_machine_story_reads_are_wired_to_existing_nightly(tmp_path):
+    assert cases.BY_ID["E31"].owner == "#5624"
+    assert "E31" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E31"] in bundle.purposes()
+    module, _common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"tenant_id": "org"}},
+        *[
+            {"status": "ok", "detail": {"identity_type": kind, "items": []}}
+            for kind in ("sql-iam", "iam-registry", "cognito-client")
+        ],
+    ]
+    evidence = {}
+    module.machine(cli, evidence)
+    assert evidence["org_id"] == "org"
+    assert cli.json.call_count == 4
+
+
 def test_story_budget_reads_all_periods_without_writes(tmp_path):
     module, common = shipped_script(tmp_path, "story_reads")
     cli = Mock()
@@ -10450,6 +10529,66 @@ def test_github_maintenance_nightly_is_read_and_preview_only(tmp_path):
     assert stages.JOURNEY_DRIVERS["E28"] in bundle.purposes()
 
 
+def test_bedrock_lifecycle_nightly_preview_has_no_probes_or_writes(tmp_path):
+    assert cases.BY_ID["E34"].owner == "#5633"
+    assert "E34" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E34"] in bundle.purposes()
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.side_effect = [
+        (
+            0,
+            {
+                "status": "dry_run",
+                "detail": {
+                    "before": {"revision": "a" * 64, "effective": {"rung": "org"}}
+                },
+            },
+        ),
+        (1, {"status": "failed", "error": {"code": "usage_error"}}),
+    ]
+    evidence = {}
+    module.bedrock_lifecycle(cli, evidence)
+    assert evidence["live_acceptance"].startswith("held:")
+    for call in cli.method_calls:
+        assert not {"--yes", "verify", "connect", "submit"}.intersection(call.args[0])
+
+
+def test_bedrock_lifecycle_nightly_does_not_hide_missing_server(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = (
+        5,
+        {"status": "failed", "error": {"code": "unsupported_operation"}},
+    )
+    with pytest.raises(common.RemoteError, match="Unexpected personal Bedrock refusal"):
+        module.bedrock_lifecycle(cli, {})
+
+
+def test_gitlab_nightly_does_not_claim_live_delivery_or_write(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "contract": "gitlab_cli_v1",
+            "providers": [],
+            "identity_linked": False,
+            "webhook_delivery": "unverified",
+            "agent_runtime": "unverified",
+        },
+    }
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.gitlab(cli, evidence)
+    assert evidence["provider_count"] == 0
+    assert "live_acceptance_hold" in evidence
+    assert all("--yes" not in call.args[0] for call in cli.method_calls)
+    assert cases.BY_ID["E30"].owner == "#5635"
+    assert "E30" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E30"] in bundle.purposes()
+
+
 @pytest.mark.parametrize("bad_group", [False, True])
 def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     tmp_path, bad_group
@@ -10485,3 +10624,145 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     else:
         assert len(launches) == 1
         assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_ratelimit_story_wired_and_read_only(tmp_path):
+    assert cases.BY_ID["E36"].owner == "#5627"
+    assert "E36" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E36"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "runtime": {
+                "tpm": "unavailable_actual_usage_not_reconciled",
+                "worker_convergence": "unknown",
+                "state": "configured_not_probed",
+            },
+            "lines": [
+                {"effective": {"rpm": 60}, "sources": {"rpm": "account_type_default"}}
+            ],
+        },
+    }
+    evidence = {}
+    module.ratelimit(cli, evidence)
+    assert cli.json.call_args.args[0] == ["ratelimit", "me"]
+    assert evidence["enforcement_qualification"] == "not_run"
+    cli.run.assert_not_called()
+    cli.json.return_value["detail"]["runtime"]["tpm"] = "enforced"
+    with pytest.raises(common.RemoteError, match="TPM gap"):
+        module.ratelimit(cli, {})
+
+
+def test_person_budget_story_is_wired_into_nightly():
+    assert cases.BY_ID["E35"].owner == "#5626"
+    assert "E35" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E35"] in bundle.purposes()
+
+
+def test_person_budget_story_retains_authority_and_refusal(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "configuration": {
+                    "period_type": p,
+                    "cap_status": "uncapped",
+                    "cap_usd": None,
+                },
+                "authority": "platform_admin",
+            },
+        }
+        for p in ("daily", "weekly", "monthly")
+    ]
+    cli.run.return_value = (
+        3,
+        {"status": "failed", "error": {"code": "permission_denied"}},
+    )
+    evidence = {}
+    module.person_budget(cli, evidence)
+    assert cli.json.call_count == 3
+    assert cli.run.call_count == 2
+    assert evidence["self_write_refusals"] == 2
+    assert "spend-through-and-restoration" in evidence["live_holds"]
+
+
+def test_model_policy_e38_is_wired_and_retains_live_holds(tmp_path):
+    assert cases.BY_ID["E38"].owner == "#5636"
+    assert "E38" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E38"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {"tenant_id": "org", "persona_key": "architect", "models": []},
+        },
+        {
+            "status": "ok",
+            "detail": {
+                "tenant_id": "org",
+                "selected_persona": "architect",
+                "entries": [],
+                "status": "unknown",
+                "aggregate_scope": "all_personas_for_selected_owner_and_chain",
+            },
+        },
+    ]
+    evidence = {}
+    module.model_policy(cli, evidence)
+    assert "posture-rollback" in evidence["live_holds"]
+    cli.run.assert_not_called()
+
+
+def test_knowledge_nightly_is_selected_and_has_no_dispatch(tmp_path):
+    assert cases.BY_ID["E32"].owner == "#5632"
+    assert "E32" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E32"] in bundle.purposes()
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.side_effect = [
+        (0, {"status": "ok", "detail": {"items": []}}),
+        (1, {"status": "failed", "error": {"code": "usage_error"}}),
+    ]
+    cli.json.return_value = {
+        "status": "preview",
+        "detail": {"effect": "soft removal; index artifacts retained"},
+    }
+    evidence = {}
+    module.knowledge(cli, evidence)
+    assert evidence["live_acceptance"].startswith("held:")
+    assert evidence["discovery"] == "available"
+    assert all(
+        not {"--yes", "reindex", "add", "commit", "submit"}.intersection(call.args[0])
+        for call in cli.method_calls
+    )
+
+
+@pytest.mark.parametrize("status", [401, 429, 500])
+def test_knowledge_nightly_does_not_hide_unexpected_errors(tmp_path, status):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = (
+        5,
+        {"status": "failed", "error": {"message": f"HTTP {status}"}},
+    )
+    with pytest.raises(common.RemoteError, match="Unexpected knowledge discovery"):
+        module.knowledge(cli, {})
+
+
+def test_recovery_nightly_reads_and_refuses_without_mutation(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {"status": "ok", "detail": {"flows": []}}
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.recovery(cli, evidence)
+    assert evidence["malformed_target_refused"] is True
+    assert "live_acceptance_hold" in evidence
+    assert all("--yes" not in call.args[0] for call in cli.method_calls)
+    assert cases.BY_ID["E37"].owner == "#5630"
+    assert stages.JOURNEY_DRIVERS["E37"] in bundle.purposes()

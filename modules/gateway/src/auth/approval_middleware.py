@@ -161,7 +161,9 @@ class ApprovalEnforcementMiddleware:
                 ids: set[str] = set()
                 for user in users:
                     ids.update(await linked_user_ids(session, user, username=context.cognito_username if context else ""))
-                memberships = (await session.scalars(select(TenantMembership).where(TenantMembership.user_id.in_(ids)))).all()
+                memberships = (
+                    await session.scalars(select(TenantMembership).where(TenantMembership.user_id.in_(ids), TenantMembership.revoked_at.is_(None)))
+                ).all()
                 tenant_ids = {row.tenant_id for row in memberships if row.tenant_id}
                 selected = context.org_id.strip() if context else ""
                 if not selected and len(tenant_ids) == 1:

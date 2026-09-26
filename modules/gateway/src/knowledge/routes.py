@@ -17,6 +17,9 @@ the gate is off, `router` is not defined so the routes are silently skipped.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import io
+import json
 import logging
 import os
 import uuid
@@ -61,6 +64,7 @@ from src.shared.identity import resolve_canonical_user_id
 logger = logging.getLogger("bedrockgateway.knowledge.routes")
 
 _router = APIRouter(prefix="/api/agent-context/assets", tags=["knowledge-assets"])
+_cli_router = APIRouter(prefix="/agent-context/assets", tags=["knowledge-assets"])
 
 # ---------------------------------------------------------------------------
 # Quota defaults (overridable via env / SSM)
@@ -450,6 +454,7 @@ async def reindex_asset(
     asset_id: str,
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
     current_user: Annotated[Any, Depends(get_current_user)],
+    request_id: Annotated[uuid.UUID | None, Query()] = None,
 ) -> AssetResponse:
     """Re-queue asset for indexing: set status = 'registered'. Owner or admin."""
     row = await _fetch_asset_by_id(db, asset_id)
@@ -458,15 +463,36 @@ async def reindex_asset(
 
     _authorize_modify(row, current_user)
 
-    await db.execute(
+    # Every caller reserves the same asset generation with compare-and-swap.
+    # Keyed receipts survive lost responses and subsequent generations. Legacy
+    # browser calls share the in-flight guard even without a request ID.
+    metadata = dict(row.metadata or {})
+    if request_id is not None:
+        receipt = hashlib.sha256(f"{current_user.user_id}:{request_id}".encode()).hexdigest()
+        receipts = metadata.get("_cli_reindex_requests", [])
+        if not isinstance(receipts, list):
+            raise HTTPException(409, detail={"reason": "reindex_receipts_invalid"})
+        if receipt in receipts:
+            return _row_to_response(row)
+        if len(receipts) >= 256:
+            raise HTTPException(409, detail={"reason": "reindex_receipts_full"})
+        metadata["_cli_reindex_requests"] = [*receipts, receipt]
+    if row.status not in {"indexed", "failed"}:
+        raise HTTPException(409, detail={"reason": "indexing_not_terminal"})
+    reserved = await db.execute(
         text("""
             UPDATE knowledge_assets
             SET status = 'registered', last_error = NULL, updated_at = NOW(),
-                ingestion_attempt_id = NULL, callback_grant_sha256 = NULL
-            WHERE id = :id
+                ingestion_attempt_id = NULL, callback_grant_sha256 = NULL,
+                metadata = CAST(:metadata AS jsonb)
+            WHERE id = :id AND updated_at = :updated_at AND status = :status
+            RETURNING id
         """),
-        {"id": asset_id},
+        {"id": asset_id, "updated_at": row.updated_at, "status": row.status, "metadata": json.dumps(metadata)},
     )
+    if reserved.fetchone() is None:
+        await db.rollback()
+        raise HTTPException(409, detail={"reason": "reindex_conflict"})
     await db.commit()
 
     # Phase 1 inline dispatch: re-publish to SQS after resetting to 'registered'.
@@ -716,6 +742,35 @@ async def bulk_preview(
         duplicates=duplicates,
         quota_ok=quota_ok,
         quota_after=quota_after,
+    )
+
+
+@_cli_router.post("/bulk/preview-json", response_model=BulkPreviewResponse)
+async def bulk_preview_json(
+    body: BulkCommitRequest,
+    db: Annotated[AsyncSession, Depends(get_agent_context_db)],
+    gateway_db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[Any, Depends(get_current_user)],
+) -> BulkPreviewResponse:
+    """JSON adapter over canonical read-only preview, with lossless conversion."""
+    if not 1 <= len(body.items) <= MAX_LINES:
+        raise HTTPException(413, detail="Preview requires 1 to 500 items")
+    lines = []
+    for item in body.items:
+        tags = ",".join(f"{key}:{value}" for key, value in item.tags.items())
+        lines.append(f"{item.source_ref} | {item.display_name or ''} | {tags}")
+    content = "\n".join(lines)
+    parsed, rejected, _, _ = parse_bulk_file(content)
+    expected = [item.model_dump() for item in body.items]
+    actual = [item.model_dump(exclude={"line"}) for item in parsed]
+    if rejected or actual != expected:
+        raise HTTPException(422, detail="Items cannot be represented losslessly by the canonical bulk parser")
+    return await bulk_preview(
+        db=db,
+        gateway_db=gateway_db,
+        current_user=current_user,
+        file=UploadFile(file=io.BytesIO(content.encode())),
+        scope=body.scope,
     )
 
 
@@ -1093,6 +1148,11 @@ def _json_dumps(obj: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Conditional export — gated behind AGENT_CONTEXT_ENABLED
 # ---------------------------------------------------------------------------
+
+_legacy_router = _router
+_router = APIRouter()
+_router.include_router(_legacy_router)
+_router.include_router(_cli_router)
 
 if os.environ.get("AGENT_CONTEXT_ENABLED", "").lower() == "true":
     router = _router

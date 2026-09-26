@@ -56,6 +56,12 @@ PLATFORM_ADMIN_ID, PLATFORM_ADMIN_SUB = "user-platform-admin", "sub-platform-adm
 #: quietly going untested.
 ALL_ROUTES = [
     ("GET", f"/admin/persona-models/posture/{CLASS}", None),
+    ("GET", f"/admin/persona-models/posture/{CLASS}/history/1", None),
+    (
+        "POST",
+        f"/admin/persona-models/posture/{CLASS}/rollback",
+        {"expected_revision": 2, "historical_revision": 1, "operation_id": "2ae4a67c-020c-4a3b-ae31-7c68520d6904", "reason": "rollback"},
+    ),
     ("PUT", f"/admin/persona-models/posture/{CLASS}", {"posture": "enforcing", "expected_revision": 1}),
 ]
 
@@ -149,7 +155,7 @@ def client_for(session: AsyncSession, context: TokenContext | None) -> AsyncClie
 async def _call(client, method: str, path: str, body: dict | None):
     if method == "GET":
         return await client.get(path)
-    return await client.put(path, json=body)
+    return await client.request(method, path, json=body)
 
 
 async def _stored(session: AsyncSession) -> tuple[str, int]:
@@ -492,3 +498,30 @@ class TestSourceLevelGate:
         assert "ORG_UPDATE" not in code
         assert "check_permission" not in code
         assert "require_platform_admin" in code
+
+
+async def test_cli_posture_replay_and_authoritative_rollback(session, seeded):
+    path = f"/admin/persona-models/posture/{CLASS}"
+    body = dict(posture="enforcing", expected_revision=1, operation_id="e1fc3954-b69d-4f80-81b2-f4b1f9fb68eb", reason="qualified change")
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        first = await client.put(path, json=body)
+        assert first.status_code == 200, first.text
+        again = await client.put(path, json=body)
+        assert again.status_code == 200 and again.json() == first.json()
+        history = await client.get(path + "/history/1")
+        assert history.status_code == 200 and history.json()["posture"] == "report_only"
+        rollback = dict(
+            expected_revision=2, historical_revision=1, operation_id="c050e376-13ab-478a-bcb2-a0f5116509ba", reason="restore audited revision"
+        )
+        restored = await client.post(path + "/rollback", json=rollback)
+        assert restored.status_code == 200, restored.text
+        assert (restored.json()["posture"], restored.json()["posture_revision"]) == ("report_only", 3)
+        assert (await client.post(path + "/rollback", json=rollback)).json() == restored.json()
+        assert (await client.put(path, json=body)).json() == first.json()
+        assert (await client.get(path)).json()["posture_revision"] == 3
+        assert (await client.put(path, json={**body, "posture": "disabled"})).status_code == 409
+    audits = list(await session.scalars(sa.select(AuditLog).where(AuditLog.event_type == "persona_model_posture_changed")))
+    assert len(audits) == 2
+    restored_audit = next(row for row in audits if row.details["after_posture_revision"] == 3)
+    assert restored_audit.details["rollback_revision"] == 1
+    assert restored_audit.details["rollback_audit_id"] == history.json()["audit_id"]

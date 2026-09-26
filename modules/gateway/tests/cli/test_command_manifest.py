@@ -147,18 +147,26 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-bedrock.py", ["adp", "bedrock"]),
         ("adp-github.py", ["adp", "github"]),
         ("adp-superplane.py", ["adp", "superplane"]),
+        ("adp-superplane-research.py", ["adp", "superplane", "research"]),
         ("adp-models.py", ["adp", "models"]),
+        ("adp-model-policy.py", ["adp", "admin", "models"]),
         ("adp-flow.py", ["adp", "flow"]),
         ("adp-task.py", ["adp", "task"]),
         ("adp-tenant.py", ["adp", "tenant"]),
+        ("adp-hierarchy.py", ["adp", "admin"]),
         ("adp-vault.py", ["adp"]),
+        ("adp-machine.py", ["adp", "admin"]),
+        ("adp-gitlab.py", ["adp"]),
         ("adp-usage.py", ["adp"]),
+        ("adp-knowledge.py", ["adp"]),
         ("adp-agent.py", ["adp", "agent"]),
         ("adp-budget.py", ["adp"]),
+        ("adp-ratelimit.py", ["adp"]),
         ("adp-doctor.py", ["adp"]),
     ]
     checked_helpers = {helper for helper, _prefix in helper_prefixes} | {
         "adp-admin.py",
+        "adp-access.py",
         "adp-github-admin.py",
     }
     manifested = {row["command"]: row for row in shipped if row["helper"] in checked_helpers}
@@ -170,7 +178,28 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     admin.pop("adp admin bedrock")
     admin.pop("adp admin github")
     admin.pop("adp admin usage")
+    admin.pop("adp admin access-request")
+    admin.pop("adp admin session")
+    actual.update(
+        {
+            name.replace("adp access-request", "adp admin access-request").replace("adp session", "adp admin session"): row
+            for name, row in parser_leaves("adp-access.py", ["adp"]).items()
+        }
+    )
+
+    for area in ("org", "department", "team", "member", "tenant"):
+        admin.pop("adp admin " + area)
+
+    for area in ("service-account", "agent", "service-principal"):
+        admin.pop("adp admin " + area)
+
+    admin.pop("adp admin indexing")
+
+    admin.pop("adp admin gitlab")
     admin.pop("adp admin budget")
+    admin.pop("adp admin ratelimit")
+
+    admin.pop("adp admin models")
     actual.update(admin)
     actual.update(parser_leaves("adp-bedrock.py", ["adp", "admin", "bedrock"]))
     actual.update(parser_leaves("adp-github-admin.py", ["adp", "admin", "github"]))
