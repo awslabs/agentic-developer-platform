@@ -14,7 +14,7 @@ process.stdout.write(JSON.stringify({...result, calls, unchanged: before === JSO
 let count = 0;
 function check(options, sample, expected, calls) {
   const result = spawnSync(process.execPath, ['-e', runner, JSON.stringify({options, sample})], {encoding:'utf8', timeout:1500, maxBuffer:4096});
-  assert.equal(result.status, 0, 'candidate process must exit normally');
+  assert.equal(result.status, 0, 'candidate process must exit normally: ' + JSON.stringify(options));
   const actual = JSON.parse(result.stdout);
   assert.equal(actual.unchanged, true, 'input mutation');
   if (calls !== undefined) assert.equal(actual.calls, calls);
@@ -30,6 +30,8 @@ check({attempt:1024}, .9, 27000, 1);
 // A huge exponent must not saturate a tiny base prematurely.
 check({attempt:1025, baseMs:Number.MIN_VALUE}, .5, 0, 1);
 check({attempt:1076, baseMs:Number.MIN_VALUE}, .75, 1, 1);
+check({attempt:Number.MAX_VALUE, baseMs:0}, .5, 0, 1);
+check({attempt:Number.MAX_VALUE}, .5, 15000, 1);
 check({attempt:3, baseMs:25, maxMs:70}, .5, 35, 1);
 check({attempt:3, baseMs:25, maxMs:70}, .999, 69, 1);
 check({attempt:1, baseMs:25, maxMs:70}, 0, 0, 1);
