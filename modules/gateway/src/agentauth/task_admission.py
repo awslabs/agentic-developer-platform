@@ -70,14 +70,21 @@ class TaskAdmission:
             return self.receipt(task, replayed=True)
         now = self.clock()
         deadline = now + timedelta(minutes=int(policy["limits"]["max_duration_minutes"]))
+        human_owner = caller.principal_id.startswith("human:")
         binding = await self.model_resolver(
             db,
             tenant=caller.tenant_id,
             principal=caller.principal_id,
             deadline=deadline,
             expected_policy_version=policy["model_policy_version"],
+            **({"include_context": True} if human_owner else {}),
             **({"persona": submit["persona"]} if submit["persona"] == "agent-task-cyber" else {}),
         )
+        if human_owner:
+            binding, owner_policy, _ = binding
+            from src.tasks.human_authority import require_admission_headroom
+
+            await require_admission_headroom(owner_policy.context, policy["limits"]["max_usd_per_task"])
         refs = []
         total_bytes = 0
         for artifact_id in submit.get("artifact_ids", []):

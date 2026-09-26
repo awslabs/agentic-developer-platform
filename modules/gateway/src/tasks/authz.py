@@ -41,7 +41,7 @@ import logging
 from dataclasses import dataclass
 
 import jwt
-from fastapi import Request
+from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.persona_models import service as principal_service
@@ -112,8 +112,11 @@ def authenticate(request: Request) -> tuple[TokenContext, frozenset[str]]:
         raise errors.prerequisite_unavailable("Credential validation is not configured.")
 
     try:
-        claims = validator.validate_token(header[7:])
-    except jwt.InvalidTokenError:
+        from src.auth.tenant_context import split_token
+
+        token, tenant_lease = split_token(header[7:])
+        claims = validator.validate_token(token)
+    except (jwt.InvalidTokenError, HTTPException):
         raise errors.TaskApiError(401, "invalid_credential", "The access token is invalid or expired.") from None
     except Exception:
         logger.warning("Task API token validation failed unexpectedly", exc_info=True)
@@ -131,6 +134,7 @@ def authenticate(request: Request) -> tuple[TokenContext, frozenset[str]]:
     except Exception:
         raise errors.TaskApiError(401, "invalid_credential", "The access token is not coherent.") from None
 
+    context._task_tenant_lease = tenant_lease
     scopes = frozenset(scope for scope in (claims.scope or "").split() if scope.startswith("adp-tasks/"))
     return context, scopes
 
@@ -144,6 +148,13 @@ async def resolve_caller(context: TokenContext, scopes: frozenset[str], db: Asyn
     principal is not active. Which applies is information about the platform's
     registration state that an unregistered caller has no claim to.
     """
+    if getattr(context, "_task_tenant_lease", None) is not None:
+        from src.auth.tenant_context import apply_context
+
+        try:
+            context = await apply_context(context, context._task_tenant_lease, db)
+        except HTTPException:
+            raise errors.disallowed_scope("The signed tenant selection is no longer authorized.") from None
     if context.account_type == "human":
         from src.tasks.human_authority import resolve_human
 

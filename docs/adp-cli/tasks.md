@@ -186,3 +186,18 @@ adapter; renaming a persona or using an investigator is not that acceptance.
 Existing per-task/pilot admission reservations and per-model personal/team/tenant
 budget enforcement remain in effect. Live human, repository and engine acceptance
 must be recorded separately before #5516 closes.
+
+Human Task commands participate in `--tenant`, `ADP_TENANT` and saved tenant
+selection. The existing signed tenant context is verified together with the
+Cognito access token and live membership; the Task owner/policy uses the selected
+tenant. A pinned lease or login expiry stops the command rather than switching
+identity. Service Task credentials retain their own deployment-bound tenant and
+cannot use the human selector.
+
+Before a new human task is accepted, the shared budget hierarchy checks headroom
+for the per-task ceiling. A refusal is HTTP 402 `budget_exceeded` (CLI exit 5).
+This preflight does not reserve spend or create a new ledger: concurrent paid
+calls remain controlled by the existing strict reservations, and existing Task
+pilot reservations remain independent. The pilot's fixed limits are not the CLI
+evaluation's tighter shared spending limit; operators must retain the latter's
+existing ledger and independently enforced bounds during live qualification.
