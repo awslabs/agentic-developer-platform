@@ -13505,3 +13505,25 @@ def test_usage_verified_owner_refuses_scope_drift(tmp_path, scope):
             {"scope": scope},
             {"usage_owner": {"org_id": "selected", "user_id": "owner"}},
         )
+
+
+def test_coding_command_ids_match_task_uuid4_contract_and_retain_identity():
+    import uuid
+    from tests.e2e.cli_uplift.remote.coding_plan import recovery_plan
+
+    config = {
+        "evaluation_id": "coding-command-contract",
+        "gateway_url": "https://gateway",
+        "human_task_coding": diagnostic_fixture("human_task_coding"),
+    }
+    plan = recovery_plan(config)
+    assert plan == recovery_plan(config)
+    assert plan["schema"] == "hosted-coding-recovery-v2"
+    for key in ("command_id", "cleanup_command_id"):
+        value = uuid.UUID(plan[key])
+        assert value.version == 4 and value.variant == uuid.RFC_4122
+        assert str(value) == plan[key]
+    assert plan["command_id"] != plan["cleanup_command_id"]
+    different = recovery_plan({**config, "evaluation_id": "another-run"})
+    assert different["command_id"] != plan["command_id"]
+    assert different["cleanup_command_id"] != plan["cleanup_command_id"]
