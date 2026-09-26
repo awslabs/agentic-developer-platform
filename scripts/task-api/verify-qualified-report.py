@@ -8,6 +8,11 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 
+class _NoDTDTreeBuilder(ElementTree.TreeBuilder):
+    def doctype(self, name, pubid, system):
+        raise ValueError("DTD declarations are not permitted in JUnit evidence")
+
+
 def _require(condition, message):
     if not condition:
         raise AssertionError(message)
@@ -26,15 +31,24 @@ _require(
     report.get("artifact_sha256"), "Qualification must bind nonempty evidence artifacts"
 )
 root = args.report.parent.resolve()
+validated_artifacts = {}
 for name, expected in report["artifact_sha256"].items():
     path = (root / name).resolve()
     path.relative_to(root)
+    content = path.read_bytes()
     _require(
-        hashlib.sha256(path.read_bytes()).hexdigest() == expected,
+        hashlib.sha256(content).hexdigest() == expected,
         "Qualification artifact digest mismatch",
     )
+    validated_artifacts[path] = content
 for run in report.get("test_runs", []):
-    suites = ElementTree.parse(root / run["report"]).getroot().iter("testsuite")
+    path = (root / run["report"]).resolve()
+    path.relative_to(root)
+    _require(path in validated_artifacts, "Qualification JUnit report is not digest-bound")
+    suites = ElementTree.fromstring(
+        validated_artifacts[path],
+        parser=ElementTree.XMLParser(target=_NoDTDTreeBuilder()),
+    ).iter("testsuite")
     tests = failed = skipped = 0
     for suite in suites:
         tests += int(suite.attrib["tests"])
