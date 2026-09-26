@@ -13407,3 +13407,101 @@ def test_coding_agent_cancel_must_bind_initial_task_and_replayed_receipt(
         module.cancel_with_replay(Cli(), "tsk-owned", "owned-command")
     assert len(calls) == (2 if fault == "different_identity" else 1)
     assert calls[0][:2] == ["agent", "abort"]
+
+
+@pytest.mark.parametrize("fault", [None, "login", "owner", "tenant", "membership"])
+def test_usage_tenant_fixture_checks_identity_before_exports(
+    tmp_path, monkeypatch, fault
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    cfg = {
+        "mode": "usage",
+        "cli_path": "/served/adp",
+        "gateway_url": "https://gateway.example",
+        "region": "us-east-1",
+        "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+        "org_id": "native",
+        "test_user_id": "login",
+        "usage_tenant": {
+            "login_user_id": "login",
+            "canonical_user_id": "owner",
+            "tenant_id": "selected",
+        },
+    }
+    if fault == "login":
+        cfg["test_user_id"] = "wrong"
+    monkeypatch.setattr(common, "load_session", lambda _: {"org_id": "native"})
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    observed = []
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            assert env["ADP_TENANT"] == "selected"
+            assert "ADP_TENANT_ID" not in env
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+
+        def json(self, args):
+            observed.append(args)
+            if fault == "membership":
+                raise common.RemoteError("Membership refused")
+            return {
+                "status": "ok",
+                "detail": {
+                    "principal_id": "wrong" if fault == "owner" else "owner",
+                    "tenant_id": "wrong" if fault == "tenant" else "selected",
+                },
+            }
+
+    monkeypatch.setattr(common, "Cli", Cli)
+    monkeypatch.setitem(
+        script.SCENARIOS, "usage", lambda cli, ev: observed.append("exports")
+    )
+    evidence = {"transcript": []}
+    if fault:
+        with pytest.raises(common.RemoteError):
+            script.execute(cfg, evidence)
+        assert "exports" not in observed
+    else:
+        script.execute(cfg, evidence)
+        assert observed == [["models", "mappings", "list"], "exports"]
+        assert evidence["tenant_selection"] == "verified_existing_membership_fixture"
+        assert evidence["usage_owner"] == {"org_id": "selected", "user_id": "owner"}
+    assert cfg["org_id"] == "native"
+
+
+@pytest.mark.parametrize("fault", [None, "missing", "extra", "secret"])
+def test_usage_tenant_fixture_allows_only_explicit_identity(fault):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    fixture = {
+        "login_user_id": "login",
+        "canonical_user_id": "owner",
+        "tenant_id": "selected",
+    }
+    if fault == "missing":
+        fixture.pop("canonical_user_id")
+    elif fault == "extra":
+        fixture["org_id"] = "override"
+    elif fault == "secret":
+        fixture["access_token"] = "value"
+    if fault:
+        with pytest.raises(config.ConfigError):
+            parse(json.dumps({"usage_tenant": fixture}))
+    else:
+        assert parse(json.dumps({"usage_tenant": fixture}))["usage_tenant"] == fixture
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"org_id": "wrong", "user_id": "owner"},
+        {"org_id": "selected", "user_id": "wrong"},
+    ],
+)
+def test_usage_verified_owner_refuses_scope_drift(tmp_path, scope):
+    script, common = shipped_script(tmp_path, "story_reads")
+    with pytest.raises(common.RemoteError, match="verified owner"):
+        script.require_usage_owner(
+            {"scope": scope},
+            {"usage_owner": {"org_id": "selected", "user_id": "owner"}},
+        )
