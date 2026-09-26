@@ -355,6 +355,13 @@ OPERATIONS = (
         feature="FEATURE_ORCHESTRATION_ENGINE_ENABLED",
     ),
     Operation(
+        "flows.recovery.write",
+        summary="Recover a reviewed engine node or exact PR association",
+        feature="FEATURE_ORCHESTRATION_ENGINE_ENABLED",
+        permission=Permission.PLAN_APPROVE,
+        mutates=True,
+    ),
+    Operation(
         "flows.approve.write",
         summary="Answer a delivery gate",
         feature="FEATURE_ORCHESTRATION_ENGINE_ENABLED",

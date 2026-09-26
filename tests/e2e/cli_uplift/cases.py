@@ -316,6 +316,14 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
+        "E37",
+        "#5630",
+        "story-reads",
+        "Flow reads and malformed recovery refusal through served CLI; owned accepted-flow recovery remains fixture-gated",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    ),
+    Case(
         "E32",
         "#5632",
         "story-reads",

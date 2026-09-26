@@ -157,6 +157,11 @@ only; real RPM, TPM/concurrency, client retry and cleanup acceptance remain held
 
 CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
 
+E37 (#5630) checks served-client flow reads and malformed recovery-target refusal.
+It performs no recovery mutation. Full recovery/continuation acceptance requires
+an owned blocked flow plus the canonical inception/amendment and bounded-worker
+fixtures described in [flow recovery](../adp-cli/flow-recovery.md).
+
 E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.
 
 E33 (#5625) uses the served CLI to read current-tenant access status and a bounded

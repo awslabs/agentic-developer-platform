@@ -8711,6 +8711,91 @@
       "tests": [
         "tests/cli/test_adp_knowledge.py"
       ]
+    },
+    {
+      "command": "adp flow node resume",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.recovery.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--flow",
+        "--json",
+        "--operation-id",
+        "--reason",
+        "--reconciled",
+        "--yes"
+      ],
+      "arguments": [
+        "node_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "ResumeRequest / RecoverBindingRequest"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/orchestration/test_controls.py"
+      ],
+      "required_capabilities": [
+        "flows.recovery.write"
+      ]
+    },
+    {
+      "command": "adp flow recover-pr",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.recovery.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--node",
+        "--operation-id",
+        "--request-file",
+        "--yes"
+      ],
+      "arguments": [
+        "flow_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "ResumeRequest / RecoverBindingRequest"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/orchestration/test_controls.py"
+      ],
+      "required_capabilities": [
+        "flows.recovery.write"
+      ]
     }
   ]
 }

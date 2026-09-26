@@ -267,3 +267,12 @@ Source implementation; live account-routing inference and restoration remain hel
 | `adp admin bedrock mappings delete` |  | `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--org`, `--scope`, `--target`, `--yes` |
 | `adp admin bedrock connection-link add` |  | `--connection`, `--destination`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
 | `adp admin bedrock connection-link remove` |  | `--connection`, `--destination`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
+
+### Engine node recovery (#5630)
+
+`adp flow node resume NODE_ID --flow FLOW_ID --reason TEXT` and
+`adp flow recover-pr FLOW_ID --node NODE_ID --request-file REQUEST.json` show
+read-only previews by default. Both accept `--dry-run`, `--json`, and
+`--yes --expect-revision REV --operation-id UUID`. The revision comes from the
+preview. See [flow recovery](flow-recovery.md). Worker pause/resume remains under
+`adp activity`; node recovery does not itself prove that a worker started.

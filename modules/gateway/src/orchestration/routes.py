@@ -524,6 +524,8 @@ class RecoverBindingRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    expected_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
     provider_repository_id: int | None = Field(default=None, gt=0)
     provider_pr_node_id: str | None = Field(default=None, min_length=1, max_length=255)
     repo: str = Field(min_length=3, max_length=255, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -598,6 +600,11 @@ async def recover_story_binding(
     node = await repo_reader.get_node(org_id=current_user.org_id, node_id=node_id)
     if node is None or node.flow_id != flow.id or node.kind != "story":
         raise HTTPException(status_code=404, detail="story not found in this flow")
+
+    if body.expected_revision is not None:
+        from .recovery_snapshot import require_snapshot
+
+        node = await require_snapshot(db, org_id=current_user.org_id, node_id=node_id, flow_id=flow_id, expected_revision=body.expected_revision)
 
     adoption_scope = None
     if body.adopt_delivery:
