@@ -5027,7 +5027,7 @@
           "POST"
         ],
         "paths": [
-          "/api/agent-context/assets/bulk/preview-json"
+          "/agent-context/assets/bulk/preview-json"
         ]
       },
       "response": {

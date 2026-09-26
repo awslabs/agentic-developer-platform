@@ -103,7 +103,7 @@ async def test_json_preview_reuses_canonical_readonly_checks(make_client, fake_u
     db.execute_results = [FakeResult(), FakeResult()]
     async with make_client(db, fake_user) as client:
         response = await client.post(
-            "/api/agent-context/assets/bulk/preview-json",
+            "/agent-context/assets/bulk/preview-json",
             json={"scope": "personal", "items": [{"source_ref": "https://example.test/guide", "asset_type": "url"}]},
         )
     assert response.status_code == 200
@@ -124,7 +124,7 @@ async def test_json_preview_reuses_canonical_readonly_checks(make_client, fake_u
 async def test_preview_refuses_lossy_bulk_conversion(make_client, fake_user, item):
     db = FakeAsyncSession()
     async with make_client(db, fake_user) as client:
-        response = await client.post("/api/agent-context/assets/bulk/preview-json", json={"scope": "personal", "items": [item]})
+        response = await client.post("/agent-context/assets/bulk/preview-json", json={"scope": "personal", "items": [item]})
     assert response.status_code == 422
     assert not db.executed_statements
 
@@ -134,7 +134,7 @@ async def test_tenant_bulk_preview_keeps_admin_guard(make_client, fake_user):
     db = FakeAsyncSession()
     async with make_client(db, fake_user) as client:
         response = await client.post(
-            "/api/agent-context/assets/bulk/preview-json",
+            "/agent-context/assets/bulk/preview-json",
             json={"scope": "tenant", "items": [{"source_ref": "https://example.test", "asset_type": "url"}]},
         )
     assert response.status_code == 403

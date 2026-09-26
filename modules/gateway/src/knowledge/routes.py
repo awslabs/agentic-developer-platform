@@ -64,6 +64,7 @@ from src.shared.identity import resolve_canonical_user_id
 logger = logging.getLogger("bedrockgateway.knowledge.routes")
 
 _router = APIRouter(prefix="/api/agent-context/assets", tags=["knowledge-assets"])
+_cli_router = APIRouter(prefix="/agent-context/assets", tags=["knowledge-assets"])
 
 # ---------------------------------------------------------------------------
 # Quota defaults (overridable via env / SSM)
@@ -744,7 +745,7 @@ async def bulk_preview(
     )
 
 
-@_router.post("/bulk/preview-json", response_model=BulkPreviewResponse)
+@_cli_router.post("/bulk/preview-json", response_model=BulkPreviewResponse)
 async def bulk_preview_json(
     body: BulkCommitRequest,
     db: Annotated[AsyncSession, Depends(get_agent_context_db)],
@@ -1147,6 +1148,11 @@ def _json_dumps(obj: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Conditional export — gated behind AGENT_CONTEXT_ENABLED
 # ---------------------------------------------------------------------------
+
+_legacy_router = _router
+_router = APIRouter()
+_router.include_router(_legacy_router)
+_router.include_router(_cli_router)
 
 if os.environ.get("AGENT_CONTEXT_ENABLED", "").lower() == "true":
     router = _router

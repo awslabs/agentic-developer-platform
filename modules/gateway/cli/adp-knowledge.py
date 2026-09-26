@@ -385,7 +385,7 @@ def bulk(args, client):
             raise common.CliError("Use a scope and 1 to 500 items.", "usage_error", 1)
         for item in body["items"]:
             source_item(item)
-        preview = client.request("POST", ASSETS + "/bulk/preview-json", body)
+        preview = client.request("POST", "/agent-context/assets/bulk/preview-json", body)
         if (
             not isinstance(preview, dict)
             or not isinstance(preview.get("valid"), list)
