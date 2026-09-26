@@ -10422,7 +10422,15 @@ def test_bedrock_lifecycle_nightly_preview_has_no_probes_or_writes(tmp_path):
     module, _ = shipped_script(tmp_path, "story_reads")
     cli = Mock()
     cli.run.side_effect = [
-        (0, {"status": "dry_run", "detail": {"before": {"revision": "a" * 64, "effective": {"rung": "org"}}}}),
+        (
+            0,
+            {
+                "status": "dry_run",
+                "detail": {
+                    "before": {"revision": "a" * 64, "effective": {"rung": "org"}}
+                },
+            },
+        ),
         (1, {"status": "failed", "error": {"code": "usage_error"}}),
     ]
     evidence = {}
@@ -10435,6 +10443,9 @@ def test_bedrock_lifecycle_nightly_preview_has_no_probes_or_writes(tmp_path):
 def test_bedrock_lifecycle_nightly_does_not_hide_missing_server(tmp_path):
     module, common = shipped_script(tmp_path, "story_reads")
     cli = Mock()
-    cli.run.return_value = (5, {"status": "failed", "error": {"code": "unsupported_operation"}})
+    cli.run.return_value = (
+        5,
+        {"status": "failed", "error": {"code": "unsupported_operation"}},
+    )
     with pytest.raises(common.RemoteError, match="Unexpected personal Bedrock refusal"):
         module.bedrock_lifecycle(cli, {})

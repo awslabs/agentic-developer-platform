@@ -188,3 +188,70 @@ def test_same_operation_replay_never_overwrites_a_later_route(api):
     assert result["detail"]["current"]["own_selection_destination_id"] == "newer"
     assert result["detail"]["acknowledged"] is True
     assert all(call.args[0] == "GET" for call in api.request.call_args_list)
+
+
+@pytest.mark.parametrize(
+    "connection", [None, [], "bad", {}, {"credential_id": "connection", "selectable": True, "status": "verified", "account_id": None}]
+)
+def test_malformed_selection_connection_refused_before_write(api, connection):
+    api.request.return_value = state(connections=[connection])
+    with pytest.raises(c.CliError) as exc:
+        c.run(args("select", "--connection", "connection", "--yes", "--expect-revision", REVISION, "--operation-id", str(uuid.uuid4())), api)
+    assert exc.value.code == "invalid_response"
+    api.request.assert_called_once_with("GET", c.SELF_ROUTING)
+
+
+def destination(**changes):
+    return {
+        "id": "destination",
+        "revision": REVISION,
+        "account_id": ACCOUNT,
+        "usable_for_routing": True,
+        "used_by": 0,
+        "source_connection_id": "connection",
+        "connection_id": None,
+        "owner_org_id": "org",
+        **changes,
+    }
+
+
+def link_args():
+    return args(
+        "connection-link",
+        "add",
+        "--destination",
+        "destination",
+        "--connection",
+        "connection",
+        "--yes",
+        "--expect-revision",
+        REVISION,
+        "--operation-id",
+        str(uuid.uuid4()),
+    )
+
+
+@pytest.mark.parametrize("reply", [None, {}, [None], [{}], [destination(account_id={})]])
+def test_malformed_destination_inventory_refused_before_link(api, reply):
+    api.request.return_value = reply
+    with pytest.raises(c.CliError) as exc:
+        c.run(link_args(), api)
+    assert exc.value.code == "invalid_response"
+    api.request.assert_called_once_with("GET", c.ROUTING + "/destinations")
+
+
+@pytest.mark.parametrize("reply", [None, {}, {"destination": None}, {"destination": []}, {"destination": {}}])
+def test_malformed_link_ack_is_unknown_without_crashing(api, reply):
+    api.request.side_effect = [[destination()], reply, [destination()]]
+    result = c.run(link_args(), api)
+    assert result["status"] == "pending"
+    assert result["detail"]["reason"] == "unknown_mutation_outcome"
+    assert sum(call.args[0] == "POST" for call in api.request.call_args_list) == 1
+
+
+def test_malformed_link_readback_does_not_claim_success(api):
+    api.request.side_effect = [[destination()], {"destination": destination(connection_id="connection")}, [None]]
+    result = c.run(link_args(), api)
+    assert result["status"] == "pending"
+    assert result["detail"]["acknowledged"] is True
+    assert result["detail"]["readback_unavailable"] is True

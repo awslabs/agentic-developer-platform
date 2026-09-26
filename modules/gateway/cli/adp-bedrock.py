@@ -407,8 +407,7 @@ def safe_routing(value):
     return result
 
 
-def selection(api):
-    value = api.request("GET", SELF_ROUTING)
+def checked_selection(value):
     if (
         not isinstance(value, dict)
         or not isinstance(value.get("effective"), dict)
@@ -419,11 +418,73 @@ def selection(api):
         raise CliError("Malformed personal routing response.", "invalid_response", 5)
     checked_revision(value.get("revision"))
     effective = value["effective"]
-    if effective.get("rung") not in {"user", "team", "org", "platform"} or (
-        effective.get("account_id") is not None and not re.fullmatch(r"[0-9]{12}", str(effective["account_id"]))
+    if (
+        effective.get("rung") not in {"user", "team", "org", "platform"}
+        or (effective.get("account_id") is not None and not isinstance(effective["account_id"], str))
+        or (effective.get("account_id") is not None and not re.fullmatch(r"[0-9]{12}", effective["account_id"]))
     ):
         raise CliError("Malformed effective billing route.", "invalid_response", 5)
-    return safe_routing(value)
+    ids = set()
+    for row in value["connections"]:
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("credential_id"), str)
+            or not row["credential_id"]
+            or type(row.get("selectable")) is not bool
+            or not isinstance(row.get("status"), str)
+        ):
+            raise CliError("Malformed selectable connection metadata.", "invalid_response", 5)
+        if row["credential_id"] in ids:
+            raise CliError("Duplicate selectable connection metadata.", "invalid_response", 5)
+        ids.add(row["credential_id"])
+        if row["selectable"] and (
+            row["status"] != "verified" or not isinstance(row.get("account_id"), str) or not re.fullmatch(r"[0-9]{12}", row["account_id"])
+        ):
+            raise CliError("Selectable connection lacks a verified billing account.", "invalid_response", 5)
+    return value
+
+
+def selection(api):
+    return safe_routing(checked_selection(api.request("GET", SELF_ROUTING)))
+
+
+def checked_destination(value):
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("id"), str)
+        or not value["id"]
+        or not isinstance(value.get("account_id"), str)
+        or not re.fullmatch(r"[0-9]{12}", value["account_id"])
+        or type(value.get("usable_for_routing")) is not bool
+        or type(value.get("used_by")) is not int
+        or value["used_by"] < 0
+    ):
+        raise CliError("Malformed Bedrock destination metadata.", "invalid_response", 5)
+    checked_revision(value.get("revision"))
+    for key in ("connection_id", "source_connection_id", "owner_org_id"):
+        if value.get(key) is not None and (not isinstance(value[key], str) or not value[key]):
+            raise CliError("Malformed destination ownership metadata.", "invalid_response", 5)
+    return value
+
+
+def lifecycle_destinations(api):
+    rows = destinations(api)
+    if not isinstance(rows, list):
+        raise CliError("Malformed destination inventory.", "invalid_response", 5)
+    ids = set()
+    for row in rows:
+        checked_destination(row)
+        if row["id"] in ids:
+            raise CliError("Duplicate destination metadata.", "invalid_response", 5)
+        ids.add(row["id"])
+    return rows
+
+
+def lifecycle_destination(api, target):
+    rows = [row for row in lifecycle_destinations(api) if row["id"] == target]
+    if len(rows) != 1:
+        raise CliError("Exact destination was not found.", "destination_not_found", 5)
+    return rows[0]
 
 
 def mapping_page(api, scope, page=1, page_size=20):
@@ -505,6 +566,13 @@ def lifecycle_operation(api, args, method, path, body, before, readback, matches
         common.write_json(target, record)
         try:
             acknowledged = api.request(method, bound_path, body)
+            try:
+                if args.command in {"select", "reset"}:
+                    checked_selection(acknowledged)
+                elif args.command == "connection-link" and method == "POST":
+                    checked_destination(acknowledged.get("destination") if isinstance(acknowledged, dict) else None)
+            except CliError:
+                raise CliError("Malformed routing acknowledgement; inspect the exact target.", "unknown_mutation_outcome", 4) from None
             if not isinstance(acknowledged, dict) or not (
                 (method == "DELETE" and path != SELF_ROUTING and acknowledged == {}) or matches(acknowledged)
             ):
@@ -522,7 +590,15 @@ def lifecycle_operation(api, args, method, path, body, before, readback, matches
             )
         record["acknowledged"] = True
         common.write_json(target, record)
-        after = readback()
+        try:
+            after = readback()
+        except CliError as exc:
+            return common.envelope(
+                "pending",
+                command,
+                {"before": before, "operation_id": key, "acknowledged": True, "readback_unavailable": True, "reason": exc.code},
+                "The change was acknowledged, but its current state could not be verified.",
+            )
         matched = matches(after)
         return common.envelope(
             "configured" if matched else "pending",
@@ -583,7 +659,7 @@ def lifecycle_run(args, api):
             return common.envelope("ok", "bedrock mappings show", before)
         destination = None
         if args.action == "set":
-            destination = destination_by_id(api, route_id(args.destination))
+            destination = lifecycle_destination(api, route_id(args.destination))
             checked_revision(destination.get("revision"))
             if not destination.get("usable_for_routing"):
                 raise CliError("Verify this destination before assigning its billing route.", "destination_not_verified", 4)
@@ -609,7 +685,7 @@ def lifecycle_run(args, api):
         )
     connection = route_id(args.connection)
     destination_id = route_id(args.destination)
-    before = safe_routing(destination_by_id(api, destination_id))
+    before = safe_routing(lifecycle_destination(api, destination_id))
     checked_revision(before.get("revision"))
     if (
         before.get("source_connection_id") != connection
@@ -621,7 +697,7 @@ def lifecycle_run(args, api):
         raise CliError("Remove the destination's mappings before unlinking it.", "destination_in_use", 4)
 
     def readback():
-        rows = destinations(api)
+        rows = lifecycle_destinations(api)
         found = [row for row in rows if row.get("id") == destination_id]
         return safe_routing(found[0]) if len(found) == 1 else {"id": destination_id, "absent": True} if not found else {"ambiguous": True}
 
@@ -632,7 +708,11 @@ def lifecycle_run(args, api):
     )
 
     def check(value):
+        if not isinstance(value, dict):
+            return False
         value = value.get("destination", value)
+        if not isinstance(value, dict):
+            return False
         return (
             (value.get("id") == destination_id and value.get("absent") is True)
             if args.action == "remove"
