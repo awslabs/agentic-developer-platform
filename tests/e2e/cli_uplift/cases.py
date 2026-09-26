@@ -302,11 +302,25 @@ CASES = (
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
+        "E26",
+        "#5589",
+        "story-reads",
+        "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
         "E27",
         "#5622",
         "tenant-isolation",
         "Two owned memberships retain explicit tenant scope during concurrent reads, local default changes and Cognito refresh; no model inference claim",
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
+    ),
+    Case(
+        "E29",
+        "#5623",
+        "story-reads",
+        "Bounded administrator hierarchy reads preserve organization scope; no mutation lifecycle acceptance claim",
+        (EC2, PLATFORM, COGNITO),
     ),
     Case(
         "E33",

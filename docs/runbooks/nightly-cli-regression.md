@@ -38,7 +38,7 @@ credentials.
 
 The daily EC2 invocation selects **`nightly`**: E01 install, C01 native login and
 refresh, E20 capabilities/doctor (#5621), E21 own usage views and bounded export
-(#5628), E22 Activity pagination and missing-run errors (#5629), and E24 vault metadata and mutation previews (#5631). All product
+(#5628), E22 Activity pagination and missing-run errors (#5629), E24 vault metadata and mutation previews (#5631), and E26 own budget daily/weekly/monthly reads (#5589). All product
 commands run from the hash-verified served CLI on the disposable EC2 instance.
 These three new scenarios add no inference or platform mutations. Missing CLI
 helpers, endpoint errors, malformed JSON, or inconsistent exit codes fail the run.
@@ -152,3 +152,5 @@ E33 (#5625) uses the served CLI to read current-tenant access status and a bound
 administrator request page. It never decides requests or revokes a shared user.
 Disposable lifecycle/concurrency and client revocation timing remain separate
 acceptance fixtures.
+
+E29 (#5623) adds bounded administrator organization/department/team/member reads with the served CLI. It performs no mutation or inference; a missing authorized organization cannot pass. Membership lifecycle and cleanup acceptance need separate owned fixtures.

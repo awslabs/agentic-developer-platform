@@ -78,7 +78,14 @@ async def _load_user_in_org(db: AsyncSession, *, user_id: str, org_id: str) -> U
     checking it after: a user in another tenant is indistinguishable from one that
     does not exist, which is what we want an out-of-org caller to learn.
     """
-    user = (await db.execute(select(User).where(User.id == user_id, User.org_id == org_id))).scalar_one_or_none()
+    from src.shared.models.onboarding import TenantMembership
+
+    revoked = (
+        select(TenantMembership.id)
+        .where(TenantMembership.user_id == user_id, TenantMembership.tenant_id == org_id, TenantMembership.revoked_at.is_not(None))
+        .exists()
+    )
+    user = (await db.execute(select(User).where(User.id == user_id, User.org_id == org_id, ~revoked).with_for_update())).scalar_one_or_none()
     if user is None:
         raise ResourceNotFoundError("User", user_id)
     return user

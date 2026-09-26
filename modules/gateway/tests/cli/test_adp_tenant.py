@@ -127,6 +127,7 @@ def test_real_shell_global_selector_and_token_helper_transport(tmp_path):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     calls = []
+    requested_tenants = []
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -151,6 +152,7 @@ def test_real_shell_global_selector_and_token_helper_transport(tmp_path):
             calls.append((self.path, self.headers.get("Authorization")))
             assert self.path.endswith("/workspaces/context")
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requested_tenants.append(body["org_id"])
             self.respond({"tenant_id": body["org_id"], "identity": "human", "membership_id": "membership", "context_token": "signed.lease.value"})
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -175,6 +177,26 @@ def test_real_shell_global_selector_and_token_helper_transport(tmp_path):
         assert result.returncode == 0, result.stderr + result.stdout
         assert calls[-1][1] == "Bearer adpctx1~signed.lease.value~" + token()
         assert all(path != "/api/workspaces/select" for path, _ in calls)
+        # A saved Claude helper runs later, outside the launcher's environment.
+        # A different terminal's tenant default cannot retarget that setup.
+        configured = subprocess.run(
+            ["bash", str(CLI / "adp"), "--tenant", "work", "claude", "setup"],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert configured.returncode == 0, configured.stderr + configured.stdout
+        helper = json.loads((tmp_path / ".claude/settings.json").read_text())["apiKeyHelper"]
+        import shlex
+
+        words = shlex.split(helper)
+        # The installed bundle is executable; source fixtures invoke bash.
+        words.insert(words.index(str(CLI / "adp")), "bash")
+        resumed = subprocess.run(words, env={**os.environ, "ADP_TENANT": "home"}, text=True, capture_output=True, timeout=30)
+        assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+        assert requested_tenants[-1] == "work"
+        assert resumed.stdout == "adpctx1~signed.lease.value~" + token()
+
     finally:
         server.shutdown()
         server.server_close()

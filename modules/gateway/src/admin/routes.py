@@ -7,7 +7,7 @@ real Cognito JWT validation via src.auth.dependencies.get_current_user.
 
 import logging
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
@@ -48,6 +48,7 @@ from src.admin.config import (
     Permission,
 )
 from src.admin.exceptions import AccessDeniedError
+from src.admin.hierarchy import router as hierarchy_router
 from src.admin.log_service import LogService
 from src.admin.memberships import project_member_org_ids
 from src.admin.policy_scoping_schemas import (
@@ -60,6 +61,7 @@ from src.admin.schemas import (
     BudgetConfigUpdateRequest,
     BudgetCreateRequest,
     BudgetListResponse,
+    BudgetPeriodSetRequest,
     BudgetStatusResponse,
     ChatDetailResponse,
     ChatListResponse,
@@ -356,6 +358,11 @@ async def list_budgets(
     Optionally filter by entity_type (org, department, team, user).
     """
     await access.check_permission(current_user, Permission.BUDGET_READ, target_org_id=org_id)
+    role, _, department = await access.get_user_role(current_user)
+    if role == AdminRole.DEPT_ADMIN:
+        if not department:
+            raise AccessDeniedError("Department scope is unavailable")
+        return await service.get_budgets_list(org_id, entity_type, page, limit, cognito, department_id=department)
     return await service.get_budgets_list(org_id, entity_type, page, limit, cognito)
 
 
@@ -400,6 +407,7 @@ async def delete_budget(
     Issue #185: Delete endpoint for budget configurations.
     """
     await access.check_permission(current_user, Permission.BUDGET_UPDATE, target_org_id=org_id)
+    entity_id = await _exact_budget_target(org_id, entity_type, entity_id, service, access, current_user, Permission.BUDGET_UPDATE)
     mark_admin_effects()
     await service.delete_budget(org_id, entity_type, entity_id, period_type)
     await write_admin_audit(
@@ -410,6 +418,94 @@ async def delete_budget(
         target_id=f"{entity_type}/{entity_id}",
         org_id=org_id,
     )
+
+
+# CLI-07: explicit period paths cannot be confused with legacy first-budget reads.
+BudgetEntity = Literal["org", "department", "team", "user", "root_user"]
+BudgetPeriod = Literal["daily", "weekly", "monthly"]
+
+
+async def _exact_budget_target(org_id, entity_type, entity_id, service, access, current_user, permission):
+    await access.check_permission(current_user, permission, target_org_id=org_id)
+    canonical, department = await service.resolve_budget_target(org_id, entity_type, entity_id)
+    role, _, allowed_department = await access.get_user_role(current_user)
+    if role == AdminRole.DEPT_ADMIN and (not allowed_department or department != allowed_department):
+        raise AccessDeniedError("Budget target is outside your department")
+    await access.check_permission(current_user, permission, target_org_id=org_id, target_dept_id=department)
+    return canonical
+
+
+@router.delete("/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}/revision", status_code=204)
+async def delete_exact_budget_config(
+    org_id: str,
+    entity_type: BudgetEntity,
+    entity_id: str,
+    period_type: BudgetPeriod,
+    expected_revision: datetime,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+):
+    canonical = await _exact_budget_target(org_id, entity_type, entity_id, service, access, current_user, Permission.BUDGET_UPDATE)
+    mark_admin_effects()
+    await service.delete_exact_budget(org_id, entity_type, canonical, period_type, expected_revision)
+    await write_admin_audit(
+        service.db,
+        actor=current_user,
+        action="delete_budget",
+        target_type="budget",
+        target_id=f"{entity_type}/{canonical}/{period_type}",
+        org_id=org_id,
+    )
+
+
+@router.get("/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}", response_model=BudgetConfigResponse | None)
+async def get_exact_budget_config(
+    org_id: str,
+    entity_type: BudgetEntity,
+    entity_id: str,
+    period_type: BudgetPeriod,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+):
+    canonical = await _exact_budget_target(org_id, entity_type, entity_id, service, access, current_user, Permission.BUDGET_READ)
+    budget = await service.exact_budget(org_id, entity_type, canonical, period_type)
+    return service.budget_response(budget) if budget is not None else None
+
+
+@router.put("/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}", response_model=BudgetConfigResponse)
+async def set_exact_budget_config(
+    org_id: str,
+    entity_type: BudgetEntity,
+    entity_id: str,
+    period_type: BudgetPeriod,
+    request: BudgetPeriodSetRequest,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+):
+    canonical = await _exact_budget_target(org_id, entity_type, entity_id, service, access, current_user, Permission.BUDGET_UPDATE)
+    mark_admin_effects()
+    result = await service.set_exact_budget(org_id, entity_type, canonical, period_type, request)
+    await write_admin_audit(
+        service.db, actor=current_user, action="set_budget", target_type="budget", target_id=f"{entity_type}/{canonical}/{period_type}", org_id=org_id
+    )
+    return result
+
+
+@router.get("/organizations/{org_id}/budgets/{entity_type}/{entity_id}/{period_type}/status", response_model=BudgetStatusResponse)
+async def get_exact_budget_status(
+    org_id: str,
+    entity_type: BudgetEntity,
+    entity_id: str,
+    period_type: BudgetPeriod,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+):
+    canonical = await _exact_budget_target(org_id, entity_type, entity_id, service, access, current_user, Permission.BUDGET_READ)
+    return await service.get_budget_status(org_id, entity_type, canonical, period_type=period_type)
 
 
 # Rate Limit Configuration Endpoints
@@ -2480,3 +2576,7 @@ async def list_agent_types(
 from src.admin.audit_routes import router as _audit_sub_router  # noqa: E402
 
 router.include_router(_audit_sub_router)
+
+
+# Guarded CLI adapters reuse the services and permissions above.
+router.include_router(hierarchy_router)

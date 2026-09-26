@@ -77,6 +77,8 @@ class TenantMembership(Base):
     )
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="member", server_default="member")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # is_active selects a workspace; only revoked_at removes membership.
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     joined_via: Mapped[str] = mapped_column(String(32), nullable=False, default="org_membership", server_default="org_membership")
     github_org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())

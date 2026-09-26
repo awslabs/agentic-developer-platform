@@ -230,6 +230,15 @@ OPERATIONS = (
     Operation("access.managed.read", summary="Review exact visible tenant requests", permission=Permission.USER_MANAGE),
     Operation("access.managed.decide", summary="Decide an exact reviewed access request", mutates=True, permission=Permission.USER_MANAGE),
     Operation("auth.session.revoke", summary="Revoke applicable gateway-issued user tokens", mutates=True, permission=Permission.USER_MANAGE),
+    Operation("hierarchy.read", summary="Read scoped organization hierarchy and revisions", permission=Permission.ORG_READ),
+    Operation(
+        "hierarchy.write",
+        summary="Revision-guarded hierarchy changes; exact route permissions still apply",
+        permission=Permission.ORG_UPDATE,
+        mutates=True,
+    ),
+    Operation("hierarchy.platform.write", summary="Create organizations and place existing members", permission=Permission.ORG_CREATE, mutates=True),
+    Operation("hierarchy.member.write", summary="Update scoped membership roles", permission=Permission.USER_MANAGE, mutates=True),
     Operation("vault.credentials.register", summary="Register an own credential; shared scopes require additional server authority", mutates=True),
     Operation("vault.credentials.metadata", summary="Update visible credential metadata with revision and ownership checks", mutates=True),
     Operation("vault.credentials.delete", summary="Delete an authorized credential; running work is not stopped", mutates=True),
@@ -251,6 +260,12 @@ OPERATIONS = (
         "budget.managed.read",
         summary="Read budgets for entities you administer",
         permission=Permission.BUDGET_READ,
+    ),
+    Operation(
+        "budget.managed.write",
+        summary="Change exact-period budgets for entities you administer",
+        permission=Permission.BUDGET_UPDATE,
+        mutates=True,
     ),
     Operation(
         "usage.self.read",

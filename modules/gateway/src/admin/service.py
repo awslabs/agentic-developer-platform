@@ -545,6 +545,113 @@ class AdminService:
 
     # Budget Configuration
 
+    async def resolve_budget_target(self, org_id: str, entity_type: str, entity_id: str) -> tuple[str, str | None]:
+        """Resolve only an existing entity in the selected tenant; return its department."""
+        if entity_type in {"user", "root_user"}:
+            resolved = await self._resolve_person_entity_id(org_id, entity_type, entity_id)
+            # The canonicalizer validates the human's tenant ownership.
+            user = (
+                await self.db.execute(
+                    select(User).where(
+                        User.org_id == org_id,
+                        or_(User.id == entity_id, User.cognito_sub == entity_id, User.id == resolved, User.cognito_sub == resolved),
+                    )
+                )
+            ).scalar_one_or_none()
+            if user is None:
+                raise ResourceNotFoundError("User", entity_id)
+            department = await self.db.scalar(select(Team.department_id).where(Team.id == user.team_id, Team.org_id == org_id))
+            return resolved, department
+        model = {"org": Organization, "department": Department, "team": Team}.get(entity_type)
+        if model is None or (entity_type == "org" and entity_id != org_id):
+            raise ResourceNotFoundError("BudgetTarget", entity_id)
+        query = select(model).where(model.id == entity_id)
+        if entity_type != "org":
+            query = query.where(model.org_id == org_id)
+        target = (await self.db.execute(query)).scalar_one_or_none()
+        if target is None:
+            raise ResourceNotFoundError("BudgetTarget", entity_id)
+        department = entity_id if entity_type == "department" else getattr(target, "department_id", None)
+        return entity_id, department
+
+    async def exact_budget(self, org_id, entity_type, entity_id, period_type, *, lock=False):
+        query = select(BudgetConfig).where(
+            BudgetConfig.org_id == org_id,
+            BudgetConfig.entity_type == entity_type,
+            BudgetConfig.entity_id == entity_id,
+            BudgetConfig.period_type == period_type,
+        )
+        if lock:
+            query = query.with_for_update()
+        return (await self.db.execute(query)).scalar_one_or_none()
+
+    def budget_response(self, budget):
+        updated_at = budget.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=UTC)
+        return BudgetConfigResponse(
+            org_id=budget.org_id,
+            entity_type=budget.entity_type,
+            entity_id=budget.entity_id,
+            period_type=budget.period_type,
+            budget_amount_usd=budget.budget_amount_usd,
+            enforcement_mode=budget.enforcement_mode,
+            updated_at=updated_at,
+        )
+
+    async def delete_exact_budget(self, org_id, entity_type, entity_id, period_type, expected_revision):
+        budget = await self.exact_budget(org_id, entity_type, entity_id, period_type, lock=True)
+        if budget is None:
+            raise ResourceNotFoundError("BudgetConfig", f"{entity_type}/{entity_id}/{period_type}")
+        revision = budget.updated_at
+        if revision.tzinfo is None:
+            revision = revision.replace(tzinfo=UTC)
+        if expected_revision.tzinfo is None or expected_revision != revision:
+            raise ResourceConflictError("BudgetConfig", "revision", "changed; inspect before deleting")
+        await self.db.delete(budget)
+        await self.db.commit()
+
+    async def set_exact_budget(self, org_id, entity_type, entity_id, period_type, request):
+        from datetime import UTC
+
+        from sqlalchemy.exc import IntegrityError
+
+        budget = await self.exact_budget(org_id, entity_type, entity_id, period_type, lock=True)
+        if budget is not None:
+            current = budget.updated_at
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=UTC)
+            if (
+                request.expect_absent
+                or request.expected_revision is None
+                or request.expected_revision.tzinfo is None
+                or request.expected_revision != current
+            ):
+                raise ResourceConflictError("BudgetConfig", "revision", "changed; inspect this exact period before retrying")
+            budget.budget_amount_usd = request.budget_amount_usd
+            budget.enforcement_mode = request.enforcement_mode
+        else:
+            if not request.expect_absent or request.expected_revision is not None:
+                raise ResourceConflictError("BudgetConfig", "revision", "absent; inspect this exact period before retrying")
+            budget = BudgetConfig(
+                org_id=org_id,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                period_type=period_type,
+                budget_amount_usd=request.budget_amount_usd,
+                enforcement_mode=request.enforcement_mode,
+            )
+            self.db.add(budget)
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            raise ResourceConflictError("BudgetConfig", "period", "concurrent creation; inspect the existing cap") from None
+        await self.db.refresh(budget)
+        result = self.budget_response(budget)
+        result.advisory = await self._mis_partitioned_cap_advisory(org_id, entity_type, entity_id)
+        return result
+
     async def get_budget_config(self, org_id: str, entity_type: str, entity_id: str) -> BudgetConfigResponse | None:
         """
         Get budget configuration for an entity.
@@ -584,6 +691,7 @@ class AdminService:
         org_id: str,
         entity_type: str,
         entity_id: str,
+        period_type: str | None = None,
     ) -> BudgetStatusResponse:
         """
         Get budget status with current spend for an entity.
@@ -608,6 +716,7 @@ class AdminService:
                 BudgetConfig.org_id == org_id,
                 BudgetConfig.entity_type == entity_type,
                 BudgetConfig.entity_id == entity_id,
+                *([BudgetConfig.period_type == period_type] if period_type is not None else []),
             )
         )
         config = result.scalar_one_or_none()
@@ -847,7 +956,7 @@ class AdminService:
             ResourceConflictError: If department name already exists in org
         """
         # Verify organization exists
-        org_result = await self.db.execute(select(Organization).where(Organization.id == org_id))
+        org_result = await self.db.execute(select(Organization).where(Organization.id == org_id).with_for_update())
         if not org_result.scalar_one_or_none():
             raise ResourceNotFoundError("Organization", org_id)
 
@@ -856,7 +965,11 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Department", "name", request.name)
 
+        if request.id and await self.db.get(Department, request.id) is not None:
+            raise ResourceConflictError("Department", "id", request.id)
+
         dept = Department(
+            **({"id": request.id} if request.id else {}),
             org_id=org_id,
             name=request.name,
             description=request.description,
@@ -1075,7 +1188,7 @@ class AdminService:
             ResourceConflictError: If team name already exists in department
         """
         # Verify department exists and belongs to org
-        dept_result = await self.db.execute(select(Department).where(Department.id == dept_id, Department.org_id == org_id))
+        dept_result = await self.db.execute(select(Department).where(Department.id == dept_id, Department.org_id == org_id).with_for_update())
         if not dept_result.scalar_one_or_none():
             raise ResourceNotFoundError("Department", dept_id)
 
@@ -1084,7 +1197,11 @@ class AdminService:
         if existing.scalar_one_or_none():
             raise ResourceConflictError("Team", "name", request.name)
 
+        if request.id and await self.db.get(Team, request.id) is not None:
+            raise ResourceConflictError("Team", "id", request.id)
+
         team = Team(
+            **({"id": request.id} if request.id else {}),
             org_id=org_id,
             department_id=dept_id,
             name=request.name,
@@ -2095,6 +2212,7 @@ class AdminService:
         page: int = 1,
         page_size: int | None = None,
         cognito_service: CognitoService | None = None,
+        department_id: str | None = None,
     ) -> BudgetListResponse:
         """
         Get list of all budget configs for an organization with current usage.
@@ -2144,12 +2262,25 @@ class AdminService:
             query = query.where(BudgetConfig.entity_type == entity_type)
             count_query = count_query.where(BudgetConfig.entity_type == entity_type)
 
+        if department_id is not None:
+            teams = select(Team.id).where(Team.org_id == org_id, Team.department_id == department_id)
+            users = select(User.id).where(User.org_id == org_id, User.team_id.in_(teams))
+            subjects = select(User.cognito_sub).where(User.org_id == org_id, User.team_id.in_(teams))
+            allowed = or_(
+                (BudgetConfig.entity_type == "department") & (BudgetConfig.entity_id == department_id),
+                (BudgetConfig.entity_type == "team") & BudgetConfig.entity_id.in_(teams),
+                (BudgetConfig.entity_type == "user") & BudgetConfig.entity_id.in_(subjects),
+                (BudgetConfig.entity_type == "root_user") & BudgetConfig.entity_id.in_(users),
+            )
+            query = query.where(allowed)
+            count_query = count_query.where(allowed)
+
         # Get total count
         total_result = await self.db.execute(count_query)
         total = total_result.scalar_one()
 
         # Get paginated budget configs
-        query = query.offset(offset).limit(page_size).order_by(BudgetConfig.entity_type, BudgetConfig.entity_id)
+        query = query.offset(offset).limit(page_size).order_by(BudgetConfig.entity_type, BudgetConfig.entity_id, BudgetConfig.period_type)
         result = await self.db.execute(query)
         budget_configs = result.scalars().all()
 

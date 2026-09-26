@@ -295,6 +295,13 @@ async def get_current_user(
 
             # Convert claims to TokenContext
             context = await apply_context(_cognito_claims_to_context(claims), tenant_lease)
+            # Workspace discovery/exchange must remain usable after removal from
+            # the token's previous org. Each selection independently checks DB
+            # membership; product requests cannot use stale Cognito claims.
+            if tenant_lease is None and request.url.path not in {"/workspaces", "/workspaces/context", "/workspaces/select"}:
+                from src.admin.membership_revocation import require_not_revoked_context
+
+                await require_not_revoked_context(context)
 
             # Issue #5419 (PMM-02): stamp trusted alias source for service callers
             if context.account_type == "service":

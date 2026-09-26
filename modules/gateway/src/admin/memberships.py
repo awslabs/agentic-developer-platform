@@ -118,6 +118,9 @@ async def set_membership_role(
     has_other_active = any(m.is_active for m in rows if m.tenant_id != tenant_id)
 
     if existing is not None:
+        from src.admin.membership_revocation import require_not_revoked
+
+        require_not_revoked(existing)
         if existing.role != desired_role:
             logger.info(
                 "membership set_role: user=%s tenant=%s %r -> %r (joined_via=%s)",
@@ -195,6 +198,9 @@ async def upsert_tenant_membership(
     has_other_active = any(m.is_active for m in rows if m.tenant_id != tenant_id)
 
     if existing is not None:
+        from src.admin.membership_revocation import require_not_revoked
+
+        require_not_revoked(existing)
         # Only ever raise privilege, never lower it: a user who is already
         # org_admin here must not be demoted by a later member-level write.
         if is_admin_level_role(desired_role) and not is_admin_level_role(existing.role):
@@ -347,6 +353,7 @@ async def project_member_org_ids(
                             select(TenantMembership.tenant_id)
                             .join(UserIdentity, UserIdentity.user_id == TenantMembership.user_id)
                             .where(
+                                TenantMembership.revoked_at.is_(None),
                                 UserIdentity.provider == "github",
                                 UserIdentity.provider_user_id == provider_user_id,
                                 UserIdentity.verification_method.in_(PROVEN_METHODS),

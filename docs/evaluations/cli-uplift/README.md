@@ -183,3 +183,19 @@ empty evaluation ID and the verified full gateway revision. Preserve the exact
 run handle and inspect both evaluation and recovery. `login` is E01+C01, not full
 E02 or complete CLI acceptance. `mode=status` is not a read-only workflow probe:
 restoration claims a durable lease, and cleanup/recovery still run.
+
+### CLI stories release, 25 September 2026
+
+The catalog includes gateway source `890b5d1a8b16d0fbf657dd258bf7535730592f04`,
+published by canonical operator image maintenance. The successful CodeBuild
+`fe111093-4da2-4157-9026-dea660396386` push log binds its full SHA tag to
+`sha256:3f2b46db9b17b33921e31246dc95a8e15ecffdf556ae5ae89f2dbe85b2577aa4`.
+The S3 source ZIP matches a fresh `git archive --format=zip` of that commit
+byte for byte (`a90982364f324a298e2c5467942ee3e99fcdf3011b6af949fc93cc25f47e53b2`).
+Migration completed before the gateway image change; all seven replicas became
+available and the scheduled engine was synchronized and verified. All 22 public
+CLI downloads match that source. Live evaluation run `36202049241` stopped at
+the missing catalog receipt before creating EC2; cleanup reported no instances.
+This receipt permits retrying the existing preflight, without weakening its
+rollout, source revision, or public artifact comparisons. It does not claim
+that the story scenarios have passed.

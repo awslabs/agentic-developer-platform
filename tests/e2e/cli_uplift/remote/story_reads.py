@@ -196,12 +196,73 @@ def access(cli, evidence):
     evidence["cases"] = ["tenant-access-status", "bounded-admin-review"]
 
 
+def hierarchy(cli, evidence):
+    orgs = detail(cli.json(["admin", "org", "list", "--page-size", "1"]))
+    common.require(
+        isinstance(orgs.get("items"), list), "Organization list is malformed"
+    )
+    common.require(bool(orgs["items"]), "No authorized hierarchy fixture is visible")
+    org = orgs["items"][0].get("id")
+    common.require(isinstance(org, str) and org, "Organization ID is missing")
+    for area in ("department", "team", "member"):
+        result = detail(
+            cli.json(["admin", area, "list", "--org", org, "--page-size", "1"])
+        )
+        common.require(
+            result.get("org_id") == org
+            and result.get("kind") == area
+            and isinstance(result.get("items"), list),
+            "Hierarchy list lost its selected scope",
+        )
+        common.require(
+            all(
+                isinstance(row, dict) and row.get("org_id") == org
+                for row in result["items"]
+            ),
+            "Foreign hierarchy row was returned",
+        )
+    evidence.update(
+        org_id=org,
+        forms=["org", "department", "team", "member"],
+        qualification="bounded administrator reads only; membership and delete lifecycle acceptance remains separate",
+    )
+
+
+def budget(cli, evidence):
+    periods = ("daily", "weekly", "monthly")
+    for period in periods:
+        result = detail(cli.json(["budget", "me", "--period", period]))
+        common.require(
+            isinstance(result.get("period"), dict)
+            and result["period"].get("period_type") == period
+            and isinstance(result.get("lines"), list),
+            "Own budget period or lines are malformed",
+        )
+        for line in result["lines"]:
+            common.require(isinstance(line, dict), "Budget line is malformed")
+            common.require(
+                line.get("cap_status") in {"capped", "uncapped"},
+                "Budget cap status missing",
+            )
+            if line["cap_status"] == "uncapped":
+                common.require(
+                    line.get("cap_usd") is None and line.get("remaining_usd") is None,
+                    "Uncapped budget was represented as zero headroom",
+                )
+    evidence.update(
+        periods=list(periods),
+        qualification="own budget reads only; no spend-through or enforcement claim",
+    )
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
     "access": access,
+    "hierarchy": hierarchy,
+    "budget": budget,
 }
 
 

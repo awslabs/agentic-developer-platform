@@ -224,6 +224,20 @@
     "classification": "durable-operation"
   },
   {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+    "module": "src.admin.routes",
+    "endpoint": "set_exact_budget_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}/revision",
+    "module": "src.admin.routes",
+    "endpoint": "delete_exact_budget_config",
+    "classification": "durable-operation"
+  },
+  {
     "method": "POST",
     "path": "/admin/organizations/{org_id}/budgets",
     "module": "src.admin.routes",
@@ -270,6 +284,20 @@
     "path": "/admin/organizations/{org_id}/departments/{dept_id}/teams",
     "module": "src.admin.routes",
     "endpoint": "create_team",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
+    "module": "src.admin.hierarchy",
+    "endpoint": "remove",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
+    "module": "src.admin.hierarchy",
+    "endpoint": "patch",
     "classification": "durable-operation"
   },
   {
