@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from harness_jobs.execution import ProviderCallRefused
-from superplane_executor import results
+from harness_jobs.identity import OperationRefused
+from superplane_executor import node_inventory, results
 
 from tests.test_batch_results_postgres import (
     output as output,
@@ -87,6 +88,14 @@ async def test_worker_cannot_publish_result_for_changed_actual_placement(
         ):
             await runtime.execute(worker)
         assert runtime.cloud.launches == 1 and runtime.cloud.exists
+    elif change == "node-replaced-at-capture":
+        # Result capture refuses the changed placement, and the subsequent
+        # allocation inventory refuses to substitute the replacement Node UID.
+        with pytest.raises(
+            OperationRefused, match="^original Node was replaced or duplicated$"
+        ):
+            await runtime.execute(worker)
+        assert runtime.cloud.launches == 1 and runtime.cloud.exists
     else:
         await runtime.execute(worker)
     result = await read(output)
@@ -98,6 +107,17 @@ async def test_worker_cannot_publish_result_for_changed_actual_placement(
             "SELECT state FROM harness_operations WHERE operation_id=$1",
             output.created["operation_id"],
         )
+        if change == "node-replaced-at-capture":
+            nodes = await connection.fetch(
+                "SELECT provider_reference FROM harness_allocation_resource "
+                "WHERE operation_id=$1 AND kind='kubernetes_node'",
+                output.created["operation_id"],
+            )
+            assert len(nodes) == 1
+            assert (
+                node_inventory.decode(nodes[0]["provider_reference"])["uid"]
+                == "allocated-node-uid"
+            )
     if change == "heartbeat-only":
         assert result["status"] == "retained" and stored == 1
         assert outcome == "succeeded" and state.nodes >= 2
