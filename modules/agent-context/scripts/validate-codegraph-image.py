@@ -21,6 +21,8 @@ MODULE = Path('modules/agent-context')
 
 
 def main():
+    if not __debug__:
+        raise RuntimeError('Acceptance validation requires assertions; do not use Python -O')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--revision', required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -35,7 +37,7 @@ def main():
          str(MODULE / 'tests/container/codegraph_runtime.py')], cwd=ROOT
     )
     digest = hashlib.sha256(archive).hexdigest()
-    receipt = {'revision': revision, 'source_archive_sha256': digest, 'result': 'incomplete'}
+    receipt = {'fixture': 'codegraph-runtime-v1', 'revision': revision, 'source_archive_sha256': digest, 'result': 'incomplete'}
     receipt_path = args.output / 'receipt.json'
     receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
     with tempfile.TemporaryDirectory(prefix='codegraph-gate-') as directory, (
