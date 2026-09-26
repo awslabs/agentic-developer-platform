@@ -406,7 +406,9 @@ class Installer:
             timeout=self.env["timeout_seconds"],
         )
         environment = (
-            self.management_probe_environment() if self.control_plane_only else {}
+            self.management_probe_environment()
+            if self.control_plane_only and not self.env.get("api_adapters")
+            else {}
         )
         result = self.commands.call(
             [
@@ -420,14 +422,24 @@ class Installer:
                 image(self.lock, "superplane-api"),
                 "-m",
                 "app.installation",
-                "management-capabilities"
+                "image-contract"
+                if self.env.get("api_adapters")
+                else "management-capabilities"
                 if self.control_plane_only
                 else "capabilities",
             ],
             env=dict(os.environ, **environment),
             allow_failure=True,
         )
-        if self.control_plane_only:
+        if self.env.get("api_adapters"):
+            from .api_adapters import image_contract_valid
+
+            require(
+                result.returncode == 0 and image_contract_valid(self.json(result)),
+                "Packaged API image contract failed",
+            )
+            self.receipt["image_contract"] = self.json(result)
+        elif self.control_plane_only:
             require(
                 result.returncode == 0
                 and self.json(result).get("controller_management") is True,
@@ -442,7 +454,9 @@ class Installer:
         }
         missing = sorted(key for key in required if capabilities.get(key) is not True)
         require(
-            self.control_plane_only or (not missing and result.returncode == 0),
+            self.control_plane_only
+            or bool(self.env.get("api_adapters"))
+            or (not missing and result.returncode == 0),
             "Production image lacks trusted capabilities: " + ", ".join(missing),
         )
         controller = self.commands.call(
@@ -571,26 +585,36 @@ class Installer:
             probe.prove_network_policy()
             probe.isolate()
             action = (
-                "management-capabilities" if self.control_plane_only else "capabilities"
+                "image-contract"
+                if self.env.get("api_adapters")
+                else "management-capabilities"
+                if self.control_plane_only
+                else "capabilities"
             )
             api = probe.run(
                 "superplane-api",
                 ["python", "-m", "app.installation", action],
                 values=self.management_probe_environment()
-                if self.control_plane_only
+                if self.control_plane_only and not self.env.get("api_adapters")
                 else None,
             )
             observed = self.json(api)
+            from .api_adapters import image_contract_valid
+
             require(
                 api.returncode == 0
                 and (
-                    observed.get("controller_management") is True
+                    image_contract_valid(observed)
+                    if self.env.get("api_adapters")
+                    else observed.get("controller_management") is True
                     if self.control_plane_only
                     else len(observed.get("capabilities", {})) == 4
                     and all(observed["capabilities"].values())
                 ),
                 "API production capability preflight failed",
             )
+            if self.env.get("api_adapters"):
+                self.receipt["image_contract"] = observed
             controller = probe.run(
                 "superplane-controller",
                 [
@@ -1257,11 +1281,19 @@ class Installer:
         stages = ["target", "management_network_policy", "images", "secrets"]
         if not self.control_plane_only:
             stages.append("workspace")
-        stages.extend(["database", "gateway", "terraform"])
+        stages.extend(["database", "gateway"])
+        if self.env.get("api_adapters"):
+            stages.append("api_adapter_prerequisites")
+        stages.append("terraform")
         for name in stages:
             self.phase(name, getattr(self, name))
         self.receipt["status"] = "preflight-passed"
         self.save()
+
+    def api_adapter_prerequisites(self):
+        from .adapter_staging import snapshot
+
+        self.receipt["api_adapter_prerequisites"] = snapshot(self)
 
     def read_s3_json(self, key):
         with tempfile.TemporaryDirectory(dir=self.directory) as directory:
@@ -2403,6 +2435,10 @@ class Installer:
         with self.exclusive():
             try:
                 self.phase("disable-route", self.disable_route)
+                if self.env.get("api_adapters"):
+                    from .adapter_staging import require_quiescent
+
+                    self.phase("adapter-quiescence", lambda: require_quiescent(self))
                 self.phase(
                     "infrastructure",
                     lambda: self.commands.call(
@@ -2420,7 +2456,24 @@ class Installer:
                 self.phase("migration", self.migrate)
                 self.phase("bootstrap", lambda: self.bootstrap(token))
                 self.phase("rollout", self.rollout)
+                if self.env.get("api_adapters"):
+                    from .adapter_staging import activate, require_quiescent, verify
+
+                    self.phase(
+                        "adapter-stage-quiescence", lambda: require_quiescent(self)
+                    )
+                    self.phase(
+                        "adapter-stage-verification", lambda: verify(self, token)
+                    )
+                    if not self.control_plane_only:
+                        self.phase("adapter-activation", lambda: activate(self))
                 self.phase("private-verification", self.private_services)
+                if self.env.get("api_adapters") and not self.control_plane_only:
+                    from .adapter_staging import verify_active
+
+                    self.phase(
+                        "adapter-active-verification", lambda: verify_active(self)
+                    )
                 self.phase("public-route", lambda: self.route(True))
                 self.phase("verification", lambda: self.verify(token))
                 if self.control_plane_only:
@@ -2432,6 +2485,15 @@ class Installer:
                 self.save()
             except BaseException:
                 self.disable_route()
+                if (
+                    self.env.get("api_adapters")
+                    and "rollout" in self.receipt["completed"]
+                ):
+                    from .adapter_staging import restore_disabled
+
+                    self.phase(
+                        "adapter-disabled-compensation", lambda: restore_disabled(self)
+                    )
                 raise
 
     def management_pod_uids(self, name):

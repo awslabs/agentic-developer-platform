@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     superplane_controller_profiles_file: str = ""
     superplane_operation_gateway_url: str = ""
     superplane_operation_gateway_region: str = ""
+    # Omission preserves existing operation hosts; staged installs set false.
+    superplane_operation_dispatch_enabled: bool = True
+
+    @field_validator("superplane_operation_dispatch_enabled", mode="before")
+    @classmethod
+    def strict_dispatch_enabled(cls, value):
+        if type(value) is bool:
+            return value
+        if value in ("true", "false"):
+            return value == "true"
+        raise ValueError("SUPERPLANE_OPERATION_DISPATCH_ENABLED must be true or false")
+
     controller_status_url: str = ""
     controller_registry_credential: str = ""
 

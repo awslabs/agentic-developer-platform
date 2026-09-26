@@ -67,6 +67,7 @@ MANAGEMENT_ROUTES = frozenset(
         ("GET", "/events"),
         ("GET", "/events/{event_id}"),
         ("GET", "/internal/installation"),
+        ("GET", "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}"),
         ("GET", "/internal/observations/clusters"),
         ("POST", "/internal/observations/leases"),
         ("POST", "/internal/observations/leases/release"),
