@@ -333,6 +333,36 @@ jobs:
       - name: Install runner dependencies
         run: pip install boto3 pytest pytest-timeout
 
+      - name: Require an explicit OIDC role (fail closed)
+        # The bounded runtime ceiling denies the sts:AssumeRole that role-chaining
+        # needs. Require the reviewed OIDC identity; refuse to proceed without it
+        # so a misconfigured environment fails loudly rather than falling back to
+        # ambient runner authority.
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, scoped role)
+        # Short-lived assumed-role session via GitHub OIDC only. No role
+        # chaining, no ambient runner authority, no static keys, no hardcoded
+        # fallback ARN. The fail-closed guard above ensures the secret is set.
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          # OIDC identifies the run directly; no shared-runner role assumption.
+          role-skip-session-tagging: true
+          role-duration-seconds: 10800
+          role-session-name: cli-uplift-eval-${{ github.run_id }}
+
       - name: Pin the deployment for this EC2 suite
         id: revision
         if: inputs.resolve_revision
@@ -365,36 +395,6 @@ jobs:
           REVISION="$(python -c 'import json,os; print(json.load(open(os.environ["EVAL_RUN_CONFIG"]))["expected_revision"])')"
           git fetch --no-tags --depth 1 origin "$REVISION"
           git cat-file -e "$REVISION:modules/gateway/cli/install.sh"
-
-      - name: Require an explicit OIDC role (fail closed)
-        # The bounded runtime ceiling denies the sts:AssumeRole that role-chaining
-        # needs. Require the reviewed OIDC identity; refuse to proceed without it
-        # so a misconfigured environment fails loudly rather than falling back to
-        # ambient runner authority.
-        env:
-          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
-        run: |
-          set -euo pipefail
-          if [ -z "$ROLE_ARN" ]; then
-            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
-            exit 1
-          fi
-
-      - name: Configure AWS credentials (OIDC, scoped role)
-        # Short-lived assumed-role session via GitHub OIDC only. No role
-        # chaining, no ambient runner authority, no static keys, no hardcoded
-        # fallback ARN. The fail-closed guard above ensures the secret is set.
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
-          aws-region: us-east-1
-          unset-current-credentials: true
-          force-skip-oidc: false
-          role-chaining: false
-          # OIDC identifies the run directly; no shared-runner role assumption.
-          role-skip-session-tagging: true
-          role-duration-seconds: 10800
-          role-session-name: cli-uplift-eval-${{ github.run_id }}
 
       - name: Publish when these credentials expire
         # The run has to know when its own AWS session dies, and this step is the
