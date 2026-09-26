@@ -22,7 +22,7 @@ def cleanup(monkeypatch):
     ]
     snapshot = AsyncMock(return_value={"complete": True, "resources": resources})
     monkeypatch.setattr(
-        "workspace_provisioning.recovery_inventory.ProviderInventory.snapshot",
+        "superplane_executor.provider_inventory.ProviderInventory.snapshot",
         snapshot,
     )
     ec2 = SimpleNamespace(

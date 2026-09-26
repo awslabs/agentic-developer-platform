@@ -7,7 +7,7 @@ from harness_jobs.identity import OperationRefused
 
 async def removal_complete(provider, operation, target, plan, call, authorize):
     """Observe every aggregate removal obligation; never resume mutations here."""
-    from workspace_provisioning.recovery_inventory import ProviderInventory
+    from superplane_executor.provider_inventory import ProviderInventory
 
     if target is None or call is None or not callable(authorize):
         return False

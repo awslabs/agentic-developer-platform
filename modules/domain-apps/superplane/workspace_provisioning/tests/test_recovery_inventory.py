@@ -91,7 +91,7 @@ def snapshot(monkeypatch):
         )
     )
     lock = AsyncMock(return_value=True)
-    monkeypatch.setattr("workspace_provisioning.recovery_inventory.lock_lease", lock)
+    monkeypatch.setattr("superplane_executor.provider_inventory.lock_lease", lock)
     return adapter, lease, context, lock
 
 

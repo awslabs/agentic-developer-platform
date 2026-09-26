@@ -485,7 +485,7 @@ async def test_inventory_refuses_another_authenticated_recovery_subject(system):
 async def test_actual_inventory_decides_retirement_and_terminal_settlement(
     system, leaked, monkeypatch
 ):
-    from workspace_provisioning.recovery_inventory import ProviderInventory
+    from superplane_executor.provider_inventory import ProviderInventory
 
     snapshot = ProviderInventory.snapshot
     completed_snapshots = []
