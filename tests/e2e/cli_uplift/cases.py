@@ -335,7 +335,7 @@ CASES = (
         "#5634",
         "story-reads",
         "GitHub maintenance status and reviewed previews never read supplied keys or change the shared App",
-        (EC2, PLATFORM, COGNITO, GITHUB_APP),
+        (EC2, PLATFORM, COGNITO),
     ),
     Case(
         "E29",

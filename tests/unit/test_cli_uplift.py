@@ -1007,13 +1007,13 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E17",
         "E18",
         "E19",
-        "E28",
         "E39",
         "E42",
         "E25",
         "E27",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
+    assert matrix["E28"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
     assert blocked["E11"] == ["github_app", "github_repo"]
     # #5413: three real deployments are a fixture like any other, so their absence
@@ -1172,6 +1172,10 @@ def test_github_fixtures_absent_blocks_only_github_cases():
     assert cases.GITHUB_APP not in available
     assert cases.GITHUB_REPO not in available
     assert {cases.EC2, cases.PLATFORM, cases.DESTINATION, cases.COGNITO} <= available
+    # Maintenance reads/previews discover the selected deployment's App. Only
+    # the separate mutating journeys require a disposable external App fixture.
+    assert set(cases.BY_ID["E28"].requires) <= available
+    assert cases.GITHUB_APP in cases.BY_ID["E10"].requires
 
 
 def test_github_fixtures_present_enables_github_cases():
@@ -8430,7 +8434,6 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         # environment, so it blocks here exactly as the GitHub cases do.
         "E18",
         "E19",
-        "E28",
         "E39",
         "E42",
         "E25",
@@ -8453,6 +8456,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E23",
         "E24",
         "E33",
+        "E28",
         "E29",
         "E31",
         "E26",
