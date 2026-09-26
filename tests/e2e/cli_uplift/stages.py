@@ -781,6 +781,7 @@ JOURNEY_DRIVERS = {
     "D01": "hosted_chat",
     "D02": "vault_lifecycle",
     "D03": "hierarchy_lifecycle",
+    "D05": "machine_lifecycle",
     "E42": "hosted_coding",
     "E06": "bedrock_routing",
     "E07": "bedrock_rungs",
