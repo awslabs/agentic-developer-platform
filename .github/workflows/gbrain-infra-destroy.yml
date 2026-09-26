@@ -21,9 +21,7 @@ jobs:
   destroy:
     name: Destroy Gbrain Infrastructure
     if: github.ref == 'refs/heads/main'
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-dev
     permissions:
       id-token: write

@@ -42,7 +42,7 @@ permissions:
 
 jobs:
   spawn:
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     steps:
       - name: Validate inputs
         env:

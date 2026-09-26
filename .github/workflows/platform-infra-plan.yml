@@ -26,10 +26,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch')
     name: Terraform Plan
     environment: adp-deploy-dev
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
-    # ARC runner has IRSA via adp-dev-agent-runner-role — no AWS_ROLE_ARN needed
+    runs-on: arc-runner-org
     permissions:
       id-token: write
       contents: read

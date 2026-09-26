@@ -17,9 +17,7 @@ jobs:
   build:
     if: github.ref == 'refs/heads/main'
     name: Build Windows 11 CAPE Image
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-dev
     timeout-minutes: 120
     permissions:

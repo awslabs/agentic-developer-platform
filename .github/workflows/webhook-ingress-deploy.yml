@@ -77,9 +77,7 @@ jobs:
 
   package:
     name: Package Lambda Code
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
     if: github.ref == 'refs/heads/main' && (needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true')
@@ -137,9 +135,7 @@ jobs:
 
   deploy-infra:
     name: Terraform Apply
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, package]
     if: github.ref == 'refs/heads/main' && (always() && needs.changes.outputs.infra == 'true' && needs.package.result == 'success')
@@ -316,9 +312,7 @@ jobs:
 
   update-code:
     name: Update Lambda Function Code
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, package, deploy-infra]
     if: |
@@ -409,9 +403,7 @@ jobs:
 
   integration-test:
     name: Integration Tests
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [update-code, deploy-infra]
     if: |

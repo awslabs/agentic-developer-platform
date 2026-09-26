@@ -51,9 +51,7 @@ jobs:
   build:
     name: Build Custom Runner Image
     if: github.ref == 'refs/heads/main'
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-build-${{ inputs.environment || 'dev' }}
     permissions:
       id-token: write

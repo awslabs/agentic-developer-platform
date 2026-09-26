@@ -88,7 +88,7 @@ permissions:
 jobs:
   lint:
     name: Lint eval scripts
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
 
@@ -139,9 +139,7 @@ jobs:
     needs: [lint]
     outputs:
       cleanup_ok: ${{ steps.cleanup.outcome == 'success' }}
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     # Longer than cli-onboarding's 45: cases 8-11 must each sleep out the
     # limiter's 60s DB config-reload interval (ratelimit/service.py:29), which

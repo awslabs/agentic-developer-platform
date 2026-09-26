@@ -16,7 +16,7 @@ permissions:
 jobs:
   validate:
     name: Validate PMM-09 evidence contract
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7

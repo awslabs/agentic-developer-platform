@@ -5,9 +5,7 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     steps:
     - uses: actions/checkout@v7
     - name: Verify source belongs to reviewed main history

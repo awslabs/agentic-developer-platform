@@ -1,3 +1,12 @@
+> **Runner routing — 26 September 2026:** Per owner instruction, every project
+> GitHub Actions job now selects the existing `arc-runner-org` pool literally,
+> including deployment/build jobs and agent workflows. `ARC_RUNNER_LABEL` does
+> not override workflow placement. Dedicated runner-group installation steps
+> below describe the earlier isolation design and are not prerequisites for
+> scheduling these workflows. Protected environments, source verification,
+> OIDC exchanges, and identity checks still apply. Selecting a runner does not
+> grant its jobs deployment or agent permissions.
+
 # Trusted automation cutover (#5674)
 
 This state separates reviewed infrastructure and publishing workflows from

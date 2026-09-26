@@ -40,18 +40,19 @@ def test_valid_environment_is_accepted():
 
 def test_all_action_jobs_run_on_arc():
     paths = list((ROOT / ".github/workflows").glob("*.yml")) + list((ROOT / ".github/workflows").glob("*.yaml"))
+    paths += [ROOT / relative for relative in (
+        "modules/agent-factory/rules/workflows/agent-template.yml",
+        "modules/agent-factory/rules/workflows/pm-notify-handler.yml",
+        "modules/agent-factory/runner-infra/workflow-example.yml",
+        "modules/agent-factory/client-workflows/.github/workflows/pr-review-trigger.yml",
+    )]
     for path in paths:
         workflow = yaml.safe_load(path.read_text())
         for name, job in workflow["jobs"].items():
-            if "runs-on" not in job:  # Reusable workflows select their own ARC jobs.
+            if "uses" in job:  # Reusable workflows select their own ARC jobs.
+                assert "runs-on" not in job
                 continue
-            assert job["runs-on"] in [
-                "arc-runner-org",
-                "arc-runner-agent",
-                "${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}",
-                {"group": "adp-deployment", "labels": "arc-runner-deployment"},
-                {"group": "Default", "labels": "arc-runner-org"},
-            ], f"{path.name}/{name}: GitHub Actions must run via ARC"
+            assert job["runs-on"] == "arc-runner-org", f"{path.name}/{name}: every job must select arc-runner-org"
 
 
 @pytest.mark.parametrize("mutation", ["bypass", "no-review", "self-review", "all-protected-branches"])
@@ -99,12 +100,7 @@ def assert_gateway_reviewed_source(workflow, job, authority_index):
 # individually below rather than in this parametrized loop.
 DEDICATED_ACTION_WORKFLOWS = {"webhook-code-deploy.yml"}
 
-# Gateway release uses the existing ARC pool with its reduced ambient role.
-# Protected environments, main-source checks and OIDC remain mandatory below.
-GATEWAY_EXISTING_RUNNER_WORKFLOWS = {
-    "gateway-deploy.yml", "run-gateway-migrations.yml", "gateway-infra-apply.yml",
-    "gateway-smoke.yml", "pricing-finalize.yml",
-}
+# Runner selection is shared; protected contexts and per-job identities remain mandatory.
 
 
 @pytest.mark.parametrize("kind", ["deployment", "build"])
@@ -124,12 +120,7 @@ def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
             found += 1
             assert len(matching) == 1, name
             assert "github.ref == 'refs/heads/main'" in job["if"], name
-            expected_runner = (
-                "arc-runner-org"
-                if name in GATEWAY_EXISTING_RUNNER_WORKFLOWS
-                else {"group": "adp-deployment", "labels": "arc-runner-deployment"}
-            )
-            assert job["runs-on"] == expected_runner, name
+            assert job["runs-on"] == "arc-runner-org", name
             assert job["environment"].startswith("adp-deploy-" if kind == "deployment" else "adp-build-"), name
             assert job["permissions"]["id-token"] == "write", name
             if name == "gateway-infra-apply.yml":
@@ -173,7 +164,7 @@ def test_webhook_code_workflow_uses_dedicated_identity_and_main_guard():
     workflow = yaml.safe_load((ROOT / ".github/workflows/webhook-code-deploy.yml").read_text())
     job = workflow["jobs"]["deploy-code"]
     assert "github.ref == 'refs/heads/main'" in job["if"]
-    assert job["runs-on"] == {"group": "adp-deployment", "labels": "arc-runner-deployment"}
+    assert job["runs-on"] == "arc-runner-org"
     assert job["environment"] == "adp-webhook-code-dev"
     assert "github.run_attempt == 1" in job["if"]
     # Permissions may be at workflow level or job level
@@ -285,7 +276,7 @@ def test_cyber_composites_preserve_trusted_runner_execution_contract():
     for name in ['cyber-infra-apply', 'cyber-infra-plan', 'cyber-windows-image-build', 'cyber-worker-build', 'cyber-k8s-deploy']:
         workflow = yaml.safe_load((ROOT / f'.github/workflows/{name}.yml').read_text())
         for job in workflow['jobs'].values():
-            if not isinstance(job.get('runs-on'), dict):
+            if not str(job.get('environment', '')).startswith(('adp-deploy-', 'adp-build-')):
                 continue
             for step in expanded_steps(job['steps']):
                 script = step.get('run', '')
@@ -350,8 +341,6 @@ def ordinary_cloud_inventory():
     for path in sorted((ROOT / '.github/workflows').glob('*.y*ml')):
         workflow = yaml.safe_load(path.read_text())
         for name, job in workflow.get('jobs', {}).items():
-            if isinstance(job.get('runs-on'), dict):
-                continue
             steps = list(expanded_steps(job.get('steps', [])))
             if any('trusted-' in s.get('uses', '') for s in steps):
                 continue
@@ -383,3 +372,12 @@ def test_ordinary_cloud_operations_match_reviewed_inventory():
                 'codebuild batch-get-builds', 'codebuild batch-get-projects', 'codebuild start-build',
                 'codebuild stop-build',  # same exact gateway project; failed dispatch cleanup
             }, job
+
+
+def test_generated_workflow_job_uses_org_pool():
+    source = (ROOT / "modules/agent-factory/runner-infra/scripts/add-auto-fix-to-repo.sh").read_text()
+    generated = source.split("AUTO_FIX_JOB=$(cat << 'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+    workflow = yaml.safe_load("jobs:\n" + generated.split("    steps:", 1)[0])
+    assert workflow["jobs"]["auto-fix-on-failure"]["runs-on"] == "arc-runner-org"
+    onboarding = (ROOT / "modules/agent-factory/runner-infra/scripts/onboard-repo.sh").read_text()
+    assert 'echo "  runs-on: arc-runner-org"' in onboarding
