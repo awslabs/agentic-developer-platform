@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from urllib.parse import quote, urlsplit
 
@@ -23,17 +24,26 @@ KEY = "gitlab_cli_v1"
 
 
 def host(value):
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path not in {"", "/"}
-    ):
-        raise HTTPException(503, "Approved GitLab provider must be an HTTPS origin")
+    """Validate an operator-approved HTTPS base URL, including a rooted install."""
+    try:
+        if not isinstance(value, str) or any(ord(char) <= 32 or ord(char) >= 127 for char in value):
+            raise ValueError
+        parsed = urlsplit(value)
+        # Accessing port also rejects malformed/out-of-range authorities.
+        port = parsed.port
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or port == 0
+            or any(char in value for char in ("\\", "%", "?", "#"))
+            or not re.fullmatch(r"(?:/[A-Za-z0-9._~-]+)*/?", parsed.path)
+            or any(segment in {".", ".."} for segment in parsed.path.split("/"))
+        ):
+            raise ValueError
+    except ValueError:
+        raise HTTPException(503, "Approved GitLab provider must be an HTTPS base URL with a canonical path") from None
     return value.rstrip("/")
 
 
@@ -41,7 +51,8 @@ async def providers():
     platform = await asyncio.to_thread(_discover_gitlab_url)
     approved = {host(row.instance) for row in root_bindings() if row.source == "gitlab"}
     if platform:
-        approved.add(host(platform))
+        platform = host(platform)
+        approved.add(platform)
     return [
         {
             "id": hashlib.sha256(value.encode()).hexdigest()[:24],
@@ -94,6 +105,7 @@ async def credential(db, caller, credential_id):
 
 
 async def probe(db, caller, approved, credential_id, repo, project_id=None):
+    base_url = host(approved["url"])
     row = await credential(db, caller, credential_id)
     try:
         token = await asyncio.to_thread(SecretsManagerHelper().get_secret, row.secret_arn)
@@ -102,7 +114,7 @@ async def probe(db, caller, approved, credential_id, repo, project_id=None):
         async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
 
             async def get(path):
-                response = await client.get(approved["url"] + "/api/v4" + path, headers={"PRIVATE-TOKEN": token})
+                response = await client.get(base_url + "/api/v4" + path, headers={"PRIVATE-TOKEN": token})
                 if response.status_code != 200:
                     raise HTTPException(403 if response.status_code in {401, 403, 404} else 503, "GitLab access not verified")
                 return response.json()
