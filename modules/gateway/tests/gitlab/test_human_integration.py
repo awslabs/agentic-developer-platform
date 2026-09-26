@@ -129,7 +129,7 @@ async def test_status_separates_access_from_webhook_and_runtime(db_session, fixt
 
 
 @pytest.mark.parametrize(
-    "value", ["http://gitlab.example", "https://user:pass@gitlab.example", "https://gitlab.example/path", "https://gitlab.example?x=1"]
+    "value", ["http://gitlab.example", "https://user:pass@gitlab.example", "https://gitlab.example/../escape", "https://gitlab.example?x=1"]
 )
 def test_non_origin_provider_configuration_is_refused(value):
     with pytest.raises(HTTPException):
@@ -200,3 +200,50 @@ async def test_human_route_schema_authorization_and_ack(db_session, fixture, mon
         assert status.json()["identity_linked"] is True
         raw_actor.account_type = "service"
         assert (await client.get("/gitlab/status")).status_code == 403
+
+
+@pytest.mark.parametrize("path", ["/gitlab", "/services/gitlab", ""])
+async def test_platform_provider_preserves_rooted_install_path(monkeypatch, path):
+    base = "https://gitlab.example.test" + path
+    monkeypatch.setattr(service, "_discover_gitlab_url", lambda: base + "/")
+    monkeypatch.setattr(service, "root_bindings", lambda: [])
+    (row,) = await service.providers()
+    assert row["url"] == base
+    assert row["kind"] == "platform"
+    assert row["id"] == service.hashlib.sha256(base.encode()).hexdigest()[:24]
+
+
+@pytest.mark.parametrize(
+    "suffix", ["//evil.test", "/%2e%2e/escape", "/gitlab/../escape", "/gitlab/./api", "/gitlab\\escape", "/gitlab?", "/gitlab#", "/gitlab\n"]
+)
+def test_rooted_provider_refuses_ambiguous_or_escaped_paths(suffix):
+    with pytest.raises(HTTPException):
+        service.host("https://gitlab.example.test" + suffix)
+
+
+@pytest.mark.parametrize("redirect", [False, True])
+async def test_probe_uses_exact_approved_base_path_without_redirect(db_session, fixture, monkeypatch, redirect):
+    import httpx
+
+    caller, _, _ = fixture
+    base = "https://gitlab.example.test/gitlab"
+    observed = []
+
+    def respond(request):
+        observed.append(str(request.url))
+        assert request.headers["PRIVATE-TOKEN"] == "synthetic-pat"
+        if redirect:
+            return httpx.Response(302, headers={"Location": "https://foreign.example/api/v4/user"})
+        if request.url.path.endswith("/user"):
+            return httpx.Response(200, json={"id": 7, "username": "human"})
+        return httpx.Response(200, json={"id": 42, "path_with_namespace": "group/project", "permissions": {"project_access": {"access_level": 40}}})
+
+    monkeypatch.setattr(service.httpx, "AsyncClient", lambda **kwargs: AsyncClient(transport=httpx.MockTransport(respond), **kwargs))
+    if redirect:
+        with pytest.raises(HTTPException):
+            await service.probe(db_session, caller, {"url": base + "/"}, CREDENTIAL, "group/project")
+        assert observed == [base + "/api/v4/user"]
+    else:
+        result = await service.probe(db_session, caller, {"url": base + "/"}, CREDENTIAL, "group/project")
+        assert result["project_id"] == 42
+        assert observed == [base + "/api/v4/user", base + "/api/v4/projects/group%2Fproject"]
