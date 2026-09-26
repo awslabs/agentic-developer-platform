@@ -52,7 +52,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py adp-knowledge.py adp-gitlab.py adp-superplane-research.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py adp-knowledge.py adp-gitlab.py adp-superplane-research.py adp-platform.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -1816,6 +1816,13 @@ Check what works here, and why something failed:
     superplane research sources|stats
     superplane research proposal list|show|create|approve|reject
     superplane research scan|proposal generate  (unavailable without durable bounded backend)
+  Platform lifecycle (canonical tooling):
+    platform status       Read selected gateway metadata; resource readiness remains unknown
+    platform plan         Review account/source/scope for a canonical update invocation
+    platform apply        Confirm account and invocation hash; retains canonical saved-plan gates
+    platform resume       Fresh reviewed update using the canonical deployment journal
+    platform teardown plan|apply  Separate inventory review and typed-account destruction gate
+
   Budgets:
     ratelimit me         Read own applicable rate limits and enforcement availability
     admin ratelimit list|show|set|delete|status  Scoped rate-limit overrides
@@ -2027,6 +2034,14 @@ main() {
                 exit 1
             fi
             ;;
+        platform)
+            if [ "${1:-}" = "status" ]; then
+                resolve_deployment "${requested_deployment}"
+            elif [ -n "${requested_deployment}" ]; then
+                print_error "Platform lifecycle uses --profile and --confirm-account; --deployment selects only platform status."
+                exit 1
+            fi
+            ;;
         help|--help|-h|version|--version|-v|"") ;;
         *) resolve_deployment "${requested_deployment}" ;;
     esac
@@ -2045,6 +2060,7 @@ main() {
     esac
     case "${command}" in
         deployment|help|--help|-h|version|--version|-v|login|logout|import|refresh|update|status|tenant|access|task|daemon|"")
+        deployment|help|--help|-h|version|--version|-v|login|logout|import|refresh|update|status|tenant|task|daemon|platform|"")
             if [ -n "${requested_tenant}" ] && [ "${command}" != "tenant" ]; then
                 print_error "This command does not accept --tenant."
                 exit 1
@@ -2091,6 +2107,7 @@ main() {
         # than as a separate `superplane` CLI on the user's PATH.
         superplane) exec_python_helper "adp-superplane.py" "$@" ;;
         models) exec_python_helper "adp-models.py" "$@" ;;
+        platform) exec_python_helper "adp-platform.py" "$@" ;;
         # AI-DLC delivery flows (Issue #5331). Same helper path as the areas
         # above, so it inherits the one credential path: the session `adp login`
         # already established. This dispatcher is also the foundation the later

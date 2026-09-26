@@ -37,6 +37,8 @@ PURPOSES = {
     "story_model_policy": ("story_reads", {"mode": "model_policy"}),
     "story_bedrock_lifecycle": ("story_reads", {"mode": "bedrock_lifecycle"}),
     "story_recovery": ("story_reads", {"mode": "recovery"}),
+
+    "story_platform": ("story_reads", {"mode": "platform"}),
     "story_activity": ("story_reads", {"mode": "activity"}),
     "story_research": ("story_research", {}),
     "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),

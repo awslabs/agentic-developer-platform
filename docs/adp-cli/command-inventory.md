@@ -294,3 +294,16 @@ read-only previews by default. Both accept `--dry-run`, `--json`, and
 `--yes --expect-revision REV --operation-id UUID`. The revision comes from the
 preview. See [flow recovery](flow-recovery.md). Worker pause/resume remains under
 `adp activity`; node recovery does not itself prove that a worker started.
+
+## Platform lifecycle (#5641)
+
+See [canonical platform facade](platform.md).
+
+| Command | Options |
+|---|---|
+| `adp platform status` | `--environment`, `--json` |
+| `adp platform plan` | `--environment`, `--json`, `--output`, `--profile`, `--region`, `--scope`, `--source-checkout`, `--source-revision` |
+| `adp platform apply` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file` |
+| `adp platform resume` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file`, `--state-file` |
+| `adp platform teardown plan` | `--environment`, `--json`, `--output`, `--profile`, `--region`, `--source-checkout`, `--source-revision` |
+| `adp platform teardown apply` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file` |

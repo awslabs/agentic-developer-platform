@@ -325,6 +325,12 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
+        "E41",
+        "#5641",
+        "story-reads",
+        "Platform status distinguishes selected-gateway capability metadata from unverified AWS/artifact readiness; no deployment invocation",
+    ),
+    Case(
         "E28",
         "#5634",
         "story-reads",

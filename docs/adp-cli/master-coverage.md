@@ -51,7 +51,7 @@ The reviewed batch contains **252 parser-backed command forms**. This is source 
 | #5638 | Superplane workspace/deployment/provider lifecycle | Existing Superplane commands and domain contracts |
 | #5639 | [Research reads and proposal review](research.md), E25 nightly reads; bounded scan/generation held | Existing Superplane research APIs; idempotent proposal identity and human revision checks |
 | #5640 | Durable hosted conversation start/resume/readback | Existing hosted chat APIs; no replacement Task dispatcher |
-| #5641 | Platform lifecycle status and governed deployment facade | Canonical deployment tooling |
+| #5641 ([platform facade](platform.md), source implementation; live held) | Platform lifecycle status and governed deployment facade | Canonical deployment tooling |
 
 The resulting CLI is a common terminal surface for identity, infrastructure connections, budgets, models, delivery, hosted work and domain operations. A single selected deployment and authorized tenant scope apply throughout. Task submission reuses Task API, and control commands advertise only runtime-supported operations.
 
