@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { runProbeCycle } from './runner';
+import { runTaskProbe } from './task-runner';
 
 export function assertLocalProbeEnabled(env: NodeJS.ProcessEnv = process.env): void {
   if (env.ADP_PERSONA_MODEL_PROBE_ENABLED !== 'true') {
@@ -9,7 +10,9 @@ export function assertLocalProbeEnabled(env: NodeJS.ProcessEnv = process.env): v
 
 async function main(): Promise<void> {
   assertLocalProbeEnabled();
-  const result = await runProbeCycle();
+  const result = process.env.ADP_TASK_PROBE_PERSONA
+    ? await runTaskProbe(process.env.ADP_TASK_PROBE_PERSONA)
+    : await runProbeCycle();
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 

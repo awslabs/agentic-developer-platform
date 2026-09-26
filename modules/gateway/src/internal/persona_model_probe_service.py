@@ -27,6 +27,7 @@ from src.shared.models.persona_model_catalogue import (
     ModelProbeCycle,
     ModelProbeSlot,
 )
+from src.tasks.personas import TASK_PERSONAS
 
 Trigger = Literal["scheduled", "manual", "change"]
 Outcome = Literal["proven", "refused", "error"]
@@ -128,8 +129,34 @@ async def _expire_leases(db: AsyncSession, now: datetime) -> None:
         slot.updated_at = now
 
 
-async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled") -> ClaimResult:
+@dataclass(frozen=True)
+class ProbeProfile:
+    canonical_model_id: str
+    compatibility_class: str
+    harness_contract_revision: str
+    digest: str | None
+
+
+def _probe_profiles(task_persona: str | None):
+    if task_persona is not None:
+        profile = TASK_PERSONAS[task_persona]
+        return tuple(
+            ProbeProfile(model.canonical_model_id, profile.compatibility_class, profile.harness_contract_revision, profile.request_shape_sha256)
+            for model in PLATFORM_MODEL_CATALOGUE
+            if model.compatibility_class == "claude-agent-sdk"
+        )
+    return tuple(
+        ProbeProfile(
+            model.canonical_model_id, model.compatibility_class, model.harness_contract_revision, expected_request_shape(model.canonical_model_id)
+        )
+        for model in PLATFORM_MODEL_CATALOGUE
+    )
+
+
+async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled", task_persona: str | None = None) -> ClaimResult:
     """Atomically reserve a Gateway-selected destination/model and worst-case spend."""
+    if task_persona is not None and task_persona not in TASK_PERSONAS:
+        raise ProbeConflictError("unknown_task_persona", "Unknown Task probe profile")
     settings = get_settings()
     if reason := _configuration_reason(settings):
         return ClaimResult(claimed=False, reason=reason)
@@ -194,10 +221,10 @@ async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled") -> Cl
 
     candidate: tuple[BedrockDestinationRegistry, object] | None = None
     for destination in destinations:
-        for model in PLATFORM_MODEL_CATALOGUE:
+        for model in _probe_profiles(task_persona):
             if settings.model_probe_model_allowlist and model.canonical_model_id not in settings.model_probe_model_allowlist:
                 continue
-            expected_digest = expected_request_shape(model.canonical_model_id)
+            expected_digest = model.digest
             if expected_digest is None:
                 continue
             paid_or_live_attempt = await db.scalar(
@@ -250,7 +277,7 @@ async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled") -> Cl
         return ClaimResult(claimed=False, reason="no_candidates")
 
     destination, model = candidate
-    expected_digest = expected_request_shape(model.canonical_model_id)
+    expected_digest = model.digest
     if expected_digest is None:  # guarded in the candidate loop; fail closed if the manifest changes mid-call
         await db.rollback()
         return ClaimResult(claimed=False, reason="no_candidates")
