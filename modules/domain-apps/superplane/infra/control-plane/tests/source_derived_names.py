@@ -69,6 +69,13 @@ def iam_role_names(environment: str) -> list[str]:
     source = "\n".join(
         path.read_text() for path in sorted(CONTROL_PLANE_DIR.glob("*.tf"))
     )
+    return [
+        f"{name_prefix(environment)}{suffix}" for suffix in iam_role_suffixes(source)
+    ]
+
+
+def iam_role_suffixes(source: str) -> list[str]:
+    """One naming parser for local and revision-pinned ownership evidence."""
     suffixes = re.findall(
         r'resource\s+"aws_iam_role"\s+"[^"]+"\s*\{[^}]*?name\s*=\s*'
         r'"\$\{local\.name_prefix\}([^"]*)"',
@@ -78,7 +85,7 @@ def iam_role_names(environment: str) -> list[str]:
     declared = re.findall(r'resource\s+"aws_iam_role"\s+"[^"]+"', source)
     if not suffixes or len(suffixes) != len(declared):  # pragma: no cover
         raise AssertionError("not every maintained aws_iam_role name could be derived")
-    return [f"{name_prefix(environment)}{suffix}" for suffix in suffixes]
+    return suffixes
 
 
 def ssm_parameter_names(environment: str) -> list[str]:

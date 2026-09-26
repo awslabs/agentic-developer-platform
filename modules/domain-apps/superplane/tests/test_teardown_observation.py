@@ -72,6 +72,11 @@ SOURCE_FILES = (
     f"{MODULE_PATH}/infra/control-plane/main.tf",
     f"{MODULE_PATH}/infra/control-plane/config.tf",
     f"{MODULE_PATH}/infra/control-plane/irsa.tf",
+    *(
+        str(path.relative_to(REPOSITORY_ROOT))
+        for path in sorted((MODULE_ROOT / "infra/control-plane").glob("*.tf"))
+        if path.name not in {"main.tf", "config.tf", "irsa.tf"}
+    ),
     f"{MODULE_PATH}/releases/superplane.lock.yaml",
     "environments/dev/modules/superplane.tfvars",
     # U3's lifecycle contract: which rendered objects a teardown deletes and which it keeps.
@@ -3028,7 +3033,10 @@ def test_derived_inventory_matches_the_terraform_and_lock_sources():
     by_type: dict[str, set[str]] = {}
     for entry in derived:
         by_type.setdefault(entry["type"], set()).add(entry["name"])
-    assert by_type["aws_iam_role"] == set(names.iam_role_names("dev"))
+    assert by_type["aws_iam_role"] == set(names.iam_role_names("dev")) - {
+        "adp-dev-superplane-api-producer"
+    }
+    # The deployed default tfvars omit the optional producer role.
     assert by_type["aws_ssm_parameter"] == set(names.ssm_parameter_names("dev"))
     assert by_type["aws_ecr_repository"] == set(names.ecr_repository_names())
     assert by_type["kubernetes_namespace"] == {"skypilot"}
@@ -3945,3 +3953,59 @@ def test_the_named_live_command_fails_without_inputs_and_does_not_skip(tmp_path)
     # Zero skipped acceptance criteria: a skip here would read as "nothing to check".
     assert " skipped" not in result.stdout
     assert "1 failed" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "selection,enabled",
+    [
+        ("", False),
+        ("api_producer_role = null", False),
+        ('api_producer_role = { api_id = "abcdefghij", stage = "dev" }', True),
+    ],
+)
+def test_revision_inventory_resolves_optional_producer_from_deployed_inputs(
+    selection, enabled
+):
+    path = "environments/dev/modules/superplane.tfvars"
+    actual = github_runs()
+
+    def github(query):
+        if query == f"contents/{path}?ref={DEPLOY_SHA}":
+            value = (REPOSITORY_ROOT / path).read_text() + "\n" + selection + "\n"
+            return {
+                "encoding": "base64",
+                "content": base64.b64encode(value.encode()).decode(),
+            }
+        return actual(query)
+
+    sources = t.RevisionSources(github, DEPLOY_SHA)
+    names = t.DerivedNamesAtRevision(sources).iam_role_names("dev")
+    assert ("adp-dev-superplane-api-producer" in names) is enabled
+    assert f"{MODULE_PATH}/infra/control-plane/api_producer.tf" in sources.hashes
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "api_producer_role = local.target",
+        "api_producer_role = null\napi_producer_role = null",
+        'api_producer_role = { api_id = "abcdefghij", stage = "dev", extra = "x" }',
+    ],
+)
+def test_revision_inventory_refuses_ambiguous_optional_producer(selection):
+    path = "environments/dev/modules/superplane.tfvars"
+    actual = github_runs()
+
+    def github(query):
+        if query == f"contents/{path}?ref={DEPLOY_SHA}":
+            value = (REPOSITORY_ROOT / path).read_text() + "\n" + selection + "\n"
+            return {
+                "encoding": "base64",
+                "content": base64.b64encode(value.encode()).decode(),
+            }
+        return actual(query)
+
+    with pytest.raises(EvidenceError, match="optional producer role input"):
+        t.DerivedNamesAtRevision(t.RevisionSources(github, DEPLOY_SHA)).iam_role_names(
+            "dev"
+        )

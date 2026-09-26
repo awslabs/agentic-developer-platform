@@ -35,6 +35,10 @@ def planned(managed):
     trust, policy = producer_role.documents(managed, issuer)
     installer = SimpleNamespace(
         env=managed,
+        aws=Mock(side_effect=AssertionError("saved-plan inspection must not call AWS")),
+        json=Mock(
+            side_effect=AssertionError("saved-plan inspection must not parse transport")
+        ),
         receipt={
             "api_producer_role_preflight": {
                 "role_missing": True,
