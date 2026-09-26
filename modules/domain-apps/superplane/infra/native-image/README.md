@@ -36,7 +36,7 @@ archive source transport without following local filesystem symlinks.
 
 Run Python with `-B` and provide all flags shown by the source parser: `--checkout`,
 `--account-id`, `--region`, `--project`, `--dispatcher-role`, `--plan`,
-`--plan-sha256`, `--inputs`, `--packer`, `--amazon-plugin`, `--output`, `--bucket`,
+`--plan-sha256`, `--deployment`, `--deployment-sha256`, `--inputs`, `--packer`, `--amazon-plugin`, `--output`, `--bucket`,
 `--output-bucket` and a unique `--dispatch-id`. All paths identify reviewed actual
 inputs; no executable placeholder plan is provided. The checkout must be clean at
 the plan revision, which must appear in the locally fetched reviewed main history.
@@ -86,3 +86,28 @@ input drift and the no-AMI-tags caller-bound recipe. Local verification is limit
 Ruff and digest-verified Terraform formatting. Terraform init/validate/mock plans,
 transport runtime fixtures and actual cloud/ABI/GPU acceptance run remotely and must
 be reported separately. Source tests cannot establish effective AWS policy behavior.
+
+## Approved deployment identity and replay protection
+
+Export `dispatch_contract` from the reviewed installation, retain the exact JSON
+bytes, and approve their SHA256. The CLI additionally requires `--deployment` and
+`--deployment-sha256`. It compares the live project's exact role, pinned environment,
+compute/privilege/pull settings, complete configured environment, VPC/subnets/groups,
+source, concurrency and build/queue timeouts with that approved contract before any
+input upload or invocation. A matching project name/buildspec is insufficient.
+
+Approved plan bytes are read and hashed once, frozen in private staging and bound
+into the envelope as `approved_plan_sha256`. The receiver validates downloaded plan
+bytes against that independent field. Tools/upstreams are streamed into private
+copies and checked against approved digests; S3 PutObject uses a matching SHA256
+checksum and validates its response, so a later mutable-path hash cannot replace the
+approved uploaded identity. The original plan is rechecked before dispatch as well.
+
+Before uploading build inputs, the CLI conditionally creates
+`dispatch/<dispatch-id>/claim.json` with `If-None-Match: *`, binding the original
+plan/source/deployment identities. Existing claims and ambiguous claim responses
+refuse invocation. Reusing an ID with a fresh local directory cannot restart the
+shared CLI after a lost StartBuild reply. Claims and dispatcher receipts have no
+automatic expiration or build-role write/delete authority; deleting a claim under
+separate operator authority explicitly relinquishes this replay guard. Native build
+artifacts and input archives retain their configured lifecycle policies.

@@ -66,13 +66,18 @@ resource "aws_s3_bucket_policy" "native" {
 resource "aws_s3_bucket_lifecycle_configuration" "native" {
   for_each = aws_s3_bucket.native
   bucket   = each.value.id
-  rule {
-    id     = "review-evidence-retention"
-    status = "Enabled"
-    filter { prefix = "" }
-    expiration { days = var.lane.retention_days }
-    noncurrent_version_expiration { noncurrent_days = var.lane.retention_days }
-    abort_incomplete_multipart_upload { days_after_initiation = 1 }
+  # Durable dispatch claims/receipts never expire automatically. Removing a claim
+  # would allow an old dispatch ID to start again after a lost local receipt.
+  dynamic "rule" {
+    for_each = each.key == "input" ? toset(["native-input/", "codebuild/"]) : toset(["builds/"])
+    content {
+      id     = "retention-${replace(rule.value, "/", "-")}"
+      status = "Enabled"
+      filter { prefix = rule.value }
+      expiration { days = var.lane.retention_days }
+      noncurrent_version_expiration { noncurrent_days = var.lane.retention_days }
+      abort_incomplete_multipart_upload { days_after_initiation = 1 }
+    }
   }
 }
 resource "aws_cloudwatch_log_group" "native" {

@@ -1,6 +1,8 @@
 """Versioned native-build input transport; existing CodeBuild action owns execution."""
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -26,7 +28,12 @@ def aws(region, *args):
     )
 
 
-def upload(region, bucket, key, path):
+def upload(region, bucket, key, path, expected_digest=None):
+    digest = expected_digest or image.file_sha(path)
+    image.digest(digest)
+    if image.file_sha(path) != digest:
+        raise image.ImageRefused("upload input differs from approved digest")
+    checksum = base64.b64encode(bytes.fromhex(digest)).decode()
     result = aws(
         region,
         "s3api",
@@ -37,7 +44,11 @@ def upload(region, bucket, key, path):
         key,
         "--body",
         str(path),
+        "--checksum-sha256",
+        checksum,
     )
+    if result.get("ChecksumSHA256") != checksum or image.file_sha(path) != digest:
+        raise image.ImageRefused("uploaded bytes differ from approved digest")
     version = result.get("VersionId")
     if not version or version == "null":
         raise image.ImageRefused("versioned immutable input required")
@@ -45,7 +56,7 @@ def upload(region, bucket, key, path):
         "bucket": bucket,
         "key": key,
         "version": version,
-        "sha256": image.file_sha(path),
+        "sha256": digest,
     }
 
 
@@ -123,13 +134,39 @@ def extract(archive, destination):
             os.symlink(os.fsdecode(payload), target)
 
 
+def approved_plan(path, digest):
+    image.digest(digest)
+    with Path(path).open("rb") as source:
+        raw = source.read(65537)
+    if len(raw) > 65536 or hashlib.sha256(raw).hexdigest() != digest:
+        raise image.ImageRefused("approved plan digest differs")
+    value = image.runner.decode_json(raw)
+    if raw.decode() != image.runner.canonical(value):
+        raise image.ImageRefused("canonical producer plan required")
+    return producer.validate_plan(value), raw
+
+
+def freeze(source, destination, digest):
+    image.digest(digest)
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    actual = hashlib.sha256()
+    with Path(source).open("rb") as incoming, destination.open("xb") as output:
+        while chunk := incoming.read(1024 * 1024):
+            actual.update(chunk)
+            output.write(chunk)
+        output.flush()
+        os.fsync(output.fileno())
+    if actual.hexdigest() != digest:
+        raise image.ImageRefused("staged input differs from approved digest")
+    destination.chmod(0o400)
+    return destination
+
+
 def prepare(args):
     checkout = Path(args.checkout).resolve()
-    plan = producer.read_plan(args.plan)
+    plan, plan_raw = approved_plan(args.plan, args.plan_sha256)
     if (plan["account_id"], plan["region"]) != (args.account_id, args.region):
         raise image.ImageRefused("approved dispatch account/region differs")
-    if image.file_sha(Path(args.plan)) != args.plan_sha256:
-        raise image.ImageRefused("approved plan digest differs")
     if (
         aws(plan["region"], "sts", "get-caller-identity")["Account"]
         != plan["account_id"]
@@ -139,6 +176,9 @@ def prepare(args):
     if output.is_relative_to(checkout):
         raise image.ImageRefused("dispatch output must be outside checkout")
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    staged_plan = output / "plan.json"
+    staged_plan.write_bytes(plan_raw)
+    staged_plan.chmod(0o400)
     attestation = output / "source-attestation.json"
     build.write(
         attestation, source_provenance.create(checkout, plan["source_revision"])
@@ -170,32 +210,40 @@ def prepare(args):
     image.pattern(args.dispatch_id, r"[A-Za-z0-9_-]{1,150}")
     prefix = "native-input/" + args.dispatch_id + "/"
     files = {
-        "source.zip": archive,
-        "source-attestation.json": attestation,
-        "plan.json": Path(args.plan),
+        "source.zip": (archive, image.file_sha(archive)),
+        "source-attestation.json": (attestation, plan["source_attestation_sha256"]),
+        "plan.json": (staged_plan, args.plan_sha256),
     }
     for name, value in plan["upstream"].items():
         if name in {"python", "nodeadm", "crictl"}:
             path = Path(args.inputs) / value["file"]
             if image.file_sha(path) != value["sha256"]:
                 raise image.ImageRefused("upstream archive digest differs")
-            files["inputs/" + value["file"]] = path
+            files["inputs/" + value["file"]] = (
+                freeze(path, output / "frozen-inputs" / value["file"], value["sha256"]),
+                value["sha256"],
+            )
     for name, path in (
         ("packer", Path(args.packer)),
         ("amazon_plugin", Path(args.amazon_plugin)),
     ):
         if image.file_sha(path) != plan["tools"][name]["sha256"]:
             raise image.ImageRefused("tool digest differs")
-        files[name] = path
+        digest = plan["tools"][name]["sha256"]
+        files[name] = (freeze(path, output / "frozen-tools" / name, digest), digest)
+    approved_plan(args.plan, args.plan_sha256)
     envelope = {
         "version": 1,
         "dispatch_id": args.dispatch_id,
         "account_id": plan["account_id"],
         "region": plan["region"],
         "source_revision": plan["source_revision"],
+        "approved_plan_sha256": args.plan_sha256,
         "objects": {
-            name: upload(plan["region"], args.bucket, prefix + name, path)
-            for name, path in files.items()
+            name: upload(
+                plan["region"], args.bucket, prefix + name, path, expected_digest=digest
+            )
+            for name, (path, digest) in files.items()
         },
     }
     build.write(output / "envelope.json", envelope)
@@ -223,6 +271,7 @@ def receive(args):
             "account_id",
             "region",
             "source_revision",
+            "approved_plan_sha256",
             "objects",
         },
     )
@@ -243,7 +292,7 @@ def receive(args):
             raise image.ImageRefused("invalid staged input name")
         download(args.region, value, root / "download" / name, args.bucket)
     staged = root / "download"
-    plan = producer.read_plan(staged / "plan.json")
+    plan, _ = approved_plan(staged / "plan.json", envelope["approved_plan_sha256"])
     allowed = json.loads(args.constraints)
     expected = {
         "account_id": plan["account_id"],
