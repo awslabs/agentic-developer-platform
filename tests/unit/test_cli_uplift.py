@@ -11343,3 +11343,184 @@ def test_recovery_negative_scenario_accepts_actual_cli_nonzero_exit(
     cli = common.Cli("adp", {}, [])
     script.recovery(cli, evidence)
     assert evidence["malformed_target_refused"] is True
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [None, "lost_first_receipt", "unknown_second", "wrong_fixture", "watch_pending"],
+)
+def test_shipped_hosted_chat_two_turns_and_durable_unknown(
+    tmp_path, monkeypatch, fault
+):
+    module, remote_common = shipped_script(tmp_path, "hosted_chat")
+    work = tmp_path / "worker"
+    work.mkdir()
+    requests = {}
+    attempts = []
+    sid = "chat-fixture"
+    marker = [None]
+    all_messages = []
+    cleanup_calls = []
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+            assert env["ADP_TENANT"] == "fixture-tenant"
+
+        def json(self, argv, **kwargs):
+            if argv[:2] == ["chat", "status"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "user_id": "other"
+                        if fault == "wrong_fixture"
+                        else "fixture-user",
+                        "general_turns_supported": True,
+                        "authorized_personas": ["agent-task-investigator"],
+                    }
+                }
+            if "--dry-run" in argv:
+                return {
+                    "status": "dry_run",
+                    "detail": {"session_id": sid, "dispatched": False},
+                }
+            if argv[:2] == ["chat", "watch"]:
+                if fault == "watch_pending":
+                    raise remote_common.RemoteError(
+                        "Task did not finish before timeout"
+                    )
+                task_id = argv[argv.index("--task-id") + 1]
+                return {
+                    "detail": {
+                        "session_id": sid,
+                        "matched_task_id": task_id,
+                        "answer_completion_verified": True,
+                        "messages": list(all_messages),
+                    }
+                }
+            if argv[:2] == ["chat", "show"]:
+                return {"detail": {"session_id": sid, "messages": list(all_messages)}}
+            raise AssertionError(argv)
+
+        def run(self, argv, **kwargs):
+            if argv[0] == "agent":
+                cleanup_calls.append(argv)
+                return 0, {"detail": {"status": "cancelled"}}
+            if argv[:2] == ["chat", "show"]:
+                return 0, {
+                    "detail": {"session_id": sid, "messages": list(all_messages)}
+                }
+            assert argv[:2] in (["chat", "start"], ["chat", "resume"])
+            request_id = argv[argv.index("--request-id") + 1]
+            attempts.append(request_id)
+            if fault == "unknown_second" and argv[1] == "resume":
+                return 4, {"detail": {"request_id": request_id, "outcome": "unknown"}}
+            if request_id not in requests:
+                index = len(requests)
+                task_id = f"tsk_12345678-1234-4123-8123-{index:012d}"
+                flag = "--message-file" if index == 0 else "--answer-file"
+                content = Path(argv[argv.index(flag) + 1]).read_text()
+                if index == 0:
+                    marker[0] = re.search(r"memory-[0-9a-f]+", content).group()
+                else:
+                    assert (
+                        marker[0] not in content
+                    )  # Recall must come from earlier context.
+                all_messages.extend(
+                    [
+                        {"role": "user", "content": content, "task_id": task_id},
+                        {
+                            "role": "assistant",
+                            "content": "NOTED" if index == 0 else marker[0],
+                            "task_id": task_id,
+                        },
+                    ]
+                )
+                requests[request_id] = {
+                    "request_id": request_id,
+                    "session_id": sid,
+                    "task_id": task_id,
+                }
+                if fault == "lost_first_receipt" and index == 0:
+                    return 4, None
+            return 4, {"detail": requests[request_id]}
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(
+        remote_common, "session_tokens", lambda cfg: {"access_token": "must-not-escape"}
+    )
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    cfg = {
+        "gateway_url": "https://gateway",
+        "cli_path": "/installed/adp",
+        "work_dir": str(work),
+        "test_user_id": "fixture-login",
+        "evaluation_id": "stable-chat-evaluation",
+        "human_task_chat": {
+            "enrollment_verified": True,
+            "shared_budget_authorized": True,
+            "max_tasks": 2,
+            "max_task_usd": 0.25,
+            "login_user_id": "fixture-login",
+            "canonical_user_id": "fixture-user",
+            "tenant_id": "fixture-tenant",
+        },
+    }
+    evidence = {"success": False, "transcript": []}
+    if fault in {"unknown_second", "wrong_fixture", "watch_pending"}:
+        with pytest.raises(remote_common.RemoteError):
+            module.execute(cfg, evidence)
+        assert evidence["success"] is False
+        if fault == "wrong_fixture":
+            assert not attempts
+            return
+        if fault == "watch_pending":
+            assert len(requests) == 1 and len(evidence["detail"]["turns"]) == 1
+            assert [args[1] for args in cleanup_calls] == ["abort", "wait"]
+            assert all(
+                args[args.index("--run") + 1]
+                == evidence["detail"]["turns"][0]["task_id"]
+                for args in cleanup_calls
+            )
+            assert evidence["detail"]["turns"][0]["phase"] == "cancelled"
+            return
+        record = evidence["detail"]["turns"][1]
+        assert record["phase"] == "acceptance_unknown"
+        assert record["endpoint"] == "/chat/sessions/chat-fixture/turns"
+        assert record["body"]["request_id"] == record["request_id"]
+        assert record["body"]["message"].startswith("What label")
+        assert len(set(attempts)) == 2  # Never start a replacement turn.
+        import shutil
+
+        shutil.rmtree(work)
+        retained = json.loads(json.dumps(remote_common.redact(evidence)))
+        assert retained["detail"]["turns"][1] == record
+    else:
+        module.execute(cfg, evidence)
+        assert evidence["success"] is True
+        assert evidence["detail"]["context_recalled"] is True
+        assert len(requests) == 2 and len(set(attempts)) == 2
+        assert attempts[0].startswith("chatdiag-") and attempts[0].endswith("-0")
+        assert all(row["phase"] == "completed" for row in evidence["detail"]["turns"])
+        rerun = {"success": False, "transcript": []}
+        module.execute(cfg, rerun)
+        assert (
+            rerun["success"] is True and len(requests) == 2 and len(set(attempts)) == 2
+        )
+        assert [row["request_id"] for row in rerun["detail"]["turns"]] == [
+            row["request_id"] for row in evidence["detail"]["turns"]
+        ]
+    encoded = json.dumps(remote_common.redact(evidence))
+    assert "must-not-escape" not in encoded and len(encoded.encode()) < 24000
+
+
+def test_hosted_chat_fixture_is_explicit_and_not_e40(tmp_path):
+    module, _ = shipped_script(tmp_path, "hosted_chat")
+    assert not module.valid_fixture({})
+    assert "hosted_chat" not in stages.JOURNEY_DRIVERS.values()
+    assert "hosted_chat" in bundle.purposes()
