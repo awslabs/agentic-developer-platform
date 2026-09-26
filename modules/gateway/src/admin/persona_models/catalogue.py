@@ -177,6 +177,15 @@ PLATFORM_MODEL_CATALOGUE: tuple[CatalogueModel, ...] = (
         compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
         harness_contract_revision=HARNESS_CONTRACT_REVISION,
     ),
+    # US profile: exact Task cyber Messages probe verified 2026-09-26.
+    # CLI harness readiness still requires its own persisted evidence.
+    CatalogueModel(
+        canonical_model_id="us.anthropic.claude-opus-5",
+        model_family="Opus",
+        canonical_version="5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
     CatalogueModel(
         canonical_model_id="global.anthropic.claude-opus-5",
         model_family="Opus",
