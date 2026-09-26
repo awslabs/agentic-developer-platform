@@ -1,5 +1,6 @@
 """E42: one explicitly enrolled human coding Task through the served CLI."""
 
+import hashlib
 import json
 import os
 import re
@@ -23,7 +24,9 @@ def fixture_valid(fixture):
         and fixture.get("persona")
         in {"agent-task-claude-developer", "agent-task-codex-developer"}
         and isinstance(fixture.get("snapshot"), dict)
-        and bool(fixture.get("instructions"))
+        and isinstance(fixture.get("instructions"), str)
+        and 0 < len(json.dumps(fixture["instructions"]).encode()) <= 4096
+        and common.redact(fixture["instructions"]) == fixture["instructions"]
     )
 
 
@@ -72,6 +75,27 @@ def persist_recovery(path, value):
 
 
 def execute(config, evidence):
+    try:
+        _execute(config, evidence)
+        evidence["success"] = True
+    finally:
+        # Only detail crosses journey_stage into durable run state/report.json.
+        # Never rely on a path on the disposable worker surviving termination.
+        detail = {
+            key: value
+            for key, value in evidence.items()
+            if key not in {"detail", "transcript", "result", "recovery_path"}
+        }
+        if "result" in evidence:
+            raw = json.dumps(evidence.pop("result"), sort_keys=True).encode()
+            detail["result_sha256"] = hashlib.sha256(raw).hexdigest()
+            detail["result_readback"] = (
+                "Use the retained Task ID to fetch the canonical result."
+            )
+        evidence["detail"] = detail
+
+
+def _execute(config, evidence):
     fixture = config.get("human_task_coding")
     common.require(
         fixture_valid(fixture),
@@ -259,6 +283,27 @@ def execute(config, evidence):
                 else "prepared",
             )
             persist_recovery(recovery_path, recovery)
+            artifact_id = recovery["journal"].get("artifact_id")
+            evidence["recovery"] = {
+                "request_id": evidence["request_id"],
+                "gateway": config["gateway_url"],
+                "task_id": task_id,
+                "phase": recovery["phase"],
+                "journal": recovery["journal"],
+                "submit_body": {
+                    "schema_version": "1.0",
+                    "persona": fixture["persona"],
+                    "instructions": fixture["instructions"],
+                    "inputs": {"repository_snapshot_artifact": artifact_id},
+                    "artifact_ids": [artifact_id],
+                    "external_reference": fixture["snapshot"]["repository"]
+                    + "#"
+                    + str(fixture["snapshot"]["issue"]),
+                }
+                if artifact_id
+                else None,
+                "reconcile": "Replay POST /v1/tasks with this exact body and original Idempotency-Key; never create a replacement request.",
+            }
             if submitted and not task_id:
                 evidence["cleanup_status"] = (
                     "acceptance_unknown"
@@ -302,6 +347,7 @@ def execute(config, evidence):
                     "status"
                 )
                 recovery["phase"] = evidence["cleanup_status"]
+                evidence["recovery"]["phase"] = evidence["cleanup_status"]
                 persist_recovery(recovery_path, recovery)
                 common.require(
                     evidence["cleanup_status"] in {"completed", "failed", "cancelled"},

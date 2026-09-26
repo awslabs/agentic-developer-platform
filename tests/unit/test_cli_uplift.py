@@ -10871,6 +10871,8 @@ def test_coding_nightly_fixture_is_explicit_and_defaults_blocked(tmp_path):
         {"max_task_usd": 1.01},
         {"enrollment_verified": False},
         {"shared_budget_authorized": False},
+        {"instructions": "x" * 4097},
+        {"instructions": "eyJabcdefgh.abcdefgh.abcdefgh"},
     ):
         assert not module.fixture_valid({**fixture, **changes})
     assert "E42" in {case.id for case in cases.resolve_suites(("nightly",))}
@@ -10985,3 +10987,71 @@ def test_coding_acceptance_replay_keeps_same_key_and_retains_unknown(tmp_path):
 
     assert module.reconcile_acceptance(Broken(), trigger, tmp_path) is None
     assert module.local_receipt(tmp_path)["artifact_id"] == "art-fixture"
+
+
+def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(tmp_path, monkeypatch, capsys):
+    import shutil
+
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    work = tmp_path / "worker-run"
+    work.mkdir()
+    calls = []
+
+    class Cli:
+        def __init__(self, executable, env, transcript, **kwargs):
+            self.home = Path(env["HOME"])
+
+        def json(self, argv, **kwargs):
+            if "--dry-run" in argv:
+                return {"status": "dry_run"}
+            journal = self.home / ".adp/state/hosted-tasks"
+            journal.mkdir(parents=True)
+            (journal / "receipt.json").write_text(json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"}))
+            raise RuntimeError("acceptance receipt unavailable")
+
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 5, None
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(remote_common, "clean_env", lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()})
+    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {"access_token": "session-must-not-escape"})
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    fixture = dict(enrollment_verified=True, shared_budget_authorized=True, max_dispatches=1,
+                   max_task_usd=1, scenario="cancel", persona="agent-task-codex-developer",
+                   snapshot={"repository": "owner/repo", "issue": 42}, instructions="Fix exactly this issue.\nPreserve this input.")
+    evidence = {"success": False, "transcript": []}
+    with pytest.raises(remote_common.RemoteError, match="acceptance is unknown"):
+        module.execute({"human_task_coding": fixture, "cli_path": "/fixture/adp", "gateway_url": "https://gateway", "work_dir": str(work)}, evidence)
+    remote_common.emit(evidence)
+    emitted = capsys.readouterr().out
+    assert len(emitted.encode()) < 24000  # SSM inline output limit; no full repository snapshot.
+    assert "session-must-not-escape" not in emitted
+    document = json.loads(emitted)
+    matrix = {"E42": {"status": cases.NOT_RUN}}
+    ctx = {"document": {"instance_id": "i-fixture"}, "matrix": matrix, "transcript": [], "correlation": {}, "fault": "none",
+           "record": lambda case_id, status, detail: cases.record(matrix, case_id, status, detail)}
+    stages.journeys_stage({}, {"journey": lambda purpose: lambda instance, ctx: document})(ctx)
+    assert matrix["E42"]["status"] == cases.FAILED
+    paths = report.write(tmp_path / "published", published_report(matrix=matrix), matrix, "adp-e2e-20260915-143022-a1b2c3")
+    shutil.rmtree(work)  # Model the disposable EC2 instance disappearing.
+    retained = json.loads(Path(paths["report"]).read_text())["cases"][0]["detail"]["recovery"]
+    assert retained["phase"] == "acceptance_unknown"
+    assert retained["task_id"] is None
+    assert retained["gateway"] == "https://gateway"
+    assert retained["submit_body"] == {
+        "schema_version": "1.0", "persona": fixture["persona"], "instructions": fixture["instructions"],
+        "inputs": {"repository_snapshot_artifact": "art-fixture"}, "artifact_ids": ["art-fixture"], "external_reference": "owner/repo#42",
+    }
+    assert retained["request_id"] == evidence["request_id"]
+    assert calls[0][calls[0].index("--request-id") + 1] == retained["request_id"]
+
+
+def test_coding_marks_success_only_after_execute_returns_and_exports_details(tmp_path, monkeypatch):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    monkeypatch.setattr(module, "_execute", lambda cfg, evidence: evidence.update(task_id="tsk-fixture", terminal_status="completed"))
+    evidence = {"success": False}
+    module.execute({}, evidence)
+    assert evidence["success"] is True
+    assert evidence["detail"]["task_id"] == "tsk-fixture"
+    assert evidence["detail"]["terminal_status"] == "completed"

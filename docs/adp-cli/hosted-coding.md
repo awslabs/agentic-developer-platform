@@ -73,3 +73,14 @@ cursors and control receipts, and requires terminal readback. Missing fixture
 blocks E42. Cleanup cancels only the newly created owned Task and requires
 terminal proof. E42 does not claim test execution, publication, control delivery
 from acceptance alone, or spend reconciliation without joined usage evidence.
+
+E42 keeps recovery data in the case's durable report details, so terminating the
+fixture instance does not discard an uncertain submission. The record contains
+the original request ID, gateway, artifact/Task IDs and exact canonical Task
+submit body. Reconcile with the same `Idempotency-Key` and body; never submit a
+replacement request. Uploaded snapshot bytes are unnecessary for this replay.
+Session credentials are excluded. E42 fixture instructions must fit within
+4 KiB as JSON and survive the normal credential redactor unchanged; this keeps
+recovery within SSM's output bound. This fixture bound does not change the CLI's
+16,000-character instruction limit. Large patch results are retrieved using the
+retained Task ID; the report carries their digest instead of duplicating them.
