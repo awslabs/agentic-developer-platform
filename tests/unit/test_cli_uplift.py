@@ -8445,6 +8445,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E23",
         "E24",
         "E26",
+        "E40",
     }
 
 
@@ -10237,6 +10238,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E23",
         "E24",
         "E26",
+        "E40",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10453,3 +10455,29 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     else:
         assert len(launches) == 1
         assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_chat_read_scenario_is_nightly_and_read_only(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "tenant_id": "tenant",
+                "user_id": "user",
+                "enabled": True,
+                "history_configured": True,
+                "history_ready": "unknown",
+                "general_turns_supported": False,
+                "authorized_personas": [],
+            },
+        },
+        {
+            "status": "ok",
+            "detail": {"tenant_id": "tenant", "user_id": "user", "items": []},
+        },
+    ]
+    module.chat(cli, {})
+    assert cli.json.call_args_list[1].args[0] == ["chat", "list", "--page-size", "1"]
+    assert stages.JOURNEY_DRIVERS["E40"] in bundle.purposes()

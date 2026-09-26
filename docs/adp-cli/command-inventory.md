@@ -175,3 +175,14 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+### Hosted chat (#5640)
+
+`adp chat status`, `list --page --page-size`, `show --session`,
+`watch --session --task-id --timeout --interval`, and
+`export --session --output` provide bounded owned retained history.
+`start --persona --message-file --request-id` and
+`resume SESSION_ID --answer-file --request-id` explicitly refuse while general
+human admission is unavailable; `--dry-run`/`--yes` do not enable it.
+All forms support `--json`. See [hosted chat](hosted-chat.md) for expiry,
+redaction, task correlation and remaining acceptance work.

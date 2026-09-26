@@ -227,6 +227,7 @@ UNIT_MODULES = [
     # draft_routes.py is: routes.py's guarantee is "nothing here is reachable below
     # approval authority". Guarded by tests/orchestration/test_internal_plane_guard.py.
     "src.orchestration.intake_routes",
+    "src.orchestration.chat_history",
 ]
 
 

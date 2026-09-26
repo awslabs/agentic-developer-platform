@@ -45,7 +45,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5637 | Superplane wire-contract repairs | Already closed; regression only |
 | #5638 | Superplane workspace/deployment/provider lifecycle | Existing Superplane commands and domain contracts |
 | #5639 | Research inspection and proposal review | Existing Superplane research APIs |
-| #5640 | Durable hosted conversation start/resume/readback | Existing hosted chat APIs; no replacement Task dispatcher |
+| #5640 | Owned hosted history/status/watch/export; general start/resume unavailable pending executable integration | Existing session table; E40 read regression; multi-turn acceptance still open |
 | #5641 | Platform lifecycle status and governed deployment facade | Canonical deployment tooling |
 
 The resulting CLI is a common terminal surface for identity, infrastructure connections, budgets, models, delivery, hosted work and domain operations. A single selected deployment and authorized tenant scope apply throughout. Task submission reuses Task API, and control commands advertise only runtime-supported operations.

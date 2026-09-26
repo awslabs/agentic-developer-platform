@@ -132,6 +132,7 @@ class TestCliScriptDownload:
             "adp-usage.py",
             "adp-agent.py",
             "adp-budget.py",
+    "adp-chat.py",
             "adp_task_client.py",
             # Issue #5730: `adp superplane onboarding`. A sibling helper rather
             # than more verbs inside adp-superplane.py, so it stays separable

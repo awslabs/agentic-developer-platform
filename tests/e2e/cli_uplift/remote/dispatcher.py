@@ -33,6 +33,7 @@ PURPOSES = {
     "story_usage": ("story_reads", {"mode": "usage"}),
     "story_budget": ("story_reads", {"mode": "budget"}),
     "story_activity": ("story_reads", {"mode": "activity"}),
+    "story_chat": ("story_reads", {"mode": "chat"}),
     "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),
     "tenant_isolation": ("tenant_isolation", {"mode": "isolation"}),
     "story_vault": ("story_reads", {"mode": "vault"}),
