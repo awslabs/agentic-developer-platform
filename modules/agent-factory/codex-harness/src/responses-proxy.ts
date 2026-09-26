@@ -196,6 +196,12 @@ export function textResponseEvents(value: unknown, policy: TextResponsesPolicy):
   return events.join("");
 }
 
+export class ResponsesBridgeError extends Error {
+  constructor(readonly code: "request_bound_exceeded" | "sdk_envelope_bound_exceeded" | "request_contract_invalid" | "handoff_or_response_failed") {
+    super(`Codex Responses bridge: ${code}`);
+  }
+}
+
 /** Bounded Responses transport; tools require explicit host schemas and receipt
  * validation. No execution, Task lifecycle or safe-resume authority lives here.
  * Once a model outcome is ambiguous, further SDK calls are refused locally.
@@ -213,6 +219,7 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
   let failed = false;
+  let failure: ResponsesBridgeError | undefined;
   let busy = false;
   let operations = 0;
   let active: AbortController | undefined;
@@ -243,7 +250,8 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       let bytes = 0;
       for await (const chunk of req) {
         bytes += chunk.length;
-        if (bytes > policy.maxRequestBytes) throw new Error("Responses HTTP body exceeds bound");
+        // SDK metadata is removed before the unchanged gateway/IPC request bound.
+        if (bytes > Math.min(256 * 1024, policy.maxRequestBytes * 4)) throw new Error("Responses HTTP body exceeds bound");
         chunks.push(chunk);
       }
       controller.signal.throwIfAborted();
@@ -261,7 +269,9 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
       const output = textResponseEvents(receipt.response, { ...policy, maxOutputTokens: request.max_output_tokens });
       if (policy.tools?.acceptResponse && policy.tools.acceptResponse(receipt.response) !== true) throw new Error("Tool response binding refused");
       res.writeHead(200, { "content-type": "text/event-stream" }).end(output);
-    } catch {
+    } catch (error) {
+      const bound = error instanceof Error && ["Responses HTTP body exceeds bound", "Responses request exceeds bound"].includes(error.message);
+      failure = new ResponsesBridgeError(dispatched ? "handoff_or_response_failed" : error instanceof Error && error.message === "Responses HTTP body exceeds bound" ? "sdk_envelope_bound_exceeded" : bound ? "request_bound_exceeded" : "request_contract_invalid");
       // No automatic replay after possible handoff or malformed input. Arbitrary
       // provider/host errors never reach SDK messages, logs or telemetry.
       failed = true;
@@ -281,6 +291,7 @@ export async function startTextResponsesProxy(host: TextResponsesHost, policy: T
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Responses listener unavailable");
   return { baseUrl: `http://127.0.0.1:${address.port}/v1`, token,
+    get failure() { return failure; },
     close: async () => {
       failed = true;
       active?.abort(new Error("Responses proxy closed"));

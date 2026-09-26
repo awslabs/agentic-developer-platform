@@ -141,6 +141,8 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     await host.assertCurrent(signal);
     signal.throwIfAborted();
     return evidence;
+  } catch (error) {
+    throw proxy?.failure ?? error;
   } finally {
     try { await proxy?.close(); }
     finally {

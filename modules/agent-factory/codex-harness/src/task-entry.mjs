@@ -6,6 +6,7 @@ import { HostBridge, decode, encode, MAX_FRAME_BYTES } from './task-sdk/protocol
 import { taskHarness, parseTaskReport, TaskReportError } from './task-adapter.js';
 import { runAdmittedSession } from './session.js';
 import { TaskTools } from './task-tools.js';
+import { ResponsesBridgeError } from './responses-proxy.js';
 import { startTelemetry, activeTraceparent, observeOperation } from './telemetry.js';
 
 console.log = console.info = console.debug = () => {};
@@ -18,7 +19,7 @@ function finish(error, report) {
   terminal = true;
   if (bridge) {
     if (bridge.cancelCommand) bridge.send('cancelled', { command_id: bridge.cancelCommand, partial_findings: null });
-    else if (error) bridge.send('error', { code: bridge.failure?.message === 'model_outcome_unknown' ? 'model_outcome_unknown' : 'process_failed', message: error instanceof TaskReportError ? `Codex Task report failed validation: ${error.code}.` : 'Codex Task did not complete with validated output and current authority.' });
+    else if (error) bridge.send('error', { code: bridge.failure?.message === 'model_outcome_unknown' ? 'model_outcome_unknown' : 'process_failed', message: error instanceof TaskReportError ? `Codex Task report failed validation: ${error.code}.` : error instanceof ResponsesBridgeError ? `Codex Task model bridge failed: ${error.code}.` : 'Codex Task did not complete with validated output and current authority.' });
     else bridge.send('result', { report });
   }
   bridge?.fail(error ?? new Error('task lifecycle ended'));

@@ -88,7 +88,7 @@ class TaskTurnStore:
             from src.admin.persona_models.catalogue import persona_compatibility_class
 
             if persona_compatibility_class(task["persona"]) != "codex-sdk" or not task["persona"].startswith("agent-task-"):
-                raise TaskStoreError("autonomous turn requires cyber persona or admitted Codex harness")
+                raise TaskStoreError("autonomous turn requires an SDK Task persona")
         self.repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
         existing = next((turn for turn in self.list_turns(identity.task_id) if turn["turn_id"] == request_id), None)
         if existing:

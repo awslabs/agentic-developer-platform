@@ -62,6 +62,8 @@ test("uncertain host outcome cannot be retried and host errors are redacted", as
   try {
     const response = await post(proxy);
     assert.equal(response.status, 502);
+    assert.equal(proxy.failure?.code, "handoff_or_response_failed");
+    assert.doesNotMatch(String(proxy.failure), /private-token-fixture/);
     assert.equal((await response.text()).includes("private-token-fixture"), false);
     assert.equal((await post(proxy)).status, 409);
     assert.equal(calls, 1);
@@ -73,6 +75,7 @@ test("malformed SDK input never reaches host and closes further admission", asyn
   const proxy = await startTextResponsesProxy(async () => { calls++; return { operationStatus: "confirmed", response: result() }; }, policy);
   try {
     assert.equal((await post(proxy, { ...request(), previous_response_id: "foreign" })).status, 400);
+    assert.equal(proxy.failure?.code, "request_contract_invalid");
     assert.equal((await post(proxy)).status, 409);
     assert.equal(calls, 0);
   } finally { await proxy.close(); }
@@ -199,5 +202,28 @@ test("invalid model usage cannot install an executable session call", async () =
   try {
     assert.equal((await post(proxy, toolRequest())).status, 502);
     assert.equal(accepted, 0);
+  } finally { await proxy.close(); }
+});
+
+test("request-size refusal exposes a bounded diagnostic without model handoff", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async () => { calls++; return { operationStatus: "confirmed", response: result() }; }, { ...policy, maxRequestBytes: 512 });
+  try {
+    assert.equal((await post(proxy, { ...request(), input: "x".repeat(1024) })).status, 400);
+    assert.equal(proxy.failure?.code, "request_bound_exceeded");
+    assert.equal(calls, 0);
+  } finally { await proxy.close(); }
+});
+
+test("discarded SDK metadata gets envelope space without increasing admitted request size", async () => {
+  let calls = 0;
+  const proxy = await startTextResponsesProxy(async request => {
+    calls++; assert.ok(Buffer.byteLength(JSON.stringify(request)) <= 512);
+    assert.equal("client_metadata" in request, false);
+    return { operationStatus: "confirmed", response: result() };
+  }, { ...policy, maxRequestBytes: 512 });
+  try {
+    assert.equal((await post(proxy, { ...request(), client_metadata: { discarded: "x".repeat(800) } })).status, 200);
+    assert.equal(calls, 1);
   } finally { await proxy.close(); }
 });
