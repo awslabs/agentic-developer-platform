@@ -113,6 +113,8 @@ class PersonaModelCostEntryResponse(BaseModel):
 class PersonaCostResponse(BaseModel):
     """Tenant- and owner-scoped usage-ledger cost report."""
 
+    tenant_id: str
+
     principal_kind: Literal["human", "service_account"]
     principal_id: str
     principal_dimension: Literal["preference_owner"] = "preference_owner"

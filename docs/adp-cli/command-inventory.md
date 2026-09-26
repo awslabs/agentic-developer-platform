@@ -65,7 +65,7 @@ Options are parser options, excluding `--help`; shell launchers pass tool argume
 | `adp kimi` | `tool_args` |  |
 | `adp login` |  | `--gateway-url`, `--no-browser` |
 | `adp logout` |  |  |
-| `adp models catalog` |  | `--json`, `--persona` |
+| `adp models catalog` |  | `--json`, `--persona`, `--service-principal` |
 | `adp models explain` |  | `--json`, `--persona`, `--service-principal` |
 | `adp models mappings list` |  | `--json`, `--service-principal` |
 | `adp models mappings reset` |  | `--json`, `--persona`, `--service-principal`, `--yes` |
@@ -175,3 +175,16 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+## Model policy and costs (#5636)
+
+See [policy and cost contract](model-policy.md).
+
+| Command | Options |
+|---|---|
+| `adp admin models default show` | `--compatibility-class`, `--json` |
+| `adp admin models default set` | `--compatibility-class`, `--dry-run`, `--expect-version`, `--json`, `--model`, `--operation-id`, `--reason`, `--yes` |
+| `adp admin models posture show` | `--compatibility-class`, `--json` |
+| `adp admin models posture set` | `--compatibility-class`, `--dry-run`, `--expect-version`, `--json`, `--operation-id`, `--posture`, `--reason`, `--yes` |
+| `adp admin models posture rollback` | `--compatibility-class`, `--dry-run`, `--expect-version`, `--json`, `--operation-id`, `--reason`, `--to-version`, `--yes` |
+| `adp models costs` | `--chain`, `--json`, `--persona`, `--service-principal` |

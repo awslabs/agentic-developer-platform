@@ -164,6 +164,7 @@ async def get_my_persona_costs(
         chain_id=chain_id,
     )
     return PersonaCostResponse(
+        tenant_id=current_user.org_id,
         **{
             **report.__dict__,
             "status": report.status.value,

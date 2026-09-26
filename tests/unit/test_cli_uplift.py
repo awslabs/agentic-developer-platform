@@ -8445,6 +8445,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E23",
         "E24",
         "E26",
+        "E38",
     }
 
 
@@ -10237,6 +10238,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E23",
         "E24",
         "E26",
+        "E38",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10453,3 +10455,31 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     else:
         assert len(launches) == 1
         assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_model_policy_e38_is_wired_and_retains_live_holds(tmp_path):
+    assert cases.BY_ID["E38"].owner == "#5636"
+    assert "E38" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E38"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {"tenant_id": "org", "persona_key": "architect", "models": []},
+        },
+        {
+            "status": "ok",
+            "detail": {
+                "tenant_id": "org",
+                "selected_persona": "architect",
+                "entries": [],
+                "status": "unknown",
+                "aggregate_scope": "all_personas_for_selected_owner_and_chain",
+            },
+        },
+    ]
+    evidence = {}
+    module.model_policy(cli, evidence)
+    assert "posture-rollback" in evidence["live_holds"]
+    cli.run.assert_not_called()
