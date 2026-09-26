@@ -47,6 +47,8 @@ SUITES = (
     "full",
     "nightly",
     "hosted-coding",
+    "hosted-chat",
+    "vault-lifecycle",
     "story-reads",
     "research",
     "tenant-isolation",
@@ -101,6 +103,8 @@ GITHUB_APP = "github_app"
 GITHUB_REPO = "github_repo"
 HOSTED = "hosted"
 HUMAN_TASK_CODING = "human_task_coding"
+HUMAN_TASK_CHAT = "human_task_chat"
+VAULT_LIFECYCLE = "vault_lifecycle"
 # #5413: three separately-reachable ADP deployments and a sign-in fixture for
 # each. Deliberately its own class rather than a count on DESTINATION — those are
 # AWS accounts a rule routes TO, whereas these are three gateways the CLI signs in
@@ -442,7 +446,23 @@ LOGIN_CHECKPOINT = Case(
     "Native Cognito admin login and refresh work on fresh EC2; no seeded session",
     (EC2, COGNITO),
 )
-BY_ID = {case.id: case for case in (*CASES, LOGIN_CHECKPOINT)}
+DIAGNOSTICS = (
+    Case(
+        "D01",
+        "#5640",
+        "hosted-chat",
+        "Two bounded hosted chat turns with durable recovery and owned cleanup",
+        (EC2, PLATFORM, COGNITO, HUMAN_TASK_CHAT),
+    ),
+    Case(
+        "D02",
+        "#5631",
+        "vault-lifecycle",
+        "Owned synthetic credential and unverified identity lifecycle with cleanup",
+        (EC2, PLATFORM, COGNITO, VAULT_LIFECYCLE),
+    ),
+)
+BY_ID = {case.id: case for case in (*CASES, LOGIN_CHECKPOINT, *DIAGNOSTICS)}
 
 
 def suite_cases(suite):
@@ -461,7 +481,7 @@ def suite_cases(suite):
         return (BY_ID["E25"],)
     if suite == "login":
         return (BY_ID["E01"], LOGIN_CHECKPOINT)
-    return tuple(case for case in CASES if case.suite == suite)
+    return tuple(case for case in (*CASES, *DIAGNOSTICS) if case.suite == suite)
 
 
 def resolve_suites(names):

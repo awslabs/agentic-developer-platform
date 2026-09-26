@@ -5,11 +5,11 @@ import json
 import os
 import re
 import tempfile
-import uuid
 from pathlib import Path
 
 import common
 from capability_contrast import _write_session
+from coding_plan import recovery_plan
 
 
 def fixture_valid(fixture):
@@ -102,10 +102,14 @@ def _execute(config, evidence):
         "Explicit human repository/model enrollment and bounded shared-budget authorization required",
     )
     common.require(config.get("cli_path"), "Served CLI was not installed")
+    common.require(config.get("evaluation_id"), "Stable evaluation identity required")
+    plan = recovery_plan(config)
+    common.require(
+        config.get("recovery_plan") == plan,
+        "Caller must retain exact coding recovery plan before dispatch",
+    )
     evidence.update(
-        request_id="e42-" + uuid.uuid4().hex,
-        command_id=str(uuid.uuid4()),
-        cleanup_command_id=str(uuid.uuid4()),
+        {key: plan[key] for key in ("request_id", "command_id", "cleanup_command_id")}
     )
     evidence["qualification"] = (
         "One hosted coding Task; test execution/publication and shared spend reconciliation require separate evidence"
@@ -130,7 +134,22 @@ def _execute(config, evidence):
     with tempfile.TemporaryDirectory(prefix="adp-hosted-coding-") as directory:
         home = Path(directory)
         os.chmod(home, 0o700)
-        env = common.clean_env(config, HOME=home)
+        identity_keys = {"login_user_id", "canonical_user_id", "tenant_id"}
+        selected_identity = identity_keys.intersection(fixture)
+        common.require(
+            not selected_identity or selected_identity == identity_keys,
+            "Coding fixture identity must include login, canonical user and tenant",
+        )
+        if selected_identity:
+            common.require(
+                config.get("test_user_id") == fixture["login_user_id"],
+                "Coding must use the installed fixture login",
+            )
+        env = common.clean_env(
+            config,
+            HOME=home,
+            **({"ADP_TENANT": fixture["tenant_id"]} if selected_identity else {}),
+        )
         for name in (
             "XDG_CONFIG_HOME",
             "XDG_DATA_HOME",
@@ -150,6 +169,13 @@ def _execute(config, evidence):
         instructions = home / "instructions.txt"
         instructions.write_text(fixture["instructions"])
         cli = common.Cli(config["cli_path"], env, evidence["transcript"], timeout=150)
+        if selected_identity:
+            principal = cli.json(["models", "mappings", "list"]).get("detail") or {}
+            common.require(
+                principal.get("tenant_id") == fixture["tenant_id"]
+                and principal.get("principal_id") == fixture["canonical_user_id"],
+                "Coding fixture resolved a different owner or tenant",
+            )
         trigger = [
             "agent",
             "trigger",

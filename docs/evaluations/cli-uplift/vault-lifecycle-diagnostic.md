@@ -3,6 +3,8 @@
 `vault_lifecycle` is an opt-in dispatcher purpose using the installed EC2
 fixture's ordinary selected-tenant human session. It performs no inference,
 provider login, identity verification, role mutation or shared-secret change.
+Select `login,vault-lifecycle` with `fixtures_json` to run D02 through normal
+reporting and EC2 cleanup. D02 is excluded from default nightly/full suites.
 E24's existing read-only coverage remains separate from this diagnostic.
 
 It creates one synthetic user-scope `api_key` entry, repeats its exact operation

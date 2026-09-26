@@ -49,6 +49,11 @@ on:
         type: choice
         options: [start, resume, status, cleanup]
         default: start
+      fixtures_json:
+        description: 'Optional bounded non-secret coding/chat/vault fixture JSON; existing policy authorization required'
+        required: false
+        type: string
+        default: '{}'
       suites:
         description: 'nightly selects install/login and CLI story read regressions; story-reads selects E20-E22 only; Start with login (install + Cognito login + cleanup); full selects the complete evaluation. multi-deployment selects #5413 E16/E17 and requires the CLI_UPLIFT_EVAL_DEPLOYMENTS variable — three reachable gateways, each with its own sign-in fixture. superplane selects #5637 E18 and requires the config superplane object — a domain service actually deployed behind the gateway plus an admin sign-in fixture; it BLOCKS without one.'
         required: false
@@ -83,6 +88,11 @@ on:
       expected_revision:
         required: true
         type: string
+      fixtures_json:
+        description: 'Optional bounded non-secret coding/chat/vault fixture JSON; existing policy authorization required'
+        required: false
+        type: string
+        default: '{}'
       suites:
         required: false
         type: string
@@ -259,6 +269,7 @@ jobs:
       # instead of at the variable. Each entry names a secret, never a password.
       # Unset means E16/E17 BLOCK, which is the honest state until a coordinator
       # supplies real integration and pre-production gateways.
+      CLI_UPLIFT_EVAL_FIXTURES: ${{ inputs.fixtures_json }}
       CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
       # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
       # overlay by `config.from_environment()`. The repository variables are
@@ -583,6 +594,7 @@ jobs:
       # instead of at the variable. Each entry names a secret, never a password.
       # Unset means E16/E17 BLOCK, which is the honest state until a coordinator
       # supplies real integration and pre-production gateways.
+      CLI_UPLIFT_EVAL_FIXTURES: ${{ inputs.fixtures_json }}
       CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
       # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
       # overlay by `config.from_environment()`. The repository variables are

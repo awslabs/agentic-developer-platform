@@ -128,7 +128,7 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
   -f mode=start -f suites=full
 ```
 
-Suites: `nightly`, `hosted-coding`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
+Suites: `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
 `github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
 
 **E16/E17 model execution is currently disabled**, even with reachable gateways.
@@ -361,3 +361,43 @@ with verified cleanup. The harness now validates the selected group's VPC,
 absence of ingress and HTTPS egress before launch. It does not modify group
 rules or runner/instance roles. `CLI_UPLIFT_EVAL_SECURITY_GROUP_ID` can override
 the reviewed binding for another explicitly configured fixture.
+
+
+### Bounded fixture input for hosted work and owned vault scenarios
+
+The existing workflow accepts optional `fixtures_json` on dispatch and reusable
+calls. Both evaluate and recover use the same overlay. It accepts only
+`human_task_coding`, `human_task_chat` and `vault_lifecycle` objects; deployment,
+role, secret, endpoint and budget-counter overrides are refused. Supply non-secret
+fixture identities and existing authorization attestations, never login tokens.
+Unknown keys, duplicate JSON keys, credentials and bounds violations fail before
+resource creation.
+
+Use `suites=login,hosted-coding` for E42 and the published snapshot contract in
+[hosted coding](../adp-cli/hosted-coding.md). Include native `login_user_id`,
+selected-tenant `canonical_user_id` and `tenant_id`, plus `enrollment_verified`,
+`shared_budget_authorized`, `max_dispatches: 1`, `max_task_usd` in `(0,1]`,
+`scenario`, `persona`, `snapshot` and `instructions`. The gateway still verifies
+standing enrollment, source ownership and policy limits. Fixture assertions do
+not grant permissions or reset shared qualification spend.
+
+Use `suites=login,hosted-chat` for explicit diagnostic D01 or
+`suites=login,vault-lifecycle` for D02. Their fixture shapes are documented in
+[chat](../evaluations/cli-uplift/hosted-chat-diagnostic.md) and
+[vault](../evaluations/cli-uplift/vault-lifecycle-diagnostic.md). D01/D02 are opt-in
+and do not change the nightly/full matrix, E40 read-only claims or story
+acceptance. Missing fixtures block their case. Reports retain results and
+recovery evidence; normal owned EC2 cleanup still runs.
+
+All three hosted/owned journeys retain immutable recovery plans in the external
+manifest before SSM. Reuse the same evaluation ID and identical fixture input
+for status/recovery. Do not restart unresolved diagnostics to manufacture new
+requests. Coding recovery keeps original snapshot/instructions and stable Task
+request/control IDs; an unknown upload or acceptance boundary still needs
+reconciliation using retained Task/journal evidence, never a replacement key.
+
+For multiline JSON use the GitHub API's structured input or `gh workflow run`
+with `--json` and a JSON object read from a private file. Never interpolate fixture
+content into a shell command. The workflow passes the input only through its
+environment and validates it before producing the run config. No schedule was
+added.
