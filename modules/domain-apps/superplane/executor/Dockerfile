@@ -23,23 +23,25 @@ RUN git apply --check /build-tools/security.patch && git apply /build-tools/secu
     go mod download && go mod verify
 RUN --network=none mkdir /out && sh /build-tools/build.sh
 
-FROM ${PYTHON_IMAGE} AS tools
-# Tool installation happens only in this remote image build. Linux/amd64 is
-# explicit; another architecture must add its reviewed artifacts first.
+# AWS CLI's official 2.37.4 bundle embeds vulnerable Python 3.14.6.
+# Build the maintained portable-exe source distribution with fixed Python.
+# This executable is ADP-built; the AWS release ZIP signature does not cover it.
+FROM public.ecr.aws/docker/library/python:3.14.7-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS tools
 ARG TARGETARCH=amd64
-RUN test "$TARGETARCH" = amd64 && apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg unzip && \
+RUN test "$TARGETARCH" = amd64 && \
+    python -c 'import sys; assert sys.version_info[:3] == (3, 14, 7)' && \
+    apt-get update && apt-get install -y --no-install-recommends build-essential binutils && \
     rm -rf /var/lib/apt/lists/*
-WORKDIR /tools
-COPY modules/domain-apps/superplane/executor/awscli-build /awscli-build
-# Pin the official renewed key and release bytes; reject expired/error statuses.
-RUN curl --fail --silent --show-error --location \
-      https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.37.4.zip -o awscliv2.zip && \
-    curl --fail --silent --show-error --location \
-      https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.37.4.zip.sig -o awscliv2.zip.sig && \
-    python /awscli-build/verify.py awscliv2.zip awscliv2.zip.sig && \
-    echo '0c59444563f4df735eeb5481f6165f95dae546c33761760d8be9855d5cfe2d12  awscliv2.zip' | sha256sum -c - && \
-    unzip -q awscliv2.zip && ./aws/install --install-dir /opt/aws-cli --bin-dir /opt/aws-bin
+WORKDIR /src/awscli
+ADD --checksum=sha256:c4d840d5975cea7f3bb51441c6f602312e9ec9dae9afaf725561a250eee73a90 https://codeload.github.com/aws/aws-cli/tar.gz/d22f2115447d212da4af5fc35e440ec7f960aad4 /tmp/awscli-source.tar.gz
+RUN tar -xzf /tmp/awscli-source.tar.gz --strip-components=1 && rm /tmp/awscli-source.tar.gz
+# Upstream's download-deps backend enforces its bundled dependency hash locks.
+RUN ./configure --with-install-type=portable-exe --with-download-deps --prefix=/opt/awscli-adp && \
+    make -j2 && make install && \
+    cp LICENSE.txt /opt/awscli-adp/LICENSE.txt && \
+    cp -r build/exe/aws/THIRD_PARTY_LICENSES /opt/awscli-adp/THIRD_PARTY_LICENSES
+RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
+COPY modules/domain-apps/superplane/executor/awscli-build/source-build.json /opt/awscli-adp/source-build.json
 
 FROM ${PYTHON_IMAGE} AS build
 WORKDIR /build
@@ -67,8 +69,8 @@ COPY --from=terraform-builder /build-tools /usr/share/licenses/superplane-terraf
 COPY --from=kubectl-builder /out/kubectl /usr/local/bin/kubectl
 COPY --from=kubectl-builder /src/LICENSES /usr/share/licenses/superplane-kubectl/upstream
 COPY --from=kubectl-builder /build-tools /usr/share/licenses/superplane-kubectl/build
-COPY --from=tools /opt/aws-cli /opt/aws-cli
-RUN ln -s /opt/aws-cli/v2/current/bin/aws /usr/local/bin/aws && \
+COPY --from=tools /opt/awscli-adp /opt/awscli-adp
+RUN ln -s /opt/awscli-adp/bin/aws /usr/local/bin/aws && \
     mkdir -p /var/lib/superplane-lifecycle && \
     chown 65531:65532 /var/lib/superplane-lifecycle && \
     chmod 0700 /var/lib/superplane-lifecycle
