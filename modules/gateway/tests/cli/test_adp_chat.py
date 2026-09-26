@@ -119,3 +119,16 @@ def test_malformed_mutation_ack_stays_pending(client, tmp_path):
     result = chat.execute(args, client)
     assert result["status"] == "pending" and result["detail"]["outcome"] == "unknown"
     assert client.post.call_count == 1
+
+
+def test_fifo_message_file_is_refused_without_blocking(client, tmp_path):
+    import os
+
+    caps = client.get("/chat/capabilities")
+    caps.update(general_turns_supported=True, authorized_personas=["agent-task-investigator"])
+    source = tmp_path / "fifo"
+    os.mkfifo(source)
+    args = chat.parser().parse_args(["start", "--persona", "agent-task-investigator", "--message-file", str(source), "--request-id", "one", "--yes"])
+    with pytest.raises(chat.common.CliError, match="regular file"):
+        chat.execute(args, client)
+    client.post.assert_not_called()

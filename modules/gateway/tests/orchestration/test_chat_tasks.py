@@ -215,3 +215,23 @@ def test_real_cli_start_transport_composes_canonical_admission(setup, tmp_path):
     result = cli.execute(args, Transport())
     assert result["status"] == "pending" and result["detail"]["task_id"] == TASK
     assert setup.admission.admit.call_args.kwargs["submit"]["instructions"] == "Explain this result"
+
+
+def test_lost_input_ack_blocks_new_turn_until_same_request_reconciled(setup, monkeypatch):
+    s = setup
+    sid = s.client.post("/chat/sessions", json=body()).json()["session_id"]
+    question = str(uuid.uuid4())
+    chat.task_record.return_value = replace(s.record, status="waiting_for_input", input_request={"input_request_id": question})
+    commands = Mock()
+    commands.admit.side_effect = [TimeoutError("lost input receipt"), {"status": "accepted"}]
+    monkeypatch.setattr(chat, "get_store", lambda: SimpleNamespace(repository=object()))
+    monkeypatch.setattr(chat, "TaskCommands", lambda _: commands)
+    payload = body(request_id="reply", reply_to=question, message="The first result")
+    assert s.client.post(f"/chat/sessions/{sid}/turns", json=payload).status_code == 503
+    chat.task_record.return_value = replace(s.record, status="completed", result={"process_exit_validated": True, "report": {"summary": "Done"}})
+    assert s.client.post(f"/chat/sessions/{sid}/turns", json=body(request_id="next")).status_code == 409
+    assert s.admission.admit.call_count == 1
+    assert s.client.post(f"/chat/sessions/{sid}/turns", json=payload).status_code == 202
+    row = s.table.get_item(Key={"session_id": sid})["Item"]
+    assert [message["content"] for message in row["messages"]] == ["Explain this result", "The first result"]
+    assert commands.admit.call_args_list[0].kwargs["command_id"] == commands.admit.call_args_list[1].kwargs["command_id"]

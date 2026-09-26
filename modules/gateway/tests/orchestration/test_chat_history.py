@@ -151,3 +151,10 @@ def test_cli_consumes_real_http_history_response(api):
     result = cli.execute(args, Transport())
     assert result["detail"]["matched_task_id"] == "task-1"
     assert result["detail"]["answer_completion_verified"] is True
+
+
+def test_task_backed_list_snapshot_does_not_infer_idle_from_legacy_threads(api, row):
+    row["chat_task_persona"] = "agent-task-investigator"
+    result = api[0].get("/chat/sessions").json()
+    assert result["items"][0]["status"] == "unknown"
+    assert result["items"][0]["answer_completion_verified"] is False

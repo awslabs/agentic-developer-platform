@@ -80,7 +80,7 @@ def session(value, expected, sid=None):
         invalid()
     if type(value.get("expires_at")) is not int or value["expires_at"] <= time.time():
         raise common.CliError("Conversation retention expired.", "history_expired", 4)
-    if value.get("status") not in {"idle", "pending"} or value.get("answer_completion_verified") is not False:
+    if value.get("status") not in {"idle", "pending", "unknown"} or value.get("answer_completion_verified") is not False:
         invalid()
     if value.get("redaction") != "known-secret-patterns" or type(value.get("truncated")) is not bool:
         invalid()
@@ -131,7 +131,7 @@ def execute(args, client):
         import os
         import stat
 
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd) as source:
             if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
                 raise common.CliError("Message input must be a regular file.", "unsafe_file", 1)

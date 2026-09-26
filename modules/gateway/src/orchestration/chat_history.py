@@ -163,7 +163,7 @@ def project(row, user, transcript=True):
         "truncated": truncated,
         "redaction": "known-secret-patterns",
         "retention_seconds": 86400,
-        "status": "pending" if pending else "idle",
+        "status": "pending" if pending else "unknown" if row.get("chat_task_persona") else "idle",
         "answer_completion_verified": False,
     }
 

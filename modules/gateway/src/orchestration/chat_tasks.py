@@ -120,7 +120,7 @@ def task_answer(record):
         raise errors.prerequisite_unavailable("Completed task report is unavailable.")
     content = json.dumps(report, ensure_ascii=False, sort_keys=True)
     if len(content) > 10000:
-        raise errors.payload_too_large("Task report exceeds the conversation context bound; inspect it with adp task get.")
+        raise errors.payload_too_large("Task report exceeds the conversation context bound; inspect it with adp task status.")
     return {"role": "assistant", "content": content, "timestamp": int(time.time()), "task_id": record.task_id}
 
 
@@ -200,7 +200,7 @@ async def send(body, request, db, table, sid=None):
         active = row["chat_requests"].get(row["chat_active_request"])
         kind, task_id, command_payload = "task", None, None
         if active:
-            if not active.get("task_id"):
+            if not active.get("task_id") or not active.get("receipt"):
                 raise errors.state_conflict("Previous admission is uncertain; reconcile its original request before sending another.")
             record = await run_in_threadpool(task_record, caller, active["task_id"])
             if record.status == "waiting_for_input":
