@@ -6,6 +6,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const TASK = /^tsk_[0-9a-f-]{36}$/;
 export class ProtocolError extends Error {}
 export class Cancelled extends Error {}
+export class ModelRefusal extends ProtocolError {
+  constructor(code) {
+    super('model request rejected');
+    this.code = code;
+  }
+}
 
 export function frame(type, task_id, fields = {}) {
   return { protocol_version: 1, type, request_id: randomUUID(), task_id, ...fields };
@@ -73,6 +79,12 @@ export class HostBridge {
     const turn_id = this.nextTurn || randomUUID();
     this.nextTurn = null;
     const response = await this.request('model.request', turn_id, { turn_id, max_tokens, sdk_request });
+    if (response.operation_status === 'rejected' && response.usage == null
+        && response.content == null && response.stop_reason == null
+        && ['budget_exceeded', 'model_access_denied'].includes(response.pre_provider_refusal)
+        && response.error_code === response.pre_provider_refusal) {
+      throw new ModelRefusal(response.pre_provider_refusal);
+    }
     if (response.operation_status !== 'confirmed') throw new ProtocolError(response.operation_status === 'unknown' ? 'model_outcome_unknown' : 'model request rejected');
     if (!Array.isArray(response.content) || typeof response.stop_reason !== 'string') throw new ProtocolError('missing confirmed model content');
     return { ...response, turn_id };

@@ -403,6 +403,14 @@ class TaskHost:
             "task_id": assignment.task_id,
             "turn_id": frame["turn_id"],
             "operation_status": status,
+            **(
+                {"pre_provider_refusal": response["error_code"]}
+                if status == "rejected"
+                and response.get("handoff") == "not_started"
+                and response.get("usage") is None
+                and response.get("error_code") in {"budget_exceeded", "model_access_denied"}
+                else {}
+            ),
             **({"usage": response["usage"]} if isinstance(response.get("usage"), dict) else {}),
             "content": response.get("content"),
             "stop_reason": response.get("stop_reason"),
