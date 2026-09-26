@@ -80,6 +80,7 @@ def test_all_tables_registered():
         "controller_batch_results",
         "controller_cleanup_bindings",
         "controller_workload_submissions",
+        "controller_node_commands",
         "controller_executions",
         "controller_provider_requests",
         "controller_capacity",
