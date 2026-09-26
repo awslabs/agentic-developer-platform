@@ -2594,3 +2594,180 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         assert not offenders, (
             f"internal routes admitted a domain user token: {offenders}"
         )
+
+
+@pytest.fixture
+def jwks_http_fixture(rsa_keys, monkeypatch):
+    """Serve real signing keys only from ephemeral loopback HTTP endpoints."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    _, public_jwk = rsa_keys
+    state = {
+        "status": 200,
+        "origin": "cross-origin",
+        "destination_requests": 0,
+        "source_requests": 0,
+        "body": json.dumps({"keys": [public_jwk]}).encode(),
+    }
+
+    class Destination(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            state["destination_requests"] += 1
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(state["body"])
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), Destination)
+
+    class Source(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path == "/other-keys":
+                state["destination_requests"] += 1
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(state["body"])
+                return
+            state["source_requests"] += 1
+            self.send_response(state["status"])
+            if state["status"] in [301, 302, 303, 307, 308]:
+                destination = (
+                    "/other-keys"
+                    if state["origin"] == "same-origin"
+                    else f"http://127.0.0.1:{target.server_port}/other-keys"
+                )
+                self.send_header("Location", destination)
+            self.end_headers()
+            self.wfile.write(state["body"])
+
+    source = ThreadingHTTPServer(("127.0.0.1", 0), Source)
+    threads = [
+        threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        for server in (source, target)
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        yield f"http://127.0.0.1:{source.server_port}/jwks", state
+    finally:
+        for server in (source, target):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=5)
+
+
+class TestJWKSHTTPAuthority:
+    @pytest.mark.parametrize("origin", ["same-origin", "cross-origin"])
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_redirected_signing_keys_are_never_requested_or_accepted(
+        self, monkeypatch, rsa_keys, jwks_http_fixture, origin, status
+    ):
+        endpoint, state = jwks_http_fixture
+        state.update(status=status, origin=origin)
+        cache = type(domain_auth.jwks_cache)()
+        monkeypatch.setattr(domain_auth, "jwks_cache", cache)
+        monkeypatch.setattr(settings, "cognito_jwks_url", endpoint)
+        token = _mint(rsa_keys[0])
+        with pytest.raises(TokenRejectedError, match="signing key is unavailable"):
+            domain_auth.verify_access_token(token)
+        assert state["destination_requests"] == 0
+        assert state["source_requests"] == 1
+        assert not cache.loaded
+        # Failure is not cached: a restored direct configured endpoint recovers.
+        state["status"] = 200
+        assert domain_auth.verify_access_token(token)["sub"] == "user-abc"
+        assert cache.loaded
+        assert state["source_requests"] == 2
+        assert state["destination_requests"] == 0
+
+    def test_direct_endpoint_verifies_real_signature_and_caches_keys(
+        self, monkeypatch, rsa_keys, jwks_http_fixture
+    ):
+        endpoint, state = jwks_http_fixture
+        cache = type(domain_auth.jwks_cache)()
+        monkeypatch.setattr(domain_auth, "jwks_cache", cache)
+        monkeypatch.setattr(settings, "cognito_jwks_url", endpoint)
+        token = _mint(rsa_keys[0])
+        assert domain_auth.verify_access_token(token)["sub"] == "user-abc"
+        assert domain_auth.verify_access_token(token)["sub"] == "user-abc"
+        assert state["source_requests"] == 1
+        # A different RSA signer cannot use this endpoint's published key.
+        other_pem, _ = _rsa_keypair()
+        with pytest.raises(TokenRejectedError):
+            domain_auth.verify_access_token(_mint(other_pem))
+        assert state["destination_requests"] == 0
+
+    @pytest.mark.parametrize(
+        "status,body",
+        [(503, b"{}"), (200, b"not-json"), (200, b'{"keys": null}'), (200, b"[]")],
+    )
+    def test_unavailable_or_malformed_endpoint_refuses_and_can_recover(
+        self, monkeypatch, rsa_keys, jwks_http_fixture, status, body
+    ):
+        endpoint, state = jwks_http_fixture
+        valid_body = state["body"]
+        state.update(status=status, body=body)
+        cache = type(domain_auth.jwks_cache)()
+        monkeypatch.setattr(domain_auth, "jwks_cache", cache)
+        monkeypatch.setattr(settings, "cognito_jwks_url", endpoint)
+        token = _mint(rsa_keys[0])
+        with pytest.raises(TokenRejectedError, match="signing key is unavailable"):
+            domain_auth.verify_access_token(token)
+        assert not cache.loaded
+        state.update(status=200, body=valid_body)
+        assert domain_auth.verify_access_token(token)["sub"] == "user-abc"
+        assert state["destination_requests"] == 0
+
+
+class TestJWKSEndpointConfiguration:
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "file:///tmp/synthetic-signing-keys.json",
+            "ftp://example.invalid/jwks",
+            "data:application/json,{}",
+            "gopher://example.invalid/jwks",
+            "/tmp/keys.json",
+            "//example.invalid/jwks",
+            "https:///jwks",
+            "https://user:password@example.invalid/jwks",
+            "https://@example.invalid/jwks",
+            "https://example.invalid/jwks#keys",
+            "https://example.invalid:invalid/jwks",
+            "https://example.invalid:99999/jwks",
+            "https://example.invalid/\x7fjwks",
+            "https://example.invalid/\\jwks",
+            "https://example.invalid/\njwks",
+        ],
+    )
+    def test_forbidden_or_malformed_endpoint_never_invokes_a_provider(
+        self, monkeypatch, endpoint
+    ):
+        import urllib.request
+
+        calls = []
+
+        def forbidden_opener(*args, **kwargs):
+            calls.append(args)
+            raise AssertionError("provider called before configuration validation")
+
+        monkeypatch.setattr(urllib.request, "build_opener", forbidden_opener)
+        monkeypatch.setattr(urllib.request, "urlopen", forbidden_opener)
+        monkeypatch.setattr(settings, "cognito_jwks_url", endpoint)
+        cache = type(domain_auth.jwks_cache)()
+        with pytest.raises(TokenPolicyError, match="JWKS URL"):
+            cache.get(TEST_KID)
+        assert not calls
+        assert not cache.loaded

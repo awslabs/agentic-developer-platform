@@ -7,9 +7,9 @@
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
     "reviewed-import-only-observation": 107,
-    "pending-source-review": 912,
+    "pending-source-review": 911,
     "nonsecurity-test-assertion": 187,
-    "fixed-source-runtime-open": 10,
+    "fixed-source-runtime-open": 11,
     "reviewed-optimization-safe-guard": 35,
     "fixed": 217,
     "reviewed-parameterized-sql": 2
@@ -10979,8 +10979,10 @@
       "rule": "B310",
       "line": 187,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Configured JWKS URL is parsed before dispatch: only HTTP(S), a hostname, valid port, no credentials/fragment/control characters/backslash. A per-request opener refuses redirects before reading or installing keys. Real RSA/native HTTP negative/recovery fixtures plus forbidden URL provider-call-zero cases establish source behavior. Configured HTTP transport risk and live runtime acceptance remain open under #6108.",
+      "evidence": "docs/security/runs/2026-09-26/superplane-jwks-boundary/review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=759",
