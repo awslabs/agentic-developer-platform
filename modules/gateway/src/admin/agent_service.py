@@ -248,7 +248,17 @@ class AgentService:
 
             items = response.get("Items", [])
 
-            # Manual pagination (DynamoDB scan/query returns all matching items)
+            # DynamoDB stops each query at 1 MB. Complete the scoped query
+            # before applying this API's page-number pagination.
+            while response.get("LastEvaluatedKey"):
+                response = table.query(
+                    IndexName="org_id-index",
+                    KeyConditionExpression="org_id = :org_id",
+                    ExpressionAttributeValues={":org_id": org_id},
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
+                )
+                items.extend(response.get("Items", []))
+
             start_idx = (page - 1) * page_size
             end_idx = start_idx + page_size
             page_items = items[start_idx:end_idx]
