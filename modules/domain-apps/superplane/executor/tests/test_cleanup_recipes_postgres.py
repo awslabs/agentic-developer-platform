@@ -126,8 +126,9 @@ async def test_already_absent_network_release_publishes_both_facts_atomically(
             assert await lock_lease(c, lease)
 
     runtime.provider.session_for = session_for
+    await register_network_authority(pool, runtime, lease)
     assert await observe_release(
-        runtime.provider, operation, runtime.plan, recipe, authorize
+        runtime.provider, operation, runtime.target, runtime.plan, recipe, authorize
     )
     async with pool.acquire() as c:
         assert await c.fetchval(
@@ -181,9 +182,16 @@ async def test_partial_or_changed_native_recipe_is_not_a_cleanup_graph(
     assert aws.calls == calls
 
 
-@pytest.mark.parametrize("sharing", ["owned", "peer", "adopted"])
+@pytest.mark.parametrize(
+    "sharing,change",
+    [
+        ("owned", c)
+        for c in [None, "revoked", "moved", "generation", "revoked-during-read"]
+    ]
+    + [("peer", None), ("adopted", None)],
+)
 async def test_completed_network_stage_observation_preserves_peers_after_lost_reply(
-    network, pool, sharing
+    network, pool, sharing, change, monkeypatch
 ):
     from dataclasses import replace
 
@@ -249,32 +257,7 @@ async def test_completed_network_stage_observation_preserves_peers_after_lost_re
             assert await lock_lease(c, operation.grant.lease)
 
     runtime.provider.session_for = session_for
-    # Install the actual membership relation consumed by Network.authority;
-    # this path does not replace its authority check with a fixture no-op.
-    async with pool.acquire() as c:
-        await c.execute("""CREATE TABLE clusters(id uuid,org_id uuid,workspace_id uuid,eks_cluster_arn text);
-            CREATE TABLE workspaces(id uuid,org_id uuid,cluster_id uuid,namespace_name text);
-            CREATE TABLE cluster_memberships(workspace_id uuid,org_id uuid,cluster_id uuid,generation text,namespace text,state text);""")
-        await c.execute(
-            "INSERT INTO clusters VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,$4)",
-            runtime.target["cluster_id"],
-            lease.org_id,
-            lease.workspace_id,
-            runtime.plan.data["cluster_arn"],
-        )
-        await c.execute(
-            "INSERT INTO workspaces VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,'original-workspace')",
-            lease.workspace_id,
-            lease.org_id,
-            runtime.target["cluster_id"],
-        )
-        await c.execute(
-            "INSERT INTO cluster_memberships VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,$4,'original-workspace','active')",
-            lease.workspace_id,
-            lease.org_id,
-            runtime.target["cluster_id"],
-            runtime.plan.network["cluster"]["membership_generation"],
-        )
+    await register_network_authority(pool, runtime, lease)
     start = len(aws.calls)
     if sharing == "owned":
         aws.lost = (
@@ -311,12 +294,70 @@ async def test_completed_network_stage_observation_preserves_peers_after_lost_re
         )
     assert takeover is not None
     operation.grant.lease = takeover.lease
+
+    async def facts():
+        async with pool.acquire() as c:
+            return (
+                await c.fetchrow(
+                    "SELECT * FROM controller_network_resources WHERE resource_key=$1",
+                    recipe["key"],
+                ),
+                await c.fetchrow(
+                    "SELECT * FROM controller_network_members WHERE resource_key=$1 AND allocation_id=$2",
+                    recipe["key"],
+                    runtime.journal.allocation,
+                ),
+                await c.fetchrow(
+                    "SELECT * FROM controller_network_effects WHERE resource_key=$1 AND action='delete'",
+                    recipe["key"],
+                ),
+            )
+
+    if change is not None:
+        before = await facts()
+        if change == "revoked-during-read":
+            observe_native = cleanup_network.observe_native
+
+            async def revoke_after_native_read(*args, **kwargs):
+                observed = await observe_native(*args, **kwargs)
+                async with pool.acquire() as c:
+                    await c.execute("UPDATE cluster_memberships SET state='revoked'")
+                return observed
+
+            monkeypatch.setattr(
+                cleanup_network, "observe_native", revoke_after_native_read
+            )
+        else:
+            async with pool.acquire() as c:
+                await c.execute(
+                    {
+                        "revoked": "UPDATE cluster_memberships SET state='revoked'",
+                        "moved": "UPDATE workspaces SET cluster_id='00000000-0000-0000-0000-000000000000'",
+                        "generation": "UPDATE cluster_memberships SET generation=repeat('b',64)",
+                    }[change]
+                )
+        calls = list(aws.calls)
+        with pytest.raises(OperationRefused):
+            await cleanup_network.observe(
+                runtime.provider,
+                operation,
+                runtime.target,
+                runtime.plan,
+                recipe,
+                authorize,
+            )
+        assert await facts() == before
+        assert all(
+            name.startswith(("describe_", "get_", "search_"))
+            for _, name, _ in aws.calls[len(calls) :]
+        )
+        return
     after_effect = len(aws.calls)
     assert await cleanup_network.observe(
-        runtime.provider, operation, runtime.plan, recipe, authorize
+        runtime.provider, operation, runtime.target, runtime.plan, recipe, authorize
     )
     assert await cleanup_network.observe(
-        runtime.provider, operation, runtime.plan, recipe, authorize
+        runtime.provider, operation, runtime.target, runtime.plan, recipe, authorize
     )
     mutations = [
         name
@@ -348,3 +389,33 @@ async def test_completed_network_stage_observation_preserves_peers_after_lost_re
             "SELECT count(*) FROM controller_network_effects WHERE resource_key=$1 AND action='delete'",
             recipe["key"],
         ) == int(sharing == "owned")
+
+
+async def register_network_authority(pool, runtime, lease):
+    """Use actual current registration checks; never bypass Network.authority."""
+    async with pool.acquire() as c:
+        await c.execute("""CREATE TABLE clusters(id uuid,org_id uuid,workspace_id uuid,eks_cluster_arn text);
+            CREATE TABLE workspaces(id uuid,org_id uuid,cluster_id uuid,namespace_name text);
+            CREATE TABLE cluster_memberships(workspace_id uuid,org_id uuid,cluster_id uuid,generation text,namespace text,state text);
+            CREATE TABLE workspace_bootstrap_reservations(workspace_id text,state text,identity_json text,attempt_token text);
+            CREATE TABLE workspace_bootstrap_authority(workspace_id text,org_id text,cluster_arn text,generation text,claim text,progress_json text,revoked boolean);""")
+        await c.execute(
+            "INSERT INTO clusters VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,$4)",
+            runtime.target["cluster_id"],
+            lease.org_id,
+            lease.workspace_id,
+            runtime.plan.data["cluster_arn"],
+        )
+        await c.execute(
+            "INSERT INTO workspaces VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,'original-workspace')",
+            lease.workspace_id,
+            lease.org_id,
+            runtime.target["cluster_id"],
+        )
+        await c.execute(
+            "INSERT INTO cluster_memberships VALUES($1::text::uuid,$2::text::uuid,$3::text::uuid,$4,'original-workspace','active')",
+            lease.workspace_id,
+            lease.org_id,
+            runtime.target["cluster_id"],
+            runtime.plan.network["cluster"]["membership_generation"],
+        )

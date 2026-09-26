@@ -206,6 +206,7 @@ async def completed(
         return await observe(
             provider,
             operation,
+            target,
             plan,
             snapshot["network"][int(stage.split(":")[1])],
             authorize,

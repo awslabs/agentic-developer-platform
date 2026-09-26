@@ -217,7 +217,10 @@ mutation-capable network release. If an exact immutable original native network
 identity is freshly observed absent, recovery may atomically record that absence
 and release only its original membership under the current fence, even when no
 delete was dispatched. It never creates a delete effect to explain preexisting
-absence. Unknown native identities remain UNKNOWN. Prior non-successful shared intents are never
+absence. The observer rechecks the current registered cluster and membership or
+bootstrap generation through the same Network authority check as execution, both
+before and after native observation. Revoked, moved, or changed current membership
+cannot publish resource, member, or effect bookkeeping. Unknown native identities remain UNKNOWN. Prior non-successful shared intents are never
 redispatched. Prefix continuation uses the existing paid dispatch path unchanged.
 
 ## 5. Explicit remaining obstacles / coverage limits

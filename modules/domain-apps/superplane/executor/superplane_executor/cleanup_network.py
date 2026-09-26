@@ -4,7 +4,6 @@ from harness_jobs.identity import OperationRefused
 from harness_jobs.leases import lock_lease
 
 from .network_inventory import observe_native
-from .network_journal import NetworkJournal
 from .network_plan import canonical
 from .network_runtime import Network
 
@@ -48,11 +47,14 @@ async def execute(provider, operation, target, plan, recipe, authorize):
         raise OperationRefused("unsupported original cleanup recipe")
 
 
-async def observe(provider, operation, plan, recipe, authorize):
+async def observe(provider, operation, target, plan, recipe, authorize):
     """Confirm exact known absence without inventing or replaying a deletion."""
     from harness_jobs.inventory import ResourcePresence
 
-    journal = NetworkJournal(provider.domain_pool, operation, plan, authorize)
+    await authorize()
+    session, _ = await provider.session_for(operation, plan)
+    runtime = Network(provider, operation, target, plan, session, authorize)
+    journal = runtime.journal
     lease = operation.grant.lease
     async with journal.locked(recipe["key"]) as db:
         row = await db.fetchrow(
@@ -104,15 +106,14 @@ async def observe(provider, operation, plan, recipe, authorize):
             or effect["descriptor"] != canonical({"reference": recipe["reference"]})
         ):
             raise OperationRefused("original network deletion intent differs")
-        session, _ = await provider.session_for(operation, plan)
-        await authorize()
+        await runtime.authority()
         presence = await observe_native(
             session,
             plan.data["provider_account_id"],
             {plan.cluster_region, *plan.network["regions"]},
             row,
         )
-        await authorize()
+        await runtime.authority()
         if presence is not ResourcePresence.ABSENT:
             return False
         async with provider.execution_pool.acquire() as c, c.transaction():
