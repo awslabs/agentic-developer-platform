@@ -10,7 +10,7 @@ tenant. Select it with the global `adp --tenant TENANT ...` option. Existing
 | `service-account --identity-type sql-iam` | Auth and admin service-account APIs share the same SQL `ServiceAccount` row. Guarded CLI adapter calls `ServiceAccountService`. | Caller-owned IAM role; no secret. Explicit department/team; no `default/default` placeholders. Canonical alias source `sa_registration`. |
 | `agent --identity-type iam-registry` | `/admin/registry/agents`, DynamoDB `AgentRegistryService` | IAM role registry; no secret. Canonical alias source `agent_registry`; alias ID is the agent UUID. |
 | `agent --identity-type cognito-client` | `/admin/agents`, Cognito app client plus DynamoDB `AgentService` metadata | Client secret delivered only to a new private file. Canonical alias source `cognito_m2m`; alias ID is the client ID. |
-| `service-principal` | Existing `/admin/service-principals` persona-model lifecycle APIs | Canonical identity for mapping, preferences and attribution; registration mints no credential. Adding/removing an alias never transfers another principal's history. |
+| `service-principal` | Existing `/service-principals` persona-model lifecycle APIs | Canonical identity for mapping, preferences and attribution; registration mints no credential. Adding/removing an alias never transfers another principal's history. |
 
 No command creates a second identity to synchronize these APIs. Register the
 required authentication object, then explicitly register or link its canonical

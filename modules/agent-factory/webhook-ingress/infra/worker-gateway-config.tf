@@ -17,6 +17,7 @@ locals {
     ADP_WORK_CLAIM_PRODUCER_ROLES          = aws_iam_role.lambda_execution.arn
     ADP_TASK_PERSONA_TOOLS                 = jsonencode(var.task_persona_tools)
     ADP_TASK_API_ADMISSION_ENABLED         = tostring(var.task_api_admission_enabled)
+    ADP_TASK_API_HUMAN_ENABLED             = tostring(var.task_api_human_enabled)
     ADP_TASK_API_RECOVERY_ENABLED          = tostring(var.task_api_recovery_enabled)
     ADP_TASK_DISPATCH_PRODUCER_ROLES       = aws_iam_role.lambda_execution.arn
     ADP_TASK_RECOVERY_PRODUCER_ROLES       = aws_iam_role.lambda_execution.arn

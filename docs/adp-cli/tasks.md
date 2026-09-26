@@ -154,3 +154,50 @@ CLI envelope with `status:"failed"`, `command`, and `error.code/message`.
 A completed task may retain failure findings in its application report; inspect
 the result content as well as the transport/task exit status. Commands do not
 convert a task failure or an accepted-only cancellation into success.
+
+## Explicit human Task enrollment (#5516)
+
+Deployments enabling `ADP_TASK_API_HUMAN_ENABLED=true` can enroll a human through
+`GET|PUT /human-principals/{canonical-user-uuid}/task-policy`. Enrollment requires
+an authenticated current human organization administrator and an active target
+membership. The body uses the existing versioned Task policy schema, including
+allowed personas/tools, task scopes, explicit model-policy revision and per-task
+limits. Task submission never creates this standing policy.
+
+`adp task submit REQUEST.json --key REQUEST_ID --human-login --wait` uses the
+selected deployment's existing ADP login. The same flag works for `status`,
+`monitor` and `abort`. It is mutually exclusive with service credentials/token
+files. The command pins one access token and does not silently switch identities
+on retry. API authority comes from current human membership and standing policy,
+not caller token scope strings or a caller-supplied owner.
+
+Durable owner IDs use `human:<canonical User.id>` so an unrelated service ID
+cannot collide. The model/budget layer resolves that locator back to the real
+human identity and its model preference, routing and budget hierarchy. Reads,
+commands and SSE rechecks revalidate current membership and policy. Paid model
+calls and new tool authority also recheck membership; stop-only cleanup remains
+available. Existing service owners and their aliases remain unchanged.
+
+This foundation supports the installed `agent-task-investigator` and
+`agent-task-cyber` executables, with their existing Task protocol. It does not
+qualify repository developer authority or hosted Codex/Claude CLI execution.
+Those require server-bound repository/issue permissions and a compatible worker
+adapter; renaming a persona or using an investigator is not that acceptance.
+Existing per-task/pilot admission reservations and per-model personal/team/tenant
+budget enforcement remain in effect. Live human, repository and engine acceptance
+must be recorded separately before #5516 closes.
+
+Human Task commands participate in `--tenant`, `ADP_TENANT` and saved tenant
+selection. The existing signed tenant context is verified together with the
+Cognito access token and live membership; the Task owner/policy uses the selected
+tenant. A pinned lease or login expiry stops the command rather than switching
+identity. Service Task credentials retain their own deployment-bound tenant and
+cannot use the human selector.
+
+Before a new human task is accepted, the shared budget hierarchy checks headroom
+for the per-task ceiling. A refusal is HTTP 402 `budget_exceeded` (CLI exit 5).
+This preflight does not reserve spend or create a new ledger: concurrent paid
+calls remain controlled by the existing strict reservations, and existing Task
+pilot reservations remain independent. The pilot's fixed limits are not the CLI
+evaluation's tighter shared spending limit; operators must retain the latter's
+existing ledger and independently enforced bounds during live qualification.

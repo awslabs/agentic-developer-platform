@@ -375,3 +375,120 @@ def test_gateway_finished_is_detach_not_execution_success(capsys):
     assert result["detail"] == {"event": "finished", "detached": True, "last_event_id": f"{RUN}:1:1"}
     assert client.raw.call_count == 1
     client.post.assert_not_called()
+
+
+@pytest.fixture
+def coding_trigger(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"repository": "owner/repo", "issue": 5}))
+    instructions = tmp_path / "instructions.txt"
+    instructions.write_text("Update the attached CLI file")
+    monkeypatch.setattr(agent.common, "state_dir", lambda: tmp_path / "state")
+    monkeypatch.setattr(agent.common, "authenticated_scope", lambda **kw: "human:owner")
+    options = agent.parser().parse_args(
+        [
+            "trigger",
+            "--repo",
+            "owner/repo",
+            "--issue",
+            "5",
+            "--persona",
+            "agent-task-codex-developer",
+            "--snapshot-file",
+            str(snapshot),
+            "--instructions-file",
+            str(instructions),
+            "--request-id",
+            "coding-test",
+        ]
+    )
+    task = Mock(gateway="https://gateway.example", token="pinned")
+    helper = Mock()
+    helper.bounded_read.side_effect = lambda response, *a: response.read()
+    task.open.return_value = io.BytesIO(
+        json.dumps(
+            {
+                "artifact_id": "art_67eb5564-4dce-4fa0-9320-72cf728ca140",
+                "content_type": "application/json",
+                "content_sha256": agent.hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+            }
+        ).encode()
+    )
+    task.submit.return_value = {"task_id": "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140", "status": "accepted"}
+    return options, helper, task
+
+
+def test_coding_preview_never_uploads_or_submits(coding_trigger):
+    options, helper, task = coding_trigger
+    assert agent.task_trigger(options, helper, task)["status"] == "dry_run"
+    task.open.assert_not_called()
+    task.submit.assert_not_called()
+
+
+def test_coding_replay_retains_artifact_and_task_idempotency(coding_trigger):
+    options, helper, task = coding_trigger
+    options.yes = True
+    first = agent.task_trigger(options, helper, task)
+    second = agent.task_trigger(options, helper, task)
+    assert first == second
+    assert task.open.call_count == 1
+    assert task.submit.call_args_list[0] == task.submit.call_args_list[1]
+    body, key = task.submit.call_args.args
+    assert key == "coding-test"
+    assert body["inputs"]["repository_snapshot_artifact"] == body["artifact_ids"][0]
+    assert first["status"] == "pending"
+
+
+def test_coding_lost_upload_does_not_dispatch_or_reupload(coding_trigger):
+    options, helper, task = coding_trigger
+    options.yes = True
+    task.open.side_effect = agent.common.CliError("response lost", "pending", 4)
+    with pytest.raises(agent.common.CliError):
+        agent.task_trigger(options, helper, task)
+    result = agent.task_trigger(options, helper, task)
+    assert result["status"] == "pending"
+    assert task.open.call_count == 1
+    task.submit.assert_not_called()
+
+
+def test_coding_reused_request_with_new_inputs_refused(coding_trigger):
+    options, helper, task = coding_trigger
+    options.yes = True
+    agent.task_trigger(options, helper, task)
+    Path(options.instructions_file).write_text("Different task")
+    with pytest.raises(agent.common.CliError, match="different task inputs"):
+        agent.task_trigger(options, helper, task)
+    assert task.submit.call_count == 1
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "status", "wait", "abort", "steer"])
+def test_task_handles_use_canonical_task_helper(monkeypatch, action):
+    from types import SimpleNamespace
+
+    task_id = "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140"
+    task = Mock()
+    task.snapshot.return_value = {"task_id": task_id, "status": "completed"}
+    task.command.return_value = {"task_id": task_id, "command_id": ID}
+    helper = SimpleNamespace(
+        TaskClient=Mock(return_value=task),
+        token_expiry=lambda token: 9999999999,
+        TERMINAL={"completed", "failed", "cancelled"},
+        snapshot_exit=lambda value: 0,
+    )
+    monkeypatch.setattr(agent.common, "load_provider", lambda name: helper)
+    monkeypatch.setattr(agent.common, "gateway_url", lambda: "https://gateway.example")
+    flags = ["--command-id", ID, "--instruction" if action == "steer" else "--reason", "bounded", "--yes"] if action in agent.ACTIONS else []
+    options = agent.parser().parse_args([action, "--run", task_id, *flags])
+    client = Mock(token="pinned-human-token")
+    result = agent.execute(options, client)
+    assert task.token == "pinned-human-token"
+    client.get.assert_not_called()
+    client.post.assert_not_called()
+    if action in {"pause", "resume"}:
+        assert result["status"] == "unavailable"
+        task.command.assert_not_called()
+    elif action in {"abort", "steer"}:
+        assert result["status"] == "pending"
+        assert task.command.call_args.args[1] == ("cancel" if action == "abort" else "messages")
+    else:
+        assert result["status"] == "ok"

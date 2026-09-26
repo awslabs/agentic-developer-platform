@@ -42,6 +42,7 @@
             "anyOf": [
               { "properties": { "http_status": { "const": 400 }, "code": { "enum": ["invalid_request", "invalid_cursor"] } } },
               { "properties": { "http_status": { "const": 401 }, "code": { "const": "invalid_credential" } } },
+              { "properties": { "http_status": { "const": 402 }, "code": { "const": "budget_exceeded" } } },
               { "properties": { "http_status": { "const": 403 }, "code": { "enum": ["disallowed_scope", "disallowed_persona"] } } },
               { "properties": { "http_status": { "const": 404 }, "code": { "const": "not_found" } } },
               { "properties": { "http_status": { "const": 409 }, "code": { "enum": ["idempotency_conflict", "command_conflict", "state_conflict"] } } },
@@ -60,6 +61,7 @@
         "invalid_request",
         "invalid_cursor",
         "invalid_credential",
+        "budget_exceeded",
         "disallowed_scope",
         "disallowed_persona",
         "not_found",
@@ -75,7 +77,7 @@
     },
 
     "http_status": {
-      "enum": [400, 401, 403, 404, 409, 410, 413, 429, 503]
+      "enum": [400, 401, 402, 403, 404, 409, 410, 413, 429, 503]
     },
 
     "history_expired_response": {

@@ -29,6 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # purpose -> (module, extra payload the orchestrator does not have to supply)
 PURPOSES = {
+    "hosted_coding": ("hosted_coding", {}),
+    "hosted_chat": ("hosted_chat", {}),
     "story_capabilities": ("story_reads", {"mode": "capabilities"}),
     "story_usage": ("story_reads", {"mode": "usage"}),
     "story_budget": ("story_reads", {"mode": "budget"}),
@@ -41,6 +43,7 @@ PURPOSES = {
     "story_superplane_lifecycle": ("story_reads", {"mode": "superplane_lifecycle"}),
     "story_activity": ("story_reads", {"mode": "activity"}),
     "story_research": ("story_research", {}),
+    "story_chat": ("story_reads", {"mode": "chat"}),
     "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),
     "tenant_isolation": ("tenant_isolation", {"mode": "isolation"}),
     "story_hierarchy": ("story_reads", {"mode": "hierarchy"}),

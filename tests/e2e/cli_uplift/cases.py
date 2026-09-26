@@ -46,6 +46,7 @@ STATUSES = (PASSED, FAILED, BLOCKED, NOT_RUN)
 SUITES = (
     "full",
     "nightly",
+    "hosted-coding",
     "story-reads",
     "research",
     "tenant-isolation",
@@ -99,6 +100,7 @@ COGNITO = "cognito"
 GITHUB_APP = "github_app"
 GITHUB_REPO = "github_repo"
 HOSTED = "hosted"
+HUMAN_TASK_CODING = "human_task_coding"
 # #5413: three separately-reachable ADP deployments and a sign-in fixture for
 # each. Deliberately its own class rather than a count on DESTINATION — those are
 # AWS accounts a rule routes TO, whereas these are three gateways the CLI signs in
@@ -409,11 +411,25 @@ CASES = (
         (EC2, PLATFORM, COGNITO, SUPERPLANE_DOMAIN),
     ),
     Case(
+        "E40",
+        "#5640",
+        "story-reads",
+        "Hosted chat readiness and bounded own history; live multi-turn acceptance remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
         "E41",
         "#5641",
         "story-reads",
         "Platform status distinguishes selected-gateway capability metadata from unverified AWS/artifact readiness; no deployment invocation",
         (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E42",
+        "#5516",
+        "hosted-coding",
+        "One enrolled human repository Task uses canonical submit, replay, monitor and control with terminal readback",
+        (EC2, PLATFORM, COGNITO, HUMAN_TASK_CODING),
     ),
 )
 
@@ -439,7 +455,7 @@ def suite_cases(suite):
         return (
             BY_ID["E01"],
             LOGIN_CHECKPOINT,
-            *(case for case in CASES if case.suite == "story-reads"),
+            *(case for case in CASES if case.suite in {"story-reads", "hosted-coding"}),
         )
     if suite == "research":
         return (BY_ID["E25"],)

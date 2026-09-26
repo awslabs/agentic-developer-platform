@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Human Activity reads and capability-gated controls. Task dispatch stays in adp task."""
+"""Human Activity controls and hosted coding through the canonical Task API."""
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -12,6 +14,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import adp_common as common
@@ -72,6 +75,17 @@ def parser():
             p.add_argument("--expected-generation", type=int, help="Advisory read check; server does not support an atomic generation precondition")
             p.add_argument("--yes", action="store_true")
             p.add_argument("--dry-run", action="store_true")
+    trigger = sub.add_parser("trigger", help="Submit a bounded repository coding task through the existing Task API")
+    trigger.add_argument("--repo", required=True)
+    trigger.add_argument("--issue", required=True, type=int)
+    trigger.add_argument("--persona", required=True, choices=["agent-task-claude-developer", "agent-task-codex-developer"])
+    trigger.add_argument("--snapshot-file", required=True, help="Repository snapshot JSON; ADP independently verifies its commit, issue and files")
+    trigger.add_argument("--instructions-file", required=True, help="UTF-8 issue task instructions")
+    trigger.add_argument("--request-id", required=True, help="Stable saved idempotency key")
+    trigger.add_argument("--timeout", type=positive, default=120)
+    trigger.add_argument("--dry-run", action="store_true")
+    trigger.add_argument("--yes", action="store_true")
+    trigger.add_argument("--json", action="store_true")
     return root
 
 
@@ -305,6 +319,8 @@ def stream(args, client, path):
 def execute(args, client):
     action = args.action
     command = "adp agent " + action
+    if action == "trigger" or str(getattr(args, "run", "")).startswith("tsk_"):
+        return task_execute(args, client)
     prefix = "/admin" if getattr(args, "admin", False) else "/me"
     base = prefix + "/agent-invocations"
     if action == "list":
@@ -398,6 +414,160 @@ def execute(args, client):
         if time.monotonic() >= deadline:
             return common.envelope("pending", command, result, "Deadline reached; hosted execution is unchanged.")
         time.sleep(min(args.interval, deadline - time.monotonic()))
+
+
+def task_execute(args, client):
+    helper = common.load_provider("adp-task.py")
+    if helper is None:
+        raise common.CliError("Task CLI helper is missing; run adp update.", "unavailable", 5)
+    command = "adp agent " + args.action
+    task = helper.TaskClient(
+        {"gateway_url": common.gateway_url()}, common.gateway_url(), human_login=True, deadline=time.monotonic() + getattr(args, "timeout", 120)
+    )
+    task.token, task.expires = client.token, helper.token_expiry(client.token)
+    if getattr(args, "admin", False):
+        raise common.CliError("Human Tasks use exact owner access; admin read override is unavailable.", "usage_error", 1)
+    if args.action == "trigger":
+        return task_trigger(args, helper, task)
+    if not re.fullmatch(r"tsk_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", args.run):
+        invalid("Malformed Task run ID.")
+    if args.action in ACTIONS:
+        if args.action not in {"abort", "steer"}:
+            return common.envelope(
+                "unavailable", command, {"task_id": args.run}, "Task API supports input and cancellation; pause/resume are not implemented."
+            )
+        if args.expected_generation is not None:
+            raise common.CliError("Task commands do not accept the Activity generation flag.", "usage_error", 1)
+        uuid.UUID(args.command_id)
+        if args.dry_run or not args.yes:
+            return common.envelope("dry_run", command, {"task_id": args.run, "command_id": args.command_id})
+        result = task.command(
+            args.run, "cancel" if args.action == "abort" else "messages", args.command_id, args.reason if args.action == "abort" else args.instruction
+        )
+        if result.get("task_id") != args.run or result.get("command_id") != args.command_id:
+            invalid("Task command acknowledgement mismatch; reconcile the same command ID.")
+        return common.envelope("pending", command, result, "Command acceptance is not execution or cancellation confirmation; inspect the same Task.")
+    if args.action == "logs" and args.follow:
+        code = helper.monitor(
+            task, args.run, SimpleNamespace(cursor=args.last_event_id, cursor_file=None, max_events=10000, timeout=args.timeout, json=True)
+        )
+        return common.envelope("ok" if code == 0 else "failed" if code in {5, 7} else "pending", command, {"task_id": args.run, "monitor_exit": code})
+    while True:
+        value = task.snapshot(args.run)
+        if value.get("task_id") != args.run:
+            invalid("Task snapshot identity mismatch.")
+        outcome = helper.snapshot_exit(value)
+        if args.action != "wait":
+            return common.envelope("ok", command, value, "Canonical Task result and events are separate from legacy Activity transcripts.")
+        if value["status"] in helper.TERMINAL:
+            return common.envelope("ok" if outcome == 0 else "pending" if outcome == 4 else "failed", command, value)
+        if time.monotonic() >= task.deadline:
+            return common.envelope("pending", command, value, "Wait deadline reached; no cancellation was sent.")
+        time.sleep(min(args.interval, max(0, task.deadline - time.monotonic())))
+
+
+def task_trigger(args, helper, task):
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo)
+        or args.issue <= 0
+        or not 1 <= len(args.request_id) <= 128
+        or any(not 32 <= ord(c) <= 126 for c in args.request_id)
+    ):
+        raise common.CliError("Use an exact repository, positive issue and printable stable request ID (1..128 characters).", "usage_error", 1)
+    with Path(args.snapshot_file).open("rb") as source:
+        snapshot_bytes = source.read(262145)
+    with Path(args.instructions_file).open() as source:
+        instructions = source.read(16001)
+    if not 0 < len(snapshot_bytes) <= 262144 or not 0 < len(instructions) <= 16000:
+        raise common.CliError("Snapshot limit is256KiB; instructions limit is16000characters.", "usage_error", 1)
+    snapshot = json.loads(snapshot_bytes)
+    if not isinstance(snapshot, dict) or snapshot.get("repository") != args.repo or snapshot.get("issue") != args.issue:
+        raise common.CliError("Snapshot repository/issue does not match the requested target.", "conflict", 4)
+    digest = hashlib.sha256(snapshot_bytes).hexdigest()
+    intent = {
+        "repo": args.repo,
+        "issue": args.issue,
+        "persona": args.persona,
+        "snapshot_sha256": digest,
+        "instructions": instructions,
+        "gateway": task.gateway,
+        "scope": common.authenticated_scope(token=task.token),
+    }
+    fingerprint = hashlib.sha256(json.dumps(intent, sort_keys=True).encode()).hexdigest()
+    if args.dry_run or not args.yes:
+        return common.envelope(
+            "dry_run",
+            "adp agent trigger",
+            {"repo": args.repo, "issue": args.issue, "persona": args.persona, "snapshot_sha256": digest, "request_id": args.request_id},
+            "No artifact uploaded or task submitted. Server repository verification runs at admission.",
+        )
+    directory = common.private_directory(common.state_dir() / "hosted-tasks")
+    key_scope = json.dumps([task.gateway, intent["scope"], args.request_id]).encode()
+    path = directory / (hashlib.sha256(key_scope).hexdigest() + ".json")
+    with common.file_lock(path.with_suffix(".lock"), "Task request already running"):
+        if path.exists():
+            saved = common.read_private_json(path)
+            if saved.get("fingerprint") != fingerprint:
+                raise common.CliError("Request ID belongs to different task inputs or identity.", "conflict", 4)
+            if not saved.get("artifact_id"):
+                return common.envelope(
+                    "pending",
+                    "adp agent trigger",
+                    {"request_id": args.request_id, "phase": "artifact_upload_unknown"},
+                    "No paid task was submitted; artifact upload outcome is unknown.",
+                )
+        else:
+            saved = {"fingerprint": fingerprint}
+            common.write_json(path, saved)
+            boundary = "adp" + uuid.uuid4().hex
+            metadata = {"schema_version": "1.0", "content_type": "application/json", "content_sha256": digest, "content_length": len(snapshot_bytes)}
+            payload = (
+                (
+                    f'--{boundary}\r\nContent-Disposition: form-data; name="metadata"\r\nContent-Type: application/json\r\n\r\n'
+                    + json.dumps(metadata)
+                    + f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="content"; filename="snapshot.json"\r\n'
+                    + 'Content-Type: application/json\r\n\r\n'
+                ).encode()
+                + snapshot_bytes
+                + f"\r\n--{boundary}--\r\n".encode()
+            )
+            with task.open(
+                "POST", "/v1/task-artifacts", data=payload, headers={"Content-Type": "multipart/form-data; boundary=" + boundary}
+            ) as response:
+                uploaded = json.loads(helper.bounded_read(response, task, 65536))
+            artifact = uploaded.get("artifact_id")
+            if (
+                not isinstance(artifact, str)
+                or not re.fullmatch(r"art_[0-9a-f-]{36}", artifact)
+                or uploaded.get("content_sha256") != digest
+                or uploaded.get("content_type") != "application/json"
+            ):
+                invalid("Artifact acknowledgement mismatch; no task submitted.")
+            saved["artifact_id"] = artifact
+            common.write_json(path, saved)
+        body = {
+            "schema_version": "1.0",
+            "persona": args.persona,
+            "instructions": instructions,
+            "inputs": {"repository_snapshot_artifact": saved["artifact_id"]},
+            "artifact_ids": [saved["artifact_id"]],
+            "external_reference": args.repo + "#" + str(args.issue),
+        }
+        accepted = task.submit(body, args.request_id)
+        if (
+            not isinstance(accepted, dict)
+            or not re.fullmatch(r"tsk_[0-9a-f-]{36}", str(accepted.get("task_id", "")))
+            or accepted.get("status") != "accepted"
+        ):
+            invalid("Task acceptance response malformed; retry the same request ID and inputs.")
+        saved["task_id"] = accepted["task_id"]
+        common.write_json(path, saved)
+        return common.envelope(
+            "pending",
+            "adp agent trigger",
+            {**accepted, "run_id": accepted["task_id"], "idempotency_key": args.request_id},
+            "Use agent status/logs/wait with this Task run ID. Accepted is not completed.",
+        )
 
 
 def main(argv=None):

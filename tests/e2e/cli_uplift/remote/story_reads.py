@@ -565,8 +565,8 @@ def recovery(cli, evidence):
             "--reason",
             "nightly refusal",
             "--dry-run",
-            "--json",
-        ]
+        ],
+        expected=None,
     )
     common.require(
         rc != 0 and isinstance(refused, dict) and refused.get("status") == "failed",
@@ -685,7 +685,37 @@ def superplane_lifecycle(cli, evidence):
     )
 
 
+def chat(cli, evidence):
+    result = detail(cli.json(["chat", "status"]))
+    common.require(
+        isinstance(result.get("general_turns_supported"), bool)
+        and isinstance(result.get("authorized_personas"), list)
+        and set(result["authorized_personas"]) <= {"agent-task-investigator"},
+        "Chat advertised an unsupported hosted persona",
+    )
+    common.require(
+        result.get("history_ready") in {"unknown", "no"},
+        "History readiness must remain evidence based",
+    )
+    if result.get("enabled") and result.get("history_configured"):
+        history = detail(cli.json(["chat", "list", "--page-size", "1"]))
+        common.require(
+            history.get("tenant_id") == result.get("tenant_id")
+            and history.get("user_id") == result.get("user_id"),
+            "Chat history escaped selected identity",
+        )
+        common.require(
+            isinstance(history.get("items"), list) and len(history["items"]) <= 1,
+            "Chat history page is unbounded",
+        )
+    evidence.update(
+        cases=["chat-readiness", "owned-history-page"],
+        qualification="read-only history; multi-turn dispatch acceptance held",
+    )
+
+
 SCENARIOS = {
+    "chat": chat,
     "superplane_lifecycle": superplane_lifecycle,
     "platform": platform,
     "gitlab": gitlab,
@@ -731,3 +761,9 @@ def execute(config, evidence):
         evidence["qualification"] = (
             "served CLI read/error regression; not full story acceptance"
         )
+    evidence["detail"] = {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"success", "stage", "transcript", "detail"}
+    }
+    evidence.update(stage="complete", success=True)

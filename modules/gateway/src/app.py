@@ -28,6 +28,7 @@ logger = logging.getLogger("bedrockgateway")
 UNIT_MODULES = [
     "src.domain_proxy.superplane",
     "src.auth.routes",
+    "src.auth.workspaces",  # Process-local tenant discovery/context; retain /auth legacy aliases.
     "src.auth.session_admin",
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
     "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
@@ -172,6 +173,7 @@ UNIT_MODULES = [
     # checks ORG_UPDATE as its first statement.
     "src.admin.persona_models.self_routes",
     "src.admin.persona_models.routes",
+    "src.admin.persona_models.human_task_routes",
     # Issue #5425 (PMM-07): the versioned runtime-posture mutation and its audited
     # operational rollback. A THIRD module because its gate is strictly stronger
     # than either router above: the policy-settings row carries no TenantMixin, so
@@ -229,6 +231,8 @@ UNIT_MODULES = [
     # draft_routes.py is: routes.py's guarantee is "nothing here is reachable below
     # approval authority". Guarded by tests/orchestration/test_internal_plane_guard.py.
     "src.orchestration.intake_routes",
+    "src.orchestration.chat_history",
+    "src.orchestration.chat_tasks",
 ]
 
 

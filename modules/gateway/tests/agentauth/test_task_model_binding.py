@@ -28,6 +28,11 @@ async def test_task_model_requires_explicit_transport_selection(monkeypatch):
     [
         (module.TASK_PERSONA, module.TASK_CONTRACT_REVISION, module.TASK_REQUEST_SHAPE),
         (module.TASK_CYBER_PERSONA, module.TASK_CYBER_CONTRACT_REVISION, module.TASK_CYBER_REQUEST_SHAPE),
+        *(
+            (name, profile.harness_contract_revision, profile.request_shape_sha256)
+            for name, profile in module.TASK_PERSONAS.items()
+            if name.endswith("-developer")
+        ),
     ],
 )
 async def test_task_transport_cannot_reuse_cli_probe(monkeypatch, persona, revision, shape):

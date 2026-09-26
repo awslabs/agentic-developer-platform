@@ -28,23 +28,19 @@
 # -----------------------------------------------------------------------------
 # What is deliberately NOT granted
 # -----------------------------------------------------------------------------
-# No write actions on either table. The gateway's intake modules are READERS: the
-# ingest Lambda and the chat worker are the only writers, and that is the property
-# that keeps one conversation from having two authors with different ideas of its
-# shape (`intake_session.py` has a test asserting there is no writer for state
-# production owns). Granting PutItem/UpdateItem here would make that testable
-# invariant an accident of code rather than a boundary.
+# Legacy intake rows remain read-only. Ingest and the chat worker retain ownership
+# of that shape; the gateway cannot PutItem or UpdateItem those session keys.
+# The separate Task-backed chat-* journal has static PutItem permission below,
+# guarded by its server-owned version and principal. Legacy ingest refuses those
+# journal rows, so it cannot attach an independent classifier turn to a Task.
 #
 # No `dynamodb:Scan`, and no wildcard on the Lambda resource. The readback is
 # GetItem by session id plus one Query against the resume GSI; a Scan would make a
 # cross-tenant read a matter of forgetting a filter rather than a permission error.
 # =============================================================================
 
-resource "aws_iam_role_policy" "gateway_intake_access" {
-  name = "adp-${var.environment}-policy-gateway-intake"
-  role = "adp-${var.environment}-role-gateway-service"
-
-  policy = jsonencode({
+locals {
+  gateway_intake_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
@@ -66,6 +62,17 @@ resource "aws_iam_role_policy" "gateway_intake_access" {
         ]
       },
       {
+        # Standing permission for Task-backed conversations only (#5640).
+        # No role policy is changed per task; session CAS remains server owned.
+        Sid      = "HostedTaskChatSessionsWrite"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = [module.gateway_sessions.table_arn]
+        Condition = {
+          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["chat-*"] }
+        }
+      },
+      {
         # The draft, at PK=session#<id>, SK=draft. GetItem only: no Query, because
         # the readback addresses exactly one item and a Query grant would permit
         # walking every row under a session partition.
@@ -84,6 +91,7 @@ resource "aws_iam_role_policy" "gateway_intake_access" {
         Action = [
           "kms:Decrypt",
           "kms:DescribeKey",
+          "kms:GenerateDataKey",
         ]
         Resource = [aws_kms_key.dynamodb.arn]
       },
@@ -109,6 +117,32 @@ resource "aws_iam_role_policy" "gateway_intake_access" {
       },
     ]
   })
+}
+
+# Existing inline-policy deployments retain their state address and behavior.
+moved {
+  from = aws_iam_role_policy.gateway_intake_access
+  to   = aws_iam_role_policy.gateway_intake_access[0]
+}
+
+resource "aws_iam_role_policy" "gateway_intake_access" {
+  count  = var.gateway_intake_managed_policy ? 0 : 1
+  name   = "adp-${var.environment}-policy-gateway-intake"
+  role   = "adp-${var.environment}-role-gateway-service"
+  policy = local.gateway_intake_policy
+}
+
+# Same permission document when the gateway has exhausted its inline quota.
+resource "aws_iam_policy" "gateway_intake_access" {
+  count  = var.gateway_intake_managed_policy ? 1 : 0
+  name   = "adp-${var.environment}-policy-gateway-intake"
+  policy = local.gateway_intake_policy
+}
+
+resource "aws_iam_role_policy_attachment" "gateway_intake_access" {
+  count      = var.gateway_intake_managed_policy ? 1 : 0
+  role       = "adp-${var.environment}-role-gateway-service"
+  policy_arn = aws_iam_policy.gateway_intake_access[0].arn
 }
 
 # -----------------------------------------------------------------------------

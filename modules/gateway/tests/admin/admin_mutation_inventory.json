@@ -616,6 +616,13 @@
     "classification": "durable-operation"
   },
   {
+    "method": "PUT",
+    "path": "/human-principals/{user_id}/task-policy",
+    "module": "src.admin.persona_models.human_task_routes",
+    "endpoint": "put_policy",
+    "classification": "existing-writer"
+  },
+  {
     "method": "DELETE",
     "path": "/me/bedrock-routing/selection",
     "module": "src.admin.bedrock_routing.self_routes",

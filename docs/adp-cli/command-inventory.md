@@ -309,3 +309,18 @@ See [canonical platform facade](platform.md).
 | `adp platform teardown apply` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file` |
 
 Superplane lifecycle #5638 adds `workspace delete`, `provider-connection create|show|validate|rotate|revoke`, `cluster list --eligible-for workspace-sharing`, `deploy profiles --workspace`, and `events --workspace [--follow --after]`. Deployment create/preview accepts `--namespace` as an assertion. See [the lifecycle contract](superplane.md#lifecycle-review-and-scoped-events-5638) for required mutation flags and source-versus-live qualification.
+| `adp chat status` |  | `--json` |
+| `adp chat start` |  | `--dry-run`, `--json`, `--message-file`, `--persona`, `--request-id`, `--yes` |
+| `adp chat resume` | `session_id` | `--answer-file`, `--dry-run`, `--json`, `--reply-to`, `--request-id`, `--yes` |
+| `adp chat list` |  | `--json`, `--page`, `--page-size` |
+| `adp chat show` |  | `--json`, `--session` |
+| `adp chat watch` |  | `--interval`, `--json`, `--session`, `--task-id`, `--timeout` |
+| `adp chat export` |  | `--json`, `--output`, `--session` |
+
+Hosted coding (#5516) adds `adp agent trigger --repo --issue --persona
+--snapshot-file --instructions-file --request-id [--dry-run|--yes] [--timeout]
+[--json]`. Both Claude and Codex developer personas submit through the existing
+Task API using the selected human login and standing repository enrollment.
+`agent status|detail|state|ping|logs|wait|steer|abort` also accept canonical `tsk_`
+handles; Task pause/resume are explicitly unavailable. See [hosted coding](hosted-coding.md)
+for repository snapshots, deterministic patch results and E42 qualification limits.

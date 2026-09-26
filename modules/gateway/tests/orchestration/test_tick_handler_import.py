@@ -71,11 +71,17 @@ from unittest.mock import AsyncMock
 from src.agentauth.model_policy import _resolve_active_allowlist_policy
 from src.shared.config import get_settings
 
+class Rows(list):
+    def all(self):
+        return self
+
 async def check():
     for kind in ('human', 'service_account'):
+        user = SimpleNamespace(id='user-a', org_id='aws-e', team_id='', status='active')
         db = SimpleNamespace(
-            scalar=AsyncMock(return_value=SimpleNamespace(id='user-a', team_id='', status='active')),
-            scalars=AsyncMock(return_value=[]),
+            scalar=AsyncMock(return_value=user),
+            execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: (user, False))),
+            scalars=AsyncMock(return_value=Rows()),
         )
         result = await _resolve_active_allowlist_policy(
             db, tenant_id='aws-e', principal_kind=kind, principal_id='user-a',

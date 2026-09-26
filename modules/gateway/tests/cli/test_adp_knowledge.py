@@ -239,3 +239,13 @@ def test_interrupted_mutation_is_unknown_not_detached_watch(client, monkeypatch,
     assert result["error"]["code"] == "unknown_mutation_outcome"
     assert result["detail"]["mutation_may_have_completed"] is True
     assert "detached" not in result["detail"]
+
+
+def test_legacy_complete_asset_can_be_discovered_without_claiming_usability(client):
+    client.request.return_value = {"items": [asset_payload(status="complete")], "total": 1, "page": 1, "page_size": 1, "has_more": False}
+    result = run(client, "knowledge", "list", "--page-size", "1")
+    assert result["status"] == "ok"
+    assert result["detail"]["items"][0]["status"] == "complete"
+    observed = k.status_result({"asset_id": ASSET_ID, "status": "complete", "stages": []})
+    assert observed["status"] == "pending"
+    assert observed["detail"]["usable"] is False

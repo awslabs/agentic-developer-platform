@@ -778,6 +778,7 @@ def personal_aws_stage(cfg, ports):
 # The dispatcher purpose each case is driven by. A purpose with no shipped script
 # is an implementation gap: the case fails naming the module that must be written.
 JOURNEY_DRIVERS = {
+    "E42": "hosted_coding",
     "E06": "bedrock_routing",
     "E07": "bedrock_rungs",
     "E08": "personal_inference",
@@ -803,6 +804,7 @@ JOURNEY_DRIVERS = {
     "E21": "story_usage",
     "E22": "story_activity",
     "E25": "story_research",
+    "E40": "story_chat",
     "E23": "tenant_smoke",
     "E27": "tenant_isolation",
     "E29": "story_hierarchy",

@@ -1009,6 +1009,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E19",
         "E28",
         "E39",
+        "E42",
         "E25",
         "E27",
     }
@@ -8431,6 +8432,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E19",
         "E28",
         "E39",
+        "E42",
         "E25",
         "E27",
     }
@@ -8454,6 +8456,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E29",
         "E31",
         "E26",
+        "E40",
         "E41",
         "E36",
         "E35",
@@ -10257,9 +10260,11 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E31",
         "E25",
         "E26",
+        "E40",
         "E41",
         "E28",
         "E39",
+        "E42",
         "E36",
         "E29",
         "E35",
@@ -10821,6 +10826,295 @@ def test_superplane_lifecycle_story_is_bounded_preview(tmp_path):
     cli.run.assert_not_called()
 
 
+def test_chat_read_scenario_is_nightly_and_read_only(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "tenant_id": "tenant",
+                "user_id": "user",
+                "enabled": True,
+                "history_configured": True,
+                "history_ready": "unknown",
+                "general_turns_supported": False,
+                "authorized_personas": [],
+            },
+        },
+        {
+            "status": "ok",
+            "detail": {"tenant_id": "tenant", "user_id": "user", "items": []},
+        },
+    ]
+    module.chat(cli, {})
+    assert cli.json.call_args_list[1].args[0] == ["chat", "list", "--page-size", "1"]
+    assert stages.JOURNEY_DRIVERS["E40"] in bundle.purposes()
+
+
+def test_coding_nightly_fixture_is_explicit_and_defaults_blocked(tmp_path):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    assert not module.fixture_valid({})
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo"},
+        instructions="bounded issue",
+    )
+    assert module.fixture_valid(fixture)
+    for changes in (
+        {"max_dispatches": 2},
+        {"max_task_usd": 1.01},
+        {"enrollment_verified": False},
+        {"shared_budget_authorized": False},
+        {"instructions": "x" * 4097},
+        {"instructions": "eyJabcdefgh.abcdefgh.abcdefgh"},
+    ):
+        assert not module.fixture_valid({**fixture, **changes})
+    assert "E42" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert cases.HUMAN_TASK_CODING not in config.fixture_classes(VALID)
+
+
+def test_coding_lost_cli_receipt_recovers_owned_task_and_cleans_up(
+    tmp_path, monkeypatch
+):
+    import json
+
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    task_id = "tsk_12345678-1234-4123-8123-123456789abc"
+    calls = []
+    work = tmp_path / "run"
+    work.mkdir()
+
+    class Cli:
+        def __init__(self, executable, env, transcript, **kwargs):
+            self.home = Path(env["HOME"])
+
+        def json(self, argv, **kwargs):
+            if "--dry-run" in argv:
+                return {"status": "dry_run"}
+            journal = self.home / ".adp/state/hosted-tasks"
+            journal.mkdir(parents=True)
+            (journal / "receipt.json").write_text(
+                json.dumps(
+                    {
+                        "artifact_id": "art-fixture",
+                        "task_id": task_id,
+                        "fingerprint": "exact",
+                    }
+                )
+            )
+            raise RuntimeError("CLI stdout lost after durable acceptance")
+
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 0, {
+                "detail": {"status": "cancelled" if "wait" in argv else "accepted"}
+            }
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {})
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo", "issue": 42},
+        instructions="bounded edit",
+    )
+    evidence = {"transcript": []}
+    with pytest.raises(RuntimeError, match="stdout lost"):
+        module.execute(
+            {
+                "human_task_coding": fixture,
+                "cli_path": "/fixture/adp",
+                "gateway_url": "https://gateway",
+                "work_dir": str(work),
+            },
+            evidence,
+        )
+    assert evidence["task_id"] == task_id
+    assert evidence["acceptance_reconciled"] is True
+    assert evidence["cleanup_status"] == "cancelled"
+    assert [argv[1] for argv in calls] == ["abort", "wait"]
+    recovery = Path(evidence["recovery_path"])
+    assert recovery.exists() and recovery.stat().st_mode & 0o777 == 0o600
+    record = json.loads(recovery.read_text())
+    assert (
+        record["task_id"] == task_id
+        and record["journal"]["artifact_id"] == "art-fixture"
+    )
+    assert record["phase"] == "cancelled"
+    assert "access_token" not in record
+
+
+def test_coding_acceptance_replay_keeps_same_key_and_retains_unknown(tmp_path):
+    import json
+
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    journal = tmp_path / ".adp/state/hosted-tasks"
+    journal.mkdir(parents=True)
+    (journal / "receipt.json").write_text(
+        json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"})
+    )
+    task_id = "tsk_12345678-1234-4123-8123-123456789abc"
+    trigger = ["agent", "trigger", "--request-id", "stable-request"]
+    calls = []
+
+    class Cli:
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 4, {"detail": {"task_id": task_id}}
+
+    assert module.reconcile_acceptance(Cli(), trigger, tmp_path) == task_id
+    assert calls == [[*trigger, "--yes"]]
+
+    class Broken:
+        def run(self, argv, **kwargs):
+            raise RuntimeError("still unavailable")
+
+    assert module.reconcile_acceptance(Broken(), trigger, tmp_path) is None
+    assert module.local_receipt(tmp_path)["artifact_id"] == "art-fixture"
+
+
+def test_coding_unknown_acceptance_survives_worker_cleanup_in_report(
+    tmp_path, monkeypatch, capsys
+):
+    import shutil
+
+    module, remote_common = shipped_script(tmp_path, "hosted_coding")
+    work = tmp_path / "worker-run"
+    work.mkdir()
+    calls = []
+
+    class Cli:
+        def __init__(self, executable, env, transcript, **kwargs):
+            self.home = Path(env["HOME"])
+
+        def json(self, argv, **kwargs):
+            if "--dry-run" in argv:
+                return {"status": "dry_run"}
+            journal = self.home / ".adp/state/hosted-tasks"
+            journal.mkdir(parents=True)
+            (journal / "receipt.json").write_text(
+                json.dumps({"artifact_id": "art-fixture", "fingerprint": "exact"})
+            )
+            raise RuntimeError("acceptance receipt unavailable")
+
+        def run(self, argv, **kwargs):
+            calls.append(argv)
+            return 5, None
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(
+        remote_common,
+        "session_tokens",
+        lambda cfg: {"access_token": "session-must-not-escape"},
+    )
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    fixture = dict(
+        enrollment_verified=True,
+        shared_budget_authorized=True,
+        max_dispatches=1,
+        max_task_usd=1,
+        scenario="cancel",
+        persona="agent-task-codex-developer",
+        snapshot={"repository": "owner/repo", "issue": 42},
+        instructions="Fix exactly this issue.\nPreserve this input.",
+    )
+    evidence = {"success": False, "transcript": []}
+    with pytest.raises(remote_common.RemoteError, match="acceptance is unknown"):
+        module.execute(
+            {
+                "human_task_coding": fixture,
+                "cli_path": "/fixture/adp",
+                "gateway_url": "https://gateway",
+                "work_dir": str(work),
+            },
+            evidence,
+        )
+    remote_common.emit(evidence)
+    emitted = capsys.readouterr().out
+    assert (
+        len(emitted.encode()) < 24000
+    )  # SSM inline output limit; no full repository snapshot.
+    assert "session-must-not-escape" not in emitted
+    document = json.loads(emitted)
+    matrix = {"E42": {"status": cases.NOT_RUN}}
+    ctx = {
+        "document": {"instance_id": "i-fixture"},
+        "matrix": matrix,
+        "transcript": [],
+        "correlation": {},
+        "fault": "none",
+        "record": lambda case_id, status, detail: cases.record(
+            matrix, case_id, status, detail
+        ),
+    }
+    stages.journeys_stage(
+        {}, {"journey": lambda purpose: lambda instance, ctx: document}
+    )(ctx)
+    assert matrix["E42"]["status"] == cases.FAILED
+    paths = report.write(
+        tmp_path / "published",
+        published_report(matrix=matrix),
+        matrix,
+        "adp-e2e-20260915-143022-a1b2c3",
+    )
+    shutil.rmtree(work)  # Model the disposable EC2 instance disappearing.
+    retained = json.loads(Path(paths["report"]).read_text())["cases"][0]["detail"][
+        "recovery"
+    ]
+    assert retained["phase"] == "acceptance_unknown"
+    assert retained["task_id"] is None
+    assert retained["gateway"] == "https://gateway"
+    assert retained["submit_body"] == {
+        "schema_version": "1.0",
+        "persona": fixture["persona"],
+        "instructions": fixture["instructions"],
+        "inputs": {"repository_snapshot_artifact": "art-fixture"},
+        "artifact_ids": ["art-fixture"],
+        "external_reference": "owner/repo#42",
+    }
+    assert retained["request_id"] == evidence["request_id"]
+    assert calls[0][calls[0].index("--request-id") + 1] == retained["request_id"]
+
+
+def test_coding_marks_success_only_after_execute_returns_and_exports_details(
+    tmp_path, monkeypatch
+):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    monkeypatch.setattr(
+        module,
+        "_execute",
+        lambda cfg, evidence: evidence.update(
+            task_id="tsk-fixture", terminal_status="completed"
+        ),
+    )
+    evidence = {"success": False}
+    module.execute({}, evidence)
+    assert evidence["success"] is True
+    assert evidence["detail"]["task_id"] == "tsk-fixture"
+    assert evidence["detail"]["terminal_status"] == "completed"
+
+
 @pytest.mark.parametrize("outcome", ["absent", "owned", "foreign", "denied"])
 def test_pending_launch_cleanup_discovers_only_exact_attempt(outcome):
     attempt = "adp-e2e-20260926-012131-df70e8-a1"
@@ -10931,3 +11225,380 @@ def test_pending_launch_cleanup_finishes_discovery_before_any_termination(
         if operation == "terminate_instances"
     ]
     assert terminated == ([] if foreign_last_page else [["i-0ab1"], ["i-0ab2"]])
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_story_read_script_reports_real_completion(
+    tmp_path, monkeypatch, capsys, fails
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    payload = tmp_path / "read.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "mode": "capabilities",
+                "cli_path": "/served/adp",
+                "gateway_url": "https://adp.example",
+                "region": "us-east-1",
+                "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+            }
+        )
+    )
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+    monkeypatch.setattr(common, "session_tokens", lambda _: {})
+    monkeypatch.setattr(script, "_write_session", lambda *args: None)
+    monkeypatch.setattr(common, "Cli", lambda *args, **kwargs: object())
+
+    def scenario(cli, evidence):
+        if fails:
+            raise common.RemoteError("actual CLI assertion failed")
+        evidence["operation_count"] = 65
+
+    monkeypatch.setitem(script.SCENARIOS, "capabilities", scenario)
+    code = common.run_script(script.execute, [str(payload)])
+    emitted = json.loads(capsys.readouterr().out)
+    assert code == int(fails)
+    assert emitted["success"] is not fails
+    if not fails:
+        assert emitted["stage"] == "complete"
+        assert emitted["detail"]["operation_count"] == 65
+        assert "not full story acceptance" in emitted["detail"]["qualification"]
+    else:
+        assert emitted["error"] == "actual CLI assertion failed"
+
+
+def test_remote_exception_after_success_cannot_emit_green(
+    tmp_path, monkeypatch, capsys
+):
+    _, common = shipped_script(tmp_path, "story_reads")
+    payload = tmp_path / "failure.json"
+    payload.write_text("{}")
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+
+    def execute(config, evidence):
+        evidence["success"] = True
+        raise common.RemoteError("cleanup failed")
+
+    assert common.run_script(execute, [str(payload)]) == 1
+    assert json.loads(capsys.readouterr().out)["success"] is False
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_tenant_script_completion_requires_session_preservation(
+    tmp_path, monkeypatch, capsys, cleanup_fails
+):
+    script, common = shipped_script(tmp_path, "tenant_isolation")
+    payload = tmp_path / "tenant.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "mode": "smoke",
+                "cli_path": "/served/adp",
+                "gateway_url": "https://adp.example",
+                "region": "us-east-1",
+                "sts_endpoint": "https://sts.us-east-1.amazonaws.com",
+                "session_ref": str(tmp_path / "session.json"),
+            }
+        )
+    )
+    monkeypatch.setattr(common, "assert_owned_instance", lambda _: None)
+    monkeypatch.setattr(common, "load_session", lambda _: {})
+    monkeypatch.setattr(common, "session_tokens", lambda _: {})
+
+    def write_session(home, *args):
+        target = home / ".bedrock-gateway"
+        target.mkdir()
+        (target / "tokens.json").write_text("{}")
+
+    monkeypatch.setattr(script, "_write_session", write_session)
+    monkeypatch.setattr(common, "Cli", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        script, "smoke", lambda cli, evidence: evidence.update(tenant_count=2)
+    )
+
+    def save(*args, **kwargs):
+        if cleanup_fails:
+            raise common.RemoteError("session preservation failed")
+
+    monkeypatch.setattr(common, "save_session", save)
+    assert common.run_script(script.execute, [str(payload)]) == int(cleanup_fails)
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["success"] is not cleanup_fails
+    if not cleanup_fails:
+        assert emitted["detail"]["tenant_count"] == 2
+
+
+def test_recovery_negative_scenario_accepts_actual_cli_nonzero_exit(
+    tmp_path, monkeypatch
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    replies = iter(
+        [
+            (0, json.dumps({"status": "ok", "detail": {"flows": []}}), ""),
+            (1, json.dumps({"status": "failed", "error": {"code": "usage_error"}}), ""),
+        ]
+    )
+    monkeypatch.setattr(common, "bounded", lambda *args, **kwargs: next(replies))
+    evidence = {}
+    cli = common.Cli("adp", {}, [])
+    script.recovery(cli, evidence)
+    assert evidence["malformed_target_refused"] is True
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [None, "lost_first_receipt", "unknown_second", "wrong_fixture", "watch_pending"],
+)
+def test_shipped_hosted_chat_two_turns_and_durable_unknown(
+    tmp_path, monkeypatch, fault
+):
+    module, remote_common = shipped_script(tmp_path, "hosted_chat")
+    work = tmp_path / "worker"
+    work.mkdir()
+    requests = {}
+    attempts = []
+    sid = "chat-fixture"
+    marker = [None]
+    all_messages = []
+    cleanup_calls = []
+
+    class Cli:
+        def __init__(self, binary, env, transcript, **kwargs):
+            assert env["BG_CONFIG_DIR"].startswith(env["HOME"])
+            assert env["ADP_TENANT"] == "fixture-tenant"
+
+        def json(self, argv, **kwargs):
+            if argv[:2] == ["chat", "status"]:
+                return {
+                    "detail": {
+                        "tenant_id": "fixture-tenant",
+                        "user_id": "other"
+                        if fault == "wrong_fixture"
+                        else "fixture-user",
+                        "general_turns_supported": True,
+                        "authorized_personas": ["agent-task-investigator"],
+                    }
+                }
+            if "--dry-run" in argv:
+                return {
+                    "status": "dry_run",
+                    "detail": {"session_id": sid, "dispatched": False},
+                }
+            if argv[:2] == ["chat", "watch"]:
+                if fault == "watch_pending":
+                    raise remote_common.RemoteError(
+                        "Task did not finish before timeout"
+                    )
+                task_id = argv[argv.index("--task-id") + 1]
+                return {
+                    "detail": {
+                        "session_id": sid,
+                        "matched_task_id": task_id,
+                        "answer_completion_verified": True,
+                        "messages": list(all_messages),
+                    }
+                }
+            if argv[:2] == ["chat", "show"]:
+                return {"detail": {"session_id": sid, "messages": list(all_messages)}}
+            raise AssertionError(argv)
+
+        def run(self, argv, **kwargs):
+            if argv[0] == "agent":
+                cleanup_calls.append(argv)
+                return 0, {"detail": {"status": "cancelled"}}
+            if argv[:2] == ["chat", "show"]:
+                return 0, {
+                    "detail": {"session_id": sid, "messages": list(all_messages)}
+                }
+            assert argv[:2] in (["chat", "start"], ["chat", "resume"])
+            request_id = argv[argv.index("--request-id") + 1]
+            attempts.append(request_id)
+            if fault == "unknown_second" and argv[1] == "resume":
+                return 4, {"detail": {"request_id": request_id, "outcome": "unknown"}}
+            if request_id not in requests:
+                index = len(requests)
+                task_id = f"tsk_12345678-1234-4123-8123-{index:012d}"
+                flag = "--message-file" if index == 0 else "--answer-file"
+                content = Path(argv[argv.index(flag) + 1]).read_text()
+                if index == 0:
+                    marker[0] = re.search(r"memory-[0-9a-f]+", content).group()
+                else:
+                    assert (
+                        marker[0] not in content
+                    )  # Recall must come from earlier context.
+                all_messages.extend(
+                    [
+                        {"role": "user", "content": content, "task_id": task_id},
+                        {
+                            "role": "assistant",
+                            "content": "NOTED" if index == 0 else marker[0],
+                            "task_id": task_id,
+                        },
+                    ]
+                )
+                requests[request_id] = {
+                    "request_id": request_id,
+                    "session_id": sid,
+                    "task_id": task_id,
+                }
+                if fault == "lost_first_receipt" and index == 0:
+                    return 4, None
+            return 4, {"detail": requests[request_id]}
+
+    monkeypatch.setattr(remote_common, "Cli", Cli)
+    monkeypatch.setattr(
+        remote_common,
+        "clean_env",
+        lambda cfg, **kwargs: {key: str(value) for key, value in kwargs.items()},
+    )
+    monkeypatch.setattr(
+        remote_common, "session_tokens", lambda cfg: {"access_token": "must-not-escape"}
+    )
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    cfg = {
+        "gateway_url": "https://gateway",
+        "cli_path": "/installed/adp",
+        "work_dir": str(work),
+        "test_user_id": "fixture-login",
+        "evaluation_id": "stable-chat-evaluation",
+        "human_task_chat": {
+            "enrollment_verified": True,
+            "shared_budget_authorized": True,
+            "max_tasks": 2,
+            "max_task_usd": 0.25,
+            "login_user_id": "fixture-login",
+            "canonical_user_id": "fixture-user",
+            "tenant_id": "fixture-tenant",
+        },
+    }
+    cfg["recovery_plan"] = module.recovery_plan(cfg)
+    evidence = {"success": False, "transcript": []}
+    if fault in {"unknown_second", "wrong_fixture", "watch_pending"}:
+        with pytest.raises(remote_common.RemoteError):
+            module.execute(cfg, evidence)
+        assert evidence["success"] is False
+        if fault == "wrong_fixture":
+            assert not attempts
+            return
+        if fault == "watch_pending":
+            assert len(requests) == 1 and len(evidence["detail"]["turns"]) == 1
+            assert [args[1] for args in cleanup_calls] == ["abort", "wait"]
+            assert all(
+                args[args.index("--run") + 1]
+                == evidence["detail"]["turns"][0]["task_id"]
+                for args in cleanup_calls
+            )
+            assert evidence["detail"]["turns"][0]["phase"] == "cancelled"
+            return
+        record = evidence["detail"]["turns"][1]
+        assert record["phase"] == "acceptance_unknown"
+        assert record["endpoint"] == "/chat/sessions/chat-fixture/turns"
+        assert record["body"]["request_id"] == record["request_id"]
+        assert record["body"]["message"].startswith("What label")
+        assert len(set(attempts)) == 2  # Never start a replacement turn.
+        import shutil
+
+        shutil.rmtree(work)
+        retained = json.loads(json.dumps(remote_common.redact(evidence)))
+        assert retained["detail"]["turns"][1] == record
+    else:
+        module.execute(cfg, evidence)
+        assert evidence["success"] is True
+        assert evidence["detail"]["context_recalled"] is True
+        assert len(requests) == 2 and len(set(attempts)) == 2
+        assert attempts[0].startswith("chatdiag-") and attempts[0].endswith("-0")
+        assert all(row["phase"] == "completed" for row in evidence["detail"]["turns"])
+        rerun = {"success": False, "transcript": []}
+        module.execute(cfg, rerun)
+        assert (
+            rerun["success"] is True and len(requests) == 2 and len(set(attempts)) == 2
+        )
+        assert [row["request_id"] for row in rerun["detail"]["turns"]] == [
+            row["request_id"] for row in evidence["detail"]["turns"]
+        ]
+    encoded = json.dumps(remote_common.redact(evidence))
+    assert "must-not-escape" not in encoded and len(encoded.encode()) < 24000
+
+
+def test_hosted_chat_fixture_is_explicit_and_not_e40(tmp_path):
+    module, _ = shipped_script(tmp_path, "hosted_chat")
+    assert not module.valid_fixture({})
+    assert "hosted_chat" not in stages.JOURNEY_DRIVERS.values()
+    assert "hosted_chat" in bundle.purposes()
+
+
+@pytest.mark.parametrize(
+    "fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"]
+)
+def test_hosted_chat_intent_precedes_ssm_and_survives_instance_loss(tmp_path, fault):
+    from tests.e2e.cli_uplift.remote.chat_plan import recovery_plan
+
+    cfg = {
+        "evaluation_id": "durable-chat",
+        "gateway_url": "https://gateway",
+        "test_user_id": "login",
+        "human_task_chat": {
+            "tenant_id": "tenant",
+            "canonical_user_id": "human",
+            "max_tasks": 2,
+            "max_task_usd": 0.25,
+        },
+    }
+    cfg["recovery_plan"] = recovery_plan(cfg)
+    durable = []
+    calls = []
+
+    def push(document, *, critical):
+        assert critical is True
+        if fault == "sink_failure":
+            raise RuntimeError("durable sink unavailable")
+        durable.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "chat", on_change=push)
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            calls.append("ssm")
+            assert durable[-1]["diagnostic_intents"][
+                "hosted_chat:durable-chat"
+            ] == recovery_plan(cfg)
+            raise RuntimeError("EC2 terminated after acceptance, before any result")
+
+    worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
+    if fault == "changed_plan":
+        cfg["recovery_plan"]["turns"][0]["message"] = "replacement paid request"
+    with pytest.raises((RuntimeError, ValueError, PortError)):
+        worker(
+            "i-owned",
+            "hosted_chat",
+            cfg,
+            manifest=None if fault == "no_manifest" else manifest,
+        )
+    if fault == "instance_loss":
+        assert calls == ["install", "ssm"]
+        # Worker state and output are absent. An independent caller can still
+        # reconstruct exactly the original requests from the external snapshot.
+        import shutil
+
+        shutil.rmtree(tmp_path)
+        retained = durable[-1]["diagnostic_intents"]["hosted_chat:durable-chat"]
+        assert retained["turns"] == recovery_plan(cfg)["turns"]
+        assert len({turn["request_id"] for turn in retained["turns"]}) == 2
+    else:
+        assert calls == []
+
+
+def test_diagnostic_manifest_refuses_replacement_request_and_local_only_sink(tmp_path):
+    plan = {"evaluation_id": "same", "turns": [{"request_id": "original"}]}
+    local = cleanup.Manifest(tmp_path / "local" / "manifest.json", "chat")
+    with pytest.raises(ValueError, match="external durable"):
+        local.record_diagnostic("hosted_chat", plan)
+    manifest = cleanup.Manifest(
+        tmp_path / "durable" / "manifest.json", "chat", on_change=lambda *a, **k: None
+    )
+    manifest.record_diagnostic("hosted_chat", plan)
+    manifest.record_diagnostic("hosted_chat", plan)
+    with pytest.raises(ValueError, match="different inputs"):
+        manifest.record_diagnostic(
+            "hosted_chat", {**plan, "turns": [{"request_id": "replacement"}]}
+        )

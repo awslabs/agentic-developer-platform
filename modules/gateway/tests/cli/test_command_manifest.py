@@ -163,6 +163,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-budget.py", ["adp"]),
         ("adp-ratelimit.py", ["adp"]),
         ("adp-platform.py", ["adp", "platform"]),
+        ("adp-chat.py", ["adp", "chat"]),
         ("adp-doctor.py", ["adp"]),
     ]
     checked_helpers = {helper for helper, _prefix in helper_prefixes} | {
@@ -447,7 +448,7 @@ def test_http_mutations_have_capabilities_and_setup_declares_provider_variants(c
                 assert row["command"] in {"adp agent " + action for action in ("pause", "resume", "steer", "abort")}
                 assert row["helper"] == "adp-agent.py"
                 assert not row["required_capabilities"]  # actual runtime capability, not invented global IDs
-            elif row.get("authentication") == "task-service-principal":
+            elif row.get("authentication") in {"task-service-principal", "task-human-standing-policy"}:
                 assert row["required_oauth_scopes"], row["command"]
                 assert not row["required_capabilities"], "Task service tokens must not use human discovery"
             else:

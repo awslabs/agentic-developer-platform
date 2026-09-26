@@ -71,7 +71,10 @@ def _valid_response_block(block, request):
 async def invoke_task_messages(db, *, identity, binding, target, request, operation_id):
     credentials = None
     if not target.is_platform:
-        credentials = await bedrock_destination_signer.get_credentials(db, target, user_id=identity.canonical_principal)
+        from src.tasks.human_authority import principal_owner
+
+        _, owner_id = principal_owner(identity.canonical_principal)
+        credentials = await bedrock_destination_signer.get_credentials(db, target, user_id=owner_id)
     kwargs = {
         "region_name": target.region or get_settings().aws_region,
         "config": Config(connect_timeout=5, read_timeout=120, retries={"total_max_attempts": 1}),
@@ -364,8 +367,8 @@ class TaskModel:
         if payload_digest(request) != request_digest:
             raise TaskStoreError("model request digest mismatch")
         task = await run_in_threadpool(self._current, identity)
-        if sdk_request and task["persona"] != "agent-task-cyber":
-            raise TaskStoreError("SDK model request requires cyber persona")
+        if sdk_request and task["persona"] not in {"agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"}:
+            raise TaskStoreError("SDK model request requires an SDK Task persona")
         if len(json.dumps(request, ensure_ascii=False).encode()) > 65536:
             raise TaskStoreError("model request exceeds task frame bound")
         existing = await run_in_threadpool(self._read, identity.task_id, turn_id)
