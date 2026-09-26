@@ -1,6 +1,16 @@
 # Build from repository root. Release tooling must supply a reviewed digest-pinned
 # Python 3.12 base; this component must never share the Go worker's credentials.
 ARG PYTHON_IMAGE
+FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS kubectl-builder
+WORKDIR /src
+RUN curl -fsSL https://github.com/kubernetes/kubernetes/archive/refs/tags/v1.31.4.tar.gz -o /tmp/kubernetes.tar.gz && \
+    echo 'ff3a2e9cae3b4734be4a6cdfeb933830c63219eaeda05cc4e59b7559fcde52b0  /tmp/kubernetes.tar.gz' | sha256sum -c - && \
+    tar -xzf /tmp/kubernetes.tar.gz --strip-components=1 && rm /tmp/kubernetes.tar.gz
+COPY modules/domain-apps/superplane/executor/kubectl-build /build-tools
+RUN git apply /build-tools/dependencies.patch && \
+    GOTOOLCHAIN=local GOWORK=off go list -mod=readonly -deps ./cmd/kubectl > /dev/null
+RUN --network=none mkdir /out && GOTOOLCHAIN=local sh /build-tools/build.sh
+
 FROM ${PYTHON_IMAGE} AS tools
 # Tool installation happens only in this remote image build. Linux/amd64 is
 # explicit; another architecture must add its reviewed artifacts first.
@@ -12,11 +22,7 @@ WORKDIR /tools
 RUN curl --fail --silent --show-error --location \
       https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip && \
     echo '186e0145f5e5f2eb97cbd785bc78f21bae4ef15119349f6ad4fa535b83b10df8  terraform.zip' | sha256sum -c - && \
-    unzip terraform.zip terraform && chmod 0755 terraform && \
-    curl --fail --silent --show-error --location \
-      https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl -o kubectl && \
-    echo '298e19e9c6c17199011404278f0ff8168a7eca4217edad9097af577023a5620f  kubectl' | sha256sum -c - && \
-    chmod 0755 kubectl
+    unzip terraform.zip terraform && chmod 0755 terraform
 # Pin both the AWS CLI version and the official AWS signing key fingerprint.
 # A keyserver response cannot replace that identity or approve unsigned bytes.
 RUN curl --fail --silent --show-error --location \
@@ -51,7 +57,9 @@ RUN /opt/executor/bin/python -c \
 FROM ${PYTHON_IMAGE} AS runtime
 COPY --from=build /opt/executor /opt/executor
 COPY --from=tools /tools/terraform /usr/local/bin/terraform
-COPY --from=tools /tools/kubectl /usr/local/bin/kubectl
+COPY --from=kubectl-builder /out/kubectl /usr/local/bin/kubectl
+COPY --from=kubectl-builder /src/LICENSES /usr/share/licenses/superplane-kubectl/upstream
+COPY --from=kubectl-builder /build-tools /usr/share/licenses/superplane-kubectl/build
 COPY --from=tools /opt/aws-cli /opt/aws-cli
 RUN ln -s /opt/aws-cli/v2/current/bin/aws /usr/local/bin/aws && \
     mkdir -p /var/lib/superplane-lifecycle && \
