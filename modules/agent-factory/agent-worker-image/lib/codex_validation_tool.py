@@ -1,8 +1,8 @@
 """Local Task validation tool; paths and commands come only from host binding.
 
-Register through ADP_TASK_TOOL_ROUTES as local:lib.codex_validation_tool.create.
-The trusted workspace provisioner writes ADP_CODEX_VALIDATION_BINDING_FILE for one
-Task attempt. This module does not infer repository authority from task prose.
+Provisioned repository workspaces bind approved checks directly through the host.
+Explicit host fixtures can also register local:lib.codex_validation_tool.create.
+This module does not infer repository authority from task prose.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ class TaskValidationTool:
         expected = {"schema_version", "attempt", "repository_path", "checks"}
         if (
             not isinstance(binding, dict)
-            or set(binding) != expected
+            or set(binding) not in (expected, expected | {"repository_binding"})
             or binding["schema_version"] != "1.0"
         ):
             raise TaskRunClientError("Invalid host validation binding")
@@ -54,6 +54,8 @@ class TaskValidationTool:
             or response.get("task", {}).get("tool_grants", []).count("validation.run") != 1
         ):
             raise TaskRunClientError("Validation tool authority could not be confirmed")
+        if "repository_binding" in self.binding and response.get("task", {}).get("repository_binding") != self.binding["repository_binding"]:
+            raise TaskRunClientError("Validation repository or check policy changed")
 
     def invoke(self, body):
         if (

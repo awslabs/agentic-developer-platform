@@ -7,6 +7,7 @@ before fetching or publishing. This module grants neither a token nor merge.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Literal
 
@@ -17,6 +18,24 @@ class TaskRepositoryPolicyError(ValueError):
     pass
 
 
+class TaskValidationCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    image: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    argv: list[str] = Field(min_length=1, max_length=64)
+    timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    memory_mb: int = Field(default=512, ge=64, le=8192)
+    cpus: int = Field(default=1, ge=1, le=8)
+    max_output_bytes: int = Field(default=16384, ge=1, le=16384)
+
+    @field_validator("argv")
+    @classmethod
+    def arguments(cls, value):
+        if any(not arg or "\x00" in arg or len(arg) > 4096 for arg in value):
+            raise ValueError("invalid validation arguments")
+        return value
+
+
 class TaskRepositoryBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     provider: Literal["github", "gitlab"]
@@ -24,6 +43,16 @@ class TaskRepositoryBinding(BaseModel):
     repository_id: str = Field(min_length=1, max_length=32, pattern=r"^[1-9][0-9]*$")
     repository: str = Field(min_length=3, max_length=512)
     base_branch: str = Field(min_length=1, max_length=255)
+    validation_checks: list[TaskValidationCheck] = Field(default_factory=list, max_length=32)
+
+    @field_validator("validation_checks")
+    @classmethod
+    def checks(cls, value):
+        if len({check.name for check in value}) != len(value):
+            raise ValueError("duplicate validation check name")
+        if len(json.dumps([check.model_dump() for check in value]).encode()) > 16384:
+            raise ValueError("validation configuration exceeds bound")
+        return value
 
     @field_validator("repository")
     @classmethod
@@ -57,7 +86,9 @@ def repositories(policy):
     for alias, value in raw.items():
         if not isinstance(alias, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", alias):
             raise TaskRepositoryPolicyError("invalid repository alias")
-        result[alias] = TaskRepositoryBinding.model_validate(value).model_dump()
+        # Preserve existing bindings without checks, including their grant digest.
+        binding = TaskRepositoryBinding.model_validate(value)
+        result[alias] = binding.model_dump(exclude={"validation_checks"} if not binding.validation_checks else set())
     return result
 
 

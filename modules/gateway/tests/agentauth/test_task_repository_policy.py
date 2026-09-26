@@ -41,3 +41,42 @@ def test_task_cannot_supply_repository_authority(selector):
 def test_invalid_repository_binding_cannot_be_frozen(overrides):
     with pytest.raises(ValueError):
         freeze_repository({"repository_binding": "application"}, {"repositories": {"application": {**BINDING, **overrides}}})
+
+
+def test_validation_checks_are_frozen_from_policy_and_changes_revoke_them():
+    check = {"name": "unit", "image": "sha256:" + "a" * 64, "argv": ["python", "-m", "pytest"]}
+    policy = {"repositories": {"application": {**BINDING, "validation_checks": [check]}}}
+    frozen = freeze_repository({"repository_binding": "application", "validation_checks": [{"argv": ["untrusted"]}]}, policy)
+    admitted = frozen["binding"]["validation_checks"][0]
+    assert admitted["argv"] == ["python", "-m", "pytest"]
+    assert admitted["max_output_bytes"] == 16384
+    require_current_repository(frozen, policy)
+    check["argv"] = ["different"]
+    with pytest.raises(ValueError):
+        require_current_repository(frozen, policy)
+    assert admitted["argv"] == ["python", "-m", "pytest"]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"image": "python:latest"},
+        {"cpus": True},
+        {"timeout_seconds": 0},
+        {"max_output_bytes": 32768},
+        {"argv": ["a\x00b"]},
+        {"argv": []},
+        {"argv": ["a" * 4096] * 5},
+        {"volumes": ["/:/host"]},
+    ],
+)
+def test_validation_policy_rejects_unbounded_or_untrusted_execution_fields(override):
+    check = {"name": "unit", "image": "sha256:" + "a" * 64, "argv": ["true"], **override}
+    with pytest.raises(ValueError):
+        freeze_repository({"repository_binding": "application"}, {"repositories": {"application": {**BINDING, "validation_checks": [check]}}})
+
+
+def test_duplicate_named_checks_are_rejected():
+    check = {"name": "unit", "image": "sha256:" + "a" * 64, "argv": ["true"]}
+    with pytest.raises(ValueError):
+        freeze_repository({"repository_binding": "application"}, {"repositories": {"application": {**BINDING, "validation_checks": [check, check]}}})

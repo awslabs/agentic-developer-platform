@@ -109,6 +109,7 @@ class TaskRunClient:
         self._cyber_endpoint = os.environ.get(CYBER_TOOLS_ENDPOINT_ENV, "")
         self._local_tools = {}
         self._workspace_tools = None
+        self._validation_tool = None
         self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
         self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
         self._base = base
@@ -301,9 +302,33 @@ class TaskRunClient:
         from lib.codex_workspace_tools import WorkspaceTools
         if self._workspace_tools is not None:
             raise TaskRunClientError("Task workspace is already bound")
-        self._workspace_tools = WorkspaceTools(self, attempt=attempt, workspace=workspace, tools=tools)
+        workspace_tools = WorkspaceTools(self, attempt=attempt, workspace=workspace, tools=tools)
+        validation_tool = None
+        if "validation.run" in tools:
+            from lib.codex_validation_tool import TaskValidationTool
+            response = self.tool_authorize({"schema_version": "1.0", "attempt": attempt, "tool": "validation.run"})
+            identity = {**attempt["run"], "runtime_attempt_id": attempt["runtime_attempt_id"]}
+            task = response.get("task", {})
+            binding = task.get("repository_binding", {})
+            source = binding.get("binding", {})
+            if (response.get("schema_version") != "1.0"
+                    or any(response.get("identity", {}).get(k) != v for k, v in identity.items())
+                    or "validation.run" not in task.get("tool_grants", [])
+                    or source.get("provider") != workspace.provider
+                    or source.get("repository") != workspace.repository
+                    or source.get("repository_id") != workspace.repository_id):
+                raise TaskRunClientError("Validation workspace authority differs")
+            validation_tool = TaskValidationTool(self, {
+                "schema_version": "1.0", "attempt": attempt,
+                "repository_path": str(workspace.root), "repository_binding": binding,
+                "checks": source.get("validation_checks", []),
+            })
+        # Bind atomically: a refused validation policy must not leave usable tools.
+        self._workspace_tools, self._validation_tool = workspace_tools, validation_tool
 
     def tool(self, name: str, body: dict) -> dict:
+        if self._validation_tool is not None and name == "validation.run":
+            return self._validation_tool.invoke(body)
         if self._workspace_tools is not None and name in self._workspace_tools.tools:
             return self._workspace_tools.invoke(name, body)
         # Exact host-configured registry. The child supplies a name, never a URL.
@@ -384,4 +409,5 @@ class TaskRunClient:
             self._binding = None
             self._stopping = True
             self._workspace_tools = None
+            self._validation_tool = None
             self._local_tools.clear()

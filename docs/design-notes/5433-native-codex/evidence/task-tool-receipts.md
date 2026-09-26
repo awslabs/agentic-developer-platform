@@ -490,3 +490,28 @@ the repository handoff and read execution path through the official SDK, not a
 live generated application story or developer/reviewer acceptance. Validation
 binding, provider publication/merge, full persona completion, OTLP operations and
 live qualification remain required.
+
+## Automatically provisioned workspace validation — 2026-09-26
+
+Repository policy now carries bounded named `validation_checks` (immutable image,
+argument vector and execution limits). Existing bindings without checks retain
+their previous shape. Freezing the binding includes the check definitions; a
+policy change revokes the prior binding. Task inputs cannot supply commands.
+
+When the worker provisions a repository with `validation.run`, its client binds
+the approved checks directly to that workspace and attempt. No environment-file
+handoff is needed for this path. Binding verifies repository identity and current
+permission, rejects missing checks, and is atomic. Each check invocation verifies
+the same repository/check policy before execution and result publication. Credential
+cleanup also drops the validation binding.
+
+The new `tools_edit_validate` integration drives the actual Task admission,
+gateway, worker, official SDK, MCP tools, real Git and Docker executor through
+read → write → commit → validation. Inference and provider source are fixtures.
+Validation evidence is read from durable tool receipts and checked against the
+final local commit before normal Task completion. Worker tests separately prove
+failed check → repair → commit → passed check and policy revocation.
+
+This remains report-persona integration evidence. It does not qualify developer
+publication, provider commit mapping, Kubernetes validation execution, live model
+quality, or end-to-end story acceptance.

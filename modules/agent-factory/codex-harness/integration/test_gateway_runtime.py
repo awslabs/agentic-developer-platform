@@ -65,6 +65,7 @@ spec.loader.exec_module(worker)
         "tools_repair",
         "tools_docker",
         "tools_workspace",
+        "tools_edit_validate",
     ],
 )
 def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch, scenario):
@@ -80,9 +81,11 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     )
     tool_mode = scenario.startswith("tools")
     actual_validation = scenario == "tools_docker"
-    actual_workspace = scenario == "tools_workspace"
+    actual_workflow = scenario == "tools_edit_validate"
+    actual_workspace = scenario in {"tools_workspace", "tools_edit_validate"}
+    workflow = {}
     image = os.environ.get("ADP_CODEX_VALIDATION_IMAGE")
-    if actual_validation and not image:
+    if (actual_validation or actual_workflow) and not image:
         pytest.skip("requires an explicitly provisioned immutable Docker image")
     tool_arguments = {}
     if actual_validation:
@@ -151,22 +154,62 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             },
         )
         tool_arguments = {"path": "source.txt"}
+    tools = [tool]
+    if actual_workflow:
+        for permission, capability, properties in [
+            (
+                "repository.write",
+                "repository.write",
+                {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "expected_sha256": {"type": ["string", "null"]},
+                },
+            ),
+            ("repository.commit", "repository.write", {"message": {"type": "string"}}),
+            (
+                "validation.run",
+                "tests.run",
+                {"check": {"type": "string"}, "commit": {"type": "string"}},
+            ),
+        ]:
+            tools.append(
+                {
+                    "permission": permission,
+                    "capability": capability,
+                    "definition": {
+                        "type": "function",
+                        "name": codex_tool_name(permission),
+                        "description": "Run the admitted " + permission + " operation.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": properties,
+                            "required": list(properties),
+                            "additionalProperties": False,
+                        },
+                        "strict": False,
+                    },
+                }
+            )
     if tool_mode:
         definition = json.loads(golden["harness"]["snapshot"]["definition"])
-        definition["optionalCapabilities"] = [tool["capability"]]
+        definition["optionalCapabilities"] = sorted({entry["capability"] for entry in tools})
         raw = rfc8785.dumps(definition).decode()
         golden["harness"]["snapshot"].update(
             definition=raw, digest=hashlib.sha256(raw.encode()).hexdigest()
         )
         golden["model_binding"]["request_shape_version"] = TASK_RESPONSES_TOOLS_REQUEST_SHAPE
-        monkeypatch.setenv("ADP_TASK_PERSONA_TOOLS", json.dumps({persona: [tool["permission"]]}))
+        monkeypatch.setenv(
+            "ADP_TASK_PERSONA_TOOLS",
+            json.dumps({persona: [entry["permission"] for entry in tools]}),
+        )
     catalogue = tmp_path / "catalogue.json"
     catalogue.write_text(
         json.dumps(
             {
                 "schemaVersion": 1,
                 "snapshots": [golden["harness"]["snapshot"]],
-                **({"tools": [tool]} if tool_mode else {}),
+                **({"tools": tools} if tool_mode else {}),
             }
         )
     )
@@ -195,7 +238,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         "model_policy_version": "1",
         "limits": {
             "max_duration_minutes": 5,
-            "max_turns": 4,
+            "max_turns": 8 if actual_workflow else 4,
             "max_output_tokens_per_turn": 4096,
             "max_usd_per_task": 1,
         },
@@ -210,8 +253,17 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 "base_branch": "main",
             }
         }
+    if actual_workflow:
+        policy["repositories"]["application"]["validation_checks"] = [
+            {
+                "name": "acceptance",
+                "image": image,
+                "argv": ["/bin/sh", "test.sh"],
+                "max_output_bytes": 8192,
+            }
+        ]
     if tool_mode:
-        policy["allowed_tools"] = [tool["permission"]]
+        policy["allowed_tools"] = [entry["permission"] for entry in tools]
         monkeypatch.setattr(
             "src.agentauth.task_service_policy.TaskServicePolicyStore.get",
             lambda self, **kwargs: policy,
@@ -331,15 +383,34 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             "price": Price(),
             "provider_request_id": "provider-fixture",
         }
-        if tool_mode and len(model_requests) == 1:
+        selected_tool, selected_args = tool, tool_arguments
+        if actual_workflow and len(model_requests) <= 4:
+            selected_tool = tools[len(model_requests) - 1]
+            selected_args = [
+                {"path": "source.txt"},
+                {
+                    "path": "source.txt",
+                    "content": "expected\n",
+                    "expected_sha256": hashlib.sha256(
+                        b"Task SDK workspace fixture source"
+                    ).hexdigest(),
+                },
+                {"message": "Repair fixture value"},
+                {"check": "acceptance", "commit": workflow.get("commit", "")},
+            ][len(model_requests) - 1]
+        if tool_mode and (
+            len(model_requests) == 1 or (actual_workflow and len(model_requests) <= 4)
+        ):
             response["responses_response"]["output"] = [
                 {
                     "type": "function_call",
-                    "id": "item_tool",
+                    "id": "item_tool_" + str(len(model_requests)),
                     "namespace": "mcp__adp",
-                    "call_id": "fixture_call",
-                    "name": tool["definition"]["name"],
-                    "arguments": json.dumps(tool_arguments),
+                    "call_id": "fixture_call_" + str(len(model_requests))
+                    if actual_workflow
+                    else "fixture_call",
+                    "name": selected_tool["definition"]["name"],
+                    "arguments": json.dumps(selected_args),
                 }
             ]
         from src.agentauth.task_responses_tools_contract import TaskToolsResponsesResult
@@ -478,7 +549,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 authorize=lambda identity, permission: routes.authorize_tool(
                     store, SimpleNamespace(get=lambda **kwargs: policy), identity, permission
                 ),
-                catalogue={tool["permission"]: tool["definition"]["name"]},
+                catalogue={entry["permission"]: entry["definition"]["name"] for entry in tools},
                 clock=now,
             )
             monkeypatch.setattr(
@@ -515,6 +586,11 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                     content = b"Task SDK workspace fixture source"
                     entry.size = len(content)
                     archive.addfile(entry, io.BytesIO(content))
+                    if actual_workflow:
+                        check = b'test "$(cat source.txt)" = expected\n'
+                        entry = tarfile.TarInfo("provider-root/test.sh")
+                        entry.size = len(check)
+                        archive.addfile(entry, io.BytesIO(check))
                 content = source.getvalue()
                 staging.stage(
                     identity,
@@ -540,10 +616,13 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             )
 
         def tool(self, name, body):
-            assert name == tool["permission"]
+            assert name in {entry["permission"] for entry in tools}
             events.append("tool-effect")
             if actual_validation or actual_workspace:
-                return super().tool(name, body)
+                result = super().tool(name, body)
+                if actual_workflow and name == "repository.commit":
+                    workflow["commit"] = result["result"]["localHead"]
+                return result
             content = b'{"validated":true}'
             record = reads.put_run_artifact(
                 attempt=self.identity(),
@@ -605,7 +684,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             from src.agentauth.task_budget_settlement import settle_task_admission
 
             identity = self.identity()
-            if actual_validation:
+            if actual_validation or actual_workflow:
+                final_head = workflow["commit"] if actual_workflow else validation_head
                 from src.agentauth.task_validation_evidence import TaskValidationEvidence
                 from src.agentauth.task_tool_routes import authorize_tool
 
@@ -616,7 +696,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                         store, SimpleNamespace(get=lambda **kwargs: policy), current, permission
                     ),
                 )
-                validated_receipts.extend(reader.read(identity=identity, commit=validation_head))
+                validated_receipts.extend(reader.read(identity=identity, commit=final_head))
                 assert reader.read(identity=identity, commit="f" * 40) == []
                 from src.tasks.store import TaskStoreError
 
@@ -625,7 +705,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                         reads, "read_artifact", lambda **kwargs: b"forged execution bytes"
                     )
                     with pytest.raises(TaskStoreError, match="artifact"):
-                        reader.read(identity=identity, commit=validation_head)
+                        reader.read(identity=identity, commit=final_head)
             result = commands.finalize(identity, body)
             settled = asyncio.run(settle_task_admission(store, identity, budget=admission_budget))
             assert settled is (scenario != "unknown")
@@ -657,7 +737,9 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         events,
     )
     assert len(model_requests) == (
-        3
+        5
+        if actual_workflow
+        else 3
         if scenario == "tools_repair"
         else 2
         if scenario in {"repair", "steer", "tools", "tools_docker", "tools_workspace"}
@@ -684,7 +766,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         from src.tasks.records import task_ops_partition
 
         row = store._get(
-            task_ops_partition(assignment.task_id), TaskToolReceipts._key("fixture_call")
+            task_ops_partition(assignment.task_id),
+            TaskToolReceipts._key("fixture_call_1" if actual_workflow else "fixture_call"),
         )
         assert row["operation_status"] == "confirmed"
         execution = json.loads(row["content"])["result"]
@@ -695,19 +778,19 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         assert events.count("source-staged") == 1
         assert not list((tmp_path / "work").iterdir())
         assert gateway._workspace_tools is None
+    if actual_workflow:
+        assert len(validated_receipts) == 1
+        assert (
+            validated_receipts[0]["status"] == "passed"
+            and validated_receipts[0]["commit"] == workflow["commit"]
+        )
+        assert gateway._validation_tool is None
     if tool_mode:
-        assert events.count("tool-effect") == 1
-        for invocation in model_requests[1:]:
-            assert (
-                len(
-                    [
-                        item
-                        for item in invocation["input"]
-                        if item.get("type") == "function_call_output"
-                    ]
-                )
-                == 1
-            )
+        assert events.count("tool-effect") == (4 if actual_workflow else 1)
+        for index, invocation in enumerate(model_requests[1:], 1):
+            assert len(
+                [item for item in invocation["input"] if item.get("type") == "function_call_output"]
+            ) == (index if actual_workflow else 1)
     if scenario == "unknown":
         enforcement.reconcile_reservation.assert_not_awaited()
         admission_budget.settle_admission.assert_not_awaited()
