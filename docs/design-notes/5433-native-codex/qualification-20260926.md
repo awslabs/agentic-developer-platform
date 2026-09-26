@@ -87,3 +87,17 @@ passes 9 scenarios and explicitly skips 9 requiring image/live configuration.
 Gateway lint and formatting checks pass across all source and tests. The local
 scanner test has 6 passes and 1 skip because Checkov is unavailable locally; CI
 must confirm the image hardening fix. Runtime registration remains default off.
+
+
+## Clean-commit live result
+
+Commit `232b8092fc50758e959f52b2b761e06f79acce64` was tested with a clean
+working tree and the non-root retry image above. The actual SDK/GPT-6 Sol medium
+run completed in **38.97 seconds**: 8 model calls, 7 tool calls, 25.025 seconds
+summed model latency, all 24 detached checks passed, fixture PR publication and
+artifact-grounded final report verified. A local OTLP collector received **18
+spans** (run, SDK turn, model, tool and completion) on **one trace**, **17
+correlated log records**, and metrics. See `evidence-20260926/retry-clean-commit.json`
+and `retry-clean-commit-otel.json`. This is repeatable live model qualification of
+the committed local runtime; Task authority/storage/billing and GitHub provider
+remain fixtures, not deployed ADP acceptance.
