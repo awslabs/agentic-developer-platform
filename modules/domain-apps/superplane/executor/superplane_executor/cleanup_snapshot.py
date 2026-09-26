@@ -15,7 +15,7 @@ from harness_jobs.execution_plan import (
 )
 from harness_jobs.identity import OperationRefused, decode_payload, payload_digest
 from harness_jobs.leases import lock_lease
-from harness_jobs.store import _record
+from harness_jobs.store import _record, stored_outcome
 
 from .cleanup_graph import canonical, digest, header
 from .cleanup_recipes import network_recipes
@@ -189,7 +189,7 @@ async def capture(finalizer, operation, target, plan, assessment):
         )
         if len(calls) != len(approved) or any(
             row["idempotency_key"] not in approved
-            or row["outcome"] != "succeeded"
+            or stored_outcome(row["outcome"]) != "succeeded"
             or (row["provider"], row["operation_kind"], row["target"])
             != (
                 approved[row["idempotency_key"]].provider,
