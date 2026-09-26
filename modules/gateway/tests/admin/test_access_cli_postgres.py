@@ -42,3 +42,9 @@ async def test_identical_concurrent_decision_has_one_receipt(seeded, monkeypatch
         assert first.status_code == second.status_code == 200, (first.text, second.text)
         assert first.json() == second.json()
         assert first.json()["status"] == "denied"
+
+
+async def test_postgres_reviewed_revocation_preserves_new_token(seeded, monkeypatch):  # noqa: F811 -- shared fixture
+    from tests.admin.test_access_cli_contract import exercise_reviewed_token_mint_race
+
+    await exercise_reviewed_token_mint_race(seeded, monkeypatch)

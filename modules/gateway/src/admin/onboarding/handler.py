@@ -1355,6 +1355,19 @@ async def deny_access_request(
         operation.target_org = request.proposed_tenant_id
     role, _ = await _authorize_decision(access, db, admin, request)
 
+    if body and (body.expected_role or body.expected_scope):
+        decision = await derive_approval_decision(
+            db,
+            access,
+            admin,
+            request,
+            role_for_existing_org=_determine_role_for_matched_user,
+        )
+        if (body.expected_role and body.expected_role != decision.granted_role) or (
+            body.expected_scope and body.expected_scope != decision.request_class.value
+        ):
+            raise HTTPException(409, "Proposed grant changed; review this request again")
+
     try:
         mark_admin_effects()
         await deny_request(

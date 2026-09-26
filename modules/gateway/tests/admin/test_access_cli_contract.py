@@ -206,3 +206,90 @@ async def test_http_revoke_reads_actual_gateway_family_without_cognito_claim(see
         assert stale.status_code == 409
     async with factory() as db:
         assert (await db.get(Token, "fixture-token")).revoked_at is not None
+
+
+@pytest.mark.parametrize("field,value", [("expected_role", "org_admin"), ("expected_scope", "create_new")])
+async def test_denial_rechecks_reviewed_grant_before_effect(seeded, monkeypatch, field, value):  # noqa: F811 -- shared fixture
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    monkeypatch.setattr(handler, "_determine_role_for_matched_user", AsyncMock(return_value="member"))
+    async with _client(seeded, _context("sub-org-admin", OWN_ORG)) as client:
+        review = (await client.get("/admin/access-requests/req-own-b/review")).json()
+        body = {
+            "operation_id": str(uuid4()),
+            "expected_revision": review["revision"],
+            "expected_role": review["proposed_role"],
+            "expected_scope": review["requested_scope"],
+            "decision_note": "Stale derived grant",
+            field: value,
+        }
+        result = await client.post("/admin/access-requests/req-own-b/deny/revision", json=body)
+        assert result.status_code == 409, result.text
+    async with async_sessionmaker(seeded)() as db:
+        target = await db.get(TenantAccessRequest, "req-own-b")
+        assert target.status == "pending"
+        assert target.decision_receipt is None
+
+
+async def exercise_reviewed_token_mint_race(seeded, monkeypatch):  # noqa: F811 -- shared fixture
+    """Mint in a second committed transaction after review, before canonical UPDATE."""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from src.auth.routes import auth_service
+    from src.shared.models.organization import User
+    from src.shared.models.token import Token
+
+    factory = async_sessionmaker(seeded, expire_on_commit=False)
+    async with factory() as db:
+        user = await db.scalar(select(User).where(User.cognito_sub == "sub-plain-member"))
+        user_id, team_id = user.id, user.team_id
+
+        def token(identifier):
+            return Token(
+                id=identifier,
+                token_hash=identifier.ljust(64, "x"),
+                entity_type="user",
+                entity_id=user_id,
+                org_id=OWN_ORG,
+                team_id=team_id,
+                department_id="",
+                is_admin=False,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+        db.add(token("reviewed-token"))
+        await db.commit()
+    original = auth_service.revoke_all_user_tokens
+
+    async def mint_then_revoke(entity_id, org_id, db, *, token_ids=None):
+        assert token_ids == ["reviewed-token"]
+        async with factory() as issuing:
+            issuing.add(token("new-token"))
+            await issuing.commit()
+        return await original(entity_id, org_id, db, token_ids=token_ids)
+
+    monkeypatch.setattr(auth_service, "revoke_all_user_tokens", mint_then_revoke)
+    async with _client(seeded, _context("sub-org-admin", OWN_ORG)) as client:
+        path = "/auth/admin/revoke-user-tokens/" + user_id
+        before = (await client.get(path + "/review", params={"org": OWN_ORG})).json()
+        response = await client.post(
+            path + "/revision", json={"org": OWN_ORG, "reason": "Reviewed race fixture", "expected_revision": before["revision"]}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["tokens_revoked"] == 1
+        assert response.json()["active_gateway_tokens"] == 1
+        assert response.json()["revocation_complete"] is False
+    async with factory() as db:
+        assert (await db.get(Token, "reviewed-token")).revoked_at is not None
+        assert (await db.get(Token, "new-token")).revoked_at is None
+    # The default service contract still revokes the complete family for legacy callers.
+    async with factory() as db:
+        assert await original(user_id, OWN_ORG, db) == 1
+        assert (await db.get(Token, "new-token")).revoked_at is not None
+
+
+async def test_reviewed_revocation_preserves_concurrently_minted_token(seeded, monkeypatch):  # noqa: F811 -- shared fixture
+    await exercise_reviewed_token_mint_race(seeded, monkeypatch)

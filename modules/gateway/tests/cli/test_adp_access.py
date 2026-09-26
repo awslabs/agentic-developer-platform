@@ -137,3 +137,30 @@ def test_real_shell_keeps_requested_tenant_distinct_from_selected_workspace(adp_
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("remaining", [0, 1])
+def test_revoke_reports_pending_when_new_tokens_remain(remaining):
+    parsed = cli.parser().parse_args(
+        ["session", "revoke-user", "--user", "user", "--org", "org", "--reason", "reviewed", "--expected-revision", "a" * 64, "--yes"]
+    )
+    before = {"user_id": "user", "org": "org", "revision": "a" * 64, "effect": "Gateway JWT only"}
+    client = Mock()
+    client.request.side_effect = [before, {**before, "tokens_revoked": 1, "active_gateway_tokens": remaining, "revocation_complete": remaining == 0}]
+    result = cli.execute(parsed, client)
+    assert result["status"] == ("pending" if remaining else "ok")
+
+
+@pytest.mark.parametrize(
+    "extra", [{}, {"active_gateway_tokens": 1, "revocation_complete": True}, {"active_gateway_tokens": "0", "revocation_complete": True}]
+)
+def test_revoke_refuses_malformed_completion_ack(extra):
+    parsed = cli.parser().parse_args(
+        ["session", "revoke-user", "--user", "user", "--org", "org", "--reason", "reviewed", "--expected-revision", "a" * 64, "--yes"]
+    )
+    before = {"user_id": "user", "org": "org", "revision": "a" * 64, "effect": "Gateway JWT only"}
+    client = Mock()
+    client.request.side_effect = [before, {**before, "tokens_revoked": 1, **extra}]
+    with pytest.raises(cli.common.CliError) as exc:
+        cli.execute(parsed, client)
+    assert exc.value.code == "unknown_mutation_outcome"

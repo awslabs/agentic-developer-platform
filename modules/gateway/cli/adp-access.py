@@ -113,9 +113,18 @@ def execute(args, client):
             or result.get("org") != args.org
             or type(result.get("tokens_revoked")) is not int
             or not isinstance(result.get("effect"), str)
+            or type(result.get("active_gateway_tokens")) is not int
+            or result["active_gateway_tokens"] < 0
+            or type(result.get("revocation_complete")) is not bool
+            or result["revocation_complete"] != (result["active_gateway_tokens"] == 0)
         ):
             raise common.CliError("Revocation outcome is incomplete; inspect this token family before retrying.", "unknown_mutation_outcome", 4)
-        return common.envelope("ok", command, result)
+        return common.envelope(
+            "ok" if result["revocation_complete"] else "pending",
+            command,
+            result,
+            None if result["revocation_complete"] else "New or remaining tokens require a fresh review; they were not silently revoked.",
+        )
     if args.action == "list":
         if not 1 <= args.limit <= 200:
             raise common.CliError("Use --limit between 1 and 200.", "usage_error", 1)

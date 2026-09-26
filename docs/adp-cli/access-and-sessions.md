@@ -33,7 +33,7 @@ adp admin access-request approve --request REQUEST_ID \
 Use `--yes` to submit those same reviewed values. `deny` accepts the same flags.
 Pagination returns `next_cursor`; pass it as `--cursor` for the next bounded
 page. The server owns role derivation and tenant authority. A stale request or
-changed proposed grant returns conflict. Approved decisions persist a stable
+changed proposed grant returns conflict for approval and denial alike. Approved decisions persist a stable
 operation receipt; an identical retry returns the recorded result. Reusing its
 UUID for another payload is refused. If effects committed but the final receipt
 was lost, the server requires reconciliation rather than executing again.
@@ -52,7 +52,10 @@ The existing token-revocation service marks the applicable gateway JWT records
 revoked. Output includes revoked/remaining counts and the affected family.
 Cognito login and refresh sessions are unchanged, established connections are
 not forcibly closed, and hosted tasks are not stopped. A changed token-family
-revision is refused. On lost delivery, inspect the same target with `--dry-run`
+revision is refused. The canonical revocation is restricted to the reviewed token
+IDs. Tokens minted concurrently after review are preserved, and a nonzero
+remaining count returns `pending` with `revocation_complete: false`; inspect
+a fresh snapshot before revoking those tokens. On lost delivery, inspect the same target with `--dry-run`
 before deciding whether another operation is needed; never blindly resend.
 
 Exit codes follow the shared contract: 1 usage, 2 authentication, 3 permission,

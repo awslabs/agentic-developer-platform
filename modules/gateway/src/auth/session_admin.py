@@ -31,7 +31,7 @@ class Revoke(BaseModel):
     expected_revision: str = Field(min_length=64, max_length=64)
 
 
-async def snapshot(user_id, org, actor, db):
+async def snapshot(user_id, org, actor, db, *, include_token_ids=False):
     access = AccessControl(db)
     await access.check_permission(actor, Permission.USER_MANAGE, target_org_id=org)
     user = await db.get(User, user_id)
@@ -45,7 +45,7 @@ async def snapshot(user_id, org, actor, db):
     await access.require_modifiable_target(actor, target_current_role=membership.role, target_is_platform_admin=user.role in PLATFORM_LEVEL_ROLES)
     rows = list((await db.execute(select(Token).where(Token.entity_id == user_id, Token.org_id == org).order_by(Token.id))).scalars().all())
     revision = hashlib.sha256(json.dumps([[row.id, str(row.revoked_at)] for row in rows]).encode()).hexdigest()
-    return {
+    result = {
         "user_id": user_id,
         "org": org,
         "revision": revision,
@@ -59,6 +59,10 @@ async def snapshot(user_id, org, actor, db):
         ),
     }
 
+    if include_token_ids:
+        return result, [row.id for row in rows if row.revoked_at is None]
+    return result
+
 
 @router.get("/admin/revoke-user-tokens/{user_id}/review")
 async def review_user_sessions(user_id: str, org: str, actor: TokenContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
@@ -67,15 +71,16 @@ async def review_user_sessions(user_id: str, org: str, actor: TokenContext = Dep
 
 @router.post("/admin/revoke-user-tokens/{user_id}/revision")
 async def revoke_reviewed_sessions(user_id: str, body: Revoke, actor: TokenContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    before = await snapshot(user_id, body.org, actor, db)
+    before, token_ids = await snapshot(user_id, body.org, actor, db, include_token_ids=True)
     if before["revision"] != body.expected_revision:
         raise HTTPException(409, "Token family changed; review it again")
     from src.auth.routes import auth_service
 
     mark_admin_effects()
-    count = await auth_service.revoke_all_user_tokens(user_id, body.org, db)
+    count = await auth_service.revoke_all_user_tokens(user_id, body.org, db, token_ids=token_ids)
     result = await snapshot(user_id, body.org, actor, db)
     result["tokens_revoked"] = count
+    result["revocation_complete"] = result["active_gateway_tokens"] == 0
     await write_admin_audit(
         db,
         actor=actor,
