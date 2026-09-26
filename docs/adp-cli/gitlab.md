@@ -62,3 +62,29 @@ Self-hosted installations beneath a canonical path are supported, for example
 use `/gitlab/api/v4/...`. Trailing slashes normalize to one provider; dot segments,
 encoded paths, repeated slashes, userinfo, query/fragment and control characters
 are refused. Paths never replace the approved authority; redirects remain disabled.
+
+## Opt in protected projects without replacing legacy delivery
+
+The webhook Lambda supports an explicit, default-off `gitlab_project_registry_enabled` Terraform option (`ADP_GITLAB_PROJECT_REGISTRY_ENABLED`). It uses a version 1 envelope in the existing protected webhook SecretString; it does not introduce another credential store. Keep the legacy token unchanged and give every opted-in numeric project a distinct random token of at least 32 characters:
+
+```json
+{
+  "version": 1,
+  "legacy_token": "EXISTING_SHARED_TOKEN_RETAIN_UNCHANGED",
+  "projects": [
+    {
+      "instance": "https://approved.gitlab.example",
+      "project_id": 123,
+      "token": "OWNED_RANDOM_PROJECT_TOKEN_AT_LEAST_32_BYTES"
+    }
+  ]
+}
+```
+
+This is protected operator configuration, not input to `adp gitlab configure` and not a file to commit with real tokens. With the new option off, existing scalar-token behavior remains unchanged, including JSON-shaped scalar values. The existing global `gitlab_model_policy_enabled` mode still accepts its project-list format and still refuses every legacy token. Enabling mixed mode cannot weaken that global setting.
+
+In mixed mode a registered token authenticates only its exact immutable project ID and instance. An actionable event also requires an immutable numeric human ID; the existing gateway root-admission path then validates tenant, approved repository path, producer and persona before publication. A shared token is refused for any opted-in numeric project ID; it cannot downgrade that project to legacy handling. Other projects keep legacy handling, with no fabricated model root. Unknown tokens, malformed registries and duplicate or shared project tokens fail closed. Numeric project IDs are blocked from shared-token fallback across all registered instances, since a shared token alone cannot prove an instance.
+
+The option enables the same existing Lambda-producer `execute-api:Invoke` policy for the exact `/roots/admit` endpoint as global protected mode. It changes no worker role or permission. Both options default false. Source changes do not apply infrastructure, switch a shared secret or install a project webhook. An operator must coordinate secret-format/flag activation and Lambda cache refresh; rollback must restore the matching original format and flags. No zero-downtime secret transition is claimed.
+
+Readiness remains separate: even after provider project access succeeds, CLI status continues to report webhook delivery and agent runtime as `unverified` until actual delivery/run evidence exists. Regression scenarios cover an unchanged legacy project alongside an opted-in project, shared-token downgrade refusal, wrong numeric project, missing human, malformed registry, global-mode strictness and default-off compatibility. Dedicated live GitLab project approval, hosted delivery/artifact evidence and owned cleanup remain required for #5635 acceptance.
