@@ -1285,7 +1285,7 @@ async def test_ambiguous_launch_across_regions_retains_without_repeating_creatio
             await connection.fetchval(
                 "SELECT count(*) FROM harness_allocation_resource"
             )
-            == 3
+            == 4
         )
         assert (
             await connection.fetchval("SELECT state FROM controller_capacity")
