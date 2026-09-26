@@ -9596,7 +9596,17 @@ def test_ci_fetches_release_history_and_defaults_to_login_checkpoint():
         for i, s in enumerate(steps)
         if "configure-aws-credentials@" in s.get("uses", "")
     )
-    assert ready < auth
+    # Revision discovery is an authenticated read; readiness must still precede
+    # execution, which is the first stage allowed to create evaluation resources.
+    pin = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("name") == "Pin the deployment for this EC2 suite"
+    )
+    execute = next(
+        i for i, step in enumerate(steps) if step.get("name") == "Run the evaluation"
+    )
+    assert auth < pin < ready < execute
     fetch = next(s for s in steps if s.get("name") == "Fetch the expected CLI release")
     assert 'git fetch --no-tags --depth 1 origin "$REVISION"' in fetch["run"]
     assert workflow()[1]["workflow_dispatch"]["inputs"]["suites"]["default"] == "login"

@@ -880,7 +880,7 @@ def test_nightly_forwards_optional_fixtures_without_changing_scheduled_scope():
     field = triggers["workflow_dispatch"]["inputs"]["fixtures_json"]
     assert field["type"] == "string"
     assert field["required"] is False
-    assert field["default"] == "{}"
+    assert field["default"] == ""
     ec2 = parent["jobs"]["ec2"]
     assert ec2["with"]["fixtures_json"] == (
         "${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}"
@@ -922,3 +922,31 @@ def test_forwarded_nightly_fixture_uses_existing_strict_child_validation(raw, va
     else:
         with pytest.raises(config.ConfigError):
             parse(raw)
+
+
+def test_revision_reads_use_explicit_oidc_before_any_aws_lookup():
+    for filename, job_name, snapshot_name in (
+        (
+            "nightly-cli-regression.yml",
+            "prepare",
+            "Snapshot deployment identity (read only)",
+        ),
+        ("eval-cli-uplift.yml", "evaluate", "Pin the deployment for this EC2 suite"),
+    ):
+        job = workflow(filename)[0]["jobs"][job_name]
+        assert job["permissions"]["id-token"] == "write"
+        assert job["environment"] in ("dev", "${{ inputs.environment || 'dev' }}")
+        steps = job["steps"]
+        names = [step.get("name") for step in steps]
+        guard = names.index("Require an explicit OIDC role (fail closed)")
+        auth = names.index("Configure AWS credentials (OIDC, scoped role)")
+        assert guard < auth < names.index(snapshot_name)
+        assert 'if [ -z "$ROLE_ARN" ]' in steps[guard]["run"]
+        assert "exit 1" in steps[guard]["run"]
+        options = steps[auth]["with"]
+        assert options["role-to-assume"] == (
+            "${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}"
+        )
+        assert options["unset-current-credentials"] is True
+        assert options["role-chaining"] is False
+        assert options["force-skip-oidc"] is False
