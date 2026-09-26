@@ -13616,3 +13616,63 @@ def test_coding_command_ids_match_task_uuid4_contract_and_retain_identity():
     different = recovery_plan({**config, "evaluation_id": "another-run"})
     assert different["command_id"] != plan["command_id"]
     assert different["cleanup_command_id"] != plan["cleanup_command_id"]
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_artifact_download_recovers_bounded_transient_edge_error(monkeypatch, status):
+    import io
+    import urllib.error
+    from tests.e2e.cli_uplift import ports
+
+    attempts, delays = [], []
+
+    class Response(io.BytesIO):
+        status = 200
+
+    def download(url, **kwargs):
+        attempts.append(url)
+        if len(attempts) == 1:
+            raise urllib.error.HTTPError(
+                url,
+                status,
+                "edge unavailable",
+                {},
+                io.BytesIO(b"private provider body"),
+            )
+        return Response(b"immutable CLI artifact")
+
+    monkeypatch.setattr(ports.urllib.request, "urlopen", download)
+    monkeypatch.setattr(ports.time, "sleep", delays.append)
+    assert (
+        ports.HttpPort().get_bytes("https://gateway/cli/adp")
+        == b"immutable CLI artifact"
+    )
+    assert len(attempts) == 2 and delays == [1]
+
+
+@pytest.mark.parametrize(
+    "status,expected_attempts",
+    [(502, 3), (503, 3), (504, 3), (403, 1), (404, 1), (500, 1)],
+)
+def test_artifact_download_persistent_failure_stays_failed(
+    monkeypatch, status, expected_attempts
+):
+    import io
+    import urllib.error
+    from tests.e2e.cli_uplift import ports
+
+    attempts, delays = [], []
+
+    def download(url, **kwargs):
+        attempts.append(url)
+        raise urllib.error.HTTPError(
+            url, status, "edge unavailable", {}, io.BytesIO(b"private provider body")
+        )
+
+    monkeypatch.setattr(ports.urllib.request, "urlopen", download)
+    monkeypatch.setattr(ports.time, "sleep", delays.append)
+    with pytest.raises(ports.PortError, match=f"HTTP {status}") as error:
+        ports.HttpPort().get_bytes("https://gateway/cli/adp")
+    assert len(attempts) == expected_attempts
+    assert delays == ([1, 2] if expected_attempts == 3 else [])
+    assert "private provider body" not in str(error.value)
