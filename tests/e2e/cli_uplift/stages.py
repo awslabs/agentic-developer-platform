@@ -816,6 +816,8 @@ JOURNEY_DRIVERS = {
     "E35": "story_person_budget",
 
     "E38": "story_model_policy",
+
+    "E34": "story_bedrock_lifecycle",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

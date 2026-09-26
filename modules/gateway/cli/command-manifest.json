@@ -7639,6 +7639,610 @@
       "required_capabilities": [
         "machine.principal.manage"
       ]
+    },
+    {
+      "command": "adp bedrock select",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.own.write",
+      "flags": [
+        "--connection",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/me/bedrock-routing/selection",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.own.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock reset",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.own.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/me/bedrock-routing/selection",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.own.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock mappings list",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "routing.bedrock.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--page",
+        "--page-size",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock mappings show",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "routing.bedrock.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock mappings set",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}",
+          "/me/cli-capabilities",
+          "/admin/bedrock-routing/mappings/{scope}",
+          "/admin/bedrock-routing/destinations"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock mappings delete",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}",
+          "/me/cli-capabilities",
+          "/admin/bedrock-routing/mappings/{scope}",
+          "/admin/bedrock-routing/destinations"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock connection-link add",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--connection",
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/connection-links",
+          "/admin/bedrock-routing/destinations",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp bedrock connection-link remove",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--connection",
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/connection-links",
+          "/admin/bedrock-routing/destinations",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock select",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.own.write",
+      "flags": [
+        "--connection",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/me/bedrock-routing/selection",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.own.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock reset",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.own.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/me/bedrock-routing/selection",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.own.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock mappings list",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "routing.bedrock.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--page",
+        "--page-size",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock mappings show",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "routing.bedrock.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock mappings set",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}",
+          "/me/cli-capabilities",
+          "/admin/bedrock-routing/mappings/{scope}",
+          "/admin/bedrock-routing/destinations"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock mappings delete",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/mappings?scope={scope}&page={page}&page_size={page_size}",
+          "/me/cli-capabilities",
+          "/admin/bedrock-routing/mappings/{scope}",
+          "/admin/bedrock-routing/destinations"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock connection-link add",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--connection",
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/connection-links",
+          "/admin/bedrock-routing/destinations",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp admin bedrock connection-link remove",
+      "helper": "adp-bedrock.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "routing.bedrock.write",
+      "flags": [
+        "--connection",
+        "--destination",
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "DELETE",
+          "GET"
+        ],
+        "paths": [
+          "/admin/bedrock-routing/connection-links",
+          "/admin/bedrock-routing/destinations",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stream": "single-json",
+        "envelope": true
+      },
+      "required_capabilities": [
+        "routing.bedrock.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_bedrock_lifecycle.py"
+      ]
     }
   ]
 }

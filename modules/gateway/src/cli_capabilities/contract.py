@@ -379,6 +379,11 @@ OPERATIONS = (
         mutates=True,
     ),
     Operation(
+        "routing.bedrock.own.write",
+        summary="Select or reset your own permitted Bedrock connection",
+        mutates=True,
+    ),
+    Operation(
         "routing.bedrock.own.read",
         summary="Read your effective Bedrock routing",
     ),

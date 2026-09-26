@@ -37,6 +37,8 @@ PURPOSES = {
     "story_person_budget": ("story_reads", {"mode": "person_budget"}),
 
     "story_model_policy": ("story_reads", {"mode": "model_policy"}),
+
+    "story_bedrock_lifecycle": ("story_reads", {"mode": "bedrock_lifecycle"}),
     "story_activity": ("story_reads", {"mode": "activity"}),
     "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),
     "tenant_isolation": ("tenant_isolation", {"mode": "isolation"}),

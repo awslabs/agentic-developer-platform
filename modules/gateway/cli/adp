@@ -1875,6 +1875,9 @@ Check what works here, and why something failed:
     admin github org-binding list|add|remove --org ID
                           Manage installation routing for an organization
     bedrock status        Show your effective Bedrock destination
+    bedrock select|reset  Review and change only your own permitted route
+    admin bedrock mappings list|show|set|delete --scope SCOPE --target ID
+    admin bedrock connection-link add|remove --destination ID --connection ID
     update [--to <version>]
                           Re-pull this CLI from your gateway; --to pins the exact
                           version and installs nothing if it is not what is served

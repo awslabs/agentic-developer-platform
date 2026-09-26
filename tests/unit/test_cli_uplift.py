@@ -8456,6 +8456,8 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E35",
 
         "E38",
+
+        "E34",
     }
 
 
@@ -10260,6 +10262,8 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E35",
 
         "E38",
+
+        "E34",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10523,6 +10527,41 @@ def test_github_maintenance_nightly_is_read_and_preview_only(tmp_path):
     assert cases.BY_ID["E28"].owner == "#5634"
     assert "E28" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E28"] in bundle.purposes()
+
+def test_bedrock_lifecycle_nightly_preview_has_no_probes_or_writes(tmp_path):
+    assert cases.BY_ID["E34"].owner == "#5633"
+    assert "E34" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E34"] in bundle.purposes()
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.side_effect = [
+        (
+            0,
+            {
+                "status": "dry_run",
+                "detail": {
+                    "before": {"revision": "a" * 64, "effective": {"rung": "org"}}
+                },
+            },
+        ),
+        (1, {"status": "failed", "error": {"code": "usage_error"}}),
+    ]
+    evidence = {}
+    module.bedrock_lifecycle(cli, evidence)
+    assert evidence["live_acceptance"].startswith("held:")
+    for call in cli.method_calls:
+        assert not {"--yes", "verify", "connect", "submit"}.intersection(call.args[0])
+
+
+def test_bedrock_lifecycle_nightly_does_not_hide_missing_server(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = (
+        5,
+        {"status": "failed", "error": {"code": "unsupported_operation"}},
+    )
+    with pytest.raises(common.RemoteError, match="Unexpected personal Bedrock refusal"):
+        module.bedrock_lifecycle(cli, {})
 
 
 @pytest.mark.parametrize("bad_group", [False, True])

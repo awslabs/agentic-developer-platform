@@ -316,6 +316,14 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
+        "E34",
+        "#5633",
+        "story-reads",
+        "Personal Bedrock reset preview preserves billing/source readback and exact team-target refusal; real routing inference remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    ),
+    Case(
         "E31",
         "#5624",
         "story-reads",
