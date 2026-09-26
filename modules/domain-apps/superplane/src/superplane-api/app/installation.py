@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.capability_probes import probe_all
 from app.composition import compose
 from app.config import require_database_url, settings
-from app.database import engine
 from app.schema_boundary import connect_args, schema_name
 
 
@@ -100,6 +99,8 @@ def capabilities() -> dict[str, bool]:
 async def database_check(
     *, migrating: bool = False, verify_role_default: bool = False
 ) -> dict:
+    from app.database import engine
+
     schema = schema_name(settings.superplane_db_schema)
     if schema is None:
         raise ValueError("isolated schema required")
@@ -200,13 +201,89 @@ async def database_check(
         }
 
 
+def image_contract() -> dict:
+    """Packaged entrypoints and pure rejection checks, never live authority."""
+    from harness_jobs.facade import OperationFacadeService
+    from harness_jobs.identity import OperationRefused
+    from superplane_contracts import API_CAPABILITY_PORTS
+    from superplane_contracts.version import CONTRACT_VERSION, check_version
+    from superplane_executor.deployment_plan import build_deployment_preview
+
+    from app.adapters.adp_vault_client import AdpVaultClient
+    from app.adapters.operation_dispatch import OperationDispatcher, ProducerTransport
+
+    for owner, methods in (
+        (OperationFacadeService, ("open_operation", "report_progress")),
+        (OperationDispatcher, ("ready", "deliver", "recover_once")),
+        (ProducerTransport, ("post",)),
+        (AdpVaultClient, ("read",)),
+    ):
+        if not all(callable(getattr(owner, method, None)) for method in methods):
+            raise ValueError("required packaged adapter entrypoint is missing")
+    if (
+        check_version(None, None).accepted
+        or check_version("unsupported", "unsupported").accepted
+    ):
+        raise ValueError("packaged contract accepts unknown versions")
+    try:
+        build_deployment_preview(
+            org_id="image-contract",
+            workspace_id="image-contract",
+            request_id="invalid",
+            profile_id="invalid",
+            profile={},
+            target={},
+            name="image-contract",
+            model_options={},
+        )
+    except OperationRefused:
+        pass
+    else:
+        raise ValueError("packaged profile builder accepted an invalid request")
+    return {
+        "image_contract_version": 1,
+        "contract_version": CONTRACT_VERSION,
+        "required_ports": sorted(API_CAPABILITY_PORTS),
+        "configuration_verified": False,
+        "authority_verified": False,
+        "production_ready": False,
+    }
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "action", choices=("capabilities", "management-capabilities", "database", "migrate", "readiness")
+        "action",
+        choices=(
+            "adapter-stage",
+            "adapter-active",
+            "image-contract",
+            "capabilities",
+            "management-capabilities",
+            "database",
+            "migrate",
+            "readiness",
+        ),
     )
     args = parser.parse_args(argv)
     try:
+        if args.action in {"adapter-stage", "adapter-active"}:
+            import sys
+
+            from app.adapter_stage import verify_stage
+
+            expected = json.loads(sys.stdin.read(65537))
+            print(
+                json.dumps(
+                    asyncio.run(
+                        verify_stage(expected, active=args.action == "adapter-active")
+                    )
+                )
+            )
+            return 0
+        if args.action == "image-contract":
+            print(json.dumps(image_contract()))
+            return 0
         if args.action == "management-capabilities":
             import httpx
 
@@ -214,17 +291,35 @@ def main(argv=None) -> int:
             from app.management import management_only
 
             async def probe_management():
-                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://image-local") as client:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://image-local",
+                ) as client:
                     health = await client.get("/health")
-                    registration = await client.post("/internal/controller/reconcile", json={})
+                    registration = await client.post(
+                        "/internal/controller/reconcile", json={}
+                    )
                     administration = await client.get("/workspaces")
                     legacy = await client.post("/internal/vault-sync/trigger", json={})
-                    return (management_only() and health.json().get("domain_auth_enforced") is True
-                            and registration.status_code == administration.status_code == 401
-                            and legacy.status_code == 503)
+                    return (
+                        management_only()
+                        and health.json().get("domain_auth_enforced") is True
+                        and registration.status_code
+                        == administration.status_code
+                        == 401
+                        and legacy.status_code == 503
+                    )
 
             supported = asyncio.run(probe_management())
-            print(json.dumps({"controller_management": supported, "governed_provisioning": False, "database_verified": False}))
+            print(
+                json.dumps(
+                    {
+                        "controller_management": supported,
+                        "governed_provisioning": False,
+                        "database_verified": False,
+                    }
+                )
+            )
             return 0 if supported else 2
         if args.action == "readiness":
             import httpx
@@ -259,6 +354,7 @@ def main(argv=None) -> int:
             from alembic import command
             from alembic.config import Config
             from alembic.script import ScriptDirectory
+            from app.database import engine
 
             expected = os.environ["SUPERPLANE_EXPECTED_SCHEMA"]
             config = Config("/app/alembic.ini")

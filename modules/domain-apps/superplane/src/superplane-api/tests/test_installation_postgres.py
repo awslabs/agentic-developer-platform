@@ -55,7 +55,9 @@ async def isolated_database(monkeypatch, installation_postgres_url):
     engine = create_async_engine(
         role_url, connect_args={"server_settings": {"search_path": schema}}
     )
-    monkeypatch.setattr(installation, "engine", engine)
+    from app import database
+
+    monkeypatch.setattr(database, "engine", engine)
     monkeypatch.setattr(installation.settings, "superplane_db_schema", schema)
     try:
         yield admin, engine, role_url, role, schema, foreign

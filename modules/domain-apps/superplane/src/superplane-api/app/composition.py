@@ -95,6 +95,7 @@ class Composition:
     _connections: Any = None
     ledger: Any = None
     dispatcher: Any = None
+    dispatch_enabled: bool = True
 
     @property
     def operation_connect(self) -> Any:
@@ -226,8 +227,12 @@ class Composition:
         self.dispatcher = None
 
     def start_dispatcher(self) -> None:
+        from app.operation_activation import dispatch_enabled
+
         if (
-            self.dispatcher is not None
+            self.dispatch_enabled
+            and dispatch_enabled()
+            and self.dispatcher is not None
             and self._connections is not None
             and self._connections.opened
         ):
@@ -371,6 +376,9 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     result._connections = connections
     result._closeables.append(connections)
     result.ledger = ledger
+    result.dispatch_enabled = (
+        getattr(settings, "superplane_operation_dispatch_enabled", True) is True
+    )
     endpoint = getattr(settings, "superplane_operation_gateway_url", "")
     if endpoint:
         from app.adapters.operation_dispatch import (
@@ -380,9 +388,10 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
 
         result.dispatcher = OperationDispatcher(
             connect,
-            ProducerTransport(
+            transport=ProducerTransport(
                 endpoint, getattr(settings, "superplane_operation_gateway_region", "")
             ),
+            enabled=result.dispatch_enabled,
         )
         result._closeables.append(result.dispatcher)
         execution._verify_run = result.dispatcher.verify_run
@@ -390,13 +399,14 @@ def _compose_harness_ports(settings: Any, result: Composition) -> None:
     adapters: dict[str, Any] = {}
     if PORT_OPERATION_FACADE in outstanding:
         adapters[PORT_OPERATION_FACADE] = HarnessOperationFacade(
-            OperationFacadeService(
+            enabled=result.dispatch_enabled,
+            service=OperationFacadeService(
                 connect=connect,
                 resolver=authority_source,
                 approvals=authority_source,
                 ledger=ledger,
                 store=store,
-            )
+            ),
         )
     if PORT_PROVIDER_AUTHORITY in outstanding:
         adapters[PORT_PROVIDER_AUTHORITY] = HarnessProviderAuthority(execution)

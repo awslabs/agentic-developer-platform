@@ -290,6 +290,12 @@ async def create_workspace(
     db: AsyncSession = Depends(get_session),
 ) -> WorkspaceResponse:
     """Admit an approved plan before creating its workspace and ownership grant."""
+    from app.operation_activation import require_admission_enabled
+
+    try:
+        require_admission_enabled()
+    except ProvisioningError as error:
+        raise HTTPException(503, str(error)) from None
     from app.adapters.operation_authority_source import (
         acting_principal,
         GrantBackedAuthority,
@@ -548,6 +554,12 @@ async def delete_workspace(
     expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> WorkspaceDeleteResponse:
     """Teardown a workspace — updates status and triggers teardown workflow."""
+    from app.operation_activation import require_admission_enabled
+
+    try:
+        require_admission_enabled()
+    except ProvisioningError as error:
+        raise HTTPException(503, str(error)) from None
     result = await db.execute(
         select(Workspace)
         .where(Workspace.id == workspace_id, Workspace.org_id == org_id)

@@ -267,6 +267,10 @@ class WorkspaceReconciler:
 
         Returns: "retried", "max_retries_exceeded", or "skipped"
         """
+        from app.operation_activation import dispatch_enabled
+
+        if not dispatch_enabled():
+            return "skipped"
         now = datetime.now(timezone.utc)
 
         # Check if max retries exceeded
