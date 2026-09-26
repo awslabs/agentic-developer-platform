@@ -43,7 +43,11 @@ async def workload(lifecycle, monkeypatch, tmp_path, request):  # noqa: F811
     workspace_id, cluster_id, request_id = [uuid.uuid4() for _ in range(3)]
     profile = profile_fixture(cluster_id)
     param = getattr(request, "param", False)
-    if param == "regions":
+    if param == "network":
+        from tests.controller_network_support import configure
+
+        configure(profile)
+    elif param == "regions":
         # #5925: a bounded regional profile. The second region reuses the same
         # account/namespace/cluster target -- only the compute location and
         # its network/image/identity binding vary.
@@ -753,6 +757,10 @@ async def worker_runtime(workload, tmp_path):
     guard = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(guard)
     cloud, verified = Cloud(data), {}
+    if "controller_network_cluster" in workload.preview.request.parameters:
+        from tests.controller_network_support import attach
+
+        await attach(pool, cloud, workload)
     guard.selected_account = lambda _: cloud.sky_account
     cloud.selected_region_override = None
     cloud.selected_subnet_override = None

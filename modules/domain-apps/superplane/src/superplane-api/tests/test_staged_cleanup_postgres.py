@@ -339,3 +339,71 @@ async def test_staged_cleanup_cannot_create_a_second_teardown_uuid(output):
             )
             == 1
         )
+
+
+@pytest.mark.parametrize("workload", ["network"], indirect=True)
+@pytest.mark.parametrize("peer", [False, True])
+async def test_paid_cross_region_network_stage_recovers_original_graph(
+    output, monkeypatch, peer
+):
+    runtime = output.runtime
+    execute = runtime.execute
+    peer_allocation = str(uuid4())
+    source_completed = False
+
+    async def establish_peer_after_source(worker):
+        nonlocal source_completed
+        result = await execute(worker)
+        if not source_completed:
+            source_completed = True
+            assert worker.operation.request.action == "provision"
+            _, snapshot = await records(output)
+            assert snapshot is not None
+            assert json.loads(snapshot["body"])["network"]
+            if peer:
+                # A separate allocation's durable existing dependency membership
+                # is outside this paid cleanup's authority. Only its membership
+                # transport is declared here; no paid peer execution is claimed.
+                async with runtime.pool.acquire() as c:
+                    await c.execute(
+                        """INSERT INTO controller_network_members
+                        (resource_key,allocation_id,org_id,workspace_id,cluster_id,membership_generation,source_operation_id,source_plan_digest)
+                        SELECT resource_key,$1,org_id,workspace_id,cluster_id,membership_generation,$2,source_plan_digest
+                        FROM controller_network_members WHERE allocation_id=$3""",
+                        peer_allocation,
+                        str(uuid4()),
+                        worker.operation.request.parameters["allocation_id"],
+                    )
+        return result
+
+    runtime.execute = establish_peer_after_source
+    await test_paid_stage_recovery_only_continues_confirmed_original_effects(
+        output, monkeypatch, "network:0", "completed"
+    )
+    aws = runtime.cloud.network
+    async with runtime.pool.acquire() as c:
+        if peer:
+            assert (
+                await c.fetchval(
+                    "SELECT count(*) FROM controller_network_members WHERE allocation_id=$1 AND released_at IS NULL",
+                    peer_allocation,
+                )
+                > 0
+            )
+        else:
+            assert (
+                await c.fetchval(
+                    "SELECT count(*) FROM controller_network_members WHERE released_at IS NULL"
+                )
+                == 0
+            )
+    deletes = [
+        name
+        for _, name, _ in aws.calls
+        if name.startswith(("delete_", "revoke_", "disassociate_"))
+    ]
+    if peer:
+        assert aws.routes and aws.peerings and aws.rules and not deletes
+    else:
+        assert not aws.routes and not aws.peerings and not aws.rules
+        assert deletes
