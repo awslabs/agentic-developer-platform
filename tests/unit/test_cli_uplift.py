@@ -1008,6 +1008,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E18",
         "E19",
         "E28",
+        "E39",
         "E25",
         "E27",
     }
@@ -8429,6 +8430,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E18",
         "E19",
         "E28",
+        "E39",
         "E25",
         "E27",
     }
@@ -8452,6 +8454,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E29",
         "E31",
         "E26",
+        "E41",
         "E36",
         "E35",
         "E38",
@@ -10254,7 +10257,9 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E31",
         "E25",
         "E26",
+        "E41",
         "E28",
+        "E39",
         "E36",
         "E29",
         "E35",
@@ -10766,3 +10771,51 @@ def test_recovery_nightly_reads_and_refuses_without_mutation(tmp_path):
     assert all("--yes" not in call.args[0] for call in cli.method_calls)
     assert cases.BY_ID["E37"].owner == "#5630"
     assert stages.JOURNEY_DRIVERS["E37"] in bundle.purposes()
+
+
+def test_platform_e41_is_read_only_and_retains_live_holds(tmp_path):
+    assert cases.BY_ID["E41"].owner == "#5641"
+    assert "E41" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E41"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "full_deployment_verified": False,
+            "environment_verified": False,
+            "artifact_verification": "unknown",
+            "components": dict.fromkeys(
+                ["gateway", "factory", "webhook", "models", "github_wiring"], {}
+            ),
+        },
+    }
+    evidence = {}
+    module.platform(cli, evidence)
+    assert "authorized-teardown-cleanup" in evidence["live_holds"]
+    assert cli.json.call_args.args[0] == ["platform", "status", "--environment", "dev"]
+    cli.run.assert_not_called()
+
+
+def test_superplane_lifecycle_story_is_bounded_preview(tmp_path):
+    assert cases.BY_ID["E39"].owner == "#5638"
+    assert cases.SUPERPLANE_DOMAIN in cases.BY_ID["E39"].requires
+    assert "E39" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E39"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"workspaces": [{"id": "workspace"}]}},
+        {
+            "status": "dry_run",
+            "detail": {
+                "before": {"workspace_id": "workspace", "billing_state": "unconfirmed"}
+            },
+        },
+        {"status": "ok", "detail": {"workspace_id": "workspace", "events": []}},
+    ]
+    evidence = {}
+    module.superplane_lifecycle(cli, evidence)
+    assert evidence["mutations"] == 0
+    assert cli.json.call_args_list[1].args[0][-1] == "--dry-run"
+    cli.run.assert_not_called()

@@ -401,6 +401,20 @@ CASES = (
         "Persona cost/catalog readback retains unknown amounts and capability evidence; no platform mutation/inference claim",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E39",
+        "#5638",
+        "story-reads",
+        "Superplane workspace lifecycle preview and scoped audit reads; no provider mutation or compute qualification",
+        (EC2, PLATFORM, COGNITO, SUPERPLANE_DOMAIN),
+    ),
+    Case(
+        "E41",
+        "#5641",
+        "story-reads",
+        "Platform status distinguishes selected-gateway capability metadata from unverified AWS/artifact readiness; no deployment invocation",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

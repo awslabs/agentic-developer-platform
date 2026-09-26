@@ -817,6 +817,8 @@ JOURNEY_DRIVERS = {
     "E38": "story_model_policy",
     "E34": "story_bedrock_lifecycle",
     "E37": "story_recovery",
+    "E41": "story_platform",
+    "E39": "story_superplane_lifecycle",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

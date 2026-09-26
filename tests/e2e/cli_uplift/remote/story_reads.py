@@ -622,7 +622,72 @@ def gitlab(cli, evidence):
     )
 
 
+def platform(cli, evidence):
+    result = detail(cli.json(["platform", "status", "--environment", "dev"]))
+    common.require(
+        result.get("full_deployment_verified") is False,
+        "Platform metadata falsely claims deployment verification",
+    )
+    common.require(
+        result.get("artifact_verification") == "unknown"
+        and result.get("environment_verified") is False,
+        "Platform status incorrectly certifies artifacts or environment",
+    )
+    common.require(
+        isinstance(result.get("components"), dict)
+        and set(result["components"])
+        == {"gateway", "factory", "webhook", "models", "github_wiring"},
+        "Platform components are missing",
+    )
+    evidence.update(
+        scope="read_only_selected_gateway_metadata",
+        live_holds=[
+            "authorized-update",
+            "interrupted-resume",
+            "placeholder-verification",
+            "authorized-teardown-cleanup",
+        ],
+    )
+
+
+def superplane_lifecycle(cli, evidence):
+    workspaces = detail(cli.json(["superplane", "workspace", "list"])).get("workspaces")
+    common.require(
+        isinstance(workspaces, list) and 1 <= len(workspaces) <= 1000,
+        "Superplane needs an existing authorized workspace",
+    )
+    workspace = workspaces[0].get("id")
+    common.require(isinstance(workspace, str) and workspace, "Workspace ID missing")
+    preview = cli.json(["superplane", "workspace", "delete", workspace, "--dry-run"])
+    common.require(
+        preview.get("status") in {"dry_run", "unavailable"},
+        "Workspace deletion preview returned an unexpected outcome",
+    )
+    before = preview.get("detail", {}).get("before", {})
+    common.require(
+        before.get("workspace_id") == workspace
+        and before.get("billing_state") == "unconfirmed",
+        "Lifecycle preview confused scope or billing proof",
+    )
+    events = detail(
+        cli.json(["superplane", "events", "--workspace", workspace, "--limit", "1"])
+    )
+    common.require(
+        events.get("workspace_id") == workspace
+        and isinstance(events.get("events"), list),
+        "Workspace audit read lost scope",
+    )
+    evidence.update(
+        workspace_id=workspace,
+        lifecycle_qualification="read and preview only",
+        compute_qualification="not_run",
+        mutations=0,
+    )
+
+
 SCENARIOS = {
+    "superplane_lifecycle": superplane_lifecycle,
+    "platform": platform,
     "gitlab": gitlab,
     "recovery": recovery,
     "knowledge": knowledge,

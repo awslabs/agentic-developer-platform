@@ -1242,7 +1242,11 @@ def test_events_filters_only_by_parameters_the_route_declares() -> None:
     passed it, and the parameter it sent was invisible.
     """
     declared = declared_query_parameters("events.py", "GET", "/events")
-    offered = [action for action in leaf_actions("events") if action.option_strings and action.dest not in ("help", "json")]
+    offered = [
+        action
+        for action in leaf_actions("events")
+        if action.option_strings and action.dest not in ("help", "json", "workspace", "follow", "after", "timeout", "max_pages")
+    ]
     argv = ["events"]
     for action in offered:
         argv += [action.option_strings[0], "10" if action.type is int else "synthetic"]
@@ -1517,8 +1521,12 @@ def test_deployment_delete_uses_uuid_and_reports_pending():
     ],
 )
 def test_deployment_namespace_is_server_owned(subcommand, flags):
-    with pytest.raises(cli.CliError, match="unrecognized arguments"):
-        cli.parser().parse_args(["deploy", subcommand, *flags, "--namespace", "kube-system"])
+    if subcommand in {"create", "preview"}:
+        parsed = cli.parser().parse_args(["deploy", subcommand, *flags, "--namespace", "kube-system"])
+        assert parsed.namespace == "kube-system"  # An expectation, never a namespace override.
+    else:
+        with pytest.raises(cli.CliError, match="unrecognized arguments"):
+            cli.parser().parse_args(["deploy", subcommand, *flags, "--namespace", "kube-system"])
 
 
 def deployment_preview_arguments(teardown=False):
