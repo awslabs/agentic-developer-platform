@@ -54,9 +54,7 @@ jobs:
     name: Guard (validate account_id)
     if: github.ref == 'refs/heads/main'
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     permissions:
       id-token: write
       contents: read
@@ -124,9 +122,7 @@ jobs:
     needs: guard
     if: github.ref == 'refs/heads/main'
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     permissions:
       id-token: write
       contents: read
@@ -326,9 +322,7 @@ jobs:
     needs: destroy
     if: github.ref == 'refs/heads/main' && (inputs.include_bootstrap == true)
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     permissions:
       id-token: write
       contents: read

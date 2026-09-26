@@ -136,7 +136,7 @@ permissions:
 jobs:
   offline:
     name: Offline guards (no AWS, no gateway, no model calls)
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -226,7 +226,7 @@ jobs:
     # Never from a pull_request: this job assumes a real role and mutates dev.
     if: github.event_name != 'pull_request'
     needs: [offline]
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 200
     # This environment must have main-only protection and an explicit OIDC
     # role binding before rollout; selecting a name alone is not protection.
@@ -556,7 +556,7 @@ jobs:
     # ref could still reach after the guarded job refused to run.
     if: ${{ always() && github.event_name != 'pull_request' }}
     needs: [evaluate]
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 20
     environment: ${{ inputs.environment || 'dev' }}
     permissions:

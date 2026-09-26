@@ -43,9 +43,7 @@ jobs:
   apply:
     name: Terraform Apply
     if: github.ref == 'refs/heads/main'
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       id-token: write

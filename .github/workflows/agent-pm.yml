@@ -29,7 +29,7 @@ concurrency:
 jobs:
   orchestrate:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-pm'
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     permissions:
       id-token: write
       contents: write

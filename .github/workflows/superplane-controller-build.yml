@@ -63,9 +63,7 @@ jobs:
   build:
     name: Build Superplane Controller Image
     if: github.ref == 'refs/heads/main'
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-build-dev
     permissions:
       id-token: write

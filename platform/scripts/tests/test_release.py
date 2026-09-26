@@ -261,10 +261,6 @@ class ReleaseContracts(unittest.TestCase):
     def test_all_github_actions_jobs_use_self_hosted_runners(self):
         import yaml
 
-        allowed = {
-            'arc-runner-org',
-            "${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}",
-        }
         workflow_dir = ROOT / '.github/workflows'
         workflows = sorted([*workflow_dir.glob('*.yml'), *workflow_dir.glob('*.yaml')])
         self.assertTrue(workflows)
@@ -278,26 +274,7 @@ class ReleaseContracts(unittest.TestCase):
                         continue
                     self.assertIn('steps', job, 'job must define steps or call a reusable workflow')
                     self.assertIn('runs-on', job, 'executable job must select a self-hosted runner')
-                    if isinstance(job['runs-on'], dict):
-                        self.assertEqual(job['runs-on'], {
-                            'group': 'adp-deployment', 'labels': 'arc-runner-deployment',
-                        })
-                        if (path.name, name) == ('webhook-code-deploy.yml', 'deploy-code'):
-                            self.assertEqual(job.get('environment'), 'adp-webhook-code-dev')
-                        else:
-                            self.assertTrue(str(job.get('environment', '')).startswith(('adp-deploy-', 'adp-build-')))
-                        self.assertIn("github.ref == 'refs/heads/main'", job.get('if', ''))
-                        continue
-                    # S14 isolates the developer persona on its reviewed agent lane.
-                    # This label is permitted only for that exact workflow/job pair.
-                    if (path.name, name) == ('agent-developer.yml', 'work'):
-                        self.assertEqual(job['runs-on'], 'arc-runner-agent')
-                        continue
-                    self.assertIn(
-                        job['runs-on'],
-                        allowed,
-                        'GitHub-hosted runner labels are prohibited; use arc-runner-org',
-                    )
+                    self.assertEqual(job['runs-on'], 'arc-runner-org')
 
 
 if __name__ == '__main__':

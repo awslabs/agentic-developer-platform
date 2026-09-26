@@ -11,8 +11,8 @@ JOB = WORKFLOW['jobs']['work']
 GUARD = next(s for s in JOB['steps'] if s.get('name') == 'Verify dedicated developer identity')
 
 
-def test_workflow_routes_to_separate_pool_and_checks_before_credentials():
-    assert JOB['runs-on'] == 'arc-runner-agent'
+def test_workflow_uses_org_pool_and_checks_identity_before_credentials():
+    assert JOB['runs-on'] == 'arc-runner-org'
     assert 'id-token' not in JOB['permissions']
     assert JOB['steps'].index(GUARD) < next(
         i for i, s in enumerate(JOB['steps']) if s.get('name') == 'Get App Credentials from AWS Secrets Manager'

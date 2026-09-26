@@ -96,9 +96,7 @@ jobs:
     name: Build ${{ matrix.image }}
     needs: detect-changes
     if: github.ref == 'refs/heads/main' && (fromJson(needs.detect-changes.outputs.matrix).image[0] != null)
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-build-dev
     permissions:
       id-token: write

@@ -19,7 +19,7 @@ jobs:
     # simply stopped being posted while the workflow reported red. The in-cluster
     # self-hosted pool is unaffected by the block, and every other scheduled workflow in
     # this repo (8 of 8 before this change) already runs on it, either by the bare
-    # arc-runner-org label or via `vars.ARC_RUNNER_LABEL || 'arc-runner-org'`. A cron on
+    # literal arc-runner-org label. A cron on
     # this pool is the established pattern; this job was the only exception.
     #
     # Safe to move: a single actions/github-script step using the Actions-provided

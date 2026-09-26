@@ -44,7 +44,7 @@ concurrency:
 jobs:
   guards:
     name: Regression orchestration guards
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -65,7 +65,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 10
     outputs:
       revision: ${{ steps.snapshot.outputs.revision }}
@@ -153,7 +153,7 @@ jobs:
     name: Nightly regression result
     if: ${{ always() && github.event_name != 'pull_request' }}
     needs: [guards, prepare, onboarding, budgets, ec2]
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
