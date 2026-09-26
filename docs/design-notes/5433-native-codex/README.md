@@ -47,6 +47,39 @@ Official reference: https://developers.openai.com/codex/sdk/ (read 2026-09-25).
 The SDK supports starting, continuing, and resuming threads. This fact alone is
 not evidence of safe ADP resume, tool authorization, metering, or tenant isolation.
 
+### Required GitHub mention invocation
+
+Owner requirement (2026-09-26): support `@agent-codex-<persona>` in GitHub
+issue and PR comments through the existing webhook ingress and trusted admission
+path. Examples include `@agent-codex-developer`, `@agent-codex-architect`,
+`@agent-codex-reviewer`, `@agent-codex-operations` and `@agent-codex-aidlc`.
+These are the required public mention names; the earlier proposed `@agent-gpt-*`
+spelling is not a substitute. Public mentions map explicitly to the authoritative
+persona registry, regardless of internal persona-key spelling.
+
+Match complete mention tokens so `@agent-codex` cannot capture a longer persona
+name and an unknown suffix cannot fall back to the legacy supervisor. Resolve
+only registered, authorized and enabled personas; return a visible unsupported
+or unavailable outcome otherwise. Newly admitted dynamic personas must gain
+their registered mention through configuration without rebuilding the harness.
+Preserve existing multi-mention, bot-loop and trusted delegation rules.
+
+The existing `@agent-codex-reviewer` name requires an explicit qualified migration
+to the shared SDK reviewer; do not register competing routes or silently switch
+the runtime of an active run. Bare `@agent-codex` retains its existing meaning.
+Signature verification, installation/repository binding, invoking human or
+delegated root, tenant, budget, source revision and delivery deduplication remain
+part of admission. A mention alone grants no repository or merge authority.
+
+GitHub-started runs use the same shared pause/resume/abort/steer contract as
+Task API runs, retain source-correlated progress and terminal results, and use
+the provider adapter for authorized repository effects. End-to-end qualification
+must submit real issue and PR comments, verify exact persona/SDK/model routing,
+exercise remote controls, and confirm results in the originating GitHub context.
+Cover webhook redelivery, unknown suffixes, prefix collisions, revoked access
+and dynamic persona registration. This invocation path remains required work;
+Task-only fixture tests do not qualify it.
+
 ## 2. Shared harness boundary
 
 The harness owns admission consumption, lifecycle, workspace/session isolation,
