@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
+from harness_jobs.admission import Reservation, retain_for_uncertain_dispatch
 
+from app.adapters.operation_budget_ledger import OperationBudgetLedger
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
 from app.services import workload_accounting
@@ -77,13 +79,27 @@ async def test_admitted_envelope_is_a_reservation_not_observed_cost(paid):
 
 
 async def test_lost_acknowledgement_retains_ceiling_and_reports_both_ledgers(paid):
+    domain_ledger = OperationBudgetLedger(paid.c.connections.connect)
+
+    async def lost_retain_ack(**kwargs):
+        await domain_ledger.retain(**kwargs)
+        raise TimeoutError("retention committed but acknowledgement was lost")
+
     async with paid.c.connections.connect() as conn:
-        await conn.execute(
-            "UPDATE harness_approval_consumption SET reservation_state='retained'"
+        row = await conn.fetchrow(
+            "SELECT reservation_id,job_id,attempt_id FROM operation_budget_reservations"
         )
+        with pytest.raises(TimeoutError, match="acknowledgement was lost"):
+            await retain_for_uncertain_dispatch(
+                conn,
+                SimpleNamespace(retain=lost_retain_ack),
+                operation_id=paid.created["operation_id"],
+                reservation=Reservation(**dict(row)),
+                reason="provider delivery outcome is unknown",
+            )
     original = (await read(paid))["operations"][0]
-    assert original["budget_state"] == "confirmed"
-    assert original["shared_reservation_state"] == "retained"
+    assert original["budget_state"] == "retained"
+    assert original["shared_reservation_state"] == "confirmed"
     assert original["accounting_consistent"] is False
     assert int(original["budget_held_micros"]) > 0
 
