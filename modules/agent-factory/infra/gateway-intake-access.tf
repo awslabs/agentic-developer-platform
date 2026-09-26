@@ -39,11 +39,8 @@
 # cross-tenant read a matter of forgetting a filter rather than a permission error.
 # =============================================================================
 
-resource "aws_iam_role_policy" "gateway_intake_access" {
-  name = "adp-${var.environment}-policy-gateway-intake"
-  role = "adp-${var.environment}-role-gateway-service"
-
-  policy = jsonencode({
+locals {
+  gateway_intake_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
@@ -120,6 +117,32 @@ resource "aws_iam_role_policy" "gateway_intake_access" {
       },
     ]
   })
+}
+
+# Existing inline-policy deployments retain their state address and behavior.
+moved {
+  from = aws_iam_role_policy.gateway_intake_access
+  to   = aws_iam_role_policy.gateway_intake_access[0]
+}
+
+resource "aws_iam_role_policy" "gateway_intake_access" {
+  count  = var.gateway_intake_managed_policy ? 0 : 1
+  name   = "adp-${var.environment}-policy-gateway-intake"
+  role   = "adp-${var.environment}-role-gateway-service"
+  policy = local.gateway_intake_policy
+}
+
+# Same permission document when the gateway has exhausted its inline quota.
+resource "aws_iam_policy" "gateway_intake_access" {
+  count  = var.gateway_intake_managed_policy ? 1 : 0
+  name   = "adp-${var.environment}-policy-gateway-intake"
+  policy = local.gateway_intake_policy
+}
+
+resource "aws_iam_role_policy_attachment" "gateway_intake_access" {
+  count      = var.gateway_intake_managed_policy ? 1 : 0
+  role       = "adp-${var.environment}-role-gateway-service"
+  policy_arn = aws_iam_policy.gateway_intake_access[0].arn
 }
 
 # -----------------------------------------------------------------------------
