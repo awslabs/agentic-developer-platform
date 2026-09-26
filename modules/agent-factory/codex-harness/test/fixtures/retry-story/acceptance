@@ -16,10 +16,11 @@ function check(options, sample, expected, calls) {
   const result = spawnSync(process.execPath, ['-e', runner, JSON.stringify({options, sample})], {encoding:'utf8', timeout:1500, maxBuffer:4096});
   assert.equal(result.status, 0, 'candidate process must exit normally: ' + JSON.stringify(options));
   const actual = JSON.parse(result.stdout);
-  assert.equal(actual.unchanged, true, 'input mutation');
-  if (calls !== undefined) assert.equal(actual.calls, calls);
-  if (typeof expected === 'string') assert.equal(actual.error, expected);
-  else assert.equal(actual.value, expected);
+  const context = JSON.stringify({options, sample});
+  assert.equal(actual.unchanged, true, 'input mutation: ' + context);
+  if (calls !== undefined) assert.equal(actual.calls, calls, context);
+  if (typeof expected === 'string') assert.equal(actual.error, expected, context);
+  else assert.equal(actual.value, expected, context);
   count++;
 }
 check({attempt:0}, .5, 0, 0);

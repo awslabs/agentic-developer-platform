@@ -192,7 +192,10 @@ def test_task_publication_branch_coexists_with_adp_memory_ref(tmp_path):
     def git(*args, input=None):
         return subprocess.check_output(
             ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
-            cwd=tmp_path, input=input, text=True, stderr=subprocess.DEVNULL,
+            cwd=tmp_path,
+            input=input,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
 
     git("init", "--bare")

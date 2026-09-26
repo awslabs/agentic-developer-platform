@@ -54,6 +54,10 @@ jobs:
       - run: python3 test/run-isolated.py -- node test/sdk-turn.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --tool-error
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-repair
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-exhausted
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-revoked
+      - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs --completion-unknown
       - run: python3 test/run-isolated.py -- node test/sdk-proxy.mjs
       - run: python3 test/run-isolated.py -- node --test test/task-bridge.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-session.mjs

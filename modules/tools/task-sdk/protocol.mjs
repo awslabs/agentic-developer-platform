@@ -90,8 +90,7 @@ export class HostBridge {
     return this.exclusive(async () => {
       const request_id = randomUUID();
       const response = await this.request('completion.request', request_id, { request_id });
-      if (response.verified !== true) throw new ProtocolError('developer completion evidence unavailable');
-      return true;
+      return response.verified === true;
     });
   }
   takeSteering() { return this.steering.splice(0); }

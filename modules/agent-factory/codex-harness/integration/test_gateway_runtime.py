@@ -826,7 +826,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             if actual_validation or actual_workspace:
                 result = super().tool(name, body)
                 if actual_live:
-                    workflow.setdefault("tool_results", []).append({"tool": name, "status": result.get("result", {}).get("status")})
+                    workflow.setdefault("tool_results", []).append({"tool": name, "status": result.get("result", {}).get("status"),
+                        **({"execution": result["result"]} if name == "validation.run" else {})})
                 if actual_workflow and name == "repository.commit":
                     workflow["commit"] = result["result"]["localHead"]
                 return result
@@ -964,7 +965,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         len(model_requests), len(live_metrics),
     )
     assert actual_live or len(model_requests) == (
-        workflow_calls + 1
+        workflow_calls + (3 if scenario == "tools_developer_moved" else 1)
         if actual_workflow
         else 3
         if scenario == "tools_repair"
@@ -1013,7 +1014,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         )
         assert gateway._validation_tool is None
     if actual_developer:
-        assert events.count("completion-observed") == (1 if scenario == "tools_developer_moved" else 2)
+        assert events.count("completion-observed") == (3 if scenario == "tools_developer_moved" else 2)
     if actual_publication:
         assert events.count("publication-effect") == 1
         assert workflow["publication"]["operation_status"] == "confirmed"
@@ -1024,7 +1025,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         for index, invocation in enumerate(model_requests[1:], 1):
             assert len(
                 [item for item in invocation["input"] if item.get("type") == "function_call_output"]
-            ) == (index if actual_workflow else 1)
+            ) == (min(index, workflow_calls) if actual_workflow else 1)
     if scenario == "unknown":
         enforcement.reconcile_reservation.assert_not_awaited()
         admission_budget.settle_admission.assert_not_awaited()

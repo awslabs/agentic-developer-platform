@@ -63,7 +63,7 @@ export async function startToolServer(tools: readonly HostTool[], host: ToolHost
   const token = randomBytes(32).toString("hex");
   const expected = Buffer.from(`Bearer ${token}`);
   const lifetime = new AbortController();
-  let busy = false, failed = false, calls = 0;
+  let busy = false, failed = false, calls = 0, clientGeneration = 0;
   const seen = new Set<string>();
   const server = http.createServer(async (req, res) => {
     const auth = Buffer.from(req.headers.authorization ?? "");
@@ -148,6 +148,16 @@ export async function startToolServer(tools: readonly HostTool[], host: ToolHost
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("MCP loopback unavailable");
   return { url: `http://127.0.0.1:${address.port}/mcp`, token,
+    // Host-only boundary after the previous SDK process has exited. SDK resume
+    // starts a new MCP client whose JSON-RPC IDs restart at zero. Clear only
+    // transport correlation; effect counts, receipt history and poison persist.
+    advanceClient() {
+      if (busy || failed || lifetime.signal.aborted || policy.signal.aborted || clientGeneration >= 2) {
+        throw new Error("Tool client cannot advance");
+      }
+      clientGeneration++;
+      seen.clear();
+    },
     async close() {
       lifetime.abort(new Error("Tool session closed"));
       server.closeAllConnections();

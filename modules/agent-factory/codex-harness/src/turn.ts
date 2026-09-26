@@ -16,6 +16,8 @@ export interface TurnContext {
   maxInputBytes: number;
   maxOutputBytes: number;
   signal: AbortSignal;
+  /** Pinned SDK reports cumulative thread usage after a resumed turn. */
+  previousUsage?: Usage;
 }
 export interface Progress {
   type: "turn.started" | "tool.started" | "tool.completed";
@@ -99,7 +101,9 @@ export async function runSdkTurn(
       if (!completed || !usage || !thread.id) throw new Error("SDK stream ended without complete turn evidence");
       span.setAttribute("adp.thread.id", thread.id);
       for (const type of ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens"] as const) {
-        tokens.add(usage[type], { ...dimensions, type });
+        const previous = context.previousUsage?.[type] ?? 0;
+        if (usage[type] < previous) throw new Error("SDK cumulative usage regressed");
+        tokens.add(usage[type] - previous, { ...dimensions, type });
       }
       succeeded = true;
       span.setStatus({ code: SpanStatusCode.OK });

@@ -117,3 +117,29 @@ test("request bounds and unsupported resource methods do not dispatch; deadline 
     assert.equal((await post(server, body(4))).status, 409);
   } finally { await server.close(); }
 });
+
+
+test("host-confirmed SDK exit permits new transport IDs without renewing effect budget", async () => {
+  let calls = 0;
+  const server = await startToolServer(tools, { ...host, async execute() {
+    calls++; return { status: "confirmed", content: "ok" };
+  } }, policy());
+  try {
+    assert.match((await post(server, body(1))).text, /"text":"ok"/);
+    assert.match((await post(server, body(1))).text, /refused/);
+    server.advanceClient();
+    assert.match((await post(server, body(1))).text, /"text":"ok"/);
+    server.advanceClient();
+    assert.match((await post(server, body(1))).text, /refused/);
+    assert.equal(calls, 2);
+    assert.throws(() => server.advanceClient(), /cannot advance/);
+  } finally { await server.close(); }
+});
+
+test("a new SDK client cannot reset an uncertain tool outcome", async () => {
+  const server = await startToolServer(tools, { ...host, async execute() { throw new Error("unknown"); } }, policy());
+  try {
+    assert.match((await post(server, body(1))).text, /refused/);
+    assert.throws(() => server.advanceClient(), /cannot advance/);
+  } finally { await server.close(); }
+});
