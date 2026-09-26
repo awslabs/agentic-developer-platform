@@ -179,6 +179,17 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #     authority to spend more, which is the effect that matters.
 #   * Deleting a provider credential is RENEW_CREDENTIAL, matching the policy's
 #     grouping of credential lifecycle operations.
+# These require domain credentials and live workspace grants, but are deliberately
+# absent from the public Gateway projection. INTERNAL_ROUTES means machine auth,
+# so putting a private user-authenticated route there would weaken its boundary.
+PRIVATE_DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
+    (
+        "GET",
+        "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
+    ): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+}
+
+
 DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/capabilities"): (Scope.ORGANIZATION, Permission.READ),
     # -- Workspace lifecycle -------------------------------------------------
@@ -310,7 +321,6 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.WORKSPACE,
         Permission.PROVISION,
     ),
-    ("GET", "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}"): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
     ("GET", "/workspaces/{workspace_id}/lifecycle-proposals"): (
         Scope.WORKSPACE,
         Permission.PROVISION,
@@ -494,7 +504,12 @@ def classify(method: str, path_template: str) -> tuple[RouteClass, object]:
     if key in INTERNAL_ROUTES:
         return RouteClass.INTERNAL, None
     try:
-        return RouteClass.DOMAIN, DOMAIN_ROUTES[key]
+        requirement = (
+            PRIVATE_DOMAIN_ROUTES[key]
+            if key in PRIVATE_DOMAIN_ROUTES
+            else DOMAIN_ROUTES[key]
+        )
+        return RouteClass.DOMAIN, requirement
     except KeyError:
         raise RouteNotInventoried(
             f"{method.upper()} {path_template} has no recorded authorization decision"
@@ -503,7 +518,12 @@ def classify(method: str, path_template: str) -> tuple[RouteClass, object]:
 
 def all_inventoried() -> frozenset[tuple[str, str]]:
     """Every (method, template) with a recorded decision, in any class."""
-    return PUBLIC_ROUTES | INTERNAL_ROUTES | frozenset(DOMAIN_ROUTES)
+    return (
+        PUBLIC_ROUTES
+        | INTERNAL_ROUTES
+        | frozenset(DOMAIN_ROUTES)
+        | frozenset(PRIVATE_DOMAIN_ROUTES)
+    )
 
 
 # ---------------------------------------------------------------------------
