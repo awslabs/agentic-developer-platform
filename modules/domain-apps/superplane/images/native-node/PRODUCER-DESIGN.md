@@ -82,3 +82,15 @@ builder verifies the exact extracted inventory and reconstructed tree. Dispatche
 source and attestation delivery must remain immutable to the build role. The new
 app-owned dedicated lane is separate work; the executor OCI project and its shared
 boundary explicitly do not authorize the required helper PassRole/EC2 workflow.
+
+## Version-2 CNI source extension
+
+Source-approved follow-up: the full AWS CNI installer output can depend on two
+independently pinned images. Version 2 replaces the single CNI input assumption with
+a bounded `cni_sources` list (one or two image/file maps, 1–64 entries each).
+Destinations are globally unique; version-2 source paths are canonical absolute
+paths. Archived version-1 input validation remains unchanged and normalization never
+mutates the approved plan. Each source reuses the non-starting create/cp/remove
+flow and produces per-source provenance before the merged CNI staging tree reaches
+the existing offline installer/verifier. Real cluster-image equality, installer
+behavior and full postjoin tree stability are still acceptance evidence.
