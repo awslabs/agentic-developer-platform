@@ -1507,6 +1507,20 @@ def get_agent_service() -> AgentService:
     return AgentService()
 
 
+async def _validate_agent_assignment(db: AsyncSession, org_id: str, department_id: str | None, team_id: str | None) -> None:
+    """Validate supplied hierarchy while preserving older unassigned clients."""
+    from src.shared.models.organization import Department, Team
+
+    if department_id:
+        department = await db.scalar(select(Department).where(Department.id == department_id, Department.org_id == org_id))
+        if department is None:
+            raise HTTPException(422, detail="Department does not belong to this organization")
+    if team_id:
+        team = await db.scalar(select(Team).where(Team.id == team_id, Team.org_id == org_id))
+        if team is None or (department_id and team.department_id != department_id):
+            raise HTTPException(422, detail="Team does not belong to the selected organization and department")
+
+
 @router.post("/agents", response_model=AgentResponse, status_code=201)
 async def create_agent(
     request: AgentCreateRequest,
@@ -1522,6 +1536,7 @@ async def create_agent(
     Requires org admin privileges.
     """
     await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=request.org_id)
+    await _validate_agent_assignment(access.db, request.org_id, request.department_id, request.team_id)
     mark_admin_effects()
     result = await service.create_agent(request)
     await write_admin_audit(
@@ -1584,6 +1599,7 @@ async def get_agent_credentials(
     service: Annotated[AgentService, Depends(get_agent_service)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     current_user: Annotated[TokenContext, Depends(get_current_user)],
+    org_id: str | None = None,
 ) -> AgentCredentialsResponse:
     """Get agent credentials (client_id and client_secret).
 
@@ -1595,10 +1611,10 @@ async def get_agent_credentials(
 
     Requires org admin privileges.
     """
-    # Get agent first to check org
-    agent = await service.get_agent(client_id, current_user.org_id)
-    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=agent.org_id)
-    return await service.get_agent_credentials(client_id, current_user.org_id)
+    target_org_id = org_id or current_user.org_id
+    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=target_org_id)
+    await service.get_agent(client_id, target_org_id)
+    return await service.get_agent_credentials(client_id, target_org_id)
 
 
 @router.put("/agents/{client_id}", response_model=AgentResponse)
@@ -1608,6 +1624,7 @@ async def update_agent(
     service: Annotated[AgentService, Depends(get_agent_service)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     current_user: Annotated[TokenContext, Depends(get_current_user)],
+    org_id: str | None = None,
 ) -> AgentResponse:
     """Update agent metadata.
 
@@ -1616,11 +1633,17 @@ async def update_agent(
 
     Requires org admin privileges.
     """
-    # Get agent first to check org
-    agent = await service.get_agent(client_id, current_user.org_id)
-    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=agent.org_id)
+    target_org_id = org_id or current_user.org_id
+    await access.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=target_org_id)
+    agent = await service.get_agent(client_id, target_org_id)
+    if {"department_id", "team_id"} & request.model_fields_set:
+        await _validate_agent_assignment(
+            access.db, target_org_id,
+            request.department_id if request.department_id is not None else agent.department_id,
+            request.team_id if request.team_id is not None else agent.team_id,
+        )
     mark_admin_effects()
-    result = await service.update_agent(client_id, current_user.org_id, request)
+    result = await service.update_agent(client_id, target_org_id, request)
     await write_admin_audit(
         access.db,
         actor=current_user,

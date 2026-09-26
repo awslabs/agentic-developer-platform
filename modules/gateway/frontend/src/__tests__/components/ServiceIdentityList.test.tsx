@@ -81,3 +81,15 @@ describe('Organization service accounts', () => {
     expect(screen.getByText('new cognito')).toBeInTheDocument();
   });
 });
+
+it('exposes management actions only to organization managers and supported accounts', async () => {
+  const view = render(<ServiceIdentityList orgId="org" />);
+  await screen.findByText('cognito worker');
+  expect(screen.queryByRole('button', { name: 'Add service account' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Edit assignment' })).not.toBeInTheDocument();
+  view.rerender(<ServiceIdentityList orgId="org" canManage />);
+  expect(screen.getByRole('button', { name: 'Add service account' })).toBeInTheDocument();
+  expect(screen.getAllByRole('button', { name: 'Edit assignment' })).toHaveLength(1);
+  await userEvent.click(screen.getByRole('button', { name: 'Edit assignment' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('cognito worker');
+});
