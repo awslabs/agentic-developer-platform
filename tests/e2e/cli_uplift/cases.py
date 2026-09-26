@@ -301,6 +301,13 @@ CASES = (
         "Served research reads preserve scoped findings/proposal IDs and pagination; no scan, mutation or decision",
         (EC2, PLATFORM, COGNITO, SUPERPLANE_RESEARCH),
     ),
+    Case(
+        "E26",
+        "#5589",
+        "story-reads",
+        "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

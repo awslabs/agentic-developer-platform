@@ -273,6 +273,31 @@ def preflight_stage(cfg, ports):
             "the disposable instance could not be launched with it",
         )
         record["instance_profile"] = profile.get("InstanceProfileName")
+        group_id = cfg.get("instance_security_group_id")
+        if group_id:
+            groups = aws.call(
+                "ec2", "describe_security_groups", GroupIds=[group_id]
+            ).get("SecurityGroups", [])
+            require(
+                len(groups) == 1 and groups[0].get("VpcId") == cfg["vpc_id"],
+                "Evaluation security group is not in the approved VPC",
+            )
+            require(
+                not groups[0].get("IpPermissions"),
+                "Evaluation security group must not allow inbound connections",
+            )
+            require(
+                any(
+                    rule.get("IpProtocol") == "-1"
+                    or (
+                        rule.get("IpProtocol") == "tcp"
+                        and rule.get("FromPort", 0) <= 443 <= rule.get("ToPort", 0)
+                    )
+                    for rule in groups[0].get("IpPermissionsEgress", [])
+                ),
+                "Evaluation security group has no HTTPS egress for SSM",
+            )
+            record["instance_security_group_id"] = group_id
 
         # SSM reachability, so an EC2 stage failure later is not a mystery.
         require(
@@ -393,6 +418,11 @@ def ec2_stage(cfg, ports):
             MinCount=1,
             MaxCount=1,
             SubnetId=cfg["private_subnet_id"],
+            **(
+                {"SecurityGroupIds": [cfg["instance_security_group_id"]]}
+                if cfg.get("instance_security_group_id")
+                else {}
+            ),
             IamInstanceProfile={"Name": cfg["instance_profile"]},
             UserData=user_data(cfg, ctx["evaluation_id"]),
             # Belt and braces with the in-guest timer: a stop from any cause
@@ -773,6 +803,7 @@ JOURNEY_DRIVERS = {
     "E22": "story_activity",
     "E25": "story_research",
     "E24": "story_vault",
+    "E26": "story_budget",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

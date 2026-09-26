@@ -1,0 +1,213 @@
+{
+  "terraform_version": "1.14.9",
+  "source_commit": "c3c23dd8f1201506dbd21788f482420ee3c1b248",
+  "binary_sha256": "2c4358d59d204b6e411526aa9918fe27c61055b382ef8832a4d297174324d549",
+  "dependency_patch_sha256": "b6a40852838af2bafdde717e173ccc867c768d2e8f632fec5a9ecc29c2e59801",
+  "go_version": "1.26.8",
+  "grpc_version": "1.83.2",
+  "binary_raw_matches": 0,
+  "offline_lifecycle": "pass",
+  "upstream_standard_vet_pass": [
+    "internal/communicator/ssh",
+    "internal/communicator/winrm",
+    "internal/backend/local"
+  ],
+  "rpc_vet_limitation": {
+    "file": "internal/rpcapi/stacks_grpc_client_test.go",
+    "upstream_unchanged": true,
+    "sha256": "ba2c104bb47a9e50b76e3cc71b824f478f0e7f6ef7e750dcd2ef0e541c7565c3",
+    "lines": [
+      175,
+      219
+    ],
+    "diagnostic": "Fatalf format %q has integer argument; pre-existing upstream tests fail Go1.26 vet; runtime suite executed separately with -vet=off"
+  },
+  "rpc_runtime_tests": "pass with package-scoped -vet=off; unmodified upstream formatting diagnostics retained",
+  "scope": "Terraform embedded dependencies in ARC and its automation-infrastructure derivative; other image findings remain open",
+  "issue": 6125,
+  "recorded_at": "2026-09-26T00:05:08.113417+00:00",
+  "original_selector_manifest": {
+    "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/s21-final-20260925-b1d0894c17/reconciliation/image-family-platform-selectors.json",
+    "sha256": "af02af8c2e1939c12935605adf0e239856fe467396fd5e11af1ac9d8b5c30f4f"
+  },
+  "baseline_arc": {
+    "source": {
+      "type": "image",
+      "target": {
+        "userInput": "security25-arc:helm322",
+        "imageID": "sha256:deaa40898a8c7f19f26f98737c70415ae9a50eade000c2954db0d44ec951beea",
+        "manifestDigest": "sha256:232e78742a8820f0a19991356ab574bbfd7e5743dca10a1b18432c00e81463e3",
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+        "tags": [
+          "security25-arc:helm322"
+        ],
+        "imageSize": 2767873038
+      }
+    },
+    "terraform_occurrences": 50,
+    "terraform_native_severity_counts": {
+      "Medium": 15,
+      "High": 26,
+      "Critical": 5,
+      "Low": 4
+    }
+  },
+  "candidate_arc": {
+    "source": {
+      "type": "image",
+      "target": {
+        "userInput": "security25-arc:terraform-security",
+        "imageID": "sha256:bbaf67b3cfcbb09c92b051ecd84e7e9f65bac34615f0993b233bd717f5e1b138",
+        "manifestDigest": "sha256:290371873b3c5e73d6e3c9f318e60c0a2aca7c66941f56f8b63af6c9dbb3b875",
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+        "tags": [
+          "security25-arc:terraform-security"
+        ],
+        "imageSize": 2769962425
+      }
+    },
+    "terraform_occurrences": 0,
+    "full_native_severity_counts": {
+      "High": 182,
+      "Medium": 445,
+      "Critical": 14,
+      "Negligible": 10,
+      "Low": 82,
+      "Unknown": 2
+    },
+    "ignored_matches_retained": 3390
+  },
+  "candidate_automation": {
+    "source": {
+      "type": "image",
+      "target": {
+        "userInput": "security25-automation:terraform-security",
+        "imageID": "sha256:a361c628b9f22d811e627a42e1463c1afc78f13735d9078458c93a69bf320011",
+        "manifestDigest": "sha256:2bd976bb51fe60c1bfb4b5731705f64d3da231f1c49bd86d7722169a3a84a4c3",
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+        "tags": [
+          "security25-automation:terraform-security"
+        ],
+        "imageSize": 2775887903
+      }
+    },
+    "terraform_occurrences": 0,
+    "full_native_severity_counts": {
+      "High": 182,
+      "Medium": 445,
+      "Critical": 14,
+      "Negligible": 10,
+      "Low": 82,
+      "Unknown": 2
+    },
+    "ignored_matches_retained": 3390
+  },
+  "scanner": {
+    "version": "0.119.0",
+    "database": {
+      "schemaVersion": "v6.1.9",
+      "from": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-09-25T00:33:36Z_1790317909.tar.zst?checksum=sha256%3A04c01bc3418d0d53f64d041c2f28070a5ce1f814ee891b3f5d90102f09232dfe",
+      "built": "2026-09-25T06:31:49Z",
+      "path": "/workspaces/projects/security25-images/pr-review/cache-scan/db/6/vulnerability.db",
+      "valid": true
+    },
+    "policy": "Same frozen database and configuration; repository ignore rules and advisory postprocessor disabled; default Grype kernel-header matching rules retained identically. Native severities are not new CVSS assignments."
+  },
+  "validation": [
+    "Independent full ARC build and all bundled-tool checks passed",
+    "Dependency checksums unchanged through the Docker build",
+    "Network-disabled nonroot lifecycle in the standalone candidate, ARC and automation images passed",
+    "Exact Terraform binary SHA256 identical in independently built ARC, automation and tested standalone candidate",
+    "SSH, WinRM and local-backend upstream suites passed with normal vet; RPC runtime suite passed with package-scoped -vet=off and original formatting diagnostics retained",
+    "Automation psql and Python yaml import checks passed"
+  ],
+  "limits": [
+    "No runner publication, rollout, capacity or RBAC changes performed",
+    "No gateway/tick workload writes",
+    "Image-family issue remains open; original findings and 45-package denominator unchanged",
+    "Docker-export scan manifest digests are retained provenance, not claims of registry publication"
+  ],
+  "artifacts": [
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/binary-grype.json",
+      "sha256": "160b6abcbd474f6f7ae41188db48341f6a17d68e76130ec474eca516a3b98bac",
+      "bytes": 5800
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/image-grype.json",
+      "sha256": "1de10a02757d9d87051ad1f46c05857c6da0fb2bcb4c2e30ad09e120e6757cd0",
+      "bytes": 18516724
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/automation-grype.json",
+      "sha256": "d8181078da056e288b826770a3fd2e9e1b8237791aade4c095b973a17a2551d9",
+      "bytes": 18518731
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/baseline-matches.json",
+      "sha256": "75a982c6e3a54cea2833462a0c50ade29d343d99d45cb4c7e324172fe2ec0b37",
+      "bytes": 383817
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/binary-modules.txt",
+      "sha256": "208401fce94d156d5f0204afead11089b4edd1f1b3c98b9dbb4524ac563b4419",
+      "bytes": 25475
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/smoke.sh",
+      "sha256": "cebeb54317197145e9a2c1ede553399e5ce509f5277bc856d6a33701f3fc6bce",
+      "bytes": 1571
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/smoke.log",
+      "sha256": "d615b2f68adfee28534047b81b5c5bf3f22a8f136affa1a7f3e9d128d4e340a2",
+      "bytes": 3937
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/image-smoke.log",
+      "sha256": "7ad355f95dc4dfd06f142743caa573ade657efd304353dc5f2381332f9051ca4",
+      "bytes": 4028
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/automation-smoke.log",
+      "sha256": "dd55b610ada6e88d4b7a0eb2121f977e6cd15541e8ff1b4d968eb9997eacdbfe",
+      "bytes": 4084
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/build.log",
+      "sha256": "42ce801b1c1be0c8072e9025754e9016dfece8ee39bb5dd19684d6bf9a4f5c39",
+      "bytes": 123
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/image-build.log",
+      "sha256": "50a8ca2693d4961da3369c1ee07c3a0575075eb6344395a39623337d033bce73",
+      "bytes": 18677
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/automation-build.log",
+      "sha256": "12deeb7e65d092e83c59531c34c276a3b0572ccd0828bf198f234b9d9a02c728",
+      "bytes": 8395
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/upstream-vet-results.log",
+      "sha256": "ed97ef09fdc5a35cf4c7482c165aba38027de8c33391a13af159947f5ef47280",
+      "bytes": 609
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/rpc-runtime-tests.log",
+      "sha256": "f2d7858016bcb02c83d1457b33531bec35812a67d8a9e9f41f54fd1b992679bc",
+      "bytes": 59
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/binary-acceptance.json",
+      "sha256": "2d6d970d4d0d768ce1eeeb793610a654e8d095b086aad33e14b9cd94b913ae51",
+      "bytes": 1042
+    },
+    {
+      "uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/terraform-security-dependencies.patch",
+      "sha256": "b6a40852838af2bafdde717e173ccc867c768d2e8f632fec5a9ecc29c2e59801",
+      "bytes": 96228
+    }
+  ],
+  "evidence_uri": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-terraform/acceptance.json"
+}
