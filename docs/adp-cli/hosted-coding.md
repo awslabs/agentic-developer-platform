@@ -19,8 +19,9 @@ adp agent abort --run tsk_UUID --command-id ANOTHER_SAVED_UUID \
 
 Use real IDs returned by the commands. The `tsk_` handle identifies the canonical
 Task; its `invocation_id` is a separate Activity identity. Task pause/resume are
-unavailable. Coding runtimes do not consume follow-up input, so E42 does not
-send steer commands. Abort acceptance remains pending until
+unavailable. Coding runtimes do not consume follow-up input, so new steer
+commands are refused by the Task API and E42 does not send them.
+Abort acceptance remains pending until
 terminal cancellation readback; a timeout only detaches the client. Retry submissions with the same
 request ID and unchanged files. A locally recorded unknown artifact upload is
 not automatically repeated and never dispatches a paid Task.

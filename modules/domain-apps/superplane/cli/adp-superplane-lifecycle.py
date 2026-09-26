@@ -197,7 +197,9 @@ def validation(path):
     return body
 
 
-def mutate_once(args, api, command, path, method, body, before, readback):
+def mutate_once(
+    args, api, command, path, method, body, before, readback, *, reconcile=None
+):
     if args.dry_run or not args.yes:
         return common.envelope(
             "dry_run",
@@ -231,12 +233,13 @@ def mutate_once(args, api, command, path, method, body, before, readback):
                 raise common.CliError(
                     "Operation ID belongs to different lifecycle inputs.", "conflict", 4
                 )
+            observed = reconcile() if reconcile is not None else before
             return common.envelope(
                 "pending",
                 command,
                 {
                     "operation_id": operation,
-                    "observed": before,
+                    "observed": observed,
                     "acknowledgement": receipt.get("acknowledgement"),
                     "replayed_without_write": True,
                 },
@@ -349,8 +352,29 @@ def provider_connection(args, api):
     if args.subcommand == "show":
         return common.envelope("ok", "superplane provider-connection show", before)
     action = args.subcommand
+    if action == "create" and args.operation_id:
+        connection = identifier(args.operation_id)
+    if action == "create" and args.yes and not args.dry_run:
+        connection = identifier(args.operation_id)
+        capabilities = api.request("GET", BASE + "/capabilities")
+        features = (
+            capabilities.get("features") if isinstance(capabilities, dict) else None
+        )
+        if (
+            not isinstance(features, list)
+            or "provider-connection-operation-id-v1" not in features
+        ):
+            raise common.CliError(
+                "Domain does not support recoverable provider registration; nothing was written.",
+                "unavailable",
+                4,
+            )
     body = (
-        {**reference(args), "provider": args.provider}
+        {
+            **reference(args),
+            "provider": args.provider,
+            **({"operation_id": connection} if connection else {}),
+        }
         if action == "create"
         else validation(args.validation_file)
         if action == "validate"
@@ -417,6 +441,9 @@ def provider_connection(args, api):
         body,
         before,
         readback,
+        reconcile=(lambda: readback({"connection_id": connection}))
+        if action == "create"
+        else None,
     )
 
 

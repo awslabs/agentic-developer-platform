@@ -242,3 +242,92 @@ async def test_deregistered_reference_cannot_commit_waiting_registration(connect
             await session.get(CredentialRegistry, ctx.registry_id)
         ).status == "Deregistered"
         assert (await session.execute(select(ProviderConnection))).scalars().all() == []
+
+
+async def test_concurrent_operation_registration_returns_one_exact_connection(
+    connection_db, monkeypatch
+):
+    ctx = connection_db
+    operation = uuid.uuid4()
+    payload = {
+        "operation_id": str(operation),
+        "credential_id": ctx.reference.credential_id,
+        "service": ctx.reference.service,
+        "label": ctx.reference.label,
+        "provider": "nebius",
+    }
+
+    async def body():
+        return dict(payload)
+
+    async def stream():
+        import json
+
+        yield json.dumps(payload).encode()
+
+    ctx.request.json = body
+    ctx.request.stream = stream
+    ctx.request.state.grant = SimpleNamespace(
+        permissions=frozenset({"workspace:renew_credential", "workspace:read"})
+    )
+
+    async def evidence(*args, **kwargs):
+        return ctx.evidence
+
+    monkeypatch.setattr(router, "_vault_evidence", evidence)
+    async with ctx.sessions() as first, ctx.sessions() as second:
+        replies = await asyncio.wait_for(
+            asyncio.gather(
+                router.register_connection(ctx.request, ctx.workspace, ctx.org, first),
+                router.register_connection(ctx.request, ctx.workspace, ctx.org, second),
+            ),
+            timeout=10,
+        )
+    assert replies[0] == replies[1]
+    assert replies[0]["connection_id"] == str(operation)
+    assert replies[0]["status"] == "pending"
+    async with ctx.sessions() as read:
+        rows = (
+            await read.scalars(
+                select(ProviderConnection).where(ProviderConnection.org_id == ctx.org)
+            )
+        ).all()
+        assert len(rows) == 1 and rows[0].id == operation
+
+
+async def test_operation_replay_rechecks_owner_and_current_authority(connection_db):
+    ctx = connection_db
+    operation = uuid.uuid4()
+    kwargs = dict(
+        org_id=ctx.org,
+        workspace_id=ctx.workspace,
+        reference=ctx.reference,
+        provider="nebius",
+        owner_principal="pg-owner",
+        bound_by="pg-owner",
+        operation_id=operation,
+    )
+    async with ctx.sessions() as session:
+        await service.register(
+            session, verify_authority=authority(ctx, session), **kwargs
+        )
+    async with ctx.sessions() as session:
+        with pytest.raises(service.RegistrationConflict):
+            await service.register(
+                session,
+                verify_authority=authority(ctx, session),
+                **{**kwargs, "owner_principal": "different-owner"},
+            )
+    async with ctx.sessions() as revoked:
+        await revoked.execute(
+            update(WorkspaceGrantRecord)
+            .where(WorkspaceGrantRecord.workspace_id == ctx.workspace)
+            .values(permissions="workspace:read")
+        )
+        await revoked.commit()
+    async with ctx.sessions() as session:
+        with pytest.raises(HTTPException) as caught:
+            await service.register(
+                session, verify_authority=authority(ctx, session), **kwargs
+            )
+        assert caught.value.status_code == 403

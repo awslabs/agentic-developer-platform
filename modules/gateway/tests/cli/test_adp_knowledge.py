@@ -249,3 +249,33 @@ def test_legacy_complete_asset_can_be_discovered_without_claiming_usability(clie
     observed = k.status_result({"asset_id": ASSET_ID, "status": "complete", "stages": []})
     assert observed["status"] == "pending"
     assert observed["detail"]["usable"] is False
+
+
+def test_worker_complete_run_contract_is_usable_only_with_verified_stages():
+    # Execute the actual ingestion run finalizer against a fake cursor: its
+    # persisted status must be accepted by the CLI, not an invented synonym.
+    path = CLI.parents[1] / "agent-context/images/ingestion/db.py"
+    spec = importlib.util.spec_from_file_location("knowledge_worker_db", path)
+    worker_db = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker_db)
+    connection = Mock()
+    cursor = connection.cursor.return_value
+    cursor.fetchone.return_value = (0, 2, 2)
+    run_id = "22222222-2222-4222-8222-222222222222"
+    worker_db.complete_index_run(connection, run_id)
+    persisted_status = cursor.execute.call_args_list[-1].args[1][0]
+    assert persisted_status == "complete"
+    value = {
+        "asset_id": ASSET_ID,
+        "status": "complete",
+        "run_id": run_id,
+        "run_status": persisted_status,
+        "stages": [{"stage": "s3_upload", "status": "verified"}, {"stage": "graphrag", "status": "skipped"}],
+    }
+    observed = k.status_result(value)
+    assert observed["status"] == "ok" and observed["detail"]["usable"] is True
+    for change in ({"run_id": None}, {"run_status": "partial"}, {"stages": []}, {"stages": [{"stage": "s3_upload", "status": "skipped"}]}):
+        result = k.status_result({**value, **change})
+        assert result["status"] == "pending" and result["detail"]["usable"] is False
+    failed = k.status_result({**value, "stages": [{"stage": "s3_upload", "status": "failed"}]})
+    assert failed["status"] == "failed" and failed["detail"]["usable"] is False
