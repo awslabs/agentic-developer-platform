@@ -307,6 +307,7 @@ async def seed_mapping(
 @pytest.fixture(autouse=True)
 def routing_transaction_lock(monkeypatch):
     from src.admin.bedrock_routing import revisions
+
     lock = AsyncMock()
     monkeypatch.setattr(revisions, "serialize_writes", lock)
     return lock
