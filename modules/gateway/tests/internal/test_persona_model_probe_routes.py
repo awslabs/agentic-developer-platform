@@ -579,15 +579,13 @@ def test_task_profiles_match_worker_and_do_not_change_legacy_cycle():
     worker = Path(__file__).parents[3] / "agent-factory/agent/src/invocability-probe/task-profiles.json"
     profiles = json.loads(worker.read_text())
     for persona, profile in TASK_PERSONAS.items():
-        if profile.compatibility_class != "anthropic_messages":
-            assert persona not in profiles
-            continue
         assert profiles[persona] == {
             "revision": profile.harness_contract_revision,
             "body": profile.probe_json,
             "digest": profile.request_shape_sha256,
+            **({"transport": "openai_responses"} if profile.compatibility_class == "codex-sdk" else {}),
         }
-        assert profile.probe_body["max_tokens"] in (16, 64)
+        assert profile.probe_body.get("max_tokens", profile.probe_body.get("max_output_tokens")) in (16, 64, 128)
     legacy = json.loads((Path(__file__).parents[2] / "src/admin/persona_models/request-shape-manifest.json").read_text())
     fingerprint = hashlib.sha256(json.dumps(legacy["models"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     assert _cycle_key(datetime(2026, 9, 26, tzinfo=UTC)) == f"2026-09-26:{fingerprint}"
@@ -650,13 +648,18 @@ async def test_claim_route_explicit_task_profile_returns_exact_body(db_session, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persona", ["agent-task-gpt-developer", "agent-task-gpt-intent-refinement"])
-async def test_codex_task_probe_denied_before_spend(db_session, monkeypatch, persona):
-    from src.internal.persona_model_probe_service import ProbeConflictError
+async def test_codex_task_probe_reserves_only_codex_model_and_exact_profile(db_session, monkeypatch, persona):
+    from src.tasks.personas import TASK_PERSONAS
 
     _enable(monkeypatch)
     db_session.add(_destination())
     await db_session.commit()
-    with pytest.raises(ProbeConflictError) as denied:
-        await claim_probe(db_session, task_persona=persona)
-    assert denied.value.reason == "unsupported_task_probe_transport"
-    assert (await db_session.scalars(select(ModelProbeCycle))).all() == []
+    result = await claim_probe(db_session, task_persona=persona)
+    assert result.claimed
+    assert result.slot.compatibility_class == "codex-sdk"
+    assert result.slot.canonical_model_id in {
+        model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE if model.compatibility_class == "codex-sdk"
+    }
+    assert result.slot.harness_contract_revision == TASK_PERSONAS[persona].harness_contract_revision
+    assert result.slot.expected_request_shape_sha256 == TASK_PERSONAS[persona].request_shape_sha256
+    assert len((await db_session.scalars(select(ModelProbeCycle))).all()) == 1
