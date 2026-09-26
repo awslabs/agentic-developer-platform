@@ -585,3 +585,22 @@ run "validation_service_passes_only_the_api_endpoint" {
     error_message = "Shared workers receive only the service endpoint, never Kubernetes credentials."
   }
 }
+
+run "codex_dashboards_require_explicit_enablement" {
+  command = plan
+  assert {
+    condition     = length(aws_cloudwatch_dashboard.codex_harness) == 0 && length(aws_cloudwatch_metric_alarm.codex_execution) == 0
+    error_message = "Codex operational telemetry is opt-in."
+  }
+}
+run "codex_alarms_use_bounded_outcome_dimensions" {
+  command = plan
+  variables {
+    enable_agent_otel           = true
+    codex_observability_enabled = true
+  }
+  assert {
+    condition     = length(aws_cloudwatch_dashboard.codex_harness) == 1 && length(aws_cloudwatch_metric_alarm.codex_execution) == 2 && aws_cloudwatch_metric_alarm.codex_execution["unknown_outcome"].dimensions == tomap({ outcome = "unknown" }) && aws_cloudwatch_metric_alarm.codex_execution["unknown_outcome"].threshold == 1
+    error_message = "Unknown outcomes need an alert using a fixed outcome dimension, not Task/user IDs."
+  }
+}

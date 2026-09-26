@@ -37,7 +37,8 @@ export async function observeOperation<T>(kind: "model" | "tool" | "completion",
 
 /** Trusted runtime configuration only. No automatic instrumentation, environment
  * resource discovery, content capture, exporter headers or arbitrary attributes. */
-export function startTelemetry(options: { endpoint?: string; traceparent?: string; runId: string; persona: string }) {
+export function startTelemetry(options: { endpoint?: string; traceparent?: string; runId: string; persona: string;
+  failureOutcome?: () => "failed" | "cancelled" | "unknown" }) {
   let tracerProvider: NodeTracerProvider | undefined;
   let meterProvider: MeterProvider | undefined;
   let loggerProvider: LoggerProvider | undefined;
@@ -78,11 +79,20 @@ export function startTelemetry(options: { endpoint?: string; traceparent?: strin
       return context.with(parent, () => trace.getTracer("adp.codex-harness").startActiveSpan("adp.codex.run", {
         attributes: { "adp.run.id": options.runId, "adp.persona.key": options.persona },
       }, async span => {
+        const started = performance.now();
+        let outcome = "completed";
         try { const value = await callback(); span.setStatus({ code: SpanStatusCode.OK }); return value; }
-        catch (error) { span.setStatus({ code: SpanStatusCode.ERROR }); span.setAttribute("error.type", "run_failed"); throw error; }
+        catch (error) {
+          outcome = "failed";
+          try { const selected = options.failureOutcome?.(); if (selected && ["failed", "cancelled", "unknown"].includes(selected)) outcome = selected; } catch { /* telemetry never changes execution */ }
+          span.setStatus({ code: SpanStatusCode.ERROR }); span.setAttribute("error.type", outcome); throw error;
+        }
         finally {
-          logs.getLogger("adp.codex-harness").emit({ severityNumber: SeverityNumber.INFO, body: "adp.codex.run.terminal",
-            attributes: { "adp.run.id": options.runId, "adp.persona.key": options.persona } });
+          const duration = (performance.now() - started) / 1000;
+          metrics.getMeter("adp.codex-harness").createHistogram("adp.codex.run.duration", { unit: "s" }).record(duration, { outcome });
+          span.setAttribute("adp.run.outcome", outcome);
+          logs.getLogger("adp.codex-harness").emit({ severityNumber: ["failed", "unknown"].includes(outcome) ? SeverityNumber.ERROR : SeverityNumber.INFO, body: "adp.codex.run.terminal",
+            attributes: { "adp.run.id": options.runId, "adp.persona.key": options.persona, "adp.run.outcome": outcome, "adp.run.duration_seconds": duration } });
           span.end();
         }
       }));

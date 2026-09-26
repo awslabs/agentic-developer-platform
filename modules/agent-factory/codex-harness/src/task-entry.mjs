@@ -111,7 +111,8 @@ if (!process.argv.includes('--embedded') || process.env.ADP_TASK_NETWORK !== 'ho
           bridge = new HostBridge(start, write, { allowSteering: true, traceContext: activeTraceparent });
           bridge.send('ready', { capabilities: ['input', 'cancel'] });
           const telemetry = startTelemetry({ endpoint: process.env.ADP_CODEX_OTEL_ENDPOINT, traceparent: harness.traceparent,
-            runId: start.task_id, persona: start.persona });
+            runId: start.task_id, persona: start.persona,
+            failureOutcome: () => bridge.cancelCommand ? "cancelled" : bridge.failure?.message === "model_outcome_unknown" ? "unknown" : "failed" });
           telemetry.run(run).then(async report => { await telemetry.shutdown(); finish(null, report); },
             async error => { await telemetry.shutdown(); bridge.failure ??= error; finish(error); });
         } else {
