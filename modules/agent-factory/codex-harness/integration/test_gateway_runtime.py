@@ -133,6 +133,7 @@ def sdk_otel_collector(request, monkeypatch):
         "tools_developer_live",
         "tools_developer_live_retry",
         "tools_developer_live_github",
+        "tools_developer_live_github_repair",
     ],
 )
 def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch, scenario, caplog):
@@ -141,7 +142,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
 
     store._clock = now
     many_turns = scenario == "tools_developer_many_turns"
-    live_github = scenario == "tools_developer_live_github"
+    live_repair = scenario == "tools_developer_live_github_repair"
+    live_github = scenario == "tools_developer_live_github" or live_repair
     retry_story = scenario == "tools_developer_live_retry" or live_github
     actual_live = scenario in {"tools_developer_live", "tools_developer_live_retry"} or live_github
     if actual_live and not os.environ.get("ADP_CODEX_LIVE_CONFIG_SOURCE"):
@@ -288,6 +290,10 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             "type": "function", "name": codex_tool_name("change.create"), "description": "Publish validated change.",
             "parameters": {"type": "object", "properties": {key: {"type": "string"} for key in ("commit", "title", "body")},
                            "required": ["commit", "title", "body"], "additionalProperties": False}, "strict": False}})
+    if live_repair:
+        tools.append({"permission": "repository.state", "capability": "repository.read", "definition": {
+            "type": "function", "name": codex_tool_name("repository.state"), "description": "Read the current clean workspace commit and tree.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False}, "strict": False}})
     if tool_mode:
         definition = json.loads(golden["harness"]["snapshot"]["definition"])
         definition["optionalCapabilities"] = sorted({entry["capability"] for entry in tools})
@@ -397,7 +403,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             ),
             submit={
                 "persona": persona,
-                "instructions": (criterion + " Read the existing retry-delay.js, implement only this module, commit, run the named acceptance check, and create a ready PR after it passes.") if retry_story else (
+                "instructions": (criterion + (" Before editing, read repository.state and run the named acceptance check on its localHead to establish the known-broken baseline. Then repair the module and validate the final commit; do not stop at the expected baseline failure." if live_repair else "") + " Read the existing retry-delay.js, implement only this module, commit, run the named acceptance check, and create a ready PR after it passes.") if retry_story else (
                     "Fix source.txt so it contains exactly expected followed by a newline. Read the file before editing, "
                     "commit the change, run the named acceptance validation check on that commit, then create a ready PR. "
                     "Use the tool receipts to cite the final result. The check is supplied by the trusted host. "
@@ -1015,6 +1021,9 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         assert gateway._validation_tool is None
     if actual_developer:
         assert events.count("completion-observed") == (3 if scenario == "tools_developer_moved" else 2)
+    if live_repair:
+        validations = [row["status"] for row in workflow["tool_results"] if row["tool"] == "validation.run"]
+        assert validations[0] == "failed" and validations[-1] == "passed", validations
     if actual_publication:
         assert events.count("publication-effect") == 1
         assert workflow["publication"]["operation_status"] == "confirmed"

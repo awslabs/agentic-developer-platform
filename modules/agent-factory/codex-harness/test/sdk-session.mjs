@@ -38,7 +38,7 @@ const host = {
 const evidence = await runAdmittedSession(input, host);
 assert.equal(evidence.response, 'Fixture conclusion.');
 assert.equal(calls, 1);
-assert.equal(checks, 3);
+assert.equal(checks, 4);
 assert.deepEqual(progress, [{ type: 'turn.started' }]);
 assert.deepEqual((await readdir(tmpdir())).sort(), before.sort(), 'Session files survived cleanup');
 await assert.rejects(runAdmittedSession({ ...input, snapshot: { ...snapshot, instructions: 'tampered' } }, host), /instruction binding/);
