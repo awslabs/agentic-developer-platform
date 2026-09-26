@@ -7,19 +7,32 @@ import json
 from pathlib import Path
 from xml.etree import ElementTree
 
+
+def _require(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--report", type=Path, required=True)
 args = parser.parse_args()
 report = json.loads(args.report.read_text())
-assert report["criteria"] and all(
-    row["status"] == "PASS" for row in report["criteria"].values()
-), "Qualification is incomplete"
-assert report.get("artifact_sha256"), "Qualification must bind nonempty evidence artifacts"
+_require(
+    report["criteria"]
+    and all(row["status"] == "PASS" for row in report["criteria"].values()),
+    "Qualification is incomplete",
+)
+_require(
+    report.get("artifact_sha256"), "Qualification must bind nonempty evidence artifacts"
+)
 root = args.report.parent.resolve()
 for name, expected in report["artifact_sha256"].items():
     path = (root / name).resolve()
     path.relative_to(root)
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, name
+    _require(
+        hashlib.sha256(path.read_bytes()).hexdigest() == expected,
+        "Qualification artifact digest mismatch",
+    )
 for run in report.get("test_runs", []):
     suites = ElementTree.parse(root / run["report"]).getroot().iter("testsuite")
     tests = failed = skipped = 0
@@ -29,7 +42,10 @@ for run in report.get("test_runs", []):
             suite.attrib.get("errors", 0)
         )
         skipped += int(suite.attrib.get("skipped", 0))
-    assert tests == run["passed"] and failed == skipped == 0, run["report"]
+    _require(
+        tests == run["passed"] and failed == skipped == 0,
+        "Qualification test results are incomplete",
+    )
 print(
     json.dumps(
         {

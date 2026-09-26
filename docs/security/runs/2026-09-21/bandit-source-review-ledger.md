@@ -155,3 +155,19 @@ The tool still checks recorded evidence integrity only; no test or source change
 performs live qualification. All **1,470** original identities/severities remain
 with **916** observations pending source review. #6108 and its runtime holds
 remain open.
+
+## Frozen qualification report guards
+
+Four original B101 observations in `scripts/task-api/verify-qualified-report.py`
+now use explicit guards preserving every original AST predicate. The baseline
+falsely prints PASS for eight tampered receipt/JUnit variants under both `-O`
+and `-OO`; the repaired verifier passes all **27** regressions across normal
+and optimized modes. Coverage includes absent/failed criteria, absent artifact
+bindings, wrong artifact digests, wrong test counts, failures, errors and skips.
+A fresh Bandit 1.7.9 scan reports zero B101 results and zero errors. Receipt:
+`evidence/bandit-qualified-report-guards.json`.
+
+All **1,470** original identities, severities and candidate links remain;
+**912** observations remain pending source review. This repair validates recorded
+integrity only, without live qualification or removal of runtime holds.
+#6108 remains open.

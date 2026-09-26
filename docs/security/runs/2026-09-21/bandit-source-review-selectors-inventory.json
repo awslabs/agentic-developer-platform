@@ -7,11 +7,11 @@
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
     "reviewed-import-only-observation": 107,
-    "pending-source-review": 916,
+    "pending-source-review": 912,
     "nonsecurity-test-assertion": 187,
     "fixed-source-runtime-open": 10,
     "reviewed-optimization-safe-guard": 35,
-    "fixed": 213,
+    "fixed": 217,
     "reviewed-parameterized-sql": 2
   },
   "scope_complete": false,
@@ -21303,8 +21303,10 @@
       "rule": "B101",
       "line": 14,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Explicit guards retain every original qualification predicate under normal and optimized Python. Synthetic receipt/JUnit tampering is refused in all modes; recorded evidence integrity only, without live qualification.",
+      "evidence": "evidence/bandit-qualified-report-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1444",
@@ -21317,8 +21319,10 @@
       "rule": "B101",
       "line": 17,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Explicit guards retain every original qualification predicate under normal and optimized Python. Synthetic receipt/JUnit tampering is refused in all modes; recorded evidence integrity only, without live qualification.",
+      "evidence": "evidence/bandit-qualified-report-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1445",
@@ -21331,8 +21335,10 @@
       "rule": "B101",
       "line": 22,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Explicit guards retain every original qualification predicate under normal and optimized Python. Synthetic receipt/JUnit tampering is refused in all modes; recorded evidence integrity only, without live qualification.",
+      "evidence": "evidence/bandit-qualified-report-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1446",
@@ -21359,8 +21365,10 @@
       "rule": "B101",
       "line": 32,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Explicit guards retain every original qualification predicate under normal and optimized Python. Synthetic receipt/JUnit tampering is refused in all modes; recorded evidence integrity only, without live qualification.",
+      "evidence": "evidence/bandit-qualified-report-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1448",
