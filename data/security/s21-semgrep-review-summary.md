@@ -9,7 +9,8 @@ checks its result index and rule against the frozen SARIF artifact.
 | --- | ---: |
 | Informational AI technology detection | 7728 |
 | Non-security localization rules | 1286 |
-| Pending source review, retained by #6119 | 4050 |
+| Pending source review, retained by #6119 | 4049 |
+| Source fixed, runtime acceptance open | 1 |
 | Existing suppressions needing revalidation | 75 |
 | Total | 13139 |
 
@@ -37,3 +38,21 @@ anchored by commit `74c48e78647afbe8c4eaf83ce3b01499e5cc61fe` at
 The original 75 suppressed records remain visible and unapproved by this review.
 
 Merging this reconciliation and bounded SQL cleanup does **not** close #6119.
+
+## Reviewer GitHub redirect boundary
+
+Exact original selector `run=0|ri=3081` (native CRITICAL, unsuppressed) is
+source-fixed with runtime acceptance still open. The GitHub client formerly
+followed off-origin redirects before checking the final origin. Native-fetch
+loopback regressions reproduce five forbidden destination requests across
+301/302/303/307/308; the repaired client makes zero. Each hop is now manual,
+bounded and validated before transit. Same-origin read redirects still support
+renamed repositories; mutation redirects require method-preserving 307/308.
+
+All 113 component tests pass on Node24, including 22 new regressions (13 fail
+against frozen source). Exact-rule Semgrep1.80.0 retains one observation before
+and after, with zero errors; scanner absence is not the acceptance evidence.
+The receipt at `docs/security/runs/2026-09-26/reviewer-redirect-boundary/review.json`
+preserves the complete original identity/severity/candidate join. All13,139
+original identities remain, and no runtime deployment or whole-story closure
+is claimed. Earlier installation receipts remain independently applicable.

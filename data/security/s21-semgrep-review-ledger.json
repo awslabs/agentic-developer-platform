@@ -11,9 +11,10 @@
     "raw_artifact_sha256": "20f1a0521a64c5e4ac7afb84addd2edae693d1d20fd8ebd560991e7bb7a0426d"
   },
   "summary": {
-    "pending-source-review": 4050,
+    "pending-source-review": 4049,
     "informational-technology-detection": 7728,
     "pending-suppression-revalidation": 75,
+    "source-fixed-runtime-open": 1,
     "nonsecurity-localization": 1286
   },
   "rule_semantic_dispositions": {
@@ -35193,7 +35194,9 @@
       "line": 143,
       "suppressed": false,
       "owner_issue": 6119,
-      "disposition": "pending-source-review"
+      "disposition": "source-fixed-runtime-open",
+      "rationale": "Exact original SSRF observation reviewed with native-fetch redirect evidence. Manual validated same-origin redirects prevent off-origin transit; fresh exact-rule scan retains one finding. Runtime rollout remains open under #6119.",
+      "evidence": "docs/security/runs/2026-09-26/reviewer-redirect-boundary/review.json"
     },
     {
       "selector": "semgrep|semgrep-results.sarif|run=0|ri=3082",
