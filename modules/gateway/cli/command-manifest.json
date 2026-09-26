@@ -4730,7 +4730,7 @@
           "/chat/sessions",
           "/chat/sessions/{session_id}"
         ],
-        "schema": "Owned bounded chat history; start/resume explicitly unavailable"
+        "schema": "Owned session journal and canonical human Task admission/commands"
       },
       "response": {
         "stream": "single-json",
@@ -4762,14 +4762,15 @@
       "request": {
         "kind": "http",
         "methods": [
-          "GET"
+          "GET",
+          "POST"
         ],
         "paths": [
           "/chat/capabilities",
           "/chat/sessions",
-          "/chat/sessions/{session_id}"
+          "/chat/sessions/{session_id}/turns"
         ],
-        "schema": "Owned bounded chat history; start/resume explicitly unavailable"
+        "schema": "Owned session journal and canonical human Task admission/commands"
       },
       "response": {
         "stream": "single-json",
@@ -4780,7 +4781,8 @@
       ],
       "tests": [
         "tests/cli/test_adp_chat.py",
-        "tests/orchestration/test_chat_history.py"
+        "tests/orchestration/test_chat_history.py",
+        "tests/orchestration/test_chat_tasks.py"
       ]
     },
     {
@@ -4793,6 +4795,7 @@
         "--answer-file",
         "--dry-run",
         "--json",
+        "--reply-to",
         "--request-id",
         "--yes"
       ],
@@ -4802,14 +4805,15 @@
       "request": {
         "kind": "http",
         "methods": [
-          "GET"
+          "GET",
+          "POST"
         ],
         "paths": [
           "/chat/capabilities",
           "/chat/sessions",
-          "/chat/sessions/{session_id}"
+          "/chat/sessions/{session_id}/turns"
         ],
-        "schema": "Owned bounded chat history; start/resume explicitly unavailable"
+        "schema": "Owned session journal and canonical human Task admission/commands"
       },
       "response": {
         "stream": "single-json",
@@ -4820,7 +4824,8 @@
       ],
       "tests": [
         "tests/cli/test_adp_chat.py",
-        "tests/orchestration/test_chat_history.py"
+        "tests/orchestration/test_chat_history.py",
+        "tests/orchestration/test_chat_tasks.py"
       ]
     },
     {
@@ -4845,7 +4850,7 @@
           "/chat/sessions",
           "/chat/sessions/{session_id}"
         ],
-        "schema": "Owned bounded chat history; start/resume explicitly unavailable"
+        "schema": "Owned session journal and canonical human Task admission/commands"
       },
       "response": {
         "stream": "single-json",
@@ -4880,7 +4885,7 @@
           "/chat/sessions",
           "/chat/sessions/{session_id}"
         ],
-        "schema": "Owned bounded chat history; start/resume explicitly unavailable"
+        "schema": "Owned session journal and canonical human Task admission/commands"
       },
       "response": {
         "stream": "single-json",
@@ -4918,7 +4923,7 @@
           "/chat/sessions",
           "/chat/sessions/{session_id}"
         ],
-        "schema": "Owned bounded chat history; start/resume explicitly unavailable"
+        "schema": "Owned session journal and canonical human Task admission/commands"
       },
       "response": {
         "stream": "single-json",
@@ -4954,7 +4959,7 @@
           "/chat/sessions",
           "/chat/sessions/{session_id}"
         ],
-        "schema": "Owned bounded chat history; start/resume explicitly unavailable"
+        "schema": "Owned session journal and canonical human Task admission/commands"
       },
       "response": {
         "stream": "single-json",

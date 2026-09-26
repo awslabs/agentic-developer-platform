@@ -33,15 +33,45 @@ task ID. An idle session, another task's response, or partial websocket activity
 cannot satisfy that match. A timeout returns pending and does not submit a turn or
 cancel work. This snapshot polling has no partial-token stream or replay guarantee.
 
-The `start --persona --message-file --request-id` and
-`resume SESSION_ID --answer-file --request-id` forms currently return unavailable
-before reading message files or sending work. General human Task admission and its
-chat executable are still being integrated. The existing ingest supports only the
-explicit `intent-refinement` pin; the CLI does not reinterpret general chat as flow
-planning or borrow worker-only Task credentials. `--yes` cannot change that gate.
-Issue-based hosted triggering remains independent.
+General hosted turns currently support the server-authorized
+`agent-task-investigator` persona. It investigates supplied text and returns the
+canonical structured report; it does not grant arbitrary developer, repository,
+cloud or graph-approval tools. The same existing Task API owns admission, the
+worker, model policy, budget reservation, tool grants and finalization.
 
-E40 adds read-only readiness/history to the existing nightly evaluation. Full
-#5640 acceptance remains open: durable general start/resume, concurrent/lost delivery,
-real bounded multi-turn worker usage, and expiry/cleanup evidence still need the
-supported chat Task executable and a live fixture.
+```sh
+adp chat start --persona agent-task-investigator --message-file question.txt --request-id opening-1 --dry-run --json
+adp chat start --persona agent-task-investigator --message-file question.txt --request-id opening-1 --yes --json
+adp chat resume chat-SESSION_ID --answer-file follow-up.txt --request-id follow-up-1 --yes --json
+# If show/watch reports waiting_for_input, answer the exact question:
+adp chat resume chat-SESSION_ID --answer-file answer.txt --request-id answer-1 --reply-to QUESTION_UUID --yes --json
+```
+
+Each message is limited to 4,000 characters. The existing session row holds a
+conditional versioned request journal: opening IDs deterministically identify the
+same session, each request freezes its Task input, and changed content with a reused
+ID conflicts. A lost acknowledgement is pending; reconcile by resending the same
+request ID and unchanged file. This invokes canonical Task idempotency, never a new
+Task identity. An outstanding Task prevents a new turn. A clarification uses its
+Task input command and retains the same task. A later completed-turn follow-up gets
+a new Task with the prior task-correlated report as context in the same session.
+
+A conversation accepts at most four request IDs (including clarification replies),
+16,000 characters of prior context and a 300,000-byte stored journal. Context that
+exceeds those bounds is refused explicitly. Retention expires 24 hours after opening
+and is not extended by retry. Task records retain their own Task API retention.
+No repository/workspace target can be changed through the message body.
+
+Deployment requires `FEATURE_CHAT_ENABLED`, the existing session-table wiring,
+`ADP_TASK_API_HUMAN_ENABLED`, `ADP_TASK_API_ADMISSION_ENABLED` and
+`ADP_TASK_API_READ_ENABLED`, plus current human membership and explicit standing
+human Task/model policy enrollment for the investigator persona. Capability
+discovery lists only enrolled personas; actual admission rechecks policy, model,
+budget and worker prerequisites. Gateway standing IAM permits session writes only
+under `chat-*`; no per-task role-policy changes are used. Browser/legacy ingest
+cannot attach a classifier turn to these Task-backed sessions.
+
+E40 adds read-only readiness/history to the existing nightly evaluation. Full live
+#5640 acceptance remains open until bounded multi-turn invocation through the served
+EC2 CLI records worker/Task IDs, actual usage, retry/control outcomes and verified
+retention/cleanup. No paid inference was used for code validation.

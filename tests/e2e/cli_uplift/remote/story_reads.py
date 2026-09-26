@@ -211,9 +211,10 @@ def budget(cli, evidence):
 def chat(cli, evidence):
     result = detail(cli.json(["chat", "status"]))
     common.require(
-        result.get("general_turns_supported") is False
-        and result.get("authorized_personas") == [],
-        "General chat admission unexpectedly claims support",
+        isinstance(result.get("general_turns_supported"), bool)
+        and isinstance(result.get("authorized_personas"), list)
+        and set(result["authorized_personas"]) <= {"agent-task-investigator"},
+        "Chat advertised an unsupported hosted persona",
     )
     common.require(
         result.get("history_ready") in {"unknown", "no"},

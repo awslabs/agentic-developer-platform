@@ -319,7 +319,7 @@ CASES = (
         "E40",
         "#5640",
         "story-reads",
-        "Hosted chat readiness and bounded own history; general turn admission and multi-turn acceptance remain held",
+        "Hosted chat readiness and bounded own history; live multi-turn acceptance remains held",
         (EC2, PLATFORM, COGNITO),
     ),
 )

@@ -44,6 +44,7 @@ def api(monkeypatch, user, row):
     table.query.return_value = {"Items": [row]}
     app = FastAPI()
     app.include_router(chat.router)
+    app.dependency_overrides[chat.get_db] = lambda: None
     app.dependency_overrides[chat.get_current_user] = lambda: user
     app.dependency_overrides[chat.store] = lambda: table
     return TestClient(app), table
@@ -112,7 +113,7 @@ def test_store_disabled_failure_and_machine_refusal(api, monkeypatch, user):
     assert client.get("/chat/sessions/sess-123").status_code == 503
     monkeypatch.setenv("FEATURE_CHAT_ENABLED", "false")
     reply = client.get("/chat/capabilities").json()
-    assert reply["general_turns_supported"] is False and reply["authorized_personas"] == []
+    assert reply["general_turns_supported"] is True and reply["authorized_personas"] == []
     table.get_item.reset_mock()
     assert client.get("/chat/sessions/sess-123").status_code == 503
     table.get_item.assert_not_called()

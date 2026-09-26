@@ -229,6 +229,7 @@ UNIT_MODULES = [
     # approval authority". Guarded by tests/orchestration/test_internal_plane_guard.py.
     "src.orchestration.intake_routes",
     "src.orchestration.chat_history",
+    "src.orchestration.chat_tasks",
 ]
 
 

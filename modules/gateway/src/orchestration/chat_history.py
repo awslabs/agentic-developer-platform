@@ -2,23 +2,47 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import time
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth.dependencies import get_current_user
 from src.chat_logging.scrubber import RegexScrubber
 from src.features.routes import _is_enabled
+from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
+from src.tasks import errors
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+
+def no_store(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+
+
+router = APIRouter(prefix="/chat", tags=["chat"], dependencies=[Depends(no_store)])
 SESSION = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 MAX_MESSAGES = 100
 MAX_CHARS = 100000
 scrubber = RegexScrubber()
+
+
+def contract_errors(function):
+    @functools.wraps(function)
+    async def wrapped(*args, **kwargs):
+        try:
+            return await function(*args, **kwargs)
+        except HTTPException:
+            raise
+        except errors.TaskApiError as exc:
+            raise HTTPException(exc.status, detail={"error": exc.code}) from None
+        except Exception:
+            raise unavailable() from None
+
+    return wrapped
 
 
 def unavailable():
@@ -145,8 +169,17 @@ def project(row, user, transcript=True):
 
 
 @router.get("/capabilities")
-def capabilities(user: Annotated[TokenContext, Depends(get_current_user)], table: Annotated[Any, Depends(store)]):
+@contract_errors
+async def capabilities(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[TokenContext, Depends(get_current_user)],
+    table: Annotated[Any, Depends(store)],
+):
+    from src.orchestration.chat_tasks import personas
+
     human(user)
+    allowed = await personas(request, db)
     enabled = _is_enabled("FEATURE_CHAT_ENABLED")
     return {
         "tenant_id": user.org_id,
@@ -154,9 +187,9 @@ def capabilities(user: Annotated[TokenContext, Depends(get_current_user)], table
         "enabled": enabled,
         "history_configured": table is not None,
         "history_ready": "unknown" if enabled and table is not None else "no",
-        "general_turns_supported": False,
-        "authorized_personas": [],
-        "reason": "general_human_task_admission_unavailable",
+        "general_turns_supported": True,
+        "authorized_personas": allowed,
+        "reason": "ready_for_admission_check" if allowed else "human_task_policy_or_deployment_unavailable",
         "retention_seconds": 86400,
     }
 
@@ -210,7 +243,14 @@ def list_sessions(
 
 
 @router.get("/sessions/{session_id}")
-def show_session(session_id: str, user: Annotated[TokenContext, Depends(get_current_user)], table: Annotated[Any, Depends(store)]):
+@contract_errors
+async def show_session(
+    session_id: str,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[TokenContext, Depends(get_current_user)],
+    table: Annotated[Any, Depends(store)],
+):
     human(user)
     require_store(table)
     if not SESSION.fullmatch(session_id):
@@ -221,4 +261,8 @@ def show_session(session_id: str, user: Annotated[TokenContext, Depends(get_curr
         raise unavailable() from None
     if not owned(row, user) or row.get("session_id") != session_id:
         raise HTTPException(404, detail={"error": "session_not_found"})
+    if row.get("chat_task_persona"):
+        from src.orchestration.chat_tasks import enrich
+
+        return await enrich(row, user, request, db)
     return project(row, user)

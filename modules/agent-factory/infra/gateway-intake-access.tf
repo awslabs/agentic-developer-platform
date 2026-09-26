@@ -66,6 +66,17 @@ resource "aws_iam_role_policy" "gateway_intake_access" {
         ]
       },
       {
+        # Standing permission for Task-backed conversations only (#5640).
+        # No role policy is changed per task; session CAS remains server owned.
+        Sid      = "HostedTaskChatSessionsWrite"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = [module.gateway_sessions.table_arn]
+        Condition = {
+          "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["chat-*"] }
+        }
+      },
+      {
         # The draft, at PK=session#<id>, SK=draft. GetItem only: no Query, because
         # the readback addresses exactly one item and a Query grant would permit
         # walking every row under a session partition.
@@ -84,6 +95,7 @@ resource "aws_iam_role_policy" "gateway_intake_access" {
         Action = [
           "kms:Decrypt",
           "kms:DescribeKey",
+          "kms:GenerateDataKey",
         ]
         Resource = [aws_kms_key.dynamodb.arn]
       },

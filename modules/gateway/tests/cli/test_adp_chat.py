@@ -83,3 +83,39 @@ def test_truncated_final_response_does_not_claim_complete_answer(client, state):
     result = chat.execute(args, client)
     assert result["detail"]["response_observed"] is True
     assert result["detail"]["answer_completion_verified"] is False
+
+
+def test_enabled_start_uses_human_task_adapter_once(client, tmp_path):
+    caps = client.get("/chat/capabilities")
+    caps.update(general_turns_supported=True, authorized_personas=["agent-task-investigator"])
+    source = tmp_path / "message.txt"
+    source.write_text("Explain this")
+    client.post.return_value = dict(
+        status="pending",
+        tenant_id="tenant",
+        user_id="user",
+        session_id="chat-one",
+        task_id="tsk-one",
+        request_id="one",
+        persona="agent-task-investigator",
+    )
+    args = chat.parser().parse_args(["start", "--persona", "agent-task-investigator", "--message-file", str(source), "--request-id", "one", "--yes"])
+    result = chat.execute(args, client)
+    assert result["status"] == "pending"
+    assert client.post.call_count == 1
+    assert client.post.call_args.args[0] == "/chat/sessions"
+    client.post.side_effect = chat.common.CliError("lost", "unknown_mutation_outcome", 4)
+    result = chat.execute(args, client)
+    assert result["detail"]["request_id"] == "one" and result["detail"]["outcome"] == "unknown"
+
+
+def test_malformed_mutation_ack_stays_pending(client, tmp_path):
+    caps = client.get("/chat/capabilities")
+    caps.update(general_turns_supported=True, authorized_personas=["agent-task-investigator"])
+    source = tmp_path / "message.txt"
+    source.write_text("Explain this")
+    client.post.return_value = {"tenant_id": "wrong", "user_id": "user"}
+    args = chat.parser().parse_args(["start", "--persona", "agent-task-investigator", "--message-file", str(source), "--request-id", "one", "--yes"])
+    result = chat.execute(args, client)
+    assert result["status"] == "pending" and result["detail"]["outcome"] == "unknown"
+    assert client.post.call_count == 1

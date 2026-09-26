@@ -36,6 +36,7 @@ def parser():
         if action == "resume":
             p.add_argument("session_id")
             p.add_argument("--answer-file", required=True)
+            p.add_argument("--reply-to", help="Exact pending clarification ID from show")
         if action in {"start", "resume"}:
             p.add_argument("--request-id", required=True)
             p.add_argument("--dry-run", action="store_true")
@@ -53,6 +54,9 @@ class Client:
     def __init__(self):
         self.api = common.Api()
         self.token = common.access_token()
+
+    def post(self, path, body):
+        return self.api.request("POST", path, body, token=self.token, timeout=30)
 
     def get(self, path):
         return self.api.request("GET", path, token=self.token, timeout=30)
@@ -109,11 +113,72 @@ def execute(args, client):
     if args.action == "status":
         return common.envelope("ok", command, capabilities)
     if args.action in {"start", "resume"}:
-        # No general human admission contract exists yet. Never silently reinterpret
-        # this as refinement or dispatch through worker-only Task credentials.
-        raise common.CliError(
-            "General hosted chat admission is unavailable. Use adp chat status; no message was read or dispatched.", "unavailable", 4
-        )
+        persona = args.persona if args.action == "start" else "agent-task-investigator"
+        if (
+            capabilities.get("general_turns_supported") is not True
+            or persona not in capabilities["authorized_personas"]
+            or capabilities.get("enabled") is not True
+            or capabilities.get("history_configured") is not True
+        ):
+            raise common.CliError(
+                "This hosted persona is unavailable for your current Task policy; no message was read or dispatched.", "unavailable", 4
+            )
+        if not args.dry_run and not args.yes:
+            raise common.CliError("Review --dry-run, then use --yes to submit this exact message.", "confirmation_required", 1)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", args.request_id):
+            raise common.CliError("Use a stable printable request ID.", "usage_error", 1)
+        path = Path(args.message_file if args.action == "start" else args.answer_file)
+        import os
+        import stat
+
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd) as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise common.CliError("Message input must be a regular file.", "unsafe_file", 1)
+            message = source.read(4001)
+        if not message.strip() or len(message) > 4000:
+            raise common.CliError("Message must contain 1–4000 characters.", "usage_error", 1)
+        body = {"message": message, "request_id": args.request_id, "persona": persona, "dry_run": args.dry_run}
+        endpoint = "/chat/sessions"
+        if args.action == "resume":
+            endpoint += "/" + identifier(args.session_id) + "/turns"
+            if args.reply_to:
+                body["reply_to"] = args.reply_to
+        try:
+            result = client.post(endpoint, body)
+        except common.CliError as exc:
+            if exc.status_code is None or exc.status_code >= 500:
+                return common.envelope(
+                    "pending",
+                    command,
+                    {"request_id": args.request_id, "outcome": "unknown"},
+                    "Reconcile the same request ID and unchanged file; no automatic retry was sent.",
+                )
+            raise
+        try:
+            scope(result, capabilities)
+            identifier(result.get("session_id"))
+            if result.get("request_id") != args.request_id or result.get("persona") != persona:
+                invalid()
+            if args.action == "resume" and result["session_id"] != args.session_id:
+                invalid()
+            expected_status = "dry_run" if args.dry_run else "pending"
+            if result.get("status") != expected_status:
+                invalid()
+            if args.dry_run and result.get("dispatched") is not False:
+                invalid()
+            if not args.dry_run:
+                identifier(result.get("task_id"))
+        except common.CliError:
+            if not args.dry_run:
+                return common.envelope(
+                    "pending",
+                    command,
+                    {"request_id": args.request_id, "outcome": "unknown"},
+                    "Admission reply could not be validated; reconcile the same request ID and unchanged message.",
+                )
+            raise
+        return common.envelope(expected_status, command, result)
     if capabilities.get("enabled") is not True or capabilities.get("history_configured") is not True:
         raise common.CliError("Hosted chat history is unavailable on this deployment.", "unavailable", 4)
     if args.action == "list":
@@ -135,6 +200,14 @@ def execute(args, client):
         if args.action != "watch":
             break
         matched = [m for m in result["messages"] if m["role"] == "assistant" and m.get("task_id") == args.task_id]
+        task = result.get("task")
+        if isinstance(task, dict) and task.get("task_id") == args.task_id:
+            if task.get("status") in {"failed", "cancelled"}:
+                return common.envelope("failed", command, result, "The correlated task terminated without a completed answer.")
+            if task.get("status") == "waiting_for_input":
+                return common.envelope(
+                    "pending", command, result, "Read the pending question and resume with its exact --reply-to ID; no answer was chosen."
+                )
         if matched:
             result["matched_task_id"] = args.task_id
             result["response_observed"] = True

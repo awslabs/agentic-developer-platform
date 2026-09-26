@@ -182,7 +182,8 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 `watch --session --task-id --timeout --interval`, and
 `export --session --output` provide bounded owned retained history.
 `start --persona --message-file --request-id` and
-`resume SESSION_ID --answer-file --request-id` explicitly refuse while general
-human admission is unavailable; `--dry-run`/`--yes` do not enable it.
+`resume SESSION_ID --answer-file --request-id [--reply-to QUESTION_UUID]` use
+canonical investigator Task admission/input commands when the current human is
+enrolled. `--dry-run` previews without writing; `--yes` confirms the supplied text.
 All forms support `--json`. See [hosted chat](hosted-chat.md) for expiry,
 redaction, task correlation and remaining acceptance work.
