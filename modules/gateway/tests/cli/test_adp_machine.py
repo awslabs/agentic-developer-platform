@@ -63,7 +63,7 @@ def test_principal_registration_uses_canonical_real_schema():
     )
     assert result["status"] == "ok"
     method, path, body = client.request.call_args_list[2].args
-    assert method == "POST" and path == "/admin/service-principals/register"
+    assert method == "POST" and path == "/service-principals/register"
     parsed = RegisterServicePrincipalRequest.model_validate(body)
     assert str(parsed.operation_id) == OP
     assert result["detail"]["canonical_service_principal_id"] == "principal"
@@ -272,3 +272,11 @@ def test_sql_create_serializer_and_pending_readback():
     assert result["status"] == "pending"
     request = Register.model_validate(client.request.call_args_list[2].args[2])
     assert request.account.department_id == "dept" and request.account.team_id == "team"
+
+
+def test_machine_contract_path_matches_built_gateway():
+    from src.app import create_app
+
+    paths = {route.path for route in create_app().routes if hasattr(route, "path")}
+    assert machine.BASE + "/registration-contract" in paths
+    assert machine.BASE + "/register" in paths

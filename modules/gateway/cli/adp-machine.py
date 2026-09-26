@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import adp_common as common
 
 SOURCES = ("sa_registration", "agent_registry", "cognito_m2m", "eventbridge", "github_actions")
-BASE = "/admin/service-principals"
+BASE = "/service-principals"
 
 
 def parser():

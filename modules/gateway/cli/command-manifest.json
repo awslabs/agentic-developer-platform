@@ -7468,7 +7468,7 @@
           "DELETE"
         ],
         "paths": [
-          "/admin/service-principals"
+          "/service-principals"
         ],
         "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
       },
@@ -7511,7 +7511,7 @@
           "DELETE"
         ],
         "paths": [
-          "/admin/service-principals"
+          "/service-principals"
         ],
         "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
       },
@@ -7554,7 +7554,7 @@
           "DELETE"
         ],
         "paths": [
-          "/admin/service-principals"
+          "/service-principals"
         ],
         "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
       },
@@ -7590,7 +7590,7 @@
           "GET"
         ],
         "paths": [
-          "/admin/service-principals"
+          "/service-principals"
         ],
         "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
       },
@@ -7631,7 +7631,7 @@
           "DELETE"
         ],
         "paths": [
-          "/admin/service-principals"
+          "/service-principals"
         ],
         "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
       },
