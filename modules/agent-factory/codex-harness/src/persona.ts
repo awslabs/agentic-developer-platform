@@ -35,7 +35,7 @@ export const personaSchema = z.object({
     context.addIssue({ code: "custom", message: "Required and optional capabilities overlap" });
   }
   const needs: Partial<Record<typeof value.completionPolicy, Capability[]>> = {
-    "validated-change": ["repository.read", "repository.write", "tests.run", "branch.push", "change.create"],
+    "validated-change": ["repository.read", "repository.write", "tests.run", "change.create"],
     "review-repair-merge": ["repository.read", "repository.write", "tests.run", "branch.push", "review.submit", "change.merge"],
     operations: ["aws.assume"], aidlc: ["agents.delegate", "artifacts.publish"],
   };

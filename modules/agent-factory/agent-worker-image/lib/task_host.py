@@ -107,6 +107,7 @@ def _child_environment(workspace: Path, *, sdk: bool = False) -> dict[str, str]:
         "PYTHONUNBUFFERED": "1",
         "ADP_TASK_PROTOCOL_VERSION": str(PROTOCOL_VERSION),
         "ADP_TASK_NETWORK": "host-mediated-sdk" if sdk else "disabled",
+        **({"ADP_CODEX_OTEL_ENDPOINT": os.environ["ADP_CODEX_OTEL_ENDPOINT"]} if sdk and os.environ.get("ADP_CODEX_OTEL_ENDPOINT") else {}),
     }
 
 
@@ -163,6 +164,7 @@ class TaskHost:
         self.work_root = work_root or Path(os.environ.get("ADP_TASK_WORK_ROOT", "/work"))
         self.command_resolver = command_resolver
         self._turn_number = 0
+        self._max_turns = 8
         self._turns: dict[str, dict] = {}
         self._pending_turn_id: str | None = None
         self._report_renderer = None
@@ -252,7 +254,7 @@ class TaskHost:
             or turn.get("turn_id") != request_id
             or type(turn.get("turn_number")) is not int
             or turn["turn_number"] != self._turn_number + 1
-            or not 1 <= turn["turn_number"] <= 8
+            or not 1 <= turn["turn_number"] <= self._max_turns
             or turn.get("transcript_version") != turn["turn_number"] + 1
             or not isinstance(turn.get("command_ids"), list)
         ):
@@ -367,6 +369,9 @@ class TaskHost:
         return prepared
 
     def _model(self, assignment, attempt: dict, frame: dict, max_tokens: int, *, prepared: dict | None = None) -> dict:
+        if "traceparent" in frame:
+            with self.client.trace_context(frame["traceparent"]):
+                return self._model(assignment, attempt, {k: v for k, v in frame.items() if k != "traceparent"}, max_tokens, prepared=prepared)
         prepared = prepared if prepared is not None else self._model_request(assignment, attempt, frame, max_tokens)
         request_digest = prepared["request_digest"]
         response = self.client.model(prepared)
@@ -425,6 +430,9 @@ class TaskHost:
         }
 
     def _cyber(self, assignment, attempt: dict, frame: dict) -> dict:
+        if "traceparent" in frame:
+            with self.client.trace_context(frame["traceparent"]):
+                return self._cyber(assignment, attempt, {k: v for k, v in frame.items() if k != "traceparent"})
         if "model_call" in frame:
             from lib.task_codex_tools import execute_codex_tool
             return execute_codex_tool(self.client, task_id=assignment.task_id, attempt=attempt, frame=frame,
@@ -762,6 +770,7 @@ class TaskHost:
                 ),
                 assignment,
             )
+            self._max_turns = bootstrap["limits"]["max_turns"]
             runtime_attempt_id = _request_id()
             attempt = self._binding(assignment, runtime_attempt_id)
             self._report_renderer = None
@@ -1125,6 +1134,27 @@ class TaskHost:
                                 "task_id": assignment.task_id, "request_id": frame["request_id"],
                                 "current": current["attempt_valid"] and not current["cancel_requested"],
                             }, control=current)
+                        elif frame["type"] == "completion.request":
+                            if not responses or cyber_job is not None or model_job is not None or deferred_model is not None:
+                                raise TaskProtocolError("Completion requires an idle Responses runtime")
+                            current = self._control(assignment, attempt, cursor)
+                            if cancel_started is not None or current["cancel_requested"]:
+                                continue
+                            if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:
+                                raise TaskProtocolError("Completion request identity reused or limit exceeded")
+                            cyber_ids.add(frame["request_id"])
+                            cyber_started = time.monotonic()
+                            cyber_job = queue.Queue(maxsize=1)
+                            def call_completion(job=cyber_job, request=frame):
+                                try:
+                                    with self.client.trace_context(request.get("traceparent")):
+                                        receipt = self.client.repository_completion({"schema_version": "1.0", "attempt": attempt})
+                                    value = {"protocol_version": PROTOCOL_VERSION, "type": "completion.result",
+                                        "task_id": assignment.task_id, "request_id": request["request_id"], "verified": receipt.get("status") == "verified"}
+                                except Exception as exc:
+                                    value = exc
+                                job.put(value)
+                            threading.Thread(target=call_completion, daemon=True, name="task-completion").start()
                         elif frame["type"] == "model.request":
                             if report_outage_started is not None:
                                 if deferred_model is not None:

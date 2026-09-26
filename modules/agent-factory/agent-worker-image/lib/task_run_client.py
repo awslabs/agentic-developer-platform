@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 import json
 import os
@@ -22,6 +24,8 @@ from lib.run_identity import CONTROL_ENDPOINT_ENV, WORKLOAD_HEADER, read_workloa
 
 CYBER_TOOLS_ENDPOINT_ENV = "ADP_CYBER_TOOLS_ENDPOINT"
 RUN_CREDENTIAL_HEADER = "X-Adp-Run-Credential"
+_TRACEPARENT = ContextVar("adp_task_traceparent", default=None)
+_TRACE_PATTERN = r"00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]"
 _MAX_RESPONSE_BYTES = 1024 * 1024
 _ACTIONS = frozenset(
     {
@@ -33,6 +37,8 @@ _ACTIONS = frozenset(
         "cyber",
         "tool-authorize",
         "repository-source",
+        "repository-publication",
+        "repository-completion",
         "tool-operation",
         "control",
         "artifact",
@@ -111,6 +117,7 @@ class TaskRunClient:
         self._workspace_tools = None
         self._validation_tool = None
         self._publication_tool = None
+        self._traceparent = None
         self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
         self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
         self._base = base
@@ -147,6 +154,16 @@ class TaskRunClient:
             raise TaskRunClientError("cyber tools endpoint unavailable")
         return endpoint
 
+    @contextmanager
+    def trace_context(self, value):
+        if value is not None and (not isinstance(value, str) or not re.fullmatch(_TRACE_PATTERN, value)):
+            raise TaskRunClientError("Invalid host trace context")
+        token = _TRACEPARENT.set(value)
+        try:
+            yield
+        finally:
+            _TRACEPARENT.reset(token)
+
     def _post(
         self,
         action: str,
@@ -171,6 +188,11 @@ class TaskRunClient:
             "Content-Type": "application/json",
             WORKLOAD_HEADER: workload_token or read_workload_token(),
         }
+        parent = _TRACEPARENT.get() or self._traceparent
+        if parent:
+            _, trace_id, span_id, flags = parent.split("-")
+            headers["traceparent"] = parent
+            headers["X-Amzn-Trace-Id"] = f"Root=1-{trace_id[:8]}-{trace_id[8:]};Parent={span_id};Sampled={1 if flags == '01' else 0}"
         if run_bound:
             headers[RUN_CREDENTIAL_HEADER] = self._run_credential or ""
         try:
@@ -243,6 +265,10 @@ class TaskRunClient:
                 raise ValueError("expiry")
         except (KeyError, TypeError, ValueError, AttributeError):
             raise TaskRunClientError("invalid task bootstrap binding or expiry") from None
+        parent = response.get("harness", {}).get("traceparent")
+        if parent is not None and (not isinstance(parent, str) or not re.fullmatch(_TRACE_PATTERN, parent)):
+            raise TaskRunClientError("Invalid bootstrap trace context")
+        self._traceparent = parent
         self._binding, self._deadline = binding, deadline
         self._run_credential, self._credential_expiry = credential, expiry
 
@@ -294,6 +320,20 @@ class TaskRunClient:
 
     def repository_publication(self, body: dict) -> dict:
         return self._post("repository-publication", body, run_bound=True)
+
+    def repository_completion(self, body: dict) -> dict:
+        if self._workspace_tools is None or self._publication_tool is None:
+            raise TaskRunClientError("Developer completion workspace unavailable")
+        state = self._workspace_tools.workspace.state()
+        if not state["clean"]:
+            return {"status": "unverified"}
+        result = self._post("repository-completion", body, run_bound=True)
+        if result.get("status") == "unverified":
+            return result
+        if (result.get("status") != "verified" or result.get("local_head") != state["localHead"]
+                or result.get("tree") != state["tree"] or self._workspace_tools.workspace.state() != state):
+            raise TaskRunClientError("Developer completion differs from workspace")
+        return result
 
     def tool_authorize(self, body: dict) -> dict:
         return self._post("tool-authorize", body, run_bound=True)
@@ -424,4 +464,5 @@ class TaskRunClient:
             self._workspace_tools = None
             self._validation_tool = None
             self._publication_tool = None
+            self._traceparent = None
             self._local_tools.clear()

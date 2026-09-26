@@ -30,6 +30,7 @@
         { "$ref": "process-protocol.schema.json#/$defs/artifact_chunk_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/start_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/control_result_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/completion_result_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/turn_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/model_result_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/report_ack_frame" },
@@ -43,6 +44,7 @@
         { "$ref": "process-protocol.schema.json#/$defs/tool_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/ready_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/control_request_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/completion_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/progress_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/model_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/input_required_frame" },
@@ -158,7 +160,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_turns": { "type": "integer", "minimum": 1, "maximum": 8 },
+            "max_turns": { "type": "integer", "minimum": 1, "maximum": 32 },
             "max_output_tokens_per_turn": { "type": "integer", "minimum": 1, "maximum": 4096 }
           }
         }
@@ -249,7 +251,7 @@
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
         "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
         "turn_id": { "$ref": "common.schema.json#/$defs/turn_id" },
-        "turn_number": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "turn_number": { "type": "integer", "minimum": 1, "maximum": 32 },
         "messages": {
           "type": "array",
           "minItems": 1,
@@ -347,6 +349,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "capabilities"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "ready" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -366,6 +369,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "report_id", "message"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "progress" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -385,6 +389,9 @@
       }
     },
 
+    "completion_request_frame": {"type": "object", "additionalProperties": false, "required": ["protocol_version", "request_id", "task_id", "type"], "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },"protocol_version": {"const": 1}, "request_id": {"$ref": "common.schema.json#/$defs/uuid4"}, "task_id": {"$ref": "common.schema.json#/$defs/task_id"}, "type": {"const": "completion.request"}}},
+    "completion_result_frame": {"type": "object", "additionalProperties": false, "required": ["protocol_version", "request_id", "task_id", "type", "verified"], "properties": {"protocol_version": {"const": 1}, "request_id": {"$ref": "common.schema.json#/$defs/uuid4"}, "task_id": {"$ref": "common.schema.json#/$defs/task_id"}, "type": {"const": "completion.result"}, "verified": {"type": "boolean"}}},
     "control_request_frame": {
       "type": "object",
       "additionalProperties": false,
@@ -395,6 +402,7 @@
         "type"
       ],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": {
           "const": 1
         },
@@ -459,6 +467,7 @@
         "responses_request"
       ],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": {
           "const": 1
         },
@@ -520,6 +529,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "input_request_id", "prompt"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "input.required" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -535,6 +545,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "report"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "result" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -549,6 +560,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "command_id"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "cancelled" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -563,6 +575,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "code", "message"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "error" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -586,6 +599,7 @@
         "payload"
       ],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": {
           "const": 1
         },

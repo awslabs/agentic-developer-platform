@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 from src.agentauth.task_repository_policy import TaskRepositoryBinding
 from src.shared.models.persona_models import ALIAS_SOURCES
@@ -283,8 +283,16 @@ class TaskPolicyLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_duration_minutes: int = Field(ge=1, le=360, strict=True)
     max_turns: int = Field(ge=1, le=8)
+    codex_max_turns: int | None = Field(default=None, ge=1, le=32)
     max_output_tokens_per_turn: int = Field(ge=1, le=4096)
     max_usd_per_task: Decimal = Field(gt=0, le=1)
+
+    @model_serializer(mode="wrap")
+    def omit_unused_codex_limit(self, handler):
+        value = handler(self)
+        if self.codex_max_turns is None:
+            value.pop("codex_max_turns", None)
+        return value
 
     @field_validator("max_duration_minutes", mode="before")
     @classmethod

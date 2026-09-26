@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import rfc8785
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from src.admin.persona_models.catalogue import persona_compatibility_class
 
@@ -84,7 +84,7 @@ class Persona(Closed):
         if set(self.requiredCapabilities) & set(self.optionalCapabilities):
             raise ValueError("overlapping capabilities")
         required = {
-            "validated-change": {"repository.read", "repository.write", "tests.run", "branch.push", "change.create"},
+            "validated-change": {"repository.read", "repository.write", "tests.run", "change.create"},
             "review-repair-merge": {"repository.read", "repository.write", "tests.run", "branch.push", "review.submit", "change.merge"},
             "operations": {"aws.assume"},
             "aidlc": {"agents.delegate", "artifacts.publish"},
@@ -138,9 +138,18 @@ class RuntimeTool(Closed):
 
 
 class Harness(Closed):
+    traceparent: str | None = Field(default=None, pattern=r"^00-[a-f0-9]{32}-[a-f0-9]{16}-0[01]$")
     snapshot: Snapshot
     policy: Policy
     tools: Annotated[list[RuntimeTool], Field(min_length=1, max_length=64)] | None = None
+
+
+    @field_validator("traceparent")
+    @classmethod
+    def valid_traceparent(cls, value):
+        if value is not None and (value.split("-")[1] == "0" * 32 or value.split("-")[2] == "0" * 16):
+            raise ValueError("zero trace identity")
+        return value
 
 
 def _sha(value: str) -> str:
@@ -292,6 +301,15 @@ def freeze_harness(*, persona, model_binding, limits, service_policy, tool_grant
                 "deadlineMs": deadline,
             },
         }
+        # Tracing is an optional gateway extra; disabled installations still admit Tasks.
+        try:
+            from opentelemetry import trace
+        except ImportError:
+            trace = None
+        if trace is not None:
+            span = trace.get_current_span().get_span_context()
+            if span.is_valid:
+                value["traceparent"] = f"00-{span.trace_id:032x}-{span.span_id:016x}-{int(span.trace_flags) & 1:02x}"
         return validate_harness(value, persona=persona, model_binding=model_binding, limits=limits)
     except (OSError, ValidationError, ValueError, TypeError, KeyError) as error:
         raise TaskHarnessError("task harness prerequisite unavailable") from error

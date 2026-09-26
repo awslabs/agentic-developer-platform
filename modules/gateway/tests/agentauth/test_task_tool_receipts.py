@@ -339,3 +339,14 @@ def test_uncertain_dynamodb_settlement_is_not_automatically_resent(journal, monk
         journal.service.settle(identity=journal.identity, call_id="call_1", owner_token=row["owner_token"], status="confirmed", content="verified")
     assert calls == 1
     assert journal.service.read(journal.identity.task_id, "call_1")["operation_status"] == "pending"
+
+
+def test_sdk_history_can_reformat_json_and_omit_completed_status(journal, transcript):
+    turn_id, history = transcript
+    journal.model["responses_response"]["output"][0]["status"] = "completed"
+    journal.store._client.put_item(TableName=journal.store.table_name, Item=_serialize(journal.model))
+    history[0]["arguments"] = '{ "number" : 1 }'
+    assert journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=history) is True
+    history[0]["status"] = "in_progress"
+    with pytest.raises(TaskStoreError, match="call differs"):
+        journal.service.verify_history(identity=journal.identity, turn_id=turn_id, history=history)

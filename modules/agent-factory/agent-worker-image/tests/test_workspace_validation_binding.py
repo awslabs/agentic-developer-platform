@@ -230,3 +230,22 @@ def test_publication_missing_prerequisite_leaves_no_bound_tools(bound, permissio
     assert bound.client._workspace_tools is None
     assert bound.client._validation_tool is None
     assert bound.client._publication_tool is None
+
+
+def test_detached_check_ignores_author_replacement_of_repository_test(bound):
+    from lib.codex_validation import DockerValidationExecutor, ValidationCheck
+    image = os.environ.get("ADP_CODEX_DETACHED_IMAGE")
+    if not image:
+        pytest.skip("requires immutable detached acceptance image")
+    bound.workspace.write_file(path="source.txt", content="wrong\n", expected_sha256=None)
+    prior = bound.workspace.read_file("test.sh")
+    bound.workspace.write_file(path="test.sh", content="exit 0\n", expected_sha256=prior["sha256"])
+    head = bound.workspace.commit("Attempt to weaken tests")["localHead"]
+    executor = DockerValidationExecutor()
+    check = ValidationCheck(name="acceptance", image=image, argv=("/opt/adp-checks/acceptance",))
+    failed = executor.run_repository(check=check, repository=bound.workspace.root, expected_head=head)
+    assert failed["status"] == "failed"
+    bound.workspace.write_file(path="source.txt", content="expected\n", expected_sha256=hashlib.sha256(b"wrong\n").hexdigest())
+    head = bound.workspace.commit("Implement requirement")["localHead"]
+    passed = executor.run_repository(check=check, repository=bound.workspace.root, expected_head=head)
+    assert passed["status"] == "passed" and passed["commit"] == head

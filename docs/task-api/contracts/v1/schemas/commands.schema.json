@@ -285,7 +285,7 @@
         "turn_number": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 8
+          "maximum": 32
         },
         "turn_id": {
           "$ref": "common.schema.json#/$defs/turn_id"

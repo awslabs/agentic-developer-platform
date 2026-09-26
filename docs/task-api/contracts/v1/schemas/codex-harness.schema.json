@@ -301,6 +301,19 @@
   },
   "additionalProperties": false,
   "properties": {
+    "traceparent": {
+      "anyOf": [
+        {
+          "pattern": "^00-[a-f0-9]{32}-[a-f0-9]{16}-0[01]$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Traceparent"
+    },
     "snapshot": {
       "$ref": "#/$defs/Snapshot"
     },

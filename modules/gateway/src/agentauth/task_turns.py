@@ -10,21 +10,36 @@ from src.tasks.records import base_item, command_sort_key, task_commands_partiti
 from src.tasks.store import TaskStoreError, _deserialize, _serialize
 
 
+def task_turn_limit(repository, task_id):
+    task = repository.read_task(task_id)
+    if not task:
+        raise TaskStoreError("Task turn authority unavailable")
+    grant = repository._get_authority("TENANT#" + task["scope"]["tenant"],
+        f"TASK_RUN#{task['invocation_id']}#GEN#{int(task['generation']):010d}")
+    if not grant:
+        raise TaskStoreError("Task turn grant unavailable")
+    ceiling = 32 if grant.get("harness") and grant.get("model_binding", {}).get("transport") == "openai_responses" else 8
+    maximum = int(grant.get("limits", {}).get("max_turns", 0))
+    if not 1 <= maximum <= ceiling:
+        raise TaskStoreError("Task turn limit invalid")
+    return maximum
+
 class TaskTurnStore:
     def __init__(self, repository, *, clock=None):
         self.repository = repository
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def list_turns(self, task_id):
+        maximum = task_turn_limit(self.repository, task_id)
         response = self.repository._client.query(
             TableName=self.repository.table_name,
             KeyConditionExpression="event_id = :partition",
             ExpressionAttributeValues={":partition": {"S": task_turns_partition(task_id)}},
             ConsistentRead=True,
-            Limit=9,
+            Limit=maximum + 1,
         )
         rows = [_deserialize(item) for item in response.get("Items", [])]
-        if len(rows) > 8 or response.get("LastEvaluatedKey"):
+        if len(rows) > maximum or response.get("LastEvaluatedKey"):
             raise TaskStoreError("task turn bound exceeded")
         return rows
 

@@ -167,7 +167,7 @@
       "additionalProperties": false,
       "required": ["max_turns", "max_output_tokens_per_turn", "max_usd", "deadline_at"],
       "properties": {
-        "max_turns": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "max_turns": { "type": "integer", "minimum": 1, "maximum": 32 },
         "max_output_tokens_per_turn": { "type": "integer", "minimum": 1, "maximum": 4096 },
         "max_usd": { "type": "number", "minimum": 0, "maximum": 1 },
         "max_provider_operation_seconds": { "type": "integer", "minimum": 1, "maximum": 120 },

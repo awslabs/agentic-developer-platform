@@ -240,10 +240,22 @@ class TaskToolReceipts:
                 self._current(identity, row["tool"])
                 supplied_call, supplied_result = history[index : index + 2]
                 index += 2
-                expected_call = {key: value for key, value in call.items() if key != "id"}
+                def canonical_call(value):
+                    if not isinstance(value, dict) or value.get("status") not in {None, "completed"}:
+                        return None
+                    normalized = {key: item for key, item in value.items() if key not in {"id", "status"}}
+                    try:
+                        normalized["arguments"] = rfc8785.dumps(json.loads(normalized["arguments"])).decode()
+                    except (KeyError, ValueError, TypeError):
+                        return None
+                    return normalized
+                # The SDK may omit completed status and reformat JSON. Compare
+                # the same canonical arguments that authorize actual execution;
+                # identity, namespace, tool, values and result remain exact.
+                expected_call = canonical_call(call)
                 if (
                     not isinstance(supplied_call, dict)
-                    or supplied_call != expected_call
+                    or expected_call is None or canonical_call(supplied_call) != expected_call
                     or call.get("namespace") != "mcp__adp"
                     or call.get("name") != self.catalogue[row["tool"]]
                 ):

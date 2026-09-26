@@ -53,6 +53,55 @@ worker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(worker)
 
 
+@pytest.fixture(autouse=True)
+def sdk_otel_collector(request, monkeypatch):
+    if getattr(request.node, "callspec", None) is None or request.node.callspec.params.get("scenario") != "tools_developer_otel":
+        yield
+        return
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+    documents = []
+    class Collector(BaseHTTPRequestHandler):
+        def do_POST(self):
+            if self.headers.get("Transfer-Encoding") == "chunked":
+                chunks = []
+                while True:
+                    size = int(self.rfile.readline().strip(), 16)
+                    if not size:
+                        self.rfile.readline()
+                        break
+                    chunks.append(self.rfile.read(size))
+                    assert self.rfile.read(2) == b"\r\n"
+                raw = b"".join(chunks)
+            else:
+                raw = self.rfile.read(int(self.headers["Content-Length"]))
+            documents.append((self.path, json.loads(raw)))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+        def log_message(self, *_):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("ADP_CODEX_OTEL_ENDPOINT", f"http://127.0.0.1:{server.server_port}")
+    try:
+        yield
+        spans = [span for path, doc in documents if path == "/v1/traces"
+            for resource in doc["resourceSpans"] for scope in resource["scopeSpans"] for span in scope["spans"]]
+        run = next(span for span in spans if span["name"] == "adp.codex.run")
+        turns = [span for span in spans if span["name"] == "adp.codex.turn"]
+        assert turns and all(span["traceId"] == run["traceId"] for span in turns)
+        assert any(path == "/v1/metrics" for path, _ in documents)
+        serialized = json.dumps(documents).lower()
+        assert all(secret not in serialized for secret in ("run-secret", "source.txt", "authorization", "access_token"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 @pytest.mark.parametrize(
     "scenario",
     [
@@ -67,14 +116,29 @@ spec.loader.exec_module(worker)
         "tools_workspace",
         "tools_edit_validate",
         "tools_edit_validate_publish",
+        "tools_developer",
+        "tools_developer_moved",
+        "tools_developer_otel",
+        "tools_developer_many_turns",
+        "tools_developer_live",
+        "tools_developer_live_retry",
     ],
 )
-def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch, scenario):
+def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch, scenario, caplog):
     def now():
         return datetime.now(UTC)
 
     store._clock = now
-    persona = "agent-task-gpt-intent-refinement"
+    many_turns = scenario == "tools_developer_many_turns"
+    retry_story = scenario == "tools_developer_live_retry"
+    actual_live = scenario in {"tools_developer_live", "tools_developer_live_retry"}
+    if actual_live and not os.environ.get("ADP_CODEX_LIVE_CONFIG_SOURCE"):
+        pytest.skip("requires explicit isolated live gateway qualification")
+    if actual_live:
+        monkeypatch.syspath_prepend(str(Path(__file__).parent))
+    live_metrics = []
+    actual_developer = scenario.startswith("tools_developer")
+    persona = "agent-task-gpt-developer" if actual_developer else "agent-task-gpt-intent-refinement"
     golden = json.loads(
         (
             ROOT / "docs/task-api/contracts/v1/fixtures/valid/bootstrap-codex-response.json"
@@ -82,12 +146,12 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     )
     tool_mode = scenario.startswith("tools")
     actual_validation = scenario == "tools_docker"
-    actual_publication = scenario == "tools_edit_validate_publish"
-    actual_workflow = scenario in {"tools_edit_validate", "tools_edit_validate_publish"}
+    actual_publication = scenario == "tools_edit_validate_publish" or actual_developer
+    actual_workflow = scenario in {"tools_edit_validate", "tools_edit_validate_publish"} or actual_developer
     actual_workspace = scenario == "tools_workspace" or actual_workflow
-    workflow_calls = 5 if actual_publication else 4
+    workflow_calls = 12 if many_turns else 5 if actual_publication else 4
     workflow = {}
-    image = os.environ.get("ADP_CODEX_VALIDATION_IMAGE")
+    image = os.environ.get("ADP_CODEX_RETRY_IMAGE" if retry_story else "ADP_CODEX_DETACHED_IMAGE" if actual_developer else "ADP_CODEX_VALIDATION_IMAGE")
     if (actual_validation or actual_workflow) and not image:
         pytest.skip("requires an explicitly provisioned immutable Docker image")
     tool_arguments = {}
@@ -202,6 +266,9 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     if tool_mode:
         definition = json.loads(golden["harness"]["snapshot"]["definition"])
         definition["optionalCapabilities"] = sorted({entry["capability"] for entry in tools})
+        if actual_developer:
+            definition = json.loads((ROOT / "modules/agent-factory/codex-harness/personas/developer.json").read_text())
+            golden["harness"]["snapshot"]["instructions"] = definition["instructions"]
         raw = rfc8785.dumps(definition).decode()
         golden["harness"]["snapshot"].update(
             definition=raw, digest=hashlib.sha256(raw.encode()).hexdigest()
@@ -238,6 +305,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         ExpressionAttributeValues={":p": {"SS": [persona]}},
     )
     binding = golden["model_binding"]
+    if actual_live:
+        binding["model_id"] = os.environ["ADP_CODEX_LIVE_MODEL"]
     policy = {
         "status": "active",
         "allowed_personas": [persona],
@@ -251,6 +320,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             "max_usd_per_task": 1,
         },
     }
+    if many_turns:
+        policy["limits"]["codex_max_turns"] = 20
     if actual_workspace:
         policy["repositories"] = {
             "application": {
@@ -266,10 +337,21 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             {
                 "name": "acceptance",
                 "image": image,
-                "argv": ["/bin/sh", "test.sh"],
+                "argv": ["/opt/adp-checks/acceptance"] if actual_developer else ["/bin/sh", "test.sh"],
                 "max_output_bytes": 8192,
             }
         ]
+    if actual_developer:
+        criterion = (
+            "Implement CommonJS retryDelay(options) in retry-delay.js. attempt must be a nonnegative integer; "
+            "baseMs and maxMs must be finite nonnegative numbers, defaulting to 100 and 30000. "
+            "Reject invalid attempt/baseMs/maxMs with RangeError. attempt=0 returns 0 without sampling. "
+            "For positive attempts call options.random (default Math.random) exactly once; require a finite numeric sample in [0,1), "
+            "otherwise throw RangeError. Return floor(sample * min(maxMs, baseMs * 2**(attempt-1))), "
+            "including finite correct results for huge attempts and zero base/cap. Do not mutate options."
+        ) if retry_story else "source.txt contains exactly expected followed by a newline."
+        policy["repositories"]["application"]["acceptance_checks"] = {
+            hashlib.sha256(("0\0" + criterion).encode()).hexdigest(): "acceptance"}
     if tool_mode:
         policy["allowed_tools"] = [entry["permission"] for entry in tools]
         monkeypatch.setattr(
@@ -296,8 +378,13 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             ),
             submit={
                 "persona": persona,
-                "instructions": "Inspect the supplied task; report missing implementation evidence.",
-                "acceptance_criteria": ["State evidence limitations."],
+                "instructions": (criterion + " Read the existing retry-delay.js, implement only this module, commit, run the named acceptance check, and create a ready PR after it passes.") if retry_story else (
+                    "Fix source.txt so it contains exactly expected followed by a newline. Read the file before editing, "
+                    "commit the change, run the named acceptance validation check on that commit, then create a ready PR. "
+                    "Use the tool receipts to cite the final result. The check is supplied by the trusted host. "
+                    "Do not alter other files."
+                ) if actual_developer else "Inspect the supplied task; report missing implementation evidence.",
+                "acceptance_criteria": [criterion] if actual_developer else ["State evidence limitations."],
                 **({"inputs": {"repository_binding": "application"}} if actual_workspace else {}),
             },
             idempotency_key="sdk-gateway-fixture",
@@ -364,6 +451,23 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 tenant="tenant-a",
                 expires_at=now() + timedelta(minutes=5),
             )
+        if actual_live:
+            from live_gateway import invoke_live_gateway
+            try:
+                document, measurement = await invoke_live_gateway(kwargs["request"], model=binding["model_id"])
+            except Exception as error:
+                events.append("live-inference-refused:" + type(error).__name__ + (":" + str(error) if isinstance(error, RuntimeError) else ""))
+                raise
+            live_metrics.append(measurement)
+            from src.agentauth.task_responses_tools_contract import TaskToolsResponsesResult
+            try:
+                from src.agentauth.task_responses_contract import normalize_provider_result
+                result = TaskToolsResponsesResult.model_validate(normalize_provider_result(document)).model_dump(exclude_none=True)
+            except Exception as error:
+                events.append("live-contract-error:" + json.dumps(error.errors(include_input=False, include_context=False)))
+                raise
+            return {"content": [], "stop_reason": "completed", "responses_response": result, "usage": result["usage"],
+                    "price": Price(), "provider_request_id": measurement["provider_request_id"]}
         text = (
             "invalid first report"
             if (scenario == "repair" and len(model_requests) == 1)
@@ -393,7 +497,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         }
         selected_tool, selected_args = tool, tool_arguments
         if actual_workflow and len(model_requests) <= workflow_calls:
-            selected_tool = tools[len(model_requests) - 1]
+            selected_tool = tools[min(len(model_requests), 5) - 1]
             selected_args = [
                 {"path": "source.txt"},
                 {
@@ -406,7 +510,9 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 {"message": "Repair fixture value"},
                 {"check": "acceptance", "commit": workflow.get("commit", "")},
                 {"commit": workflow.get("commit", ""), "title": "Repair source", "body": "Validation passed."},
-            ][len(model_requests) - 1]
+            ][min(len(model_requests), 5) - 1]
+            if many_turns and len(model_requests) > 5:
+                selected_tool, selected_args = tools[0], {"path": "source.txt"}
         if tool_mode and (
             len(model_requests) == 1 or (actual_workflow and len(model_requests) <= workflow_calls)
         ):
@@ -591,8 +697,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             if staging.read(identity) is None:
                 source = io.BytesIO()
                 with tarfile.open(fileobj=source, mode="w:gz") as archive:
-                    entry = tarfile.TarInfo("provider-root/source.txt")
-                    content = b"Task SDK workspace fixture source"
+                    entry = tarfile.TarInfo("provider-root/" + ("retry-delay.js" if retry_story else "source.txt"))
+                    content = (ROOT / "modules/agent-factory/codex-harness/test/fixtures/retry-story/retry-delay.js").read_bytes() if retry_story else b"Task SDK workspace fixture source"
                     entry.size = len(content)
                     archive.addfile(entry, io.BytesIO(content))
                     if actual_workflow:
@@ -623,6 +729,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             async def publish(**kwargs):
                 await kwargs["reauthorize"]()
                 proposal = kwargs["manifest"]
+                workflow["manifest"] = proposal
                 events.append("publication-effect")
                 return {"schema_version": "1.0", "task_id": assignment.task_id, "provider": "github",
                         "repository_id": proposal["repository_id"], "source_revision": proposal["source_revision"],
@@ -637,6 +744,30 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             assert result == asyncio.run(service.execute(self.identity(), **arguments))
             workflow["publication"] = service.read(self.identity())
             return result
+
+        def gateway_repository_completion(self, body):
+            from src.agentauth.task_completion_service import TaskCompletionService
+            from src.agentauth.task_publication_service import TaskPublicationService
+            from src.agentauth.task_source_staging import TaskSourceStaging
+            from src.agentauth.task_validation_evidence import TaskValidationEvidence
+            from src.agentauth.task_tool_routes import authorize_tool
+            def authorize(current, permission):
+                return authorize_tool(store, SimpleNamespace(get=lambda **kwargs: policy), current, permission)
+            async def observe(**kwargs):
+                await kwargs["reauthorize"]()
+                events.append("completion-observed")
+                receipt = dict(kwargs["receipt"])
+                if scenario == "tools_developer_moved":
+                    receipt["provider_head"] = "f" * 40
+                return receipt
+            publication = TaskPublicationService(store, artifacts=reads,
+                staging=TaskSourceStaging(store, s3=reads.s3, bucket=reads.bucket, authorize=authorize),
+                validations=TaskValidationEvidence(store, artifacts=reads, authorize=authorize), authorize=authorize, publisher=None)
+            from src.tasks.store import TaskStoreError
+            try:
+                return asyncio.run(TaskCompletionService(publication, observe=observe).execute(self.identity()))
+            except TaskStoreError:
+                return {"schema_version": "1.0", "task_id": self.identity().task_id, "status": "unverified"}
 
         def gateway_tool_authorize(self, body):
             from src.agentauth.task_tool_routes import ToolAuthorizationBody, authorize_tool
@@ -654,6 +785,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             events.append("tool-effect")
             if actual_validation or actual_workspace:
                 result = super().tool(name, body)
+                if actual_live:
+                    workflow.setdefault("tool_results", []).append({"tool": name, "status": result.get("result", {}).get("status")})
                 if actual_workflow and name == "repository.commit":
                     workflow["commit"] = result["result"]["localHead"]
                 return result
@@ -718,7 +851,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             from src.agentauth.task_budget_settlement import settle_task_admission
 
             identity = self.identity()
-            if actual_validation or actual_workflow:
+            if actual_validation or (actual_workflow and "commit" in workflow):
                 final_head = workflow["commit"] if actual_workflow else validation_head
                 from src.agentauth.task_validation_evidence import TaskValidationEvidence
                 from src.agentauth.task_tool_routes import authorize_tool
@@ -740,9 +873,11 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                     )
                     with pytest.raises(TaskStoreError, match="artifact"):
                         reader.read(identity=identity, commit=final_head)
+            if actual_developer and body["outcome"] == "completed":
+                self.gateway_repository_completion({"schema_version": "1.0", "attempt": body["attempt"]})
             result = commands.finalize(identity, body)
             settled = asyncio.run(settle_task_admission(store, identity, budget=admission_budget))
-            assert settled is (scenario != "unknown")
+            assert actual_live or settled is (scenario != "unknown")
             return result
 
     gateway = Gateway()
@@ -763,14 +898,18 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         acknowledge=lambda: events.append("ack"),
     )
     task = store.read_task(assignment.task_id)
-    expected_state = {"cancel": "cancelled", "unknown": "failed"}.get(scenario, "completed")
+    expected_state = {"cancel": "cancelled", "unknown": "failed", "tools_developer_moved": "failed"}.get(scenario, "completed")
+    if actual_live and task["state"] != expected_state:
+        print(json.dumps({"events": events, "model_requests": len(model_requests), "responses": len(live_metrics)}))
     assert task["state"] == expected_state, (
         result,
         task.get("error"),
         gateway.finalize_body,
         events,
+        [(record.message, getattr(record, "exception_type", "")) for record in caplog.records],
+        len(model_requests), len(live_metrics),
     )
-    assert len(model_requests) == (
+    assert actual_live or len(model_requests) == (
         workflow_calls + 1
         if actual_workflow
         else 3
@@ -795,7 +934,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             validated_receipts[0]["commit"] == validation_head
             and validated_receipts[0]["status"] == "passed"
         )
-    if actual_workspace:
+    if actual_workspace and not actual_live:
         from src.agentauth.task_tool_receipts import TaskToolReceipts
         from src.tasks.records import task_ops_partition
 
@@ -819,12 +958,14 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             and validated_receipts[0]["commit"] == workflow["commit"]
         )
         assert gateway._validation_tool is None
+    if actual_developer:
+        assert events.count("completion-observed") == (1 if scenario == "tools_developer_moved" else 2)
     if actual_publication:
         assert events.count("publication-effect") == 1
         assert workflow["publication"]["operation_status"] == "confirmed"
         assert workflow["publication"]["result"]["local_head"] == workflow["commit"]
         assert gateway._publication_tool is None
-    if tool_mode:
+    if tool_mode and not actual_live:
         assert events.count("tool-effect") == (workflow_calls if actual_workflow else 1)
         for index, invocation in enumerate(model_requests[1:], 1):
             assert len(
@@ -844,10 +985,17 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         assert task["result"]["process_exit_validated"] is True
         for artifact_id in task["result"]["artifact_ids"]:
             record = reads.load_artifact(artifact_id=artifact_id)
-            assert json.loads(reads.read_artifact(record=record)) == report
+            assert actual_live or json.loads(reads.read_artifact(record=record)) == report
     else:
         assert result == 1 and task["result"] is None
     if scenario == "steer":
         assert "Also inspect the retry configuration." in json.dumps(model_requests[1])
+    if actual_live:
+        destination = os.environ.get("ADP_CODEX_LIVE_EVIDENCE")
+        if destination:
+            Path(destination).write_text(json.dumps({"model": binding["model_id"], "effort": "medium",
+                "status": task["state"], "model_calls": live_metrics, "tool_effects": events.count("tool-effect"),
+                "publication": workflow.get("publication", {}).get("result"), "manifest": workflow.get("manifest"), "tool_results": workflow.get("tool_results"),
+                "limitations": ["Task admission identity and ledger use Moto fixtures", "provider source and PR publication use fixtures", "gateway inference is live and charged to the authenticated user"]}, indent=2))
     assert "ack" in events
     assert not list((tmp_path / "work").iterdir())

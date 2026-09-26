@@ -210,4 +210,22 @@ def test_repository_policy_round_trips_through_admin_schema_and_dynamo(store):
     )
     loaded = repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)
     assert loaded == created
-    assert TaskPolicyResponse.model_validate(loaded).repositories["application"].model_dump() == BINDING
+    from src.agentauth.task_repository_policy import repositories
+    response = TaskPolicyResponse.model_validate(loaded)
+    assert repositories({"repositories": {"application": response.repositories["application"].model_dump()}})["application"] == BINDING
+
+
+def test_codex_turn_budget_is_optional_bounded_and_preserves_legacy_limit(store):
+    repository, _ = store
+    value = policy()
+    value["limits"]["codex_max_turns"] = 20
+    created = repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0,
+        policy=value, updated_by="human-admin-1")
+    response = TaskPolicyResponse.model_validate(created)
+    assert response.limits.codex_max_turns == 20
+    assert response.limits.max_turns == 8
+    for invalid in (0, 33, True, 1.5):
+        value["limits"]["codex_max_turns"] = invalid
+        with pytest.raises(TaskServicePolicyError):
+            repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=1,
+                policy=value, updated_by="human-admin-1")

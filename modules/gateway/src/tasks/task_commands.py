@@ -331,12 +331,20 @@ class TaskCommands:
         if outcome == "completed" and pending:
             raise errors.state_conflict("Pending input must be consumed before completion.")
         if outcome == "completed":
+            from src.agentauth.task_completion_service import require_completion_receipt
+            from src.tasks.store import TaskStoreError
+            try:
+                require_completion_receipt(self.repo, identity, snapshot)
+            except TaskStoreError:
+                raise errors.state_conflict("Persona completion evidence is unavailable.") from None
+            from src.agentauth.task_turns import task_turn_limit
+            maximum_turns = task_turn_limit(self.repo, identity.task_id)
             operations = self.repo._client.query(
                 TableName=self.repo.table_name,
                 KeyConditionExpression="event_id = :pk AND begins_with(arrived_at, :model)",
                 ExpressionAttributeValues=_serialize({":pk": task_ops_partition(identity.task_id), ":model": "MODEL#"}),
                 ConsistentRead=True,
-                Limit=9,
+                Limit=maximum_turns + 1,
             )
             rows = [_deserialize(row) for row in operations.get("Items", [])]
             turns = self.repo._client.query(
@@ -344,7 +352,7 @@ class TaskCommands:
                 KeyConditionExpression="event_id = :pk",
                 ExpressionAttributeValues=_serialize({":pk": task_turns_partition(identity.task_id)}),
                 ConsistentRead=True,
-                Limit=9,
+                Limit=maximum_turns + 1,
             )
             turn_ids = {row["turn_id"] for row in map(_deserialize, turns.get("Items", []))}
             operation_turn_ids = {row.get("turn_id") for row in rows}

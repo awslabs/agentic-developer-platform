@@ -76,7 +76,7 @@ export interface TextResponsesRequest {
 }
 const usageSchema = z.strictObject({
   input_tokens: z.number().int().nonnegative().safe(), output_tokens: z.number().int().nonnegative().safe(),
-  input_tokens_details: z.strictObject({ cached_tokens: z.number().int().nonnegative().safe() }).optional(),
+  input_tokens_details: z.strictObject({ cached_tokens: z.number().int().nonnegative().safe(), cache_write_tokens: z.number().int().nonnegative().safe().optional() }).optional(),
   output_tokens_details: z.strictObject({ reasoning_tokens: z.number().int().nonnegative().safe() }).optional(),
 });
 const responseSchema = z.strictObject({
@@ -160,7 +160,7 @@ export function textResponseEvents(value: unknown, policy: TextResponsesPolicy):
   const response = responseSchema.parse(value);
   if (!Number.isSafeInteger(response.usage.input_tokens + response.usage.output_tokens)
     || response.usage.output_tokens > policy.maxOutputTokens
-    || (response.usage.input_tokens_details?.cached_tokens ?? 0) > response.usage.input_tokens
+    || ((response.usage.input_tokens_details?.cached_tokens ?? 0) + (response.usage.input_tokens_details?.cache_write_tokens ?? 0)) > response.usage.input_tokens
     || (response.usage.output_tokens_details?.reasoning_tokens ?? 0) > response.usage.output_tokens) throw new Error("Invalid Responses usage");
   const calls = response.output.filter(item => item.type === "function_call");
   if (calls.length > 1) throw new Error("Parallel tool calls not admitted");

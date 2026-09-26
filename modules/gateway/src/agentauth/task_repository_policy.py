@@ -45,6 +45,15 @@ class TaskRepositoryBinding(BaseModel):
     base_branch: str = Field(min_length=1, max_length=255)
     validation_checks: list[TaskValidationCheck] = Field(default_factory=list, max_length=32)
 
+    acceptance_checks: dict[str, str] = Field(default_factory=dict, max_length=100)
+
+    @field_validator("acceptance_checks")
+    @classmethod
+    def acceptance(cls, value):
+        if any(not re.fullmatch(r"[a-f0-9]{64}", key) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name) for key, name in value.items()):
+            raise ValueError("invalid acceptance check mapping")
+        return value
+
     @field_validator("validation_checks")
     @classmethod
     def checks(cls, value):
@@ -88,7 +97,8 @@ def repositories(policy):
             raise TaskRepositoryPolicyError("invalid repository alias")
         # Preserve existing bindings without checks, including their grant digest.
         binding = TaskRepositoryBinding.model_validate(value)
-        result[alias] = binding.model_dump(exclude={"validation_checks"} if not binding.validation_checks else set())
+        excluded = {name for name in ("validation_checks", "acceptance_checks") if not getattr(binding, name)}
+        result[alias] = binding.model_dump(exclude=excluded)
     return result
 
 

@@ -73,6 +73,7 @@ class TaskResponsesRequest(ClosedModel):
 
 
 class ResponsesInputDetails(ClosedModel):
+    cache_write_tokens: int | None = Field(default=None, strict=True, ge=0, le=2**53 - 1)
     cached_tokens: int = Field(strict=True, ge=0, le=2**53 - 1)
 
 
@@ -90,6 +91,9 @@ class ResponsesUsage(ClosedModel):
     def consistent_counts(self):
         if self.input_tokens_details and self.input_tokens_details.cached_tokens > self.input_tokens:
             raise ValueError("cache exceeds inclusive input")
+        if (self.input_tokens_details
+            and self.input_tokens_details.cached_tokens + (self.input_tokens_details.cache_write_tokens or 0) > self.input_tokens):
+            raise ValueError("cache read/write exceeds inclusive input")
         if self.output_tokens_details and self.output_tokens_details.reasoning_tokens > self.output_tokens:
             raise ValueError("reasoning exceeds inclusive output")
         if self.input_tokens + self.output_tokens > 2**53 - 1:
@@ -117,3 +121,29 @@ class TaskResponsesResult(ClosedModel):
     status: Literal["completed"]
     output: list[ResponsesOutputMessage | ResponsesReasoningOutput] = Field(min_length=1, max_length=16)
     usage: ResponsesUsage
+
+
+def normalize_provider_result(document):
+    """Normalize documented empty provider metadata at the trusted boundary.
+
+    Keep the closed execution contract: nonempty reasoning content/logprobs and
+    unknown fields still fail validation. Preserve inclusive cache-write usage.
+    """
+    import copy
+    result = {key: copy.deepcopy(document.get(key)) for key in ("id", "status", "output", "usage")}
+    usage = result["usage"]
+    if isinstance(usage, dict) and "total_tokens" in usage:
+        total = usage.pop("total_tokens")
+        if type(total) is not int or total != usage.get("input_tokens", -1) + usage.get("output_tokens", -1):
+            raise ValueError("Provider total usage differs")
+    if isinstance(result["output"], list):
+        for item in result["output"]:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "reasoning" and item.get("content") == []:
+                item.pop("content")
+            if item.get("type") == "message" and isinstance(item.get("content"), list):
+                for part in item["content"]:
+                    if isinstance(part, dict) and part.get("logprobs") == []:
+                        part.pop("logprobs")
+    return result

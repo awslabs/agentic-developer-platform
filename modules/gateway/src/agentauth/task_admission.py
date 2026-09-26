@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -123,8 +124,11 @@ class TaskAdmission:
         immutable_input.update(input_digest=digest)
         if refs:
             immutable_input["artifacts"] = refs
+        turn_limit = int(policy["limits"]["max_turns"])
+        if binding["transport"] == "openai_responses":
+            turn_limit = int(policy["limits"].get("codex_max_turns", turn_limit))
         limits = {
-            "max_turns": int(policy["limits"]["max_turns"]),
+            "max_turns": turn_limit,
             "max_output_tokens_per_turn": int(policy["limits"]["max_output_tokens_per_turn"]),
             "max_usd": float(policy["limits"]["max_usd_per_task"]),
             "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -134,6 +138,15 @@ class TaskAdmission:
         try:
             harness = freeze_harness(persona=submit["persona"], model_binding=binding, limits=limits, service_policy=policy, tool_grants=tool_grants)
             if harness is not None:
+                if json.loads(harness["snapshot"]["definition"])["completionPolicy"] == "validated-change":
+                    from src.agentauth.task_completion_service import required_acceptance
+                    try:
+                        required_acceptance((repository_binding or {}).get("binding", {}), submit.get("acceptance_criteria", []))
+                        required = {"repository.read", "repository.write", "repository.commit", "validation.run", "change.create"}
+                        if not required.issubset(tool_grants):
+                            raise TaskStoreError("Developer tools unavailable")
+                    except TaskStoreError:
+                        raise TaskHarnessError("Developer completion prerequisites unavailable") from None
                 assert_bootstrap_size(harness, immutable_input=immutable_input, model_binding=binding, limits=limits)
         except TaskHarnessError:
             raise TaskAdmissionError("prerequisite_unavailable", 503) from None

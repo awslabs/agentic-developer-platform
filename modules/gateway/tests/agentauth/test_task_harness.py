@@ -305,3 +305,23 @@ def test_executable_catalogue_freezes_only_granted_schemas_and_requires_tool_pro
     for bad in [[], ["repository.merge_change"]]:
         with pytest.raises(harness.TaskHarnessError):
             harness.freeze_harness(**{**arguments, "service_policy": {**arguments["service_policy"], "allowed_tools": bad}})
+
+
+def test_trace_context_is_frozen_from_gateway_span_only(frozen):
+    trace = pytest.importorskip("opentelemetry.trace")
+    arguments, _, _ = frozen
+    parent = trace.SpanContext(trace_id=int("1234567890abcdef" * 2, 16), span_id=int("1234567890abcdef", 16),
+        is_remote=True, trace_flags=trace.TraceFlags(1))
+    with trace.use_span(trace.NonRecordingSpan(parent)):
+        value = harness.freeze_harness(**arguments)
+    assert value["traceparent"] == "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
+    for invalid in ("00-" + "0" * 32 + "-1234567890abcdef-01", "not-a-trace", "00-" + "1" * 32 + "-" + "0" * 16 + "-01"):
+        with pytest.raises(ValueError):
+            harness.Harness.model_validate({**value, "traceparent": invalid})
+
+
+def test_tracing_extra_is_optional_for_admission(frozen, monkeypatch):
+    import sys
+    arguments, _, _ = frozen
+    monkeypatch.setitem(sys.modules, "opentelemetry", None)
+    assert "traceparent" not in harness.freeze_harness(**arguments)

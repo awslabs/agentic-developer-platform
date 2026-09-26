@@ -127,7 +127,7 @@ def validate_bootstrap(value: object, assignment) -> dict:
     if "harness" in body:
         if model["transport"] != "openai_responses":
             raise TaskProtocolError("harness metadata requires Responses transport")
-        _exact(body["harness"], {"snapshot", "policy"}, {"tools"})
+        _exact(body["harness"], {"snapshot", "policy"}, {"tools", "traceparent"})
     limits = _exact(
         body["limits"],
         {"max_turns", "max_output_tokens_per_turn", "max_usd", "deadline_at"},
@@ -140,7 +140,7 @@ def validate_bootstrap(value: object, assignment) -> dict:
     )
     if (
         type(limits["max_turns"]) is not int
-        or not 1 <= limits["max_turns"] <= 8
+        or not 1 <= limits["max_turns"] <= (32 if model["transport"] == "openai_responses" else 8)
         or type(limits["max_output_tokens_per_turn"]) is not int
         or not 1 <= limits["max_output_tokens_per_turn"] <= 4096
     ):
@@ -161,6 +161,10 @@ def validate_child_frame(value: object, task_id: str) -> dict:
         raise TaskProtocolError("task child frame identity mismatch")
     if not _uuid4(value.get("request_id")):
         raise TaskProtocolError("task child request id is invalid")
+    if "traceparent" in value:
+        if not isinstance(value["traceparent"], str) or not re.fullmatch(r"00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]", value["traceparent"]):
+            raise TaskProtocolError("Invalid child trace context")
+        common = common | {"traceparent"}
     frame_type = value.get("type")
     if frame_type == "ready":
         body = _exact(value, common | {"capabilities"})
@@ -183,7 +187,7 @@ def validate_child_frame(value: object, task_id: str) -> dict:
             or any(key in body for key in ("reasoning", "thinking", "percentage"))
         ):
             raise TaskProtocolError("task progress frame is invalid")
-    elif frame_type == "control.request":
+    elif frame_type in {"control.request", "completion.request"}:
         _exact(value, common)
     elif frame_type == "model.request":
         if "responses_request" in value:

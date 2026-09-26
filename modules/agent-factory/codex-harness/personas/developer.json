@@ -9,7 +9,6 @@
     "repository.read",
     "repository.write",
     "tests.run",
-    "branch.push",
     "change.create",
     "artifacts.publish"
   ],

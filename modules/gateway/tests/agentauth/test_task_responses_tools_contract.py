@@ -103,3 +103,34 @@ def test_function_arguments_must_be_bounded_json_objects(call, arguments):
     result = {"id": "response_1", "status": "completed", "output": [{**call, "id": "item_1"}], "usage": {"input_tokens": 10, "output_tokens": 10}}
     with pytest.raises(ValidationError):
         TaskToolsResponsesResult.model_validate(result)
+
+
+def test_live_provider_empty_metadata_is_normalized_without_losing_usage():
+    from src.agentauth.task_responses_contract import normalize_provider_result
+    raw = {
+        "id": "response", "status": "completed", "output": [
+            {"id": "reason", "type": "reasoning", "summary": [], "encrypted_content": "opaque", "content": []},
+            {"id": "message", "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
+             "content": [{"type": "output_text", "text": "Done", "annotations": [], "logprobs": []}]},
+        ],
+        "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
+                  "input_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 30}},
+    }
+    normalized = normalize_provider_result(raw)
+    result = TaskToolsResponsesResult.model_validate(normalized)
+    assert result.usage.input_tokens_details.cache_write_tokens == 30
+    assert "content" not in normalized["output"][0]
+    assert "logprobs" not in normalized["output"][1]["content"][0]
+    assert raw["output"][0]["content"] == [] and raw["usage"]["total_tokens"] == 120
+    for mutation in ("reasoning", "logprobs", "total", "cache"):
+        altered = deepcopy(raw)
+        if mutation == "reasoning":
+            altered["output"][0]["content"] = [{"text": "private"}]
+        elif mutation == "logprobs":
+            altered["output"][1]["content"][0]["logprobs"] = [{"value": 1}]
+        elif mutation == "total":
+            altered["usage"]["total_tokens"] = 121
+        else:
+            altered["usage"]["input_tokens_details"]["cache_write_tokens"] = 90
+        with pytest.raises(ValueError):
+            TaskToolsResponsesResult.model_validate(normalize_provider_result(altered))

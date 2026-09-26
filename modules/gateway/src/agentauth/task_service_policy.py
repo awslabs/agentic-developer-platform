@@ -176,7 +176,12 @@ def _validate_policy(policy: dict) -> None:
     if not isinstance(policy.get("model_policy_version"), str) or not policy["model_policy_version"] or len(policy["model_policy_version"]) > 128:
         raise TaskServicePolicyError("invalid_policy")
     limits = policy.get("limits")
-    if not isinstance(limits, dict) or set(limits) != {"max_duration_minutes", "max_turns", "max_output_tokens_per_turn", "max_usd_per_task"}:
+    required_limits = {"max_duration_minutes", "max_turns", "max_output_tokens_per_turn", "max_usd_per_task"}
+    if not isinstance(limits, dict) or set(limits) - {"codex_max_turns"} != required_limits:
+        raise TaskServicePolicyError("invalid_policy")
+    codex_turns = limits.get("codex_max_turns", 8)
+    if (isinstance(codex_turns, bool) or not isinstance(codex_turns, int | Decimal)
+        or not 1 <= codex_turns <= 32 or int(codex_turns) != codex_turns):
         raise TaskServicePolicyError("invalid_policy")
     if not _valid_duration(limits["max_duration_minutes"]):
         raise TaskServicePolicyError("invalid_policy")

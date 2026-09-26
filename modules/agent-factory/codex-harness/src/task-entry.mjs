@@ -6,6 +6,7 @@ import { HostBridge, decode, encode, MAX_FRAME_BYTES } from './task-sdk/protocol
 import { taskHarness, parseTaskReport } from './task-adapter.js';
 import { runAdmittedSession } from './session.js';
 import { TaskTools } from './task-tools.js';
+import { startTelemetry, activeTraceparent } from './telemetry.js';
 
 console.log = console.info = console.debug = () => {};
 const transfers = new ArtifactTransfers();
@@ -49,6 +50,9 @@ async function run() {
       maxOutputTokens: start.limits.max_output_tokens_per_turn, maxResponseBytes: 48000, signal: bridge.controller.signal,
     }, {
       ...(toolSession ? { toolBroker: toolSession.toolBroker } : {}),
+      ...(JSON.parse(snapshot.definition).completionPolicy === 'validated-change' ? {
+        async verifyCompletion(signal) { signal.throwIfAborted(); return bridge.completion(); },
+      } : {}),
       async assertCurrent(signal) { signal.throwIfAborted(); await bridge.current(); signal.throwIfAborted(); },
       async model(request, signal) {
         signal.throwIfAborted();
@@ -95,11 +99,14 @@ if (!process.argv.includes('--embedded') || process.env.ADP_TASK_NETWORK !== 'ho
         else if (value.type === 'start') {
           if (start) throw new Error('repeated start');
           const { harness, model_binding, persona, deadline_at, repository, ...task } = value;
-          start = { ...transfers.start(parseHostFrame(JSON.stringify(task))), harness, model_binding, persona, deadline_at, repository };
+          start = { ...transfers.start(parseHostFrame(JSON.stringify(task), 32)), harness, model_binding, persona, deadline_at, repository };
           taskHarness(start);
-          bridge = new HostBridge(start, write, { allowSteering: true });
+          bridge = new HostBridge(start, write, { allowSteering: true, traceContext: activeTraceparent });
           bridge.send('ready', { capabilities: ['input', 'cancel'] });
-          run().then(report => finish(null, report), error => { bridge.failure ??= error; finish(error); });
+          const telemetry = startTelemetry({ endpoint: process.env.ADP_CODEX_OTEL_ENDPOINT, traceparent: harness.traceparent,
+            runId: start.task_id, persona: start.persona });
+          telemetry.run(run).then(async report => { await telemetry.shutdown(); finish(null, report); },
+            async error => { await telemetry.shutdown(); bridge.failure ??= error; finish(error); });
         } else {
           if (!bridge) throw new Error('missing start');
           if (!terminal) bridge.receive(value);

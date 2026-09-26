@@ -3,10 +3,12 @@
 Epic #5433; harness story #6195. See the source-bound
 [design](../../../docs/design-notes/5433-native-codex/README.md).
 
-This package is an **unregistered foundation**, not a production runtime or a
-claim that #6195 is complete. It is deliberately absent from task command and
-persona dispatch registries and the worker Dockerfile. The existing Claude,
-Task API investigator and Codex reviewer packages are unchanged.
+This package is packaged in the worker image but remains unregistered and
+unqualified for production. The developer Task flow now runs the official SDK,
+host-mediated edits, immutable-image validation, scoped GitHub publication, and
+fresh provider-state completion checks. See the
+[2026-09-26 qualification evidence](../../../docs/design-notes/5433-native-codex/qualification-20260926.md)
+for the exact test boundary and remaining story requirements.
 
 Implemented components:
 
@@ -29,19 +31,16 @@ Implemented components:
   capability qualification, authorization or production enablement. Effort settings
   are candidates to evaluate, not proven quality/cost optima.
 
-Still required before registration: embedded Task lifecycle wiring, authoritative
-snapshot/grant bootstrap binding, executable tool/network/filesystem enforcement,
-authenticated repository broker execution/idempotency and GitLab formal review,
-authority-safe resume, completion/schema policies, collector export,
-dashboards/alerts, domain skills and live qualification. The gateway's model
-reservation and durable receipt implementation now exists; the embedded Codex
-entrypoint must connect it to this runtime. These remain acceptance criteria of
-#6195 and its persona stories. Preflight and sandbox options alone are not a
-complete security boundary.
+Still required for story closure: production registration and validation executor,
+GitHub mention and GitLab execution parity, pause/resume, connected role/delegation
+qualification, memory lifecycle/gateway integration, dashboards/alerts and a
+measured Claude comparison. The implemented Task path preserves admission,
+generation fences, budget reservations and durable model/tool receipts. Current
+local Docker validation is not a Kubernetes deployment qualification.
 
 The TypeScript SDK is pinned to the existing reviewer version 0.155.1. Its own
 packaged runtime transport is used by the SDK; this package does not spawn or
-parse the Codex CLI. Tests use only local protocol fixtures; no live model request is made.
+parse the Codex CLI. Default tests use fixtures. Live inference requires an explicit opt-in and isolated copied credentials.
 
 Development: Node.js 24, `npm ci --ignore-scripts`,
 `python3 test/run-isolated.py -- npm test`. The wrapper replaces inherited
@@ -137,3 +136,31 @@ grant before reservations, and refuses a combined bootstrap exceeding the IPC
 frame bound. Existing tasks never reload instructions from a changed catalogue.
 The current runtime's capability ceiling remains report publication until the
 executable brokers and persona completion policies are qualified.
+
+
+Developer completion and telemetry (2026-09-26)
+
+A developer requires explicit acceptance criteria mapped by repository policy
+`acceptance_checks` to immutable-image `/opt/adp-checks/<name>` entrypoints.
+The key is SHA-256 of the decimal criterion index, a NUL separator and the exact
+criterion text. Repository-owned tests may supplement these checks but cannot
+certify their own requirements. `change.create` publishes the scoped Task branch
+and PR together; separate generic `branch.push` authority is not required.
+Completion checks the current clean workspace, all required checks, durable
+publication receipt, current PR head/base/tree/open/non-draft state and current
+attempt. Finalization observes provider state again. Amended requirements are
+refused until renewed independent acceptance evidence is supported.
+
+Repository service policy may set `limits.codex_max_turns` up to 32 (developer
+snapshot currently caps at 20). Omission preserves the existing eight-turn
+limit. Non-Responses Tasks retain the legacy cap. Time, token and spend limits
+still apply; more available turns do not imply more default model work.
+
+Host-only `ADP_CODEX_OTEL_ENDPOINT` selects an OTLP HTTP collector base URL.
+Admission freezes valid gateway trace context; SDK IPC carries W3C trace context
+and the signed worker transport emits W3C and X-Ray headers. Default telemetry
+contains identifiers, bounded metrics and event kinds, not task/source content.
+Exporter queues/timeouts are bounded and shutdown waits at most 750 ms. The
+collector setting is not copied into the isolated SDK subprocess. This provides
+export plumbing; production collector routing, dashboards and alerts remain to
+be qualified.

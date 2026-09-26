@@ -29,16 +29,18 @@ async def settle_task_admission(repository, identity, *, budget=None):
         or stop.get("workload_terminated")
     ):
         return False
+    from src.agentauth.task_turns import task_turn_limit
+    maximum = await run_in_threadpool(task_turn_limit, repository, identity.task_id)
     page = await run_in_threadpool(
         repository._client.query,
         TableName=repository.table_name,
         KeyConditionExpression="event_id = :pk AND begins_with(arrived_at, :model)",
         ExpressionAttributeValues=_serialize({":pk": task_ops_partition(identity.task_id), ":model": "MODEL#"}),
         ConsistentRead=True,
-        Limit=9,
+        Limit=maximum + 1,
     )
     rows = [_deserialize(row) for row in page.get("Items", [])]
-    if page.get("LastEvaluatedKey") or len(rows) > 8:
+    if page.get("LastEvaluatedKey") or len(rows) > maximum:
         return False
     amount = Decimal(0)
     for row in rows:

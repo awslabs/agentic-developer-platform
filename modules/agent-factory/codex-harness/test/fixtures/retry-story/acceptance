@@ -1,0 +1,39 @@
+#!/usr/local/bin/node
+'use strict';
+// Independent assertions stay in the immutable image. Candidate code executes
+// in a subprocess; process.exit(0) cannot skip this driver's assertions.
+const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const runner = `const { retryDelay } = require('/work/retry-delay.js');
+const input = JSON.parse(process.argv[1]); let calls = 0;
+const options = {...input.options, random: () => { calls++; return input.sample; }};
+const before = JSON.stringify(options);
+let result;
+try { result = {value: retryDelay(options)}; } catch (error) { result = {error: error.name}; }
+process.stdout.write(JSON.stringify({...result, calls, unchanged: before === JSON.stringify(options)}));`;
+let count = 0;
+function check(options, sample, expected, calls) {
+  const result = spawnSync(process.execPath, ['-e', runner, JSON.stringify({options, sample})], {encoding:'utf8', timeout:1500, maxBuffer:4096});
+  assert.equal(result.status, 0, 'candidate process must exit normally');
+  const actual = JSON.parse(result.stdout);
+  assert.equal(actual.unchanged, true, 'input mutation');
+  if (calls !== undefined) assert.equal(actual.calls, calls);
+  if (typeof expected === 'string') assert.equal(actual.error, expected);
+  else assert.equal(actual.value, expected);
+  count++;
+}
+check({attempt:0}, .5, 0, 0);
+check({attempt:1}, .5, 50, 1);
+check({attempt:2}, .5, 100, 1);
+check({attempt:10}, .5, 15000, 1);
+check({attempt:1024}, .9, 27000, 1);
+check({attempt:3, baseMs:25, maxMs:70}, .5, 35, 1);
+check({attempt:3, baseMs:25, maxMs:70}, .999, 69, 1);
+check({attempt:1, baseMs:25, maxMs:70}, 0, 0, 1);
+check({attempt:1024, baseMs:0}, .5, 0, 1);
+check({attempt:1, maxMs:0}, .5, 0, 1);
+for (const attempt of [-1, 1.5, '1', null]) check({attempt}, .5, 'RangeError');
+for (const baseMs of [-1, '10', null]) check({attempt:1, baseMs}, .5, 'RangeError');
+for (const maxMs of [-1, '10', null]) check({attempt:1, maxMs}, .5, 'RangeError');
+for (const sample of [-.1, 1, '0.5', null]) check({attempt:1}, sample, 'RangeError');
+console.log(JSON.stringify({passed: count}));

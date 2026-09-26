@@ -21,7 +21,7 @@ export function decode(line) {
   if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new ProtocolError('process frame exceeds limit');
   const value = JSON.parse(line);
   if (!value || value.protocol_version !== 1 || !UUID.test(value.request_id) || !TASK.test(value.task_id)) throw new ProtocolError('invalid host frame');
-  if (!['start', 'turn', 'cancel', 'control.result', 'model.result', 'cyber.result', 'tool.result', 'report.ack', 'artifact.chunk'].includes(value.type)) throw new ProtocolError('unknown host frame');
+  if (!['start', 'turn', 'cancel', 'control.result', 'completion.result', 'model.result', 'cyber.result', 'tool.result', 'report.ack', 'artifact.chunk'].includes(value.type)) throw new ProtocolError('unknown host frame');
   for (const forbidden of ['run_credential', 'gateway_token', 'aws_access_key_id', 'github_token', 'api_key', 'owner_token']) {
     if (forbidden in value) throw new ProtocolError('host frame contains authority');
   }
@@ -29,8 +29,9 @@ export function decode(line) {
 }
 
 export class HostBridge {
-  constructor(start, write, { allowSteering = false } = {}) {
+  constructor(start, write, { allowSteering = false, traceContext } = {}) {
     this.allowSteering = allowSteering;
+    this.traceContext = traceContext;
     this.steering = [];
     this.start = start;
     this.write = write;
@@ -47,7 +48,10 @@ export class HostBridge {
     for (const artifact of start.artifacts || []) this.evidence.set(artifact.artifact_id, { ref: artifact.artifact_id, source: 'artifact', artifact_id: artifact.artifact_id });
     this.failure = null;
   }
-  send(type, fields) { this.write(frame(type, this.start.task_id, fields)); }
+  send(type, fields) {
+    const traceparent = this.traceContext?.();
+    this.write(frame(type, this.start.task_id, { ...(traceparent ? { traceparent } : {}), ...fields }));
+  }
   async request(kind, id, fields) {
     if (this.controller.signal.aborted) throw new Cancelled();
     if (this.pending.size >= 8 || this.pending.has(id)) throw new ProtocolError('too many outstanding operations');
@@ -74,6 +78,14 @@ export class HostBridge {
       const request_id = randomUUID();
       const response = await this.request('control.request', request_id, { request_id });
       if (response.current !== true) throw new ProtocolError('task authority is no longer current');
+    });
+  }
+  completion() {
+    return this.exclusive(async () => {
+      const request_id = randomUUID();
+      const response = await this.request('completion.request', request_id, { request_id });
+      if (response.verified !== true) throw new ProtocolError('developer completion evidence unavailable');
+      return true;
     });
   }
   takeSteering() { return this.steering.splice(0); }
@@ -162,6 +174,10 @@ export class HostBridge {
       if (this.input) {
         const input = this.input; this.input = null; input.resolve(text);
       } else this.steering.push({ turn_id: value.turn_id, text });
+    } else if (value.type === 'completion.result') {
+      const pending = this.pending.get(value.request_id);
+      if (!pending || pending.kind !== 'completion.request' || typeof value.verified !== 'boolean') throw new ProtocolError('uncorrelated completion receipt');
+      this.pending.delete(value.request_id); pending.resolve(value);
     } else if (value.type === 'control.result') {
       const pending = this.pending.get(value.request_id);
       if (!pending || pending.kind !== 'control.request' || typeof value.current !== 'boolean') throw new ProtocolError('uncorrelated task control');

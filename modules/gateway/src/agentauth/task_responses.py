@@ -72,20 +72,13 @@ async def invoke_task_responses(db, *, identity, binding, target, request, opera
         raise TaskStoreError("task Responses usage unavailable or exceeded bound")
     if "total_tokens" in usage and (type(usage["total_tokens"]) is not int or usage["total_tokens"] != trusted.input_tokens + trusted.output_tokens):
         raise TaskStoreError("task Responses total usage inconsistent")
+    from src.agentauth.task_responses_contract import normalize_provider_result
+
     # Keep only the output contract. Provider metadata is consumed for pricing;
     # it must not become a new instruction, credential or tool in the SDK child.
     result = (
         (TaskToolsResponsesResult if tool_profile else TaskResponsesResult)
-        .model_validate(
-            {
-                "id": document.get("id"),
-                "status": document.get("status"),
-                "output": document.get("output"),
-                "usage": {
-                    key: usage[key] for key in ("input_tokens", "output_tokens", "input_tokens_details", "output_tokens_details") if key in usage
-                },
-            }
-        )
+        .model_validate(normalize_provider_result(document))
         .model_dump(exclude_none=True)
     )
     if tool_profile:

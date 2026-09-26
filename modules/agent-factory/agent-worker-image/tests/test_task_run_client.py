@@ -280,3 +280,34 @@ def test_generic_tool_registry_is_exact_and_host_owned(monkeypatch):
         instance.tool('archive.other', body)
     with pytest.raises(client.TaskRunClientError):
         instance.tool('https://untrusted.example', body)
+
+
+@pytest.mark.parametrize("action", ["repository-publication", "repository-completion"])
+def test_repository_delivery_uses_real_allowlisted_signed_transport(transport, action):
+    calls, proof = transport
+    run = client.TaskRunClient()
+    run._run_credential = "test-run-secret"
+    run._post(action, {"schema_version": "1.0"}, run_bound=True)
+    url, request, trust_env = calls[-1]
+    assert url.endswith("/task/" + action)
+    assert request["headers"]["X-Adp-Run-Credential"] == "test-run-secret"
+    assert request["headers"]["X-Adp-Workload-Token"] == proof
+    assert request["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256 ")
+    assert trust_env is False
+
+
+def test_trace_headers_are_signed_and_context_does_not_leak(transport):
+    calls, _ = transport
+    run = client.TaskRunClient()
+    parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
+    with run.trace_context(parent):
+        run.bootstrap({"schema_version": "1.0", "task_id": "task-test", "invocation_id": "invocation-test"})
+    run.attempt({"schema_version": "1.0"})
+    headers = {key.lower(): value for key, value in calls[0][1]["headers"].items()}
+    assert headers["traceparent"] == parent
+    assert headers["x-amzn-trace-id"] == "Root=1-12345678-90abcdef1234567890abcdef;Parent=1234567890abcdef;Sampled=1"
+    assert "traceparent" in headers["authorization"]
+    assert "traceparent" not in {key.lower() for key in calls[1][1]["headers"]}
+    with pytest.raises(client.TaskRunClientError):
+        with run.trace_context("00-" + "0" * 32 + "-1234567890abcdef-01"):
+            pytest.fail("invalid trace accepted")

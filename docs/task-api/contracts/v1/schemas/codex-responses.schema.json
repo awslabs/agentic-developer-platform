@@ -3,6 +3,20 @@
     "ResponsesInputDetails": {
       "additionalProperties": false,
       "properties": {
+        "cache_write_tokens": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Write Tokens"
+        },
         "cached_tokens": {
           "maximum": 9007199254740991,
           "minimum": 0,

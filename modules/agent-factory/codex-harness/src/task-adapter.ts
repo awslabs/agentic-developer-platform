@@ -10,6 +10,7 @@ export const taskRuntimeToolSchema = z.strictObject({
     parameters: z.record(z.string(), z.unknown()), strict: z.literal(false) }),
 });
 const harnessSchema = z.strictObject({
+  traceparent: z.string().regex(/^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$/).optional(),
   tools: z.array(taskRuntimeToolSchema).min(1).max(64).optional(),
   snapshot: z.strictObject({ definition: z.string().max(65536), digest, instructions: z.string().max(262144), skillSources: z.string().max(2097152) }),
   policy: z.strictObject({
