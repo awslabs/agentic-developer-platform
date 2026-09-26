@@ -48,7 +48,9 @@ export async function runTaskProbe(persona: string, gateway: ProbeGateway = new 
     const response = JSON.parse(Buffer.from(receipt.body).toString('utf8'));
     const content = Array.isArray(response.content) ? response.content : [];
     const valid = persona === 'agent-task-investigator'
-      ? content.some((part: any) => part.type === 'text' && typeof part.text === 'string' && part.text.trim() === 'OK')
+      ? response.type === 'message' && response.role === 'assistant' && response.stop_reason === 'end_turn' &&
+        content.length === 1 && content[0]?.type === 'text' && typeof content[0].text === 'string' &&
+        /^OK\.?$/.test(content[0].text.trim())
       : content.some((part: any) => part.type === 'tool_use' && part.name === 'task_probe' && part.input?.value === 'OK');
     if (receipt.status === 200 && completion.provider_request_id && valid) {
       completion.outcome = 'proven'; completion.error_code = null;
