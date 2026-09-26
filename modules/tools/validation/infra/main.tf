@@ -13,6 +13,41 @@ locals {
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 data "aws_partition" "current" {}
+data "aws_eks_cluster" "validation" {
+  count = local.active
+  name  = var.cluster_name
+}
+data "aws_subnet" "validation" {
+  for_each = var.enabled ? toset(var.subnet_ids) : toset([])
+  id       = each.value
+}
+# The service must reach the private EKS API as well as the gateway and AWS
+# APIs. Reusing another tools Lambda's egress-only group does not admit EKS
+# ingress, and attaching the cluster group would inherit unrelated privileges.
+resource "aws_security_group" "service" {
+  count       = local.active
+  name        = "${var.name}-service"
+  description = "Dedicated Task validation Lambda"
+  vpc_id      = data.aws_eks_cluster.validation[0].vpc_config[0].vpc_id
+}
+resource "aws_vpc_security_group_egress_rule" "https" {
+  count             = local.active
+  security_group_id = aws_security_group.service[0].id
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = "0.0.0.0/0"
+  description       = "HTTPS to gateway, EKS and AWS APIs through private subnet routing"
+}
+resource "aws_vpc_security_group_ingress_rule" "eks_api" {
+  count                        = local.active
+  security_group_id            = data.aws_eks_cluster.validation[0].vpc_config[0].cluster_security_group_id
+  referenced_security_group_id = aws_security_group.service[0].id
+  ip_protocol                  = "tcp"
+  from_port                    = 443
+  to_port                      = 443
+  description                  = "Task validation service to private EKS API only"
+}
 resource "aws_dynamodb_table" "jobs" {
   count                       = local.active
   name                        = "${var.name}-jobs"
@@ -67,7 +102,7 @@ resource "aws_lambda_function" "service" {
   ephemeral_storage { size = 2048 }
   vpc_config {
     subnet_ids         = var.subnet_ids
-    security_group_ids = var.security_group_ids
+    security_group_ids = [aws_security_group.service[0].id]
   }
   environment {
     variables = {
@@ -76,8 +111,8 @@ resource "aws_lambda_function" "service" {
       ADP_VALIDATION_WORKER_ROLES     = join(",", sort(tolist(var.worker_role_arns)))
       ADP_TASK_AUTHORITY_ENDPOINT     = var.authority_endpoint
       ADP_VALIDATION_CLUSTER_NAME     = var.cluster_name
-      ADP_VALIDATION_CLUSTER_ENDPOINT = var.cluster_endpoint
-      ADP_VALIDATION_CLUSTER_CA       = var.cluster_ca
+      ADP_VALIDATION_CLUSTER_ENDPOINT = data.aws_eks_cluster.validation[0].endpoint
+      ADP_VALIDATION_CLUSTER_CA       = data.aws_eks_cluster.validation[0].certificate_authority[0].data
       ADP_VALIDATION_NAMESPACE        = var.validation_namespace
     }
   }
@@ -87,11 +122,19 @@ resource "aws_lambda_function" "service" {
       error_message = "Validation API and worker roles must belong to the selected AWS account and region."
     }
     precondition {
-      condition     = var.isolation_qualified && var.image_uri != "" && length(var.subnet_ids) > 0 && length(var.security_group_ids) > 0 && length(var.worker_role_arns) > 0 && var.agent_registry_table_name != ""
+      condition     = var.isolation_qualified && var.image_uri != "" && length(var.subnet_ids) > 0 && length(var.worker_role_arns) > 0 && var.agent_registry_table_name != ""
       error_message = "Activation requires qualified isolation, immutable service image, private connectivity and explicit worker roles."
     }
+    precondition {
+      condition     = var.authority_endpoint == "https://${var.rest_api_id}.execute-api.${data.aws_region.current.region}.${data.aws_partition.current.dns_suffix}/${var.stage_name}/internal/v1/agent/task"
+      error_message = "Task authority must use the selected API and stage."
+    }
+    precondition {
+      condition     = data.aws_eks_cluster.validation[0].vpc_config[0].endpoint_private_access && alltrue([for subnet in data.aws_subnet.validation : subnet.vpc_id == data.aws_eks_cluster.validation[0].vpc_config[0].vpc_id && !subnet.map_public_ip_on_launch])
+      error_message = "Validation requires a private EKS endpoint and private subnets in its VPC."
+    }
   }
-  depends_on = [aws_cloudwatch_log_group.service, aws_iam_role_policy.service]
+  depends_on = [aws_cloudwatch_log_group.service, aws_iam_role_policy.service, aws_vpc_security_group_egress_rule.https, aws_vpc_security_group_ingress_rule.eks_api]
 }
 resource "aws_lambda_function_event_invoke_config" "service" {
   count                        = local.active

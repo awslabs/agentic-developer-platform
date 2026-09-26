@@ -6,7 +6,17 @@ mock_provider "aws" {
     defaults = { region = "us-east-1" }
   }
   mock_data "aws_partition" {
-    defaults = { partition = "aws" }
+    defaults = { partition = "aws", dns_suffix = "amazonaws.com" }
+  }
+  mock_data "aws_eks_cluster" {
+    defaults = {
+      endpoint              = "https://cluster.example"
+      certificate_authority = [{ data = "Zml4dHVyZQ==" }]
+      vpc_config            = [{ vpc_id = "vpc-fixture", cluster_security_group_id = "sg-cluster", endpoint_private_access = true }]
+    }
+  }
+  mock_data "aws_subnet" {
+    defaults = { vpc_id = "vpc-fixture", map_public_ip_on_launch = false }
   }
 }
 mock_provider "kubernetes" {}
@@ -19,10 +29,7 @@ variables {
   authority_endpoint        = "https://fixture.execute-api.us-east-1.amazonaws.com/test/internal/v1/agent/task"
   worker_role_arns          = ["arn:aws:iam::123456789012:role/worker"]
   cluster_name              = "fixture"
-  cluster_endpoint          = "https://cluster.example"
-  cluster_ca                = "Zml4dHVyZQ=="
   subnet_ids                = ["subnet-fixture"]
-  security_group_ids        = ["sg-fixture"]
   image_uri                 = "123456789012.dkr.ecr.us-east-1.amazonaws.com/validation@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
 run "disabled_has_no_runtime_or_grants" {
@@ -64,16 +71,16 @@ run "dedicated_iam_and_bounded_runtime" {
 run "registry_grants_no_models" {
   command = plan
   override_resource {
-    target = aws_iam_role.service[0]
+    target          = aws_iam_role.service[0]
     override_during = plan
-    values = { arn = "arn:aws:iam::123456789012:role/validation-service" }
+    values          = { arn = "arn:aws:iam::123456789012:role/validation-service" }
   }
   variables {
-    enabled = true
+    enabled             = true
     isolation_qualified = true
   }
   assert {
-    condition = length(aws_dynamodb_table_item.registry) == 1 && jsondecode(aws_dynamodb_table_item.registry[0].item).allowed_models.L == []
+    condition     = length(aws_dynamodb_table_item.registry) == 1 && jsondecode(aws_dynamodb_table_item.registry[0].item).allowed_models.L == []
     error_message = "Service must provision its gateway identity with the dedicated IAM role."
   }
 }
@@ -81,9 +88,58 @@ run "registry_grants_no_models" {
 run "reject_cross_account_worker" {
   command = plan
   variables {
-    enabled = true
+    enabled             = true
     isolation_qualified = true
-    worker_role_arns = ["arn:aws:iam::999999999999:role/worker"]
+    worker_role_arns    = ["arn:aws:iam::999999999999:role/worker"]
+  }
+  expect_failures = [aws_lambda_function.service]
+}
+
+run "private_cluster_network_binding" {
+  command = plan
+  variables {
+    enabled             = true
+    isolation_qualified = true
+  }
+  assert {
+    condition     = aws_security_group.service[0].vpc_id == "vpc-fixture" && aws_vpc_security_group_ingress_rule.eks_api[0].security_group_id == "sg-cluster" && aws_vpc_security_group_ingress_rule.eks_api[0].from_port == 443 && aws_vpc_security_group_ingress_rule.eks_api[0].to_port == 443 && aws_vpc_security_group_ingress_rule.eks_api[0].ip_protocol == "tcp"
+    error_message = "EKS must admit only HTTPS from the dedicated service group."
+  }
+  assert {
+    condition     = aws_lambda_function.service[0].environment[0].variables["ADP_VALIDATION_CLUSTER_ENDPOINT"] == "https://cluster.example" && aws_lambda_function.service[0].environment[0].variables["ADP_VALIDATION_CLUSTER_CA"] == "Zml4dHVyZQ=="
+    error_message = "EKS endpoint and trust must come from the selected live cluster."
+  }
+}
+run "reject_other_authority_api" {
+  command = plan
+  variables {
+    enabled             = true
+    isolation_qualified = true
+    authority_endpoint  = "https://other.execute-api.us-east-1.amazonaws.com/test/internal/v1/agent/task"
+  }
+  expect_failures = [aws_lambda_function.service]
+}
+run "reject_other_vpc_subnet" {
+  command = plan
+  variables {
+    enabled             = true
+    isolation_qualified = true
+  }
+  override_data {
+    target = data.aws_subnet.validation["subnet-fixture"]
+    values = { vpc_id = "vpc-other", map_public_ip_on_launch = false }
+  }
+  expect_failures = [aws_lambda_function.service]
+}
+run "reject_public_only_cluster" {
+  command = plan
+  variables {
+    enabled             = true
+    isolation_qualified = true
+  }
+  override_data {
+    target = data.aws_eks_cluster.validation[0]
+    values = { vpc_config = [{ vpc_id = "vpc-fixture", cluster_security_group_id = "sg-cluster", endpoint_private_access = false }] }
   }
   expect_failures = [aws_lambda_function.service]
 }

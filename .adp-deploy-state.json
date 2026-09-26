@@ -727,5 +727,24 @@
       "pod": "agent-scaledjob-bqjdv-fbl2q",
       "status": "browser collection denied by task credential policy; corrected in new image"
     }
+  },
+  "codex_qualification_20260926": {
+    "account_id": "879318057152",
+    "region": "us-east-1",
+    "account_approved": true,
+    "scope": "Bounded validation service and developer Task qualification; broader rollout disabled",
+    "source": "0ba1cee51f3c03e6cb10229e0fec3b0bd95310f7",
+    "cluster": "adp-dev-eks-cluster",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:b223b39ca26f8b9ab9bffb31c2370ba8342e5ccd3bfab0af9a5f8fbabab46cd0",
+    "image_manifest": "application/vnd.docker.distribution.manifest.v2+json",
+    "artifact_published": true,
+    "runtime_deployed": false,
+    "isolation_qualified": false,
+    "live_task_qualified": false,
+    "deployment_access": "Current dev-box role denies namespace and clusterrole creation; embark1 expired; existing deployment identity requested",
+    "terraform_security_tests": {
+      "passed": 9,
+      "failed": 0
+    }
   }
 }

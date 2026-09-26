@@ -25,10 +25,7 @@ variable "tools_parent_resource_id" { type = string }
 variable "authority_endpoint" { type = string }
 variable "worker_role_arns" { type = set(string) }
 variable "cluster_name" { type = string }
-variable "cluster_endpoint" { type = string }
-variable "cluster_ca" { type = string }
 variable "subnet_ids" { type = list(string) }
-variable "security_group_ids" { type = list(string) }
 variable "validation_namespace" {
   type    = string
   default = "adp-codex-validation"
