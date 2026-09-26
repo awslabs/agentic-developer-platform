@@ -150,9 +150,13 @@ async def test_staged_teardown_completes_original_paid_allocation(output):
     assert not runtime.kube.stored
 
 
-@pytest.mark.parametrize("stage", ["cordon:0", "root:0", "drain", "down", "node:0"])
-async def test_paid_completed_stage_recovery_resumes_same_operation(
-    output, monkeypatch, stage
+@pytest.mark.parametrize(
+    "stage,gap",
+    [(s, "completed") for s in ["cordon:0", "root:0", "drain", "down", "node:0"]]
+    + [("cordon:0", "before-send"), ("down", "lost-handle")],
+)
+async def test_paid_stage_recovery_only_continues_confirmed_original_effects(
+    output, monkeypatch, stage, gap
 ):
     import asyncio
     from contextlib import asynccontextmanager
@@ -178,7 +182,27 @@ async def test_paid_completed_stage_recovery_resumes_same_operation(
             )
         return result
 
-    monkeypatch.setattr(staged_cleanup, "completed", lose_completed_reply)
+    if gap == "completed":
+        monkeypatch.setattr(staged_cleanup, "completed", lose_completed_reply)
+    elif gap == "before-send":
+
+        async def never_sent(*args, **kwargs):
+            raise asyncio.CancelledError(
+                "shared intent committed before first mutation"
+            )
+
+        monkeypatch.setattr(staged_cleanup, "execute", never_sent)
+    else:
+        remember = worker.finalizer.provider.remember
+
+        async def lose_handle(call, plan, request_id=None, region=None):
+            if request_id is not None:
+                raise asyncio.CancelledError(
+                    "SkyPilot accepted down before handle commit"
+                )
+            return await remember(call, plan, request_id, region)
+
+        monkeypatch.setattr(worker.finalizer.provider, "remember", lose_handle)
     with pytest.raises(asyncio.CancelledError):
         await runtime.execute(worker)
     monkeypatch.setattr(staged_cleanup, "completed", complete)
@@ -252,6 +276,26 @@ async def test_paid_completed_stage_recovery_resumes_same_operation(
     )
     reports = await recovery.run()
     assert len(reports) == 1
+    if gap != "completed":
+        assert reports[0].action == "deferred"
+        async with runtime.pool.acquire() as c:
+            assert (
+                await c.fetchval(
+                    "SELECT count(*) FROM harness_provider_call_intent WHERE operation_id=$1 AND stage='intended'",
+                    lease.operation_id,
+                )
+                == 1
+            )
+            assert await c.fetchval("SELECT count(*) FROM harness_operations") == 2
+            assert (
+                await c.fetchval(
+                    "SELECT state FROM harness_operations WHERE operation_id=$1",
+                    lease.operation_id,
+                )
+                != "succeeded"
+            )
+        assert getattr(runtime.cloud, "downs", 0) == int(gap == "lost-handle")
+        return
     async with runtime.pool.acquire() as c:
         assert (
             await c.fetchval(
