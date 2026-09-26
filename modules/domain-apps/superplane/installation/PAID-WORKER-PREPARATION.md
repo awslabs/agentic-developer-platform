@@ -31,7 +31,7 @@ All fields are mandatory when selected; unknown fields, lifecycle modes, caller 
 
 ## Separate release image
 
-`superplane-executor` remains the long-running `controller-service` Docker target. `superplane-paid-worker` is a separate build selection, repository and immutable digest using the explicit `paid-worker` target in the same maintained Dockerfile. The app buildspec is `releases/buildspecs/paid-worker.yml`. No new shared workflow, image build, ECR publication or promotion is included.
+`superplane-executor` remains the long-running `controller-service` Docker target. `superplane-paid-worker` is a separate build selection, repository and immutable digest using the explicit `paid-worker` target in the same maintained Dockerfile. The app buildspec is `releases/buildspecs/paid-worker.yml`. The app-owned project manifest, pending lock and existing exact-commit dispatcher integration are documented in [paid-worker release](../releases/PAID-WORKER-RELEASE.md). Source enrollment is implemented; infrastructure approval/provisioning, image build, ECR publication and promotion have not been performed. No shared workflow is changed.
 
 A release selecting this projection must already contain a separately resolved `superplane-paid-worker` image and same-release source provenance under its own repository. The installer refuses pending images and reuse of the controller-service digest. This change does not manufacture a sample digest or imply that a paid image has been built. The actual image entrypoint/package/native-controller contract still needs verification through the approved build lane before activation can be implemented.
 
