@@ -137,6 +137,15 @@ REDIRECTED = {
 # growing this file also means the onboarding work and the concurrent changes to
 # the operational verbs do not have to land on top of each other.
 ONBOARDING_HELPER = "adp-superplane-onboarding.py"
+LIFECYCLE_HELPER = "adp-superplane-lifecycle.py"
+
+
+def lifecycle_helper():
+    module = common.load_provider(LIFECYCLE_HELPER)
+    if module is None:
+        raise CliError("Superplane lifecycle extension is not installed. Run adp update.", "provider_unavailable", 4)
+    return module
+
 
 CANCELLED = (
     "Cancelled locally. This did NOT cancel work already accepted by the domain API "
@@ -705,6 +714,8 @@ def replay_safe_create(api, command, path, body, *, expected_name, id_field, ope
 
 
 def workspace(args, api):
+    if args.subcommand == "delete":
+        return lifecycle_helper().workspace_delete(args, api)
     if args.subcommand == "use":
         # Purely local, and deliberately not validated against the API: selecting
         # a context is not an authorization decision. The next call carries the
@@ -830,6 +841,8 @@ def events(args, api):
     which is worse than not offering the filter. It is now refused with a pointer
     to the filters that exist (see parser()).
     """
+    if getattr(args, "workspace", None) or getattr(args, "follow", False) or getattr(args, "after", None):
+        return lifecycle_helper().events(args, api)
     path = query(
         API_BASE + "/events",
         {
@@ -938,6 +951,8 @@ def deployment_preview(args, api, identifier, path, body):
 
 
 def deploy(args, api):
+    if args.subcommand == "profiles":
+        return lifecycle_helper().deployment_profiles(args, api)
     if args.subcommand != "list":
         operation_id = deployment_uuid(args.operation_id, "--operation-id")
         if args.subcommand in {"delete", "teardown-preview"} and not looks_like_uuid(args.id):
@@ -960,6 +975,8 @@ def deploy(args, api):
             "precision": args.precision,
             "profile_id": args.profile_id,
         }
+        if getattr(args, "namespace", None) is not None:
+            body["expected_namespace"] = args.namespace
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", args.profile_id):
             raise CliError("Use a configured deployment --profile-id (lowercase letters, digits and hyphens).", "usage_error", 1)
         # Sent only when the user asked for them, so the server's own defaults
@@ -1888,6 +1905,7 @@ def parser():
     ):
         create_deploy = mutation(leaf(deploy_subcommands, name, help=help_text))
         create_deploy.add_argument("--model", required=True, help="Model to serve, for example a HuggingFace name")
+        create_deploy.add_argument("--namespace", help="Assert the workspace-owned namespace; never override placement")
         create_deploy.add_argument("--precision", default="fp16", choices=("fp8", "fp16", "bf16", "awq", "int8"))
         create_deploy.add_argument("--name", required=True, help="Deployment name (lowercase letters, digits, hyphens)")
         create_deploy.add_argument("--workspace")
@@ -2018,10 +2036,14 @@ def parser():
     if Path(__file__).with_name(ONBOARDING_HELPER).is_file():
         commands.add_parser("onboarding", add_help=False, help="Discover, plan and bind workspace and provider onboarding")
 
+    if Path(__file__).with_name(LIFECYCLE_HELPER).is_file():
+        lifecycle_helper().configure(commands, workspace_subcommands, deploy_subcommands, leaf, mutation, events_command)
     return root
 
 
 HANDLERS = {
+    "cluster": lambda args, api: lifecycle_helper().cluster_list(args, api),
+    "provider-connection": lambda args, api: lifecycle_helper().provider_connection(args, api),
     "workspace": workspace,
     "node": node,
     "quota": quota,
@@ -2066,7 +2088,8 @@ def main(argv=None):
         reject_secret_arguments(argv)
         # Also before argparse: a filter that was silently dropped server-side must
         # name that, not fail as an unknown flag (Issue #5637).
-        reject_ignored_event_filter(argv)
+        if not Path(__file__).with_name(LIFECYCLE_HELPER).is_file():
+            reject_ignored_event_filter(argv)
         # Also before argparse, and before any gateway or token is resolved: a
         # redirected verb performs nothing, so neither its arguments nor the
         # user's session are relevant. Parsing them would mean either rebuilding

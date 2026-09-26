@@ -2,7 +2,7 @@
 
 This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues/5644), reconciled in the reviewed integration batch against main `93785ab6f` on 26 September 2026. A target entry does not mean the command is installed or the server permits it. The final leaf-command/flag inventory is the checked command manifest from #5621, reconciled with parser source and the served bundle.
 
-The reviewed batch contains **252 parser-backed command forms**. This is source coverage; deployment parity and live story acceptance are recorded separately. The batch combines hierarchy, access/session controls, machine identities, person caps, rate limits, model policy, Bedrock routing, knowledge, GitLab, research and recovery, with scenarios in the existing nightly EC2 harness. Hosted human/repository tasks, general chat, and platform/Superplane lifecycle completion remain in progress.
+The reviewed batch contains **266 parser-backed command forms**. This is source coverage; deployment parity and live story acceptance are recorded separately. The batch combines hierarchy, access/session controls, machine identities, person caps, rate limits, model policy, Bedrock routing, knowledge, GitLab, research and recovery, with scenarios in the existing nightly EC2 harness. The platform and Superplane lifecycle adapters are included in the second reviewed batch; their live deployment/cleanup acceptance remains open. Hosted human/repository tasks and general chat remain in progress.
 
 ## Available in baseline source
 
@@ -48,8 +48,9 @@ The reviewed batch contains **252 parser-backed command forms**. This is source 
 | #5635 | GitLab connection and agent readiness | Existing GitLab integration |
 | #5636 ([model policy/costs](model-policy.md), source implementation; live held) | Model defaults, runtime posture and persona cost | Existing model-policy APIs; retain upstream evidence dependencies |
 | #5637 | Superplane wire-contract repairs | Already closed; regression only |
-| #5638 | Superplane workspace/deployment/provider lifecycle | Existing Superplane commands and domain contracts |
 | #5639 | [Research reads and proposal review](research.md), E25 nightly reads; bounded scan/generation held | Existing Superplane research APIs; idempotent proposal identity and human revision checks |
+
+| #5638 | Superplane workspace/deployment/provider lifecycle | App-owned lifecycle adapters, revisions, namespace assertions, scoped events, E39 read-only scenario; live compute/cleanup held |
 | #5640 | Durable hosted conversation start/resume/readback | Existing hosted chat APIs; no replacement Task dispatcher |
 | #5641 ([platform facade](platform.md), source implementation; live held) | Platform lifecycle status and governed deployment facade | Canonical deployment tooling |
 

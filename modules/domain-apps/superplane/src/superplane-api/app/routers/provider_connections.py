@@ -53,9 +53,9 @@ import logging
 import uuid
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,6 +79,7 @@ from app.models.provider_connection import ProviderConnection, ProviderConnectio
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
 from app.services import provider_connections as service
+from app.services.cli_lifecycle import connection_revision, require_connection_revision
 from app.services.credential_evidence import (
     VerifiedCredentialEvidence,
     get_credential_evidence_reader,
@@ -568,7 +569,7 @@ async def get_connection(
     connection, binding = await _load_or_404(db, org_id, connection_id)
     state = _state(connection, binding)
     _require_binding(workspace_id=workspace_id, state=state, binding=binding)
-    return connection_response(state)
+    return {**connection_response(state), "revision": connection_revision(connection, binding)}
 
 
 @router.post(_CONNECTIONS + "/{connection_id}/validation")
@@ -578,6 +579,7 @@ async def record_validation(
     connection_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> dict[str, Any]:
     """Record a validation reading and activate the connection if it passed.
 
@@ -601,6 +603,8 @@ async def record_validation(
         org_id=org_id,
         require_renewal=True,
     )
+
+    require_connection_revision(expected_revision, connection, binding)
 
     report = _report_or_400(await _body(request), field="validation")
     evidence = await _vault_evidence(
@@ -649,6 +653,7 @@ async def rotate_connection(
     connection_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> dict[str, Any]:
     """Switch onto an already-validated replacement, atomically (acceptance 5).
 
@@ -675,6 +680,8 @@ async def rotate_connection(
         org_id=org_id,
         require_renewal=True,
     )
+
+    require_connection_revision(expected_revision, connection, binding)
 
     payload = await _body(request)
     if not isinstance(payload, dict):
@@ -748,6 +755,7 @@ async def disable_connection(
     connection_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> dict[str, Any]:
     """Block new admissions and renewals, and say what that does not accomplish.
 
@@ -772,6 +780,8 @@ async def disable_connection(
         org_id=org_id,
         require_renewal=False,
     )
+
+    require_connection_revision(expected_revision, connection, binding)
 
     state = await service.record_disablement(
         db,

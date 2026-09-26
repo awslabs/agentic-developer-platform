@@ -526,3 +526,19 @@ class TestNamespaceResolver:
             / "alembic/versions/028_deployment_namespace_quota.py"
         )
         assert "UPDATE workspaces" not in migration.read_text()
+
+
+async def test_expected_namespace_does_not_override_workspace(monkeypatch):
+    from unittest.mock import AsyncMock
+    from pydantic import ValidationError
+    from app.schemas.proxy import CreateDeploymentRequest
+    from app.services import deployment_operations
+    from app.services.provisioning import ProvisioningRefused
+
+    body = CreateDeploymentRequest(name="model-a", model_name="model", profile_id="profile", expected_namespace="other")
+    monkeypatch.setattr(deployment_operations,"get_workspace_cluster",AsyncMock(return_value=(object(),None)))
+    monkeypatch.setattr(deployment_operations,"resolve_workspace_namespace",lambda workspace:"owned")
+    with pytest.raises(ProvisioningRefused,match="workspace-owned namespace"):
+        await deployment_operations.preview_create(None,uuid.uuid4(),uuid.uuid4(),body)
+    with pytest.raises(ValidationError):
+        CreateDeploymentRequest(name="model-a",model_name="model",namespace="other")

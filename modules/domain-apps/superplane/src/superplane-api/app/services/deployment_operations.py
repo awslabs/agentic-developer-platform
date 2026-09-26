@@ -57,6 +57,7 @@ def request_document(body):
     return {
         "name": body.name,
         "profile_id": body.profile_id,
+        **({"expected_namespace":body.expected_namespace} if body.expected_namespace is not None else {}),
         **{key: getattr(body, key) for key in MODEL_FIELDS},
     }
 
@@ -67,7 +68,9 @@ async def preview_create(db, org_id, workspace_id, body):
             "select an installed controller deployment profile"
         )
     workspace, _ = await get_workspace_cluster(workspace_id, org_id, db)
-    resolve_workspace_namespace(workspace)
+    namespace = resolve_workspace_namespace(workspace)
+    if getattr(body, "expected_namespace", None) is not None and body.expected_namespace != namespace:
+        raise ProvisioningRefused("Requested namespace does not match the workspace-owned namespace")
     return await preview_controller_deployment(
         db,
         policy_path=settings.superplane_controller_profiles_file,
@@ -146,6 +149,8 @@ async def create(request, db, org_id, workspace_id, body):
         workspace_id, org_id, db, for_update=True
     )
     namespace = resolve_workspace_namespace(workspace)
+    if getattr(body, "expected_namespace", None) is not None and body.expected_namespace != namespace:
+        raise ProvisioningRefused("Requested namespace does not match the workspace-owned namespace")
     intent = await db.scalar(
         select(Deployment)
         .where(

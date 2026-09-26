@@ -322,5 +322,13 @@
   [
     "GET",
     "/api/v1/research/cli-support"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/lifecycle"
+  ],
+  [
+    "GET",
+    "/events/workspaces/{workspace_id}"
   ]
 ]

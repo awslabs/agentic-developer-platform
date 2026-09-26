@@ -3688,6 +3688,7 @@
         "--max-model-len",
         "--model",
         "--name",
+        "--namespace",
         "--operation-id",
         "--plan-revision",
         "--precision",
@@ -3812,6 +3813,7 @@
         "--max-model-len",
         "--model",
         "--name",
+        "--namespace",
         "--operation-id",
         "--plan-revision",
         "--precision",
@@ -3897,14 +3899,19 @@
       "operation": "superplane.workspace.read",
       "flags": [
         "--action",
+        "--after",
         "--end-time",
         "--event-type",
+        "--follow",
         "--json",
         "--limit",
+        "--max-pages",
         "--offset",
         "--resource-type",
         "--start-time",
-        "--user"
+        "--timeout",
+        "--user",
+        "--workspace"
       ],
       "arguments": [],
       "request": {
@@ -3913,12 +3920,13 @@
           "GET"
         ],
         "paths": [
-          "/superplane/**"
+          "/superplane/v1/events",
+          "/superplane/v1/events/workspaces/{workspace_id}"
         ],
         "schema": "helper parser and server route schemas"
       },
       "response": {
-        "stream": "single-json",
+        "stream": "ndjson",
         "schema": "adp_common JSON envelope"
       },
       "tests": [
@@ -9572,6 +9580,295 @@
         "tests/cli/test_command_manifest.py"
       ],
       "required_capabilities": []
+    },
+    {
+      "command": "adp superplane workspace delete",
+      "helper": "adp-superplane.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--yes"
+      ],
+      "arguments": [
+        "workspace"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/superplane/v1/workspaces/{workspace_id}/lifecycle",
+          "/superplane/v1/workspaces/{workspace_id}"
+        ],
+        "schema": "Superplane canonical lifecycle APIs and reviewed revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ],
+      "tests": [
+        "tests/cli/test_superplane_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp superplane provider-connection create",
+      "helper": "adp-superplane.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--credential-id",
+        "--dry-run",
+        "--json",
+        "--label",
+        "--operation-id",
+        "--provider",
+        "--service",
+        "--workspace",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/superplane/v1/workspaces/{workspace_id}/provider-connections/**"
+        ],
+        "schema": "Superplane canonical lifecycle APIs and reviewed revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ],
+      "tests": [
+        "tests/cli/test_superplane_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp superplane provider-connection show",
+      "helper": "adp-superplane.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "superplane.workspace.read",
+      "flags": [
+        "--connection",
+        "--json",
+        "--workspace"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/workspaces/{workspace_id}/provider-connections/**"
+        ],
+        "schema": "Superplane canonical lifecycle APIs and reviewed revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_superplane_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp superplane provider-connection validate",
+      "helper": "adp-superplane.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--connection",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--validation-file",
+        "--workspace",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/superplane/v1/workspaces/{workspace_id}/provider-connections/**"
+        ],
+        "schema": "Superplane canonical lifecycle APIs and reviewed revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ],
+      "tests": [
+        "tests/cli/test_superplane_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp superplane provider-connection rotate",
+      "helper": "adp-superplane.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--connection",
+        "--credential-id",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--label",
+        "--operation-id",
+        "--service",
+        "--validation-file",
+        "--workspace",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/superplane/v1/workspaces/{workspace_id}/provider-connections/**"
+        ],
+        "schema": "Superplane canonical lifecycle APIs and reviewed revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ],
+      "tests": [
+        "tests/cli/test_superplane_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp superplane provider-connection revoke",
+      "helper": "adp-superplane.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "superplane.workspace.write",
+      "flags": [
+        "--connection",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--operation-id",
+        "--workspace",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/superplane/v1/workspaces/{workspace_id}/provider-connections/**"
+        ],
+        "schema": "Superplane canonical lifecycle APIs and reviewed revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "superplane.workspace.write"
+      ],
+      "tests": [
+        "tests/cli/test_superplane_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp superplane deploy profiles",
+      "helper": "adp-superplane.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "superplane.workspace.read",
+      "flags": [
+        "--json",
+        "--workspace"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/workspaces/{workspace_id}/deployment-profiles"
+        ],
+        "schema": "Superplane canonical lifecycle APIs and reviewed revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_superplane_lifecycle.py"
+      ]
+    },
+    {
+      "command": "adp superplane cluster list",
+      "helper": "adp-superplane.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "superplane.workspace.read",
+      "flags": [
+        "--eligible-for",
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/superplane/v1/workspaces"
+        ],
+        "schema": "Superplane canonical lifecycle APIs and reviewed revision"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_superplane_lifecycle.py"
+      ]
     }
   ]
 }

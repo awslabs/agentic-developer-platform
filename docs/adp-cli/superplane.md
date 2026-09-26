@@ -304,3 +304,31 @@ If a continuation response is lost, retain its request reference and use
 `lifecycle continue` recovers the submitted receipt, including after the API has
 advanced past its source proposal. A completed phase does not establish workspace
 readiness; check `adp superplane onboarding readiness --workspace WORKSPACE_ID`.
+
+## Lifecycle review and scoped events (#5638)
+
+The installed CLI exposes these app-owned adapters over existing Superplane APIs:
+
+```bash
+adp superplane workspace delete WORKSPACE_UUID --dry-run
+adp superplane workspace delete WORKSPACE_UUID --yes --expected-revision REVISION --operation-id OPERATION_UUID
+adp superplane provider-connection create --workspace WORKSPACE_UUID --provider aws --credential-id CREDENTIAL_REFERENCE --service aws --label LABEL --dry-run
+adp superplane provider-connection show --workspace WORKSPACE_UUID --connection CONNECTION_UUID
+adp superplane provider-connection validate --workspace WORKSPACE_UUID --connection CONNECTION_UUID --validation-file PRIVATE_JSON --dry-run
+adp superplane provider-connection rotate --workspace WORKSPACE_UUID --connection CONNECTION_UUID --credential-id REPLACEMENT_REFERENCE --service aws --label LABEL --validation-file PRIVATE_JSON --dry-run
+adp superplane provider-connection revoke --workspace WORKSPACE_UUID --connection CONNECTION_UUID --dry-run
+adp superplane cluster list --eligible-for workspace-sharing
+adp superplane deploy profiles --workspace WORKSPACE_UUID
+adp superplane events --workspace WORKSPACE_UUID --limit 100
+adp superplane events --workspace WORKSPACE_UUID --follow --after CURSOR --timeout 60 --max-pages 10
+```
+
+Mutations require `--yes` and a stable `--operation-id`; existing connections also require the exact reviewed `--expected-revision`. Without `--yes`, these commands preview. Local receipts bind operation IDs to gateway, authenticated scope, path and request; retries do not send another mutation after an uncertain result. An acknowledgement remains `pending`: it does not prove workload completion, provider credential revocation, resource deletion or stopped billing. Default workspaces are protected. Protected retirement still requires staged cleanup access; these commands do not bypass that admission gate.
+
+Credential arguments are existing ADP references, never secret values. The private validation JSON accepts only `credential_valid`, `permissions_sufficient`, `quota_available` booleans and optional integer `observed_capacity`. The server independently attests the exact report against the vault; caller-supplied readings alone cannot activate a connection. `revoke` disables new connection admission and renewal; already issued credentials and the superseded credential after rotation require provider/vault revocation separately.
+
+Deployment create/preview `--namespace` asserts the server-owned namespace. It cannot override workspace isolation. `deploy profiles` exposes the installed serving catalog and submission readiness; successful metadata reads do not qualify GPU capacity or inference. Workspace lifecycle snapshots distinguish the cluster home region from separately selected compute provider regions.
+
+Workspace events use a stable workspace-bound cursor and bounded `(created_at, id)` ordering. `--follow` emits NDJSON pages and a final pending envelope; without it, one JSON envelope is returned. This attributed audit feed is not a complete provider event stream. Organization event filters cannot be combined with workspace cursor mode.
+
+Nightly scenario E39 reads a disposable configured Superplane workspace, reviews deletion without writing, and reads one scoped event page. It requires the Superplane domain fixture and otherwise reports blocked. Provider lifecycle, live compute, teardown and billing acceptance remain separately held until those actions are exercised and verified.

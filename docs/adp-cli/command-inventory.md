@@ -307,3 +307,5 @@ See [canonical platform facade](platform.md).
 | `adp platform resume` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file`, `--state-file` |
 | `adp platform teardown plan` | `--environment`, `--json`, `--output`, `--profile`, `--region`, `--source-checkout`, `--source-revision` |
 | `adp platform teardown apply` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file` |
+
+Superplane lifecycle #5638 adds `workspace delete`, `provider-connection create|show|validate|rotate|revoke`, `cluster list --eligible-for workspace-sharing`, `deploy profiles --workspace`, and `events --workspace [--follow --after]`. Deployment create/preview accepts `--namespace` as an assertion. See [the lifecycle contract](superplane.md#lifecycle-review-and-scoped-events-5638) for required mutation flags and source-versus-live qualification.

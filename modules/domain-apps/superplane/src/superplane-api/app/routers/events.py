@@ -72,7 +72,9 @@ async def list_events(
 
     if user:
         query = query.where(func.coalesce(Event.principal, Event.user_id) == user)
-        count_query = count_query.where(func.coalesce(Event.principal, Event.user_id) == user)
+        count_query = count_query.where(
+            func.coalesce(Event.principal, Event.user_id) == user
+        )
 
     if action:
         query = query.where(Event.action == action)
@@ -129,3 +131,95 @@ async def get_event(
         )
 
     return EventResponse.model_validate(event)
+
+
+@router.get("/workspaces/{workspace_id}")
+async def workspace_events(
+    workspace_id: uuid.UUID,
+    after: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=50, ge=1, le=100),
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    """Stable bounded stream of audit records attributable to this exact workspace."""
+    import base64
+    import json
+    from sqlalchemy import and_, or_
+    from app.models.workspace import Workspace
+
+    workspace = await db.scalar(
+        select(Workspace.id).where(
+            Workspace.id == workspace_id, Workspace.org_id == org_id
+        )
+    )
+    if workspace is None:
+        raise HTTPException(404, "Workspace not found")
+    path = "/workspaces/" + str(workspace_id)
+    statement = select(Event).where(
+        Event.org_id == org_id,
+        or_(
+            and_(Event.resource_type == "workspace", Event.resource_id == workspace_id),
+            Event.request_path == path,
+            Event.request_path.like(path + "/%"),
+        ),
+    )
+    if after:
+        try:
+            value = json.loads(base64.urlsafe_b64decode(after.encode()))
+            if set(value) != {"workspace", "time", "id"} or value["workspace"] != str(
+                workspace_id
+            ):
+                raise ValueError
+            instant, event_id = (
+                datetime.fromisoformat(value["time"]),
+                uuid.UUID(value["id"]),
+            )
+            if instant.tzinfo is None:
+                raise ValueError
+        except Exception:
+            raise HTTPException(422, "Invalid workspace event cursor") from None
+        statement = statement.where(
+            or_(
+                Event.created_at > instant,
+                and_(Event.created_at == instant, Event.id > event_id),
+            )
+        )
+    rows = (
+        (
+            await db.execute(
+                statement.order_by(Event.created_at, Event.id).limit(limit + 1)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    emitted = rows[:limit]
+    cursor = after
+    if emitted:
+        from datetime import timezone
+
+        last = emitted[-1]
+        instant = last.created_at
+        instant = (
+            instant.astimezone(timezone.utc)
+            if instant.tzinfo
+            else instant.replace(tzinfo=timezone.utc)
+        )
+        cursor = base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "workspace": str(workspace_id),
+                    "time": instant.isoformat(),
+                    "id": str(last.id),
+                }
+            ).encode()
+        ).decode()
+    return {
+        "workspace_id": str(workspace_id),
+        "events": [
+            EventResponse.model_validate(row).model_dump(mode="json") for row in emitted
+        ],
+        "next_cursor": cursor,
+        "has_more": len(rows) > limit,
+        "coverage": "Workspace resource and exact workspace-path audit records; not a complete provider-event feed.",
+    }

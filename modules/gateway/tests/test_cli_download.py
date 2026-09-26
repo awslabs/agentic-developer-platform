@@ -139,7 +139,6 @@ class TestCliScriptDownload:
             "adp-knowledge.py",
             "adp-budget.py",
             "adp-ratelimit.py",
-
             "adp-platform.py",
             "adp_task_client.py",
             # Issue #5730: `adp superplane onboarding`. A sibling helper rather
@@ -150,6 +149,7 @@ class TestCliScriptDownload:
             # references only — never values.
             "adp-superplane-onboarding.py",
             "adp-superplane-research.py",
+            "adp-superplane-lifecycle.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

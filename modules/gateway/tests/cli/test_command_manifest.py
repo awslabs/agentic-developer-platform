@@ -162,7 +162,6 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-agent.py", ["adp", "agent"]),
         ("adp-budget.py", ["adp"]),
         ("adp-ratelimit.py", ["adp"]),
-
         ("adp-platform.py", ["adp", "platform"]),
         ("adp-doctor.py", ["adp"]),
     ]
