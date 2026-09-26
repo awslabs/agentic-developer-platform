@@ -1,0 +1,292 @@
+{
+  "issue": 6111,
+  "source_commit": "4bd03f0a3095c8018271cc9d5e3ab8014ce994a6",
+  "scope_complete": false,
+  "live_acceptance": false,
+  "original_occurrences": 1466,
+  "images": {
+    "token": {
+      "identity": {
+        "input": "security25-closure-factory:token-4bd03f0a3",
+        "docker_archive_sha256": "5695730f42d503883448d3a7780b415874ef079f8b3417ac9a217fc0c33a5323",
+        "docker_config_id": "sha256:4fbabe86bd435da70b86b23229051f3828d2346d8831001489a11c34569466e7",
+        "archive_manifest": [
+          {
+            "Config": "blobs/sha256/4fbabe86bd435da70b86b23229051f3828d2346d8831001489a11c34569466e7",
+            "RepoTags": [
+              "security25-closure-factory:token-4bd03f0a3"
+            ],
+            "Layers": [
+              "blobs/sha256/3ee87b1055c51d2ac7dc8988b8fcd770985201b17d5a14a7907e4b854064f5ca",
+              "blobs/sha256/ae721e4b27a4843111426da3866d30983e5210e940353f810d4b45fa11e37b63",
+              "blobs/sha256/93ac10510c5fb92767d49eae8216adadeeb348ef0f89d29dc8a6283e42fd548e",
+              "blobs/sha256/18fcc30ba6691d58a146f871b86fe40f235a5aff20f1e2adc7cdb318cb6ab5ff",
+              "blobs/sha256/5d7a4a38524c657c1eea048189f7c7d8c7676dbb668765d9ecc0d782ace5a724",
+              "blobs/sha256/8be62a0ad7957a8ce9ee85ebffbe1520b2ced356289f2aa6d042bb9a1e204804",
+              "blobs/sha256/48cdf26598491851557608468f1f88887045250d824a79d2593c303088b51f08",
+              "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1"
+            ]
+          }
+        ]
+      },
+      "matches": 4,
+      "packages": 212,
+      "evidence": [
+        {
+          "path": "/workspaces/projects/security25/closure-6111/token-source4bd-scan/grype.raw.sarif",
+          "sha256": "a116807863695a5110b0a0612f442e1d94ea9133e8ef252316c2db2dbb90ab61"
+        },
+        {
+          "path": "/workspaces/projects/security25/closure-6111/token-source4bd-scan/syft.json",
+          "sha256": "99a2674962eff0fdf221990678948b83d6acefbff3e82d55c06e62b38e73c476"
+        },
+        {
+          "path": "/workspaces/projects/security25/closure-6111/token-source4bd-scan/scanner-metadata.json",
+          "sha256": "17316322730bc114da00e92e2897df6fb0441e38a6834b9c6df365ba44990255"
+        }
+      ]
+    },
+    "agent": {
+      "identity": {
+        "input": "security25-closure-factory:agent-4bd03f0a3",
+        "docker_archive_sha256": "a691d1842224fdbd8f0c0fc3ef3779ca3e1b2d2a0c57dfe802742c28cbba8ad0",
+        "docker_config_id": "sha256:d159ba0b6accdff2449eb273a9b3f515eacdb964504186e410025a428a8e91f5",
+        "archive_manifest": [
+          {
+            "Config": "blobs/sha256/d159ba0b6accdff2449eb273a9b3f515eacdb964504186e410025a428a8e91f5",
+            "RepoTags": [
+              "security25-closure-factory:agent-4bd03f0a3"
+            ],
+            "Layers": [
+              "blobs/sha256/e2de96513ba9eb53b431787ec8a65cdde380ac4772a3e4c4b714dcfde2a102b5",
+              "blobs/sha256/f7f2d304681aaa935c9cfd180850cf616ae843efce7682873d6521ded7268937",
+              "blobs/sha256/e554276b05e6306c5ad33cd85bfa7f0693083e21f6114db5abf60a20fb413039",
+              "blobs/sha256/d39db1cf9caa4f49c5a2e67111fbe6e0d5eea8ede550cb82f3dc2b79712688d6",
+              "blobs/sha256/a08503a400f376b634028d879e94db5df64296af2e003b50ccd27953617776b9",
+              "blobs/sha256/184c0a24a1df7a5a7d5428d353b48cfd68cf19ecdfe018508637518f72ccb478",
+              "blobs/sha256/e6bda5d223717a5938fe447fd97bf1f125484940a8dfa91b450a0162fad0555a",
+              "blobs/sha256/7a4233f4f7e534b3d1ee2c03368bf33c196beedcd199446fd8307003c2468af0",
+              "blobs/sha256/610a3a89e290b97f3f162689d2243102b2d4cff95de2e9570e9e2d06cb15be1d",
+              "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+              "blobs/sha256/0d78de15797fbce2d44d1dc9def48a35da982b0d2166a878eaabbb4a3eb3d6e5",
+              "blobs/sha256/99a922371d1c8fef3717f96f6a208633ef693e3ac3508ff3eb87a2a034c88c03",
+              "blobs/sha256/8ec4f0bffeb9eccb5398ae1282affbc02079d7cadb557f5df61324debd4a9c71",
+              "blobs/sha256/cd16531c7bc8ace7caf6cf770797389b983487f8905c1400c00d8d3fb8a592ef",
+              "blobs/sha256/e21f0222a166d64313df6230fb5c3176e54b1830a6d0c3eea9baf1dfb14a015a",
+              "blobs/sha256/31f627bad1c6e7036db973eb14ff81e708f7c1dd9e78cfb2e13394fd761dd2a5",
+              "blobs/sha256/a0be600b472114cdf6f54a36bc7a5c2fc566dd674b13049d09a768d4a60e43b2",
+              "blobs/sha256/fc2fcdf28b0576a4de5e339d0924bcdbb5dd4205711a9a99e3d33a2537de26a4"
+            ]
+          }
+        ]
+      },
+      "matches": 4,
+      "packages": 438,
+      "evidence": [
+        {
+          "path": "/workspaces/projects/security25/closure-6111/agent-source4bd-scan/grype.raw.sarif",
+          "sha256": "9f1f3a1e4180a9b2ac4b1743864791b0c0e4941ff13896d5809166336721c910"
+        },
+        {
+          "path": "/workspaces/projects/security25/closure-6111/agent-source4bd-scan/syft.json",
+          "sha256": "882434efd9b94bde485ea8fc0bb1988d967e413a8e288a75668aa52a16322432"
+        },
+        {
+          "path": "/workspaces/projects/security25/closure-6111/agent-source4bd-scan/scanner-metadata.json",
+          "sha256": "5dc09a92e9e392f64a96d98273e3425f796fb75fbaae849ec78091736d7d1557"
+        }
+      ]
+    },
+    "gateway": {
+      "identity": {
+        "input": "security25-closure-factory:gateway-4bd03f0a3",
+        "docker_archive_sha256": "05cfc0702019336c4aa67450cd92deb3290f840081df5cd741cd57f50e7003e6",
+        "docker_config_id": "sha256:42a655eeaefbd423e09b96a52a4ca59dcc4e90a32d8ecb04e4d5b87ded9fb8b7",
+        "archive_manifest": [
+          {
+            "Config": "blobs/sha256/42a655eeaefbd423e09b96a52a4ca59dcc4e90a32d8ecb04e4d5b87ded9fb8b7",
+            "RepoTags": [
+              "security25-closure-factory:gateway-4bd03f0a3"
+            ],
+            "Layers": [
+              "blobs/sha256/6b37362b3da78869050b894b799ad4df04f1f3b52774087db0d81151570244c8",
+              "blobs/sha256/3d9fb74714202c0d9ba7af2ca3e226fec5647f73cefc725b7ff37338bc1b59ec",
+              "blobs/sha256/264ba3d8ae19c964ad7ebecdd4379a348cc08c7898b50d08d7884127a78fdb23",
+              "blobs/sha256/4a43a40b039e72c4176e2fcbb0c08f42be7ff4e6a07722417801c9147b67bfb2",
+              "blobs/sha256/168967fb407fde45fe7e51eb202c538acdf24815fe07dd325ac89899504e5e13",
+              "blobs/sha256/0e77425e91c7736f6e8a507f1a0be4effad450368de89fc8cd1150a729204c71",
+              "blobs/sha256/c96bcc28513f704fed14b9c8cbe98d3d5736f1d4f59194f483f3bb03f2a34275",
+              "blobs/sha256/0a2f2b8ea6e6cee319c37e997074fca32c2b21d303ed4935491eac58494fc916",
+              "blobs/sha256/ed980d61294984458f0707de1be4b668eccb48d4e531923285a69b99ffd0c245",
+              "blobs/sha256/9af40187e3156987f44c1cb353f935be794b8eb9cea73ae1690c5838d970f3bd",
+              "blobs/sha256/1f6030e743a735fd50acc5870d9fa4018654d7d7bab319f2994205cd2ee96ce3",
+              "blobs/sha256/36ced5cd0148fc39c2bc0cc2810733f3cd974adcc52ba2998b28f34dd3e1aef8",
+              "blobs/sha256/702c936ae0ceea552f41d7f2f976b68464778792ce526f545f8e143d1bfa8049",
+              "blobs/sha256/8b3defc04ed510cee434873a274d1d7f387aa608bdcaaac66d72bd5bdae39e43",
+              "blobs/sha256/9f4fc068b3cfc36ea31532c360181c7fc5df293988f7cdf810b4670ac1173407",
+              "blobs/sha256/848fa4f70295a91dcecbb5317bc352d1521d2e2c4b8d2abc71ea070c77c95889",
+              "blobs/sha256/a71efa041a12d3e44705268b509a88aa99fcdba086f052a42df469e50526999b",
+              "blobs/sha256/b4426ceedb638298bc61763c56d290aab6c92d38a22d0086f69bba92aafb4715",
+              "blobs/sha256/b05d4cc18a42546ab2c945d08c58bedc49ea53c9aa4fca0049ee3267968eafcb"
+            ]
+          }
+        ]
+      },
+      "matches": 299,
+      "packages": 155,
+      "evidence": [
+        {
+          "path": "/workspaces/projects/security25/closure-6111/gateway-source4bd-scan/grype.raw.sarif",
+          "sha256": "e8fe040c105c87bef90bc2a5b38c7d8979846cae8f15149499fc3bb9f7a5062e"
+        },
+        {
+          "path": "/workspaces/projects/security25/closure-6111/gateway-source4bd-scan/syft.json",
+          "sha256": "72eaf948ea9f40e1f79a221920f1361bd975e2da66ed076d0c2fa792d07453ba"
+        },
+        {
+          "path": "/workspaces/projects/security25/closure-6111/gateway-source4bd-scan/scanner-metadata.json",
+          "sha256": "ef2fe0f6a5a188c82fe1213dfce64bdc9dfc17fb60b3e54fc0308731a6b85612"
+        }
+      ]
+    },
+    "worker": {
+      "identity": {
+        "input": "security25-closure-factory:worker-4bd03f0a3",
+        "docker_archive_sha256": "e88f3ea766f42ee5c487221430520fe3d7f95c5146af4412a23b90c51b683833",
+        "docker_config_id": "sha256:1da363407dd13806bf964c2bbd67339f6a7eae07d8c1e51682b5815c52966acb",
+        "archive_manifest": [
+          {
+            "Config": "blobs/sha256/1da363407dd13806bf964c2bbd67339f6a7eae07d8c1e51682b5815c52966acb",
+            "RepoTags": [
+              "security25-closure-factory:worker-4bd03f0a3"
+            ],
+            "Layers": [
+              "blobs/sha256/6b37362b3da78869050b894b799ad4df04f1f3b52774087db0d81151570244c8",
+              "blobs/sha256/3d9fb74714202c0d9ba7af2ca3e226fec5647f73cefc725b7ff37338bc1b59ec",
+              "blobs/sha256/264ba3d8ae19c964ad7ebecdd4379a348cc08c7898b50d08d7884127a78fdb23",
+              "blobs/sha256/4a43a40b039e72c4176e2fcbb0c08f42be7ff4e6a07722417801c9147b67bfb2",
+              "blobs/sha256/168967fb407fde45fe7e51eb202c538acdf24815fe07dd325ac89899504e5e13",
+              "blobs/sha256/0e77425e91c7736f6e8a507f1a0be4effad450368de89fc8cd1150a729204c71",
+              "blobs/sha256/c96bcc28513f704fed14b9c8cbe98d3d5736f1d4f59194f483f3bb03f2a34275",
+              "blobs/sha256/0a2f2b8ea6e6cee319c37e997074fca32c2b21d303ed4935491eac58494fc916",
+              "blobs/sha256/ed980d61294984458f0707de1be4b668eccb48d4e531923285a69b99ffd0c245",
+              "blobs/sha256/6f7030d954b73573e035928dcc00884948477a896224208726b6f782868f7ee5",
+              "blobs/sha256/36a3a96535a363791f83a3169c0c1d9e73216ed0a3ecfc334fb80606b78b7b52",
+              "blobs/sha256/e799c8707055e5940b37af52a6dfc6d38974dd2ea54fff68732693f541e35c46",
+              "blobs/sha256/d31f59a7f9b5245edfb5c5a714f5e47d7e2c119cdba6d96a08edb7331682b242",
+              "blobs/sha256/8a1c5f6ad49d61f4f7cbd4b0a988ce3a93e526780cf716afc8f196f5c44f6083",
+              "blobs/sha256/6146ca3d091d86e508f9f90135fc04dee947161aa7121fa2969aa72623bba97b",
+              "blobs/sha256/3679d922f98553b592dc13eb3ccd22f478874829332930698da3446660b672c2",
+              "blobs/sha256/f7daa454cca47c26342dcea271a33948dced9ffdf3cc35541fe230cfa9ab6df0",
+              "blobs/sha256/88a9cecbc25454b01299ed57935662c36b23e2f33e6546ae4108c66ef0107e7a",
+              "blobs/sha256/df46122b819f5ea4e32a29a8e3e473554b0555558bed5fbe2d892597c237d2cf",
+              "blobs/sha256/4008fc553958df52009c36c72f830c7002cf09134afdf8fdb229a5ad61c79d53",
+              "blobs/sha256/b86c9ae5e90d53515a57fac67881217445b15f9c640fc9dbafd48c7255f4abf1",
+              "blobs/sha256/ec2628f66bc31c328750cbbaf1ef7e7fdaeb25759d41e71004b8b359f98e4aaa",
+              "blobs/sha256/397602fa2ee777b683873311211b104453473a7dc889c8982702297da9ce03bb",
+              "blobs/sha256/0d8b3943bcc173a906d5d842e9c928838686a65bbb2e18c0c3487c7844d40f24",
+              "blobs/sha256/7853c90840a67984d67279fed8ea1fd34feae0be6099ec8ccf8b762504e80bf4",
+              "blobs/sha256/14febc01972f7a8842ed76e6056db442fe217166d756427a0abd95adc99f3bf5",
+              "blobs/sha256/1eeb82107699d2c24204b1fa097e2b823d05c3b3a35916dcb9b90eb9a98a7842",
+              "blobs/sha256/95ad61eed0cc769f90e7bda2cc9adc7118327e49a8569ddde39ae410d3e62c5a",
+              "blobs/sha256/68115011f6d03467e1bdb4e5d44fadceb219074ed2c2e805bedb0926117e2e12",
+              "blobs/sha256/a3a8765582c8dfe68bb0ecb6ad99030dd5d28dd8554decc6c0984d6655c8191b",
+              "blobs/sha256/d62afc86c9cfc46819e338098418cb791733f70ca3149f16fed7eeb915d02fbb",
+              "blobs/sha256/8ed51b2947b35f4fd4044699463e422deaea8c1c3ef8048355a3a66a98d2d090",
+              "blobs/sha256/ceedab64861406b633a57d13c2dc292cfa876c43450876efd3ef2bda284cc106",
+              "blobs/sha256/ac9b3a05326cd62abe94e73eb5f9779ac0d5079f402e1ba52c7479cfa50c625a",
+              "blobs/sha256/5d4c7a077d308b39827e717dcf136d710254148229dd3f106f7e5fdcf5f586d2",
+              "blobs/sha256/2a9aec5b0549693b4645d53a2b66330f8bd77445d0bdc64bb038ae7395c28e4e",
+              "blobs/sha256/8221d70077adfedbef4996e1e760244d6963b393c46ec659e841b145cda3aa5a",
+              "blobs/sha256/311081568a513e0275f6fd62a7715bdd2da50c831ddb84e3db4f151f6947b045",
+              "blobs/sha256/1de09d45aa78e31277f14518a95b5d6b2a1fa0119eb72ad3efddc6426eae661f",
+              "blobs/sha256/36e3d24a56afd609bcf1c40533bdc700816c49959c1321db2f644af35c2623f2",
+              "blobs/sha256/022e8bb8f74212f8dcc832eb9203054341258ef45b29c189bd8eea0e35096734",
+              "blobs/sha256/2a3a7c194f0f9040328e71dc7c57ba6b224861a333190675cdafaeed395ec657",
+              "blobs/sha256/aa6525552cfdafdb452b5791f3d731434858c34ab73f45b1067c23f9aa770871",
+              "blobs/sha256/52af09edf90305dfc089a48dfb5a8e4af78bce6eaa68f1e1cc273361b03784a9",
+              "blobs/sha256/fa67ae0e6a0b004c82f526ac24f1d36a39fe428e20f5a5da2b12a671a1533390",
+              "blobs/sha256/ed027d9a6c7d312ec10957039cf12ff8c5ec6c338232ba3823ccf5091cd850c2",
+              "blobs/sha256/b5e284172dc6c5bf9287ed5a69850a1f734ac29df215f5d2167da23a8c875af0",
+              "blobs/sha256/c02763ea6c09d994afcceee1b07a6a750c6db39ad9849153996c3f80d8ddfeec",
+              "blobs/sha256/ad095f8696986416b133fb0a3a42c6bfa924dbf2648e6545e7767756e6709868",
+              "blobs/sha256/0e4ca16a3640bb4acd077721595b1f2840e29387ae3d4b94d335a9b40d8d8430",
+              "blobs/sha256/9ea904fc9efe5b4715a2b247c8d8d346ea45abd590263743810613d3a7f1f74e",
+              "blobs/sha256/8ca4f048caa21e2d966470e1520843469135df8fbb1e9ac42e0a926cba512a31",
+              "blobs/sha256/c049714dbc681854af51ee191229b44252b61632f11ac02dab9648eda7fc7816",
+              "blobs/sha256/0ad9ec67c36c50b2ab3aa46c988f0850c70b61d7fa7f3511d70db92f1198b9c7",
+              "blobs/sha256/d30dee6eda35f84fadacaaa1fa037a2c0f15715e9543b79a44a452d1671976a9",
+              "blobs/sha256/6628b1c3528ff7aa1b55f97612d04f8bca104d3047cc544041e56011b710fb02",
+              "blobs/sha256/1c9b21277d3537c497173450c6ed8233c334cdb575d2785123ebf84b365dc7a6",
+              "blobs/sha256/4605cff333ad865d67b1733a1b2f251a784c86ec5508b83f2c23610e510e41a8",
+              "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1"
+            ]
+          }
+        ]
+      },
+      "matches": 1053,
+      "packages": 2476,
+      "evidence": [
+        {
+          "path": "/workspaces/projects/security25/closure-6111/worker-source4bd-scan/grype.raw.sarif",
+          "sha256": "a93b8d0893bd7c200176a7b61d94163288bd419a41e030d305ea1140dc516ff7"
+        },
+        {
+          "path": "/workspaces/projects/security25/closure-6111/worker-source4bd-scan/syft.json",
+          "sha256": "7cb625a969aeadd6f9d3af46c62b0e40004a963eaa15f86d9cee4266132cbac6"
+        },
+        {
+          "path": "/workspaces/projects/security25/closure-6111/worker-source4bd-scan/scanner-metadata.json",
+          "sha256": "4399f5ad532bcccb27c0b8c03794b6386476dd6e4a5627edae66c99405d78637"
+        }
+      ]
+    }
+  },
+  "reconciliation": {
+    "path": "/workspaces/projects/security25/closure-6111/whole-family-source4bd-reconciliation.json",
+    "sha256": "9a0719a80e2a2194fd17a86f091e259eb82b8bb267f483d099abc1ab1f1f2532"
+  },
+  "limits": [
+    "1009 originals retain matching candidates; 457 nonobservations require source/package proof. Neither group is accepted wholesale.",
+    "All tests are local image acceptance; no publication, live provider, or deployment acceptance.",
+    "Stopped native investigations remain unresolved."
+  ],
+  "runtime_evidence": [
+    {
+      "path": "/workspaces/projects/security25/closure-6111/token-source4bd-runtime.log",
+      "sha256": "f39c6854eecb73e61dae80c4630dfd92f5aab59e3ba5f3d43240c488b5d61452"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/token-source4bd-provider-fixture.log",
+      "sha256": "ea3aedcdc0beb9e8baf74c5b05677c3c7d9e445351479acb8c280919e9b9dcf5"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/agent-source4bd-runtime-executable-tmp.log",
+      "sha256": "5f8d9194e559af87d3949fe59f07321fcacbf1e029841266bc8f462bdf5cca0d"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-source4bd-corepack.log",
+      "sha256": "652e9b1ab188fdb0a2b1c229d7136cae163dc8382a0ff96350ba84bee2cbc4af"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-source4bd-boundaries.log",
+      "sha256": "7296ead0a6bf57f10367247d1a659adfdc8669fd8b866cf7d413bd0963bd3cf7"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-source4bd-readonly-stdlib-contract.log",
+      "sha256": "967d46514f00e5a6cba72b780ae591dec43134cb7c201503186bf5668a8a282d"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/gateway-source4bd-startup.log",
+      "sha256": "775684494acec9a81b0e8cb505935bd1b42d0399e30840201bf26ba981e3bfd4"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/gateway-source4bd-stdlib.log",
+      "sha256": "22d87b30f5f15fd27ec20179828b77d16967ff3a5f323b46e9d37b7e0538bf59"
+    }
+  ],
+  "retained_harness_failures": {
+    "agent-source4bd-runtime.log": "Temporary executable on noexec tmpfs; corrected fixture supplies executable private tmpfs.",
+    "worker-source4bd-stdlib-contract.log": "Build apply helper also removes stale bytecode; cannot run on readonly runtime. Corrected check invokes pure hash verifier, then installed tests and contract selfcheck."
+  }
+}

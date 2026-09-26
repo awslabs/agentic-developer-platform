@@ -54,6 +54,11 @@ case "$SHARED_REPO" in
     docker build "${SHARED_BUILD_OPTIONS[@]}" -f agent/Dockerfile -t "$SHARED_IMAGE" .
     ;;
   adp-agent-gateway)
+    # Older immutable source revisions predate this build input. New revisions
+    # must stage from their own archived canonical sources, never the checkout.
+    if grep -Fq 'COPY security/stdlib/' modules/agent-factory/gateway/Dockerfile; then
+      bash modules/agent-factory/scripts/stage-security-bundles.sh
+    fi
     cd modules/agent-factory
     docker build "${SHARED_BUILD_OPTIONS[@]}" -f gateway/Dockerfile -t "$SHARED_IMAGE" .
     ;;

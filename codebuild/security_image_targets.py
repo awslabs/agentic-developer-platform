@@ -38,7 +38,10 @@ BUILD_CONFIG = {
     },
     "modules/agent-factory/agent-worker-image/Dockerfile": {"context": "."},
     "modules/agent-factory/agent/Dockerfile": {"context": "modules/agent-factory"},
-    "modules/agent-factory/gateway/Dockerfile": {"context": "modules/agent-factory"},
+    "modules/agent-factory/gateway/Dockerfile": {
+        "context": "modules/agent-factory",
+        "prepare": [["run", "bash", "modules/agent-factory/scripts/stage-security-bundles.sh"]],
+    },
     "modules/domain-apps/superplane/src/superplane-api/Dockerfile": {
         "prepare": [["run", "bash", "modules/domain-apps/superplane/src/superplane-api/scripts/stage-domain-auth.sh"]],
     },

@@ -47,3 +47,22 @@ This closes the token-refresher fixture gap only. All original #6111 image
 findings remain retained; four-image vulnerability reconciliation, other image
 runtime acceptance, and any publication/rollout are still required. No image
 vulnerability clearance or live acceptance is inferred from this test.
+
+## urllib3 redirect body regression
+
+`urllib3_redirect_runtime.py` runs real HTTP requests against a disposable loopback
+server inside the network-isolated image. Run it with the image's Python before
+the existing provider fixtures. Both PoolManager and HTTPConnectionPool must
+remove the body/content headers when303 changes POST to GET;307 must retain
+method/body, and the caller header dictionary must remain unchanged. Baseline
+AL2023 urllib3 leaks the synthetic body in both303 cases (two failures/four tests).
+
+The build-time backport preserves AL2023 vendor patches and verifies the exact
+source hashes before patching. It follows upstream urllib3 1.26.18's
+CVE-2023-45803 behavior. A changed vendor source fails the build for review.
+The package version remains1.25.10, so raw scanner matches remain; source hashes
+and real boundary tests, not scanner disappearance, establish this repair.
+
+Independent review added repeated non-entity header coverage: final six HTTP tests
+pass alongside all nine token-publication tests. Both303paths preserve repeated
+headers using HTTPHeaderDict copies. No caller-owned header mutation occurs.

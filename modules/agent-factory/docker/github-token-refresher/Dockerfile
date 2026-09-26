@@ -24,6 +24,10 @@ RUN dnf upgrade -y \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
+# Preserve vendor backports while repairing the remaining urllib3 303 body leak.
+COPY security/patch-urllib3.py /tmp/patch-urllib3.py
+RUN python3 /tmp/patch-urllib3.py && rm /tmp/patch-urllib3.py
+
 # Create non-root user
 RUN groupadd -r tokengen && useradd -r -g tokengen -s /sbin/nologin tokengen
 

@@ -51,6 +51,17 @@ RUN apk upgrade --no-cache
 # (the error message mentions SHELL but the real requirement is a bash binary).
 RUN apk add --no-cache dumb-init bash
 
+# Keep the bundled package manager usable while replacing its vulnerable
+# transitive dependencies. npm11 supports this Node22 runtime (>=22.9).
+# Release artifact hash is independently retained in the runner security receipt.
+RUN wget -q https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -O /tmp/npm.tgz \
+    && echo "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483  /tmp/npm.tgz" | sha256sum -c - \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && mkdir -p /usr/local/lib/node_modules/npm \
+    && tar -xzf /tmp/npm.tgz --strip-components=1 -C /usr/local/lib/node_modules/npm \
+    && rm /tmp/npm.tgz \
+    && npm --version
+
 # Create directories with proper ownership
 RUN mkdir -p /app /data /tmp/workspace && \
     chown -R agent:agent /app /data /tmp/workspace

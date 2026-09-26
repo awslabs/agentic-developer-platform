@@ -10,3 +10,6 @@
 !rules/
 !rules/personas/
 !rules/personas/**
+!security/
+!security/stdlib/
+!security/stdlib/**

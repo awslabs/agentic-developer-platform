@@ -1,0 +1,44 @@
+{
+  "issue": 6111,
+  "scope_complete": false,
+  "baseline_source": "66c4d0f9aaf6b897a4d0b52329e3be5847fe49ae",
+  "baseline_image": "security25-closure-factory:worker-66c4d0f9a",
+  "problem": "Corepack prepared pnpm and Yarn only under root HOME. Runtime UID1001 attempts registry requests even for version commands. pnpm12 additionally requires its signed native executable on first invocation.",
+  "repair": "Pin already-tested versions; invoke both during image build with normal signature verification; copy complete prepared cache into runtime HOME with UID1001 ownership.",
+  "prototype_image": "security25-closure-factory:worker-corepack-ready",
+  "validation": "Offline network-none, read-only root, UID1001, no capabilities, writable /work. Both managers install and load actual local dependency, then validate frozen/immutable locks. Yarn writable global folder explicitly under /work. No live auth or provider requests.",
+  "full_source_image_rebuild": "passed at 4bd03f0a3095c8018271cc9d5e3ab8014ce994a6",
+  "scanner_reconciliation": "pending; existing findings retained, including any package occurrences at old paths",
+  "evidence": [
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-final-tooling.log",
+      "sha256": "700ad95866e898314a6eb2091479f73a5a0bff13a27aa96d1215fab34f624c50"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-corepack-runtime.log",
+      "sha256": "c3b7fa753a267a41f9120a39bf5de09d75d33039952391fc658b07b84d445e31"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-corepack-ready-runtime-2.log",
+      "sha256": "ae85e3ab3995d6d245f1b7ad13124f0e6400e6c5fefc29f1cda503d50e28995f"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-corepack-yarn-runtime.log",
+      "sha256": "80fe3c2ae8a69a22e2be2cda97da65972091c074a01847c6b365dd5e20b6cb46"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-corepack-dependency-runtime.log",
+      "sha256": "586004ffd5b60b38fb68afc2febbf8b00aa49d41d2148974eae66a50d9f5a87a"
+    },
+    {
+      "path": "/workspaces/projects/security25/closure-6111/worker-corepack-dependency-negative-runtime.log",
+      "sha256": "116643a8690685e503564c42219a7c4e042de1b8ef0ec3f39867871b17eab5f7"
+    }
+  ],
+  "independent_review": "Context worker reviewed Dockerfile/cache transfer and fixture, requested explicit version and stale-lock negative assertions; both added and pass on prototype.",
+  "final_source_validation": {
+    "source_commit": "4bd03f0a3095c8018271cc9d5e3ab8014ce994a6",
+    "receipt": "factory-source4bd-image-validation.json",
+    "status": "Local full-source build and runtime checks passed; whole-family and live acceptance remain open."
+  }
+}
