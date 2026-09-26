@@ -49,6 +49,7 @@ SUITES = (
     "hosted-coding",
     "hosted-chat",
     "vault-lifecycle",
+    "machine-lifecycle",
     "hierarchy-lifecycle",
     "story-reads",
     "research",
@@ -106,6 +107,7 @@ HOSTED = "hosted"
 HUMAN_TASK_CODING = "human_task_coding"
 HUMAN_TASK_CHAT = "human_task_chat"
 VAULT_LIFECYCLE = "vault_lifecycle"
+MACHINE_LIFECYCLE = "machine_lifecycle"
 HIERARCHY_LIFECYCLE = "hierarchy_lifecycle"
 # #5413: three separately-reachable ADP deployments and a sign-in fixture for
 # each. Deliberately its own class rather than a count on DESTINATION — those are
@@ -449,6 +451,13 @@ LOGIN_CHECKPOINT = Case(
     (EC2, COGNITO),
 )
 DIAGNOSTICS = (
+    Case(
+        "D05",
+        "#5624/#5625",
+        "machine-lifecycle",
+        "Owned canonical principal lifecycle with ordinary access and session review boundary",
+        (EC2, PLATFORM, COGNITO, MACHINE_LIFECYCLE),
+    ),
     Case(
         "D03",
         "#5623/#5622",

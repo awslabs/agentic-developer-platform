@@ -1757,7 +1757,7 @@ def test_every_supported_suite_and_case_can_be_published(tmp_path, suite, status
     assert len(ET.parse(paths["junit"]).findall(".//testcase")) == len(matrix)
 
 
-@pytest.mark.parametrize("diagnostic", ("D01", "D02", "D03", "D04"))
+@pytest.mark.parametrize("diagnostic", ("D01", "D02", "D03", "D04", "D05"))
 def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
     # D04's guarded source is separately reviewed; schema support must land
     # before its harness so completed remote mutations remain reportable.
@@ -1767,7 +1767,7 @@ def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
     assert report.validate(document) == []
 
 
-@pytest.mark.parametrize("invalid_id", ("D00", "D05", "E43", "C02", "diagnostic"))
+@pytest.mark.parametrize("invalid_id", ("D00", "D06", "E43", "C02", "diagnostic"))
 def test_schema_still_rejects_unknown_case_identifiers(invalid_id):
     document = published_report()
     document["cases"][0]["id"] = invalid_id
