@@ -12,7 +12,7 @@ Added tooling:
 
 - **Runtimes:** Node.js 22, Python 3.12
 - **AWS:** AWS CLI v2
-- **IaC:** Terraform 1.14.9
+- **IaC:** Terraform 1.14.9 (ADP security rebuild with Go 1.26.8 and pinned dependencies)
 - **K8s:** kubectl 1.35.9, Helm 3.22.0 (archive checksum verified)
 - **Git/GitHub:** git, gh CLI
 - **Container:** Docker CLI (for ECR login/push; no DinD daemon), Kaniko executor (daemonless image builds)
@@ -55,3 +55,17 @@ Once the new image is serving workflows, remove the per-workflow install steps (
 
 - Keep the pinned runner release within GitHub's supported update window. ARC disables automatic runner updates; an expired pin can register but GitHub rejects its message requests and the pod exits. Verify the runner version, tool checks, and real job execution when updating it.
 - Terraform / kubectl / Helm pins should stay in sync with what the rest of the project uses; check `modules/agent-factory/infra/` Helm releases and cluster Kubernetes version before bumping.
+
+## Terraform security rebuild
+
+The builder checks out the exact Terraform 1.14.9 commit and applies
+`terraform-security-dependencies.patch` to its module files. The runtime/compiler
+and dependency updates address the embedded Go, SSH, NTLM, gRPC and telemetry
+advisories without changing the Terraform release or application source. The
+build uses a digest-pinned Go image, verifies modules, and forbids module-file
+changes during compilation. Upstream licensing and a modification notice ship
+with the binary under `/usr/local/share/licenses/terraform/`.
+
+Refresh the patch from the pinned upstream commit when updating dependencies;
+review the complete resolved graph and run isolated lifecycle and upstream
+compatibility tests before publishing. Runner rollout is a separate operation.
