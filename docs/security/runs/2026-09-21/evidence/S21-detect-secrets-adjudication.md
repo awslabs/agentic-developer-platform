@@ -17,9 +17,9 @@ with no raw candidate values or source-line content published.
 | Exact AWS published example identifier or secret-access-key example | 72 |
 | Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 496 |
-| Derived checksums recomputed from immutable source inputs | 26 |
+| Derived checksums recomputed from immutable source inputs | 36 |
 | Resource references with explicit field/consumer binding | 33 |
-| Pending context review, retained by #6110 | 1009 |
+| Pending context review, retained by #6110 | 999 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -154,3 +154,22 @@ exercise occurred.
 Current verified nonsecret dispositions: **850/1859**, with **1,009** pending
 under #6110. All 3,708 original selector identities and audit joins are retained;
 these eight observations do not establish acceptance of the complete story.
+
+A further **ten** fixture content hashes are independently recomputed from
+strict base64-decoded canonical fixture payloads, with verified byte lengths.
+Seven invalid variants preserve the canonical artifact fields and differ only
+by their explicitly named deliberate mutation plus fixture metadata. Two
+canonical fixtures prove their own payload hashes; one start-frame reference
+matches the complete canonical artifact identity, content type, length and hash.
+A fixture pathname or checksum-shaped value alone supplies no acceptance.
+
+The receipt is `S21-detect-secrets-fixture-payload-review.json`; verifier
+`scripts/security/s21/verify_fixture_payload_digests.py` checks the exact original
+scan index and full private audit join against immutable Git source. Twelve new
+regression tests exercise candidate/payload/context/identity/length mismatches,
+undeclared mutations, original selector misbinding and dirty working copies.
+The complete verifier suite passes 71 tests.
+
+Current verified nonsecret dispositions: **860/1859**, with **999** pending under
+#6110. All 3,708 original identities and audit joins are preserved. The original
+story remains open; no credential was exercised or additional scope accepted.
