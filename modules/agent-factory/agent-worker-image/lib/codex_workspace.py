@@ -282,7 +282,7 @@ class CodexWorkspace:
         self._git("commit", "-m", message)
         return self.state()
 
-    def export_changes(self, *, expected_head):
+    def export_changes(self, *, expected_head, allow_empty=False):
         """Host-only publication manifest from committed objects, never dirty files.
 
         Local and provider commit identities differ. The gateway must check base
@@ -339,7 +339,7 @@ class CodexWorkspace:
                     else base64.b64encode(content).decode(),
                 }
             )
-        if not changes:
+        if not changes and not allow_empty:
             raise WorkspaceError("Publication has no committed changes")
         if self.state() != current:
             raise WorkspaceError("Workspace changed while preparing publication")

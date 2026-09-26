@@ -72,7 +72,7 @@ class TaskAuthorityClient:
         self.session.close()
 
     def post(self, action, body, *, status=200):
-        if action not in {"tool-authorize", "artifact"}:
+        if action not in {"tool-authorize", "artifact", "repository-source"}:
             raise ValueError("Unsupported platform operation")
         url = self.endpoint + "/" + action
         data = json.dumps(body, separators=(",", ":"), allow_nan=False).encode()
@@ -104,8 +104,10 @@ class TaskAuthorityClient:
                         403 if response.status_code in (401, 403, 404) else 503,
                         "Task authority refused operation",
                     )
-                raw = response.raw.read(131073, decode_content=True)
-                if len(raw) > 131072:
+                large_read = action == "repository-source" or (action == "artifact" and body.get("operation") == "read")
+                maximum = 1024 * 1024 if large_read else 131072
+                raw = response.raw.read(maximum + 1, decode_content=True)
+                if len(raw) > maximum:
                     raise HTTPException(503, "Task authority response exceeds bound")
                 return json.loads(raw)
         except HTTPException:
@@ -142,6 +144,15 @@ class TaskAuthorityClient:
             return verified
         except Exception:
             raise HTTPException(503, "Task authority binding unavailable") from None
+
+    def tool_authorize(self, body):
+        """Task source-client port with the same verified identity/scope checks."""
+        if set(body) != {"schema_version", "attempt", "tool"} or body["schema_version"] != "1.0":
+            raise HTTPException(422, "Invalid Task source authorization")
+        return self.authorize(attempt=body["attempt"], tool=body["tool"]).model_dump()
+
+    def repository_source(self, body):
+        return self.post("repository-source", body)
 
     def put_run_artifact(self, *, attempt, content, content_type, digest):
         if digest != hashlib.sha256(content).hexdigest():

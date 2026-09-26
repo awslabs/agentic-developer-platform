@@ -1,0 +1,52 @@
+{
+  "kindVersion": "v0.27.0",
+  "nodeInfo": {
+    "architecture": "amd64",
+    "bootID": "f39752fc-298b-4b5a-8981-2b6bbf45aad7",
+    "containerRuntimeVersion": "containerd://2.0.2",
+    "kernelVersion": "7.0.0-1012-aws",
+    "kubeProxyVersion": "v1.32.2",
+    "kubeletVersion": "v1.32.2",
+    "machineID": "b7cf46a32e464191877471bb75774d0c",
+    "operatingSystem": "linux",
+    "osImage": "Debian GNU/Linux 12 (bookworm)",
+    "systemUUID": "6fc179a7-b255-4f16-8a22-277a0b043648"
+  },
+  "nodeImage": "sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f",
+  "kubeletPodPidsLimit": 128,
+  "calicoManifestSha256": "9382d2b27a76f40c170454b408653e6d71e2205ef0aef069e942bb690e7381d0",
+  "networkControl": {
+    "endpoint": "10.96.0.1:443",
+    "podUid": "603d8cde-7524-46bc-8bfd-b3ad21cd4f07",
+    "exitCode": 0,
+    "imageId": "registry.example/checks@sha256:5c1c5d87388b6885e357c435f1c74703144146aac0d6a0edf3e6fc666f611512"
+  },
+  "fullRepository": {
+    "runtimeSource": {
+      "commit": "c8b874a29bc9b1b995147b7c5b327b3125f70f85",
+      "dirty": false
+    },
+    "fileCount": 7557,
+    "compressedArchiveBytes": 25396245,
+    "allFileContentDigest": "c4cb57e1d5417e6a117e78d7c86a9547d53b546128acf0875fb88c8774ad7485",
+    "result": {
+      "check": "full_source",
+      "commit": "4fb5b1b2af2cd36636f9aa058a790884c9a2cadb",
+      "archiveSha256": "76d76f45312ab8b3e61652be20380e675cfd4a9bc60a5eb22a7136af3b4e2a2f",
+      "specificationDigest": "e114d52274ff4482b23b6d9baad39b0dd0a010e22226c8b0e4ac94538da66218",
+      "environmentDigest": "17946ce7b2fc5c9c1fc95a1ea0d18b6207aa5442f48d186cf3131a760c7a3fc7",
+      "status": "passed",
+      "exitCode": 0,
+      "reason": "completed",
+      "durationSeconds": 13.712,
+      "output": "full-source-verified\n",
+      "executionIdentity": {
+        "backend": "kubernetes",
+        "podUid": "c126a6a2-3e41-4b39-a0df-4ee69c803288"
+      },
+      "tree": "f48103dfad3f233d2ca41aced44c0e2ab95b9da4"
+    },
+    "cleanupConfirmed": true,
+    "totalSeconds": 23.478
+  }
+}

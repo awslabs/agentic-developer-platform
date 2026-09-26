@@ -625,6 +625,12 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 events.append(f"fixture-gateway-error:{action}:{type(error).__name__}:{error}")
                 raise
 
+        def validation_service(self, body):
+            if not hasattr(self, "qualification_validation_service"):
+                from validation_service_fixture import ValidationServiceFixture
+                self.qualification_validation_service = ValidationServiceFixture(self)
+            return self.qualification_validation_service.call(body)
+
         def identity(self, require_attempt=True):
             return runtime.authenticate(
                 credential=self._run_credential, pod=pod, require_attempt=require_attempt
@@ -823,7 +829,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             identity = self.identity()
             require_body_attempt(identity, parsed.attempt)
             return authorize_tool(
-                store, SimpleNamespace(get=lambda **kwargs: policy), identity, parsed.tool
+                store, SimpleNamespace(get=lambda **kwargs: policy), identity, parsed.tool, cleanup=parsed.cleanup
             )
 
         def tool(self, name, body):
@@ -878,6 +884,24 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             }
 
         def gateway_artifact(self, body):
+            if body.get("operation") == "read":
+                from fastapi import FastAPI
+                from httpx import ASGITransport, AsyncClient
+                from src.tasks import http, internal_artifacts
+                monkeypatch.setenv(http.FLAG_WORKER, "true")
+                from src.agentauth import task_runtime_routes
+                from src.agentauth.routes import require_agent_transport
+                monkeypatch.setattr(internal_artifacts, "get_store", lambda: reads)
+                monkeypatch.setattr(task_runtime_routes, "authenticate_task_attempt", AsyncMock(side_effect=lambda request: self.identity()))
+                app = FastAPI()
+                app.dependency_overrides[require_agent_transport] = lambda: None
+                app.include_router(internal_artifacts.router)
+                async def read():
+                    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://fixture") as client:
+                        response = await client.post("/internal/v1/agent/task/artifact", json=body)
+                        assert response.status_code == 200, response.text
+                        return response.json()
+                return asyncio.run(read())
             record = reads.put_run_artifact(
                 attempt=self.identity(),
                 content=base64.b64decode(body["content_base64"]),

@@ -60,18 +60,21 @@ def from_host_configuration(task_id):
 class KubernetesValidationAPI:
     """Pinned host configuration, rotating token file, bounded calls, no retries."""
 
-    def __init__(self, *, endpoint, token_file, ca_file, session=None):
+    def __init__(self, *, endpoint, ca_file, token_file=None, token_provider=None, session=None):
         parsed = urlsplit(endpoint)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username
                 or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
             raise ValueError("Invalid validation API endpoint")
         self.endpoint = endpoint.rstrip("/")
-        self.token_file, self.ca_file = Path(token_file), str(ca_file)
+        if (token_file is None) == (token_provider is None):
+            raise ValueError("Exactly one host credential source is required")
+        self.token_file = Path(token_file) if token_file is not None else None
+        self.token_provider, self.ca_file = token_provider, str(ca_file)
         self.session = session or requests.Session()
         self.session.trust_env = False
 
     def request(self, method, path, *, body=None, params=None, raw=False, maximum=1024 * 1024, timeout_seconds=3):
-        token = self.token_file.read_text().strip()
+        token = self.token_file.read_text().strip() if self.token_file is not None else self.token_provider()
         if not token or len(token) > 16384 or any(c.isspace() for c in token):
             raise ValidationUnavailable("Validation API credential unavailable")
         try:

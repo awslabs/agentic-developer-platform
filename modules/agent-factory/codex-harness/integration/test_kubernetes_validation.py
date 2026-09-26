@@ -130,7 +130,7 @@ const attempts=Array.from({length:140},()=>new Promise(resolve=>{
 }));
 Promise.all(attempts).then(()=>{
   for(const child of children)child.kill('SIGKILL');
-  if(refused===0 || started>128)process.exitCode=1;
+  if(refused===0 || started<100 || started>128)process.exitCode=1;
   else console.log('process-limit-enforced');
 });
 """

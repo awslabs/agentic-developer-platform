@@ -7,7 +7,7 @@ import hashlib
 import re
 
 from lib.codex_workspace import CodexWorkspace
-from lib.task_run_client import TaskRunClientError
+from lib.task_errors import TaskRunClientError
 
 CHUNK_BYTES = 512 * 1024
 MAX_BYTES = 32 * 1024 * 1024

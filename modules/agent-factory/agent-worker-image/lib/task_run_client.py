@@ -21,6 +21,7 @@ import requests
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from lib.run_identity import CONTROL_ENDPOINT_ENV, WORKLOAD_HEADER, read_workload_token
+from lib.task_errors import TaskRunClientError
 
 CYBER_TOOLS_ENDPOINT_ENV = "ADP_CYBER_TOOLS_ENDPOINT"
 RUN_CREDENTIAL_HEADER = "X-Adp-Run-Credential"
@@ -46,10 +47,6 @@ _ACTIONS = frozenset(
         "settlement",
     }
 )
-
-
-class TaskRunClientError(Exception):
-    """A task-scoped operation was unavailable or refused."""
 
 
 class TaskRunClientUnavailable(TaskRunClientError):
@@ -117,6 +114,7 @@ class TaskRunClient:
         self._workspace_tools = None
         self._validation_tool = None
         self._host_validation_executor = None
+        self._validation_attempt = None
         self._validation_backend = os.environ.get("ADP_CODEX_VALIDATION_BACKEND", "docker-local")
         self._publication_tool = None
         self._traceparent = None
@@ -307,7 +305,13 @@ class TaskRunClient:
             self._bootstrap(self._bootstrap_body, renewal=True)
 
     def attempt(self, body: dict) -> dict:
-        return self._post("attempt", body, run_bound=True)
+        receipt = self._post("attempt", body, run_bound=True)
+        if (receipt.get("schema_version") == "1.0" and receipt.get("operation_status") == "confirmed"
+                and receipt.get("request_id") == body.get("runtime_attempt_id")
+                and all(key in body for key in ["task_id", "invocation_id", "generation", "runtime_attempt_id"])):
+            self._validation_attempt = {"run": {key: body[key] for key in ["task_id", "invocation_id", "generation"]},
+                                        "runtime_attempt_id": body["runtime_attempt_id"]}
+        return receipt
 
     def report(self, body: dict) -> dict:
         return self._post("report", body, run_bound=True)
@@ -348,6 +352,13 @@ class TaskRunClient:
     def _hosted_validation(self):
         if self._validation_backend == "docker-local":
             return None
+        if self._validation_backend == "service":
+            if self._validation_attempt is None:
+                raise TaskRunClientError("Validation service attempt unavailable")
+            if self._host_validation_executor is None:
+                from lib.codex_service_validation import ServiceValidationExecutor
+                self._host_validation_executor = ServiceValidationExecutor(client=self, attempt=self._validation_attempt)
+            return self._host_validation_executor
         if self._validation_backend != "kubernetes" or self._binding is None:
             raise TaskRunClientError("Host validation backend unavailable")
         if self._host_validation_executor is None:
@@ -375,12 +386,16 @@ class TaskRunClient:
                     or source.get("repository") != workspace.repository
                     or source.get("repository_id") != workspace.repository_id):
                 raise TaskRunClientError("Validation workspace authority differs")
+            self._validation_attempt = copy.deepcopy(attempt)
             executor = self._hosted_validation()
+            if self._validation_backend == "service":
+                executor.workspace = workspace
             if executor is not None:
                 # Resolve deployment availability and prior-work cleanup before
                 # starting the SDK, never after model work has already begun.
                 executor._boundary()
-                executor.recover()
+                if self._validation_backend != "service":
+                    executor.recover()
                 if any("@sha256:" not in check.get("image", "") for check in source.get("validation_checks", [])):
                     raise TaskRunClientError("Hosted validation requires registry-qualified checks")
             validation_tool = TaskValidationTool(self, {
@@ -430,6 +445,20 @@ class TaskRunClient:
             valid = False
         if not valid:
             raise TaskRunClientError("Tool endpoint unavailable")
+        return self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
+
+    def validation_service(self, body: dict) -> dict:
+        endpoint = os.environ.get("ADP_CODEX_VALIDATION_SERVICE_ENDPOINT", "")
+        try:
+            parsed = urlparse(endpoint)
+            valid = (parsed.scheme == "https" and parsed.hostname and not parsed.username
+                     and not parsed.password and parsed.port in (None, 443)
+                     and "?" not in endpoint and "#" not in endpoint
+                     and re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*/tools/validation", parsed.path))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise TaskRunClientError("Validation service endpoint unavailable")
         return self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
 
     def cyber(self, body: dict) -> dict:

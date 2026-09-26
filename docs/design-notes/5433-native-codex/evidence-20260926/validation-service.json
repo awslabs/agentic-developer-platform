@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "qualification": "local-only",
+  "date": "2026-09-26",
+  "base_source": "c8b874a29bc9b1b995147b7c5b327b3125f70f85",
+  "worker_service_tests": {
+    "passed": 143
+  },
+  "gateway_artifact_tests": {
+    "passed": 24
+  },
+  "terraform_tests": {
+    "passed": 3
+  },
+  "real_kubernetes": {
+    "passed": 7,
+    "duration_seconds": 33.31,
+    "cluster": "kind v0.27.0 / Kubernetes v1.32.2 / Calico v3.30.3",
+    "pod_pids_limit": 128
+  },
+  "sdk_service_kubernetes_completion": {
+    "passed": 1,
+    "duration_seconds": 12.97,
+    "sdk": "0.155.1",
+    "inference": "fixture",
+    "provider": "fixture",
+    "ledger": "Moto",
+    "validation": "actual Kubernetes Pod",
+    "transport": "local HTTP/IAM and Lambda delivery seam",
+    "otel": "actual HTTP collector"
+  },
+  "image_import": "passed under non-root, read-only root, network disabled",
+  "production_task_admission_qualified": false,
+  "deployed": false
+}

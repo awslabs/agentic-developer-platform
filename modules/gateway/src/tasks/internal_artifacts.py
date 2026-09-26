@@ -1,4 +1,4 @@
-"""Run-authorized input reads and immutable result uploads on the fixed artifact route."""
+"""Run-authorized attached artifact reads and immutable result uploads on the fixed artifact route."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ async def artifact(request: Request):
                 raise errors.invalid_request("Artifact identifier must be a string.")
             task = store.repository.read_task(attempt.task_id)
             record = store.load_artifact(artifact_id=body["artifact_id"])
-            if not task or body["artifact_id"] not in task.get("artifact_ids", []):
+            if not task or body["artifact_id"] not in (task.get("artifact_ids", []) + task.get("result_artifact_ids", [])):
                 raise errors.not_found()
             if (
                 record is None
@@ -67,7 +67,7 @@ async def artifact(request: Request):
             ):
                 raise errors.not_found()
             if record.content_length > 262144:
-                raise errors.payload_too_large("Stored input exceeds its fixed per-artifact limit.")
+                raise errors.payload_too_large("Stored artifact exceeds its fixed per-artifact limit.")
             content = store.read_artifact(record=record)
             # Recheck live workload, credential and policy after the object read.
             await authenticate_task_attempt(request)

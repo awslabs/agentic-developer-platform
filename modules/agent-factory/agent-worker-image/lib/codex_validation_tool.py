@@ -69,7 +69,8 @@ class TaskValidationTool:
             return False
         if not self._termination_confirmed:
             from lib.codex_kubernetes_validation import KubernetesValidationExecutor
-            if isinstance(self.executor, KubernetesValidationExecutor):
+            from lib.codex_service_validation import ServiceValidationExecutor
+            if isinstance(self.executor, (KubernetesValidationExecutor, ServiceValidationExecutor)):
                 try:
                     self._termination_confirmed = self.executor.recover()
                 except Exception:
