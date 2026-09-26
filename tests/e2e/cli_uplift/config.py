@@ -156,6 +156,7 @@ DEFAULTS = {
     # launch call with a bare KeyError -- preflight verifies the name exists.
     "instance_profile": "adp-cli-uplift-eval-instance",
     "instance_type": "t3.small",
+    "instance_security_group_id": "",
 }
 
 
@@ -301,6 +302,13 @@ def validate(config):
         require(
             str(result[key]).startswith("https://"), f"{key} must be an HTTPS endpoint"
         )
+
+    group = result.get("instance_security_group_id")
+    require(
+        not group
+        or (isinstance(group, str) and re.fullmatch(r"sg-[0-9a-f]{8,17}", group)),
+        "instance_security_group_id must be a security group ID",
+    )
 
     for key in ("instance_profile", "instance_type"):
         require(
@@ -606,6 +614,7 @@ EXAMPLE_PATH = Path(__file__).resolve().parent / "config.example.json"
 # env var -> config key. A dotted key lands inside `github`.
 OVERLAY = {
     "CLI_UPLIFT_EVAL_INSTANCE_PROFILE": "instance_profile",
+    "CLI_UPLIFT_EVAL_SECURITY_GROUP_ID": "instance_security_group_id",
     "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "expected_revision",
     "CLI_UPLIFT_EVAL_GITHUB_ORG": "github.org",
     "CLI_UPLIFT_EVAL_GITHUB_REPO": "github.repo",
