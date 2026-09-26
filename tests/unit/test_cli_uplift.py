@@ -13410,8 +13410,9 @@ def test_coding_agent_cancel_must_bind_initial_task_and_replayed_receipt(
 
 
 @pytest.mark.parametrize("fault", [None, "login", "owner", "tenant", "membership"])
+@pytest.mark.parametrize("selected_run", [False, True])
 def test_usage_tenant_fixture_checks_identity_before_exports(
-    tmp_path, monkeypatch, fault
+    tmp_path, monkeypatch, fault, selected_run
 ):
     script, common = shipped_script(tmp_path, "story_reads")
     cfg = {
@@ -13428,6 +13429,8 @@ def test_usage_tenant_fixture_checks_identity_before_exports(
             "tenant_id": "selected",
         },
     }
+    if selected_run:
+        cfg["usage_tenant"]["usage_run_id"] = "57e3ed64-0794-4df0-828f-565479f9ddac"
     if fault == "login":
         cfg["test_user_id"] = "wrong"
     monkeypatch.setattr(common, "load_session", lambda _: {"org_id": "native"})
@@ -13466,6 +13469,7 @@ def test_usage_tenant_fixture_checks_identity_before_exports(
         assert observed == [["models", "mappings", "list"], "exports"]
         assert evidence["tenant_selection"] == "verified_existing_membership_fixture"
         assert evidence["usage_owner"] == {"org_id": "selected", "user_id": "owner"}
+        assert evidence.get("usage_run_id") == cfg["usage_tenant"].get("usage_run_id")
     assert cfg["org_id"] == "native"
 
 
@@ -13505,3 +13509,87 @@ def test_usage_verified_owner_refuses_scope_drift(tmp_path, scope):
             {"scope": scope},
             {"usage_owner": {"org_id": "selected", "user_id": "owner"}},
         )
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "57e3ed64-0794-4df0-828f-565479f9ddac",
+        "",
+        "not-a-uuid",
+        "tsk_123",
+        "57E3ED64-0794-4DF0-828F-565479F9DDAC",
+        None,
+    ],
+)
+def test_usage_run_fixture_requires_exact_invocation_uuid(run_id):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    fixture = {
+        "login_user_id": "login",
+        "canonical_user_id": "owner",
+        "tenant_id": "tenant",
+        "usage_run_id": run_id,
+    }
+    if run_id == "57e3ed64-0794-4df0-828f-565479f9ddac":
+        assert parse(json.dumps({"usage_tenant": fixture}))["usage_tenant"] == fixture
+    else:
+        with pytest.raises(config.ConfigError):
+            parse(json.dumps({"usage_tenant": fixture}))
+
+
+@pytest.mark.parametrize("fault", [None, "coverage", "request_row", "export_row"])
+def test_usage_run_filters_every_read_and_refuses_unrelated_rows(
+    tmp_path, monkeypatch, fault
+):
+    script, common = shipped_script(tmp_path, "story_reads")
+    monkeypatch.setitem(script.require_selected_run.__globals__, "common", common)
+    run = "57e3ed64-0794-4df0-828f-565479f9ddac"
+    calls = []
+
+    def reply(args, export=False):
+        calls.append(args)
+        assert args[args.index("--run") + 1] == run
+        row = args[:2] in (["usage", "requests"], ["logs", "list"], ["logs", "export"])
+        wrong = (export and fault == "export_row") or (
+            not export and fault == "request_row"
+        )
+        return {
+            "status": "ok",
+            "detail": {
+                "scope": {
+                    "kind": "own",
+                    "org_id": "tenant",
+                    "user_id": "owner",
+                    "coverage": "direct_identity_records"
+                    if fault == "coverage"
+                    else "selected_run",
+                },
+                "items": [{"invocation_id": "other" if wrong else run}]
+                if row
+                else [{"count": 1}],
+                "complete": True,
+            },
+        }
+
+    cli = Mock()
+    cli.json.side_effect = reply
+    cli.run.side_effect = lambda args, **kwargs: (0, reply(args, export=True))
+    serialized = []
+    monkeypatch.setattr(
+        script,
+        "exercise_usage_exports",
+        lambda cli, flags, evidence: serialized.append(flags),
+    )
+    evidence = {
+        "usage_run_id": run,
+        "usage_owner": {"org_id": "tenant", "user_id": "owner"},
+    }
+    if fault:
+        with pytest.raises(common.RemoteError):
+            script.usage(cli, evidence)
+        assert not serialized
+    else:
+        script.usage(cli, evidence)
+        assert len(calls) == 6
+        assert serialized[0][serialized[0].index("--run") + 1] == run

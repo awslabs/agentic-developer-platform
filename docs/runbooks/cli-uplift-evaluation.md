@@ -469,7 +469,7 @@ not access-request approval, token revocation, or provider delivery. Access
 requests still need an independently verified GitHub actor fixture.
 
 E21 (`login,usage-exports`) optionally accepts `fixtures_json.usage_tenant` with
-exactly `login_user_id`, `canonical_user_id`, and `tenant_id`, identifying an
+required `login_user_id`, `canonical_user_id`, and `tenant_id`, identifying an
 existing login and workspace membership. This read-only fixture selects the
 existing membership through `ADP_TENANT` in the isolated CLI process, then verifies
 canonical owner and tenant through `models mappings list` before reading usage.
@@ -479,3 +479,12 @@ credential, or shared configuration is changed. Without the fixture E21 keeps
 its verified native tenant. CSV/NDJSON still read at most two one-record pages per
 format; evidence reports counts and continuation, never the private records.
 Populated exports do not establish complete accounting or late settlement.
+
+The same `usage_tenant` object optionally accepts `usage_run_id`, an exact
+lowercase invocation UUID for an existing owned Activity/Task. E21 passes it as
+`--run` to every read/export, requires `selected_run` coverage, and checks every
+request/export record's public `invocation_id` (the serialized `agent_run_id`).
+A missing/foreign invocation fails through the existing gateway authorization;
+there is no fallback to broad usage. Omit the field to retain ordinary own-usage
+coverage. The fixture dispatches no Task or inference. Empty or incomplete
+pages still cannot establish complete run accounting.

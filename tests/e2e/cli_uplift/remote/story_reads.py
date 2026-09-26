@@ -16,6 +16,7 @@ from pathlib import Path
 import common
 from capability_contrast import _write_session
 from usage_exports import exercise as exercise_usage_exports
+from usage_exports import require_selected_run
 
 
 def detail(envelope):
@@ -67,6 +68,8 @@ def usage(cli, evidence):
         "--end",
         end.isoformat(),
     ]
+    if evidence.get("usage_run_id"):
+        flags.extend(["--run", evidence["usage_run_id"]])
     forms = [
         ["usage", "summary"],
         ["usage", "timeline"],
@@ -77,6 +80,13 @@ def usage(cli, evidence):
     for command in forms:
         result = detail(cli.json([*command, *flags]))
         require_usage_owner(result, evidence)
+        require_selected_run(
+            result.get("scope", {}),
+            result.get("items")
+            if command in (["usage", "requests"], ["logs", "list"])
+            else None,
+            evidence,
+        )
         common.require(
             result.get("scope", {}).get("kind") == "own"
             and isinstance(result.get("items"), list),
@@ -91,6 +101,7 @@ def usage(cli, evidence):
     common.require(isinstance(envelope, dict), "Export lacks JSON output")
     exported = envelope.get("detail") or {}
     require_usage_owner(exported, evidence)
+    require_selected_run(exported.get("scope", {}), exported.get("items"), evidence)
     complete = exported.get("complete")
     common.require(type(complete) is bool, "Export completeness is missing")
     common.require(
@@ -771,17 +782,27 @@ def execute(config, evidence):
     if fixture:
         common.require(
             isinstance(fixture, dict)
-            and set(fixture) == {"login_user_id", "canonical_user_id", "tenant_id"}
+            and {"login_user_id", "canonical_user_id", "tenant_id"} <= set(fixture)
+            and set(fixture)
+            <= {"login_user_id", "canonical_user_id", "tenant_id", "usage_run_id"}
             and all(
                 isinstance(value, str) and value.strip() for value in fixture.values()
             ),
-            "Usage tenant requires exactly three explicit fixture identities",
+            "Usage tenant requires three explicit identities and optional usage_run_id",
         )
         common.require(
             config.get("test_user_id") == fixture["login_user_id"],
             "Usage tenant login identity mismatch",
         )
         tenant = fixture["tenant_id"]
+        if "usage_run_id" in fixture:
+            try:
+                valid_run = (
+                    str(uuid.UUID(fixture["usage_run_id"])) == fixture["usage_run_id"]
+                )
+            except (ValueError, TypeError, AttributeError):
+                valid_run = False
+            common.require(valid_run, "Usage run requires an exact invocation UUID")
     with tempfile.TemporaryDirectory(prefix="adp-story-reads-") as directory:
         home = Path(directory)
         os.chmod(home, 0o700)
@@ -809,6 +830,8 @@ def execute(config, evidence):
                 "Usage tenant canonical owner or membership mismatch",
             )
             evidence["tenant_selection"] = "verified_existing_membership_fixture"
+            if "usage_run_id" in fixture:
+                evidence["usage_run_id"] = fixture["usage_run_id"]
             evidence["usage_owner"] = {
                 "org_id": tenant,
                 "user_id": fixture["canonical_user_id"],

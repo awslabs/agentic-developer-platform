@@ -149,6 +149,23 @@ def parse(mode, code, out, err):
         ) from None
 
 
+def require_selected_run(scope, rows, evidence):
+    run_id = evidence.get("usage_run_id")
+    if run_id:
+        common.require(
+            scope.get("coverage") == "selected_run",
+            "Usage run filter lacks selected_run coverage",
+        )
+        if rows is not None:
+            common.require(
+                all(
+                    isinstance(row, dict) and row.get("invocation_id") == run_id
+                    for row in rows
+                ),
+                "Usage run filter returned a different invocation",
+            )
+
+
 def exercise(cli, flags, evidence):
     formats = {}
     for mode in ("ndjson", "csv"):
@@ -173,6 +190,7 @@ def exercise(cli, flags, evidence):
             cli.transcript.append(common.sanitize(argv))
             code, out, err = common.bounded(argv, env=cli.env, timeout=cli.timeout)
             rows, meta = parse(mode, code, out, err)
+            require_selected_run(meta["scope"], rows, evidence)
             try:
                 same_window = all(
                     datetime.fromisoformat(meta[key].replace("Z", "+00:00"))
