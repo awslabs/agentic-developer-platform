@@ -65,7 +65,16 @@ class TaskValidationTool:
             raise TaskRunClientError("Validation repository or check policy changed")
 
     def wait_stopped(self, timeout):
-        return self._finished.wait(timeout) and self._termination_confirmed
+        if not self._finished.wait(timeout):
+            return False
+        if not self._termination_confirmed:
+            from lib.codex_kubernetes_validation import KubernetesValidationExecutor
+            if isinstance(self.executor, KubernetesValidationExecutor):
+                try:
+                    self._termination_confirmed = self.executor.recover()
+                except Exception:
+                    return False
+        return self._termination_confirmed
 
     def invoke(self, body):
         if not self._execution_lock.acquire(blocking=False):

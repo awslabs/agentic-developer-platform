@@ -113,6 +113,23 @@ def test_bootstrap_has_only_workload_proof_run_calls_add_opaque_credential(trans
     assert all(call[2] is False and call[1]["allow_redirects"] is False for call in calls)
 
 
+def test_replacement_host_cannot_finalize_with_unknown_validation_work(transport, monkeypatch):
+    run = client.TaskRunClient()
+    executor = Mock()
+    executor.recover.side_effect = RuntimeError("unknown Pod termination")
+    monkeypatch.setattr(run, "_hosted_validation", lambda: executor)
+    posted = Mock()
+    monkeypatch.setattr(run, "_post", posted)
+    with pytest.raises(client.TaskRunClientUnavailable, match="termination"):
+        run.finalize({"outcome": "completed"})
+    posted.assert_not_called()
+    # No bound workspace or in-memory validation handler on this replacement.
+    run.settlement({"stop_evidence": {"child_exit_confirmed": True, "workload_terminated": True}})
+    assert posted.call_args.args[1]["stop_evidence"] == {
+        "child_exit_confirmed": False, "workload_terminated": False,
+    }
+
+
 @pytest.mark.parametrize(("action", "body", "status", "accepted"), [
     ("artifact", {"content_base64": "eA=="}, 201, True),
     ("artifact", {"operation": "read"}, 200, True),

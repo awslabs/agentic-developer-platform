@@ -23,6 +23,10 @@ import rfc8785
 
 from lib.codex_source_limits import MAX_SOURCE_BYTES, MAX_SOURCE_ENTRIES, MAX_VALIDATION_ARCHIVE_BYTES
 
+# Local Docker IDs remain valid for fixture qualification. Hosted execution
+# requires the registry-qualified form; neither form admits mutable tags.
+IMMUTABLE_IMAGE_PATTERN = r"(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[1-9][0-9]{0,4})?/(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*@)?sha256:[a-f0-9]{64}"
+
 
 @dataclass(frozen=True)
 class ValidationCheck:
@@ -37,7 +41,8 @@ class ValidationCheck:
     def document(self):
         if (
             not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", self.name)
-            or not re.fullmatch(r"sha256:[a-f0-9]{64}", self.image)
+            or len(self.image) > 512
+            or not re.fullmatch(IMMUTABLE_IMAGE_PATTERN, self.image)
             or not isinstance(self.argv, tuple)
             or not 1 <= len(self.argv) <= 64
             or any(
@@ -78,9 +83,8 @@ class ValidationCancelled(ValidationUnavailable):
     """Cancellation observed before any container process started."""
 
 
-class DockerValidationExecutor:
-    def __init__(self, docker="/usr/bin/docker"):
-        self.docker = docker
+class RepositoryValidationExecutor:
+    """Export the exact clean source commit for an isolated host backend."""
 
     def run_repository(self, *, check: ValidationCheck, repository: Path, expected_head: str, cancelled=None):
         """Validate an immutable commit from a trusted host-owned checkout.
@@ -181,6 +185,10 @@ class DockerValidationExecutor:
             ):
                 result.update(status="failed", reason="source_changed")
             return result
+
+class DockerValidationExecutor(RepositoryValidationExecutor):
+    def __init__(self, docker="/usr/bin/docker"):
+        self.docker = docker
 
     def run(self, *, check: ValidationCheck, archive: Path, archive_sha256: str, commit: str, cancelled=None):
         if cancelled is not None and cancelled.is_set():

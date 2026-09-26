@@ -3,6 +3,49 @@ mock_provider "kubernetes" {}
 mock_provider "helm" {}
 mock_provider "tls" {}
 
+run "codex_validation_is_off_by_default" {
+  command = plan
+  assert {
+    condition     = length(kubernetes_namespace.codex_validation) == 0 && length(kubernetes_service_account.codex_validation_host) == 0
+    error_message = "Validation must not provision resources or grant credentials by default."
+  }
+}
+
+run "codex_validation_uses_a_dedicated_identity" {
+  command = plan
+  variables {
+    codex_kubernetes_validation_enabled = true
+    codex_validation_api_cidrs          = ["10.0.0.20/32"]
+    task_api_worker_enabled             = true
+  }
+  assert {
+    condition = (
+      one(kubernetes_role_binding.codex_validation[0].subject).name == "validation-host" &&
+      one(kubernetes_role_binding.codex_validation[0].subject).namespace == "adp-codex-validation-hosts" &&
+      local.agent_worker_sa_name != "validation-host" &&
+      !strcontains(local.agent_authority_env_block, "ADP_CODEX_VALIDATION_BACKEND")
+    )
+    error_message = "Validation API access must not be assigned to the shared worker fleet."
+  }
+  assert {
+    condition = (
+      kubernetes_namespace.codex_validation[0].metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted" &&
+      length(kubernetes_network_policy.codex_validation_deny[0].spec[0].egress) == 0 &&
+      length(kubernetes_network_policy.codex_validation_deny[0].spec[0].ingress) == 0 &&
+      kubernetes_resource_quota.codex_validation[0].spec[0].hard["pods"] == "8"
+    )
+    error_message = "Validation must retain restricted Pods, deny all network traffic and bound resource creation."
+  }
+}
+
+run "codex_validation_refuses_subnet_api_access" {
+  command = plan
+  variables {
+    codex_validation_api_cidrs = ["10.0.0.0/8"]
+  }
+  expect_failures = [var.codex_validation_api_cidrs]
+}
+
 variables {
   # Enabling authority requires an approved immutable worker digest; the variable
   # validation rejects tags, so a plausible digest is supplied rather than "".

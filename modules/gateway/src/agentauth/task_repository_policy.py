@@ -21,7 +21,10 @@ class TaskRepositoryPolicyError(ValueError):
 class TaskValidationCheck(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     name: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
-    image: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    image: str = Field(max_length=512, pattern=(
+        r"^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[1-9][0-9]{0,4})?/"
+        r"(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*@)?sha256:[a-f0-9]{64}$"
+    ))
     argv: list[str] = Field(min_length=1, max_length=64)
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
     memory_mb: int = Field(default=512, ge=64, le=8192)

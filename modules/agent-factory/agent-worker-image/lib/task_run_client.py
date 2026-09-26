@@ -116,6 +116,8 @@ class TaskRunClient:
         self._local_tools = {}
         self._workspace_tools = None
         self._validation_tool = None
+        self._host_validation_executor = None
+        self._validation_backend = os.environ.get("ADP_CODEX_VALIDATION_BACKEND", "docker-local")
         self._publication_tool = None
         self._traceparent = None
         self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
@@ -343,6 +345,16 @@ class TaskRunClient:
         # Trusted host only. Owner tokens must not be included in child frames.
         return self._post("tool-operation", body, run_bound=True)
 
+    def _hosted_validation(self):
+        if self._validation_backend == "docker-local":
+            return None
+        if self._validation_backend != "kubernetes" or self._binding is None:
+            raise TaskRunClientError("Host validation backend unavailable")
+        if self._host_validation_executor is None:
+            from lib.codex_kubernetes_validation import from_host_configuration
+            self._host_validation_executor = from_host_configuration(self._binding["task_id"])
+        return self._host_validation_executor
+
     def bind_workspace(self, *, attempt, workspace, tools):
         from lib.codex_workspace_tools import WorkspaceTools
         if self._workspace_tools is not None:
@@ -363,11 +375,19 @@ class TaskRunClient:
                     or source.get("repository") != workspace.repository
                     or source.get("repository_id") != workspace.repository_id):
                 raise TaskRunClientError("Validation workspace authority differs")
+            executor = self._hosted_validation()
+            if executor is not None:
+                # Resolve deployment availability and prior-work cleanup before
+                # starting the SDK, never after model work has already begun.
+                executor._boundary()
+                executor.recover()
+                if any("@sha256:" not in check.get("image", "") for check in source.get("validation_checks", [])):
+                    raise TaskRunClientError("Hosted validation requires registry-qualified checks")
             validation_tool = TaskValidationTool(self, {
                 "schema_version": "1.0", "attempt": attempt,
                 "repository_path": str(workspace.root), "repository_binding": binding,
                 "checks": source.get("validation_checks", []),
-            })
+            }, executor=executor)
         publication_tool = None
         if "change.create" in tools:
             from lib.codex_publication_tool import PREREQUISITES, TaskPublicationTool
@@ -456,10 +476,19 @@ class TaskRunClient:
                 self.validation_stop_event.set()
             handlers = [self._validation_tool, *self._local_tools.values()]
         deadline = time.monotonic() + (10 if cancel else 0)
-        return all(
+        local_stopped = all(
             handler.wait_stopped(max(0, deadline - time.monotonic()))
             for handler in handlers if isinstance(handler, TaskValidationTool)
         )
+        if not local_stopped:
+            return False
+        try:
+            # Even a replacement host with no bound workspace must inspect the
+            # persistent inventory before claiming all Task work has stopped.
+            executor = self._hosted_validation()
+            return executor is None or executor.recover()
+        except Exception:
+            return False
 
     def finalize(self, body: dict) -> dict:
         if not self._validation_stopped(cancel=body.get("outcome") != "completed"):
@@ -488,6 +517,7 @@ class TaskRunClient:
             self.validation_stop_event.set()
             self._workspace_tools = None
             self._validation_tool = None
+            self._host_validation_executor = None
             self._publication_tool = None
             self._traceparent = None
             self._local_tools.clear()
