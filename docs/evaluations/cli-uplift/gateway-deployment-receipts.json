@@ -156,6 +156,17 @@
         "build_log_group": "/aws/codebuild/adp-dev-gateway-build",
         "build_log_stream": "beba7c18-17a4-479f-a1e9-608432f481d5",
         "image_tag": "8cfd14826112915ee984ebf3b38d2c0a65bedb4c"
+      },
+      "sha256:5ca2b38120c45445c0a12d898819a5922db94bcc0f81604478dac9b523588d58": {
+        "source_sha": "e93e592c7da5aa31cc3e882a7441815c547dd700",
+        "build_id": "adp-dev-gateway-build:de39d1c8-7bf4-47e2-b746-24fea0f39992",
+        "source_bucket": "adp-terraform-state-879318057152",
+        "source_key": "codebuild/src/adp-dev-gateway-build/e93e592c7da5aa31cc3e882a7441815c547dd700-1790396865-3663670.zip",
+        "source_archive_sha256": "b897c2999a065facebce62ca969204427081a677a1a0be2e88a92ab58d6b6844",
+        "build_status": "SUCCEEDED",
+        "build_log_group": "/aws/codebuild/adp-dev-gateway-build",
+        "build_log_stream": "de39d1c8-7bf4-47e2-b746-24fea0f39992",
+        "image_tag": "e93e592c7da5aa31cc3e882a7441815c547dd700"
       }
     }
   }
