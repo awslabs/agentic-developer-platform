@@ -812,6 +812,8 @@ JOURNEY_DRIVERS = {
     "E36": "story_ratelimit",
 
     "E35": "story_person_budget",
+
+    "E38": "story_model_policy",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

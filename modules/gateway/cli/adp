@@ -52,7 +52,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -1760,6 +1760,9 @@ Run GPU workloads (uses the same sign-in — no second token to manage):
                             Resolve a submission whose reply was lost
 
 Configure agent persona models:
+    admin models default show|set  Evidence-backed platform model defaults
+    admin models posture show|set|rollback  Audited version-bound runtime policy
+    models costs          Persona/model costs, --service-principal for managed scope
     models catalog --persona KEY
     models mappings list|set|reset
     models explain --persona KEY

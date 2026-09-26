@@ -169,6 +169,8 @@ async def set_runtime_posture(
     actor_id: str,
     actor_kind: str = "platform_admin",
     reason: str | None = None,
+    rollback_revision: int | None = None,
+    rollback_audit_id: str | None = None,
 ) -> PersonaModelPolicySetting:
     """Change the posture for one compatibility class, atomically and audited.
 
@@ -240,6 +242,7 @@ async def set_runtime_posture(
                 "actor_kind": actor_kind,
                 "subject_key": compatibility_class,
                 "change_reason": reason,
+                **({"rollback_revision": rollback_revision, "rollback_audit_id": rollback_audit_id} if rollback_revision is not None else {}),
             },
         )
     )

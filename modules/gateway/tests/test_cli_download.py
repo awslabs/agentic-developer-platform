@@ -112,6 +112,7 @@ class TestCliScriptDownload:
             # point of the story, so publishing it exposes nothing.
             "adp-superplane.py",
             "adp-models.py",
+            "adp-model-policy.py",
             # Issue #5331: `adp flow`. Same property — it reads the session
             # `adp login` already wrote and adds no credential store of its own,
             # so serving it publicly exposes nothing. Added in the PR that ships

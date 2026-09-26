@@ -382,7 +382,47 @@ def person_budget(cli, evidence):
     )
 
 
+def model_policy(cli, evidence):
+    persona = "architect"
+    catalog = detail(cli.json(["models", "catalog", "--persona", persona]))
+    common.require(
+        catalog.get("persona_key") == persona
+        and isinstance(catalog.get("models"), list),
+        "Malformed model catalogue",
+    )
+    costs = detail(cli.json(["models", "costs", "--persona", persona]))
+    common.require(
+        costs.get("tenant_id") == catalog.get("tenant_id"),
+        "Cost/catalog tenant mismatch",
+    )
+    common.require(
+        costs.get("selected_persona") == persona
+        and isinstance(costs.get("entries"), list),
+        "Malformed persona costs",
+    )
+    common.require(
+        costs.get("status")
+        in {"known", "none_incurred", "estimated", "partial", "unknown"},
+        "Cost certainty missing",
+    )
+    common.require(
+        costs.get("aggregate_scope") == "all_personas_for_selected_owner_and_chain",
+        "Filtered costs relabelled aggregate",
+    )
+    evidence.update(
+        persona=persona,
+        cost_status=costs["status"],
+        live_holds=[
+            "platform-default-change",
+            "posture-rollback",
+            "concurrent-live-replay",
+            "local-hosted-model-decision-and-restore",
+        ],
+    )
+
+
 SCENARIOS = {
+    'model_policy': model_policy,
     'person_budget': person_budget,
     'ratelimit': ratelimit,
     "capabilities": capabilities,

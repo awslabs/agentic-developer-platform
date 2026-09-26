@@ -148,6 +148,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-github.py", ["adp", "github"]),
         ("adp-superplane.py", ["adp", "superplane"]),
         ("adp-models.py", ["adp", "models"]),
+        ("adp-model-policy.py", ["adp", "admin", "models"]),
         ("adp-flow.py", ["adp", "flow"]),
         ("adp-task.py", ["adp", "task"]),
         ("adp-tenant.py", ["adp", "tenant"]),
@@ -186,6 +187,8 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         admin.pop("adp admin " + area)
     admin.pop("adp admin budget")
     admin.pop("adp admin ratelimit")
+
+    admin.pop("adp admin models")
     actual.update(admin)
     actual.update(parser_leaves("adp-bedrock.py", ["adp", "admin", "bedrock"]))
     actual.update(parser_leaves("adp-github-admin.py", ["adp", "admin", "github"]))

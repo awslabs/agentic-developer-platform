@@ -8452,6 +8452,8 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E36",
 
         "E35",
+
+        "E38",
     }
 
 
@@ -10252,6 +10254,8 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E29",
 
         "E35",
+
+        "E38",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10571,6 +10575,11 @@ def test_person_budget_story_is_wired_into_nightly():
 
 
 def test_person_budget_story_retains_authority_and_refusal(tmp_path):
+
+def test_model_policy_e38_is_wired_and_retains_live_holds(tmp_path):
+    assert cases.BY_ID["E38"].owner == "#5636"
+    assert "E38" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E38"] in bundle.purposes()
     module, common = shipped_script(tmp_path, "story_reads")
     cli = Mock()
     cli.json.side_effect = [
@@ -10597,3 +10606,21 @@ def test_person_budget_story_retains_authority_and_refusal(tmp_path):
     assert cli.run.call_count == 2
     assert evidence["self_write_refusals"] == 2
     assert "spend-through-and-restoration" in evidence["live_holds"]
+
+            "detail": {"tenant_id": "org", "persona_key": "architect", "models": []},
+        },
+        {
+            "status": "ok",
+            "detail": {
+                "tenant_id": "org",
+                "selected_persona": "architect",
+                "entries": [],
+                "status": "unknown",
+                "aggregate_scope": "all_personas_for_selected_owner_and_chain",
+            },
+        },
+    ]
+    evidence = {}
+    module.model_policy(cli, evidence)
+    assert "posture-rollback" in evidence["live_holds"]
+    cli.run.assert_not_called()

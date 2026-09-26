@@ -44,7 +44,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5633 | Personal Bedrock routing and administrator mappings | Existing routing helpers/services |
 | #5634 | GitHub installations, App keys and org bindings | Existing GitHub helpers/services |
 | #5635 | GitLab connection and agent readiness | Existing GitLab integration |
-| #5636 | Model defaults, runtime posture and persona cost | Existing model-policy APIs; retain upstream evidence dependencies |
+| #5636 ([model policy/costs](model-policy.md), source implementation; live held) | Model defaults, runtime posture and persona cost | Existing model-policy APIs; retain upstream evidence dependencies |
 | #5637 | Superplane wire-contract repairs | Already closed; regression only |
 | #5638 | Superplane workspace/deployment/provider lifecycle | Existing Superplane commands and domain contracts |
 | #5639 | Research inspection and proposal review | Existing Superplane research APIs |

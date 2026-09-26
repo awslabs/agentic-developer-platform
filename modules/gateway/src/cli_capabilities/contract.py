@@ -293,6 +293,9 @@ OPERATIONS = (
         feature="FEATURE_AGENT_MODELS_ENABLED",
         readiness="model_route",
     ),
+    Operation("models.costs.read", summary="Read attributable persona/model costs"),
+    Operation("models.policy.read", summary="Read platform model default and posture policy", platform_admin=True),
+    Operation("models.policy.write", summary="Change platform defaults/posture with audited replay and rollback", platform_admin=True, mutates=True),
     Operation(
         "models.mapping.self.write",
         summary="Set or reset your own persona model mapping",

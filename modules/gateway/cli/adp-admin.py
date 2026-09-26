@@ -52,6 +52,8 @@ def parser():
     commands.add_parser("ratelimit", help="Inspect or manage scoped rate-limit overrides")
     for area in ("org", "department", "team", "member", "tenant"):
         commands.add_parser(area, help="Scoped hierarchy and membership administration")
+
+    commands.add_parser("models", help="Platform model defaults and runtime posture")
     commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
@@ -172,6 +174,12 @@ def main(argv=None):
             if not module:
                 raise common.CliError("Hierarchy helper is missing. Run adp update.", "provider_unavailable", 4)
             return module.main(argv)
+
+        if argv and argv[0] == "models":
+            module = common.load_provider("adp-model-policy.py")
+            if module is None:
+                raise common.CliError("Model policy helper missing; run adp update.", "unavailable")
+            return module.main(argv[1:])
         if argv and argv[0] == "budget":
             module = common.load_provider("adp-budget.py")
             if not module:
