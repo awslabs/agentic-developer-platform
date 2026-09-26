@@ -140,3 +140,21 @@ def test_cost_wire_schema_preserves_unknown_and_tenant(client):
     client.request.side_effect = [dict(tenant_id="org", principal_kind="human", principal_id="user"), report]
     with pytest.raises(models.CliError):
         models.run(parsed, client)
+
+
+@pytest.mark.parametrize("evidence", [None, {}, {"account_id": "123"}])
+def test_ready_default_without_real_evidence_is_refused(client, evidence):
+    current = state("default")
+    preview = dict(
+        compatibility_class=CLASS,
+        canonical_model_id="model",
+        current=current,
+        current_posture=dict(posture="enforcing", posture_revision=1),
+        ready=True,
+        evidence=evidence,
+    )
+    client.request.side_effect = [current, preview]
+    parsed = policy.parser().parse_args(["default", "set", "--compatibility-class", CLASS, "--model", "model", "--dry-run"])
+    with pytest.raises(policy.common.CliError, match="evidence"):
+        policy.execute(parsed, client)
+    assert client.request.call_count == 2

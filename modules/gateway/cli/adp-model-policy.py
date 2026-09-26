@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import http.client
 import sys
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode
 from uuid import UUID
@@ -101,6 +102,35 @@ def execute(args, client):
         ):
             raise common.CliError("Malformed default promotion preview.", "invalid_response", 5)
         state(promotion.get("current"), "default", args.compatibility_class)
+        posture = promotion.get("current_posture")
+        if (
+            not isinstance(posture, dict)
+            or posture.get("posture") not in POSTURES
+            or type(posture.get("posture_revision")) is not int
+            or posture["posture_revision"] < 1
+        ):
+            raise common.CliError("Malformed default-preview posture.", "invalid_response", 5)
+        if promotion["ready"]:
+            evidence = promotion.get("evidence")
+            if (
+                not isinstance(evidence, dict)
+                or not all(
+                    isinstance(evidence.get(key), str) and evidence[key]
+                    for key in ("account_id", "region", "harness_contract_revision", "request_shape_sha256", "provider_request_id", "verified_at")
+                )
+                or len(evidence["account_id"]) != 12
+                or not evidence["account_id"].isdigit()
+                or len(evidence["request_shape_sha256"]) != 64
+                or any(ch not in "0123456789abcdef" for ch in evidence["request_shape_sha256"])
+            ):
+                raise common.CliError("Malformed default promotion evidence.", "invalid_response", 5)
+            try:
+                if datetime.fromisoformat(evidence["verified_at"].replace("Z", "+00:00")).tzinfo is None:
+                    raise ValueError
+            except ValueError:
+                raise common.CliError("Malformed default evidence timestamp.", "invalid_response", 5) from None
+        elif not isinstance(promotion.get("reason"), str) or not promotion["reason"]:
+            raise common.CliError("Unavailable default evidence lacks a reason.", "invalid_response", 5)
         preview["promotion"] = promotion
         body["canonical_model_id"] = args.model
     else:
