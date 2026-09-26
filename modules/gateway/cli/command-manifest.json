@@ -172,6 +172,213 @@
       ]
     },
     {
+      "command": "adp admin budget delete",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.managed.write",
+      "flags": [
+        "--department",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--period",
+        "--scope",
+        "--team",
+        "--usage",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}/revision",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin budget list",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.managed.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budgets"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin budget set",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.managed.write",
+      "flags": [
+        "--amount-usd",
+        "--department",
+        "--dry-run",
+        "--expect-absent",
+        "--expected-revision",
+        "--json",
+        "--mode",
+        "--org",
+        "--period",
+        "--scope",
+        "--team",
+        "--usage",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin budget show",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.managed.read",
+      "flags": [
+        "--department",
+        "--json",
+        "--org",
+        "--period",
+        "--scope",
+        "--team",
+        "--usage",
+        "--user"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin budget status",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.managed.read",
+      "flags": [
+        "--department",
+        "--json",
+        "--org",
+        "--period",
+        "--scope",
+        "--team",
+        "--usage",
+        "--user"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+          "/admin/organizations/{org_id}/budgets/{entity_type}/{entity_id}/{period_type}/status"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
       "command": "adp admin github revalidate",
       "helper": "adp-github-admin.py",
       "status": "shipped",
@@ -383,6 +590,574 @@
           ]
         }
       ]
+    },
+    {
+      "command": "adp admin usage departments",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--org",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/managed/{org_id}/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin usage requests",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/managed/{org_id}/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin usage summary",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--org",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/managed/{org_id}/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin usage users",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--org",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/managed/{org_id}/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent abort",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--command-id",
+        "--dry-run",
+        "--expected-generation",
+        "--json",
+        "--reason",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
+    },
+    {
+      "command": "adp agent chain",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--json"
+      ],
+      "arguments": [
+        "chain_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent detail",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent list",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--cursor",
+        "--json",
+        "--max-pages",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent logs",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--follow",
+        "--json",
+        "--last-event-id",
+        "--run",
+        "--timeout"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**",
+          "/activity/invocations/{invocation_id}/agent/events"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "ndjson",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent pause",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--command-id",
+        "--dry-run",
+        "--expected-generation",
+        "--json",
+        "--reason",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
+    },
+    {
+      "command": "adp agent ping",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent resume",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--command-id",
+        "--dry-run",
+        "--expected-generation",
+        "--json",
+        "--reason",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
+    },
+    {
+      "command": "adp agent state",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent status",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp agent steer",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--command-id",
+        "--dry-run",
+        "--expected-generation",
+        "--instruction",
+        "--json",
+        "--run",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/activity/invocations/{invocation_id}/agent/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
+    },
+    {
+      "command": "adp agent wait",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--admin",
+        "--interval",
+        "--json",
+        "--run",
+        "--timeout"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/agent-invocations/**",
+          "/admin/agent-invocations/**"
+        ],
+        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
     },
     {
       "command": "adp aws connect",
@@ -707,6 +1482,39 @@
       ]
     },
     {
+      "command": "adp budget me",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.self.read",
+      "flags": [
+        "--json",
+        "--period"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/budget"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.self.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
       "command": "adp capabilities",
       "helper": "adp-doctor.py",
       "status": "shipped",
@@ -839,6 +1647,206 @@
         "tests/cli/test_command_manifest.py"
       ],
       "required_capabilities": []
+    },
+    {
+      "command": "adp credential add",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.credentials.register",
+      "flags": [
+        "--domain-app-id",
+        "--dry-run",
+        "--expires-at",
+        "--json",
+        "--label",
+        "--operation-id",
+        "--scope",
+        "--service",
+        "--strict",
+        "--type",
+        "--value-file",
+        "--value-stdin",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.credentials.register"
+      ]
+    },
+    {
+      "command": "adp credential delete",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.credentials.delete",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.credentials.delete"
+      ]
+    },
+    {
+      "command": "adp credential list",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--scope"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp credential show",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp credential update",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.credentials.metadata",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--expires-at",
+        "--json",
+        "--label",
+        "--strict",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/credentials/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.credentials.metadata"
+      ]
     },
     {
       "command": "adp daemon install",
@@ -1336,6 +2344,49 @@
       ]
     },
     {
+      "command": "adp flow node resume",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.recovery.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--flow",
+        "--json",
+        "--operation-id",
+        "--reason",
+        "--reconciled",
+        "--yes"
+      ],
+      "arguments": [
+        "node_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "ResumeRequest / RecoverBindingRequest"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/orchestration/test_controls.py"
+      ],
+      "required_capabilities": [
+        "flows.recovery.write"
+      ]
+    },
+    {
       "command": "adp flow plans",
       "helper": "adp-flow.py",
       "status": "shipped",
@@ -1367,6 +2418,48 @@
       ],
       "required_capabilities": [
         "flows.read"
+      ]
+    },
+    {
+      "command": "adp flow recover-pr",
+      "helper": "adp-flow.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "flows.recovery.write",
+      "flags": [
+        "--dry-run",
+        "--expect-revision",
+        "--json",
+        "--node",
+        "--operation-id",
+        "--request-file",
+        "--yes"
+      ],
+      "arguments": [
+        "flow_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/orchestration/**",
+          "/me/cli-capabilities"
+        ],
+        "schema": "ResumeRequest / RecoverBindingRequest"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_flow.py",
+        "tests/orchestration/test_controls.py"
+      ],
+      "required_capabilities": [
+        "flows.recovery.write"
       ]
     },
     {
@@ -1609,6 +2702,122 @@
       "required_capabilities": []
     },
     {
+      "command": "adp identity link",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.identities.claim",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--provider",
+        "--provider-user-id",
+        "--resume",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/identities/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.identities.claim"
+      ]
+    },
+    {
+      "command": "adp identity list",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--provider"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/auth/identities/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp identity unlink",
+      "helper": "adp-vault.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "vault.identities.unlink",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--provider",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT",
+          "PATCH",
+          "POST",
+          "DELETE"
+        ],
+        "paths": [
+          "/auth/identities/**"
+        ],
+        "schema": "auth.vault_schemas; revision-required metadata adapter"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
+      },
+      "tests": [
+        "tests/cli/test_adp_vault.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/auth/test_vault_routes.py"
+      ],
+      "required_capabilities": [
+        "vault.identities.unlink"
+      ]
+    },
+    {
       "command": "adp import",
       "helper": "bg-cognito-auth.sh",
       "status": "shipped",
@@ -1719,6 +2928,121 @@
       "tests": [
         "tests/cli/test_bg_auth.py",
         "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp logs export",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--format",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "ndjson",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp logs list",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp logs show",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
       ],
       "required_capabilities": []
     },
@@ -3162,26 +4486,114 @@
       "required_capabilities": []
     },
     {
-      "command": "adp version",
-      "helper": "adp",
+      "command": "adp usage models",
+      "helper": "adp-usage.py",
       "status": "shipped",
       "mutates": false,
-      "operation": "",
-      "flags": [],
+      "operation": null,
+      "flags": [
+        "--end",
+        "--json",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
       "arguments": [],
       "request": {
-        "kind": "local",
-        "methods": [],
-        "paths": [],
-        "schema": "local CLI contract"
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
       },
       "response": {
         "stream": "single-json",
-        "schema": "adp_common JSON envelope or documented local output"
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
       },
       "tests": [
-        "tests/cli/test_adp_launch.py",
-        "tests/cli/test_command_manifest.py"
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp usage request",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--run",
+        "--start"
+      ],
+      "arguments": [
+        "request_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp usage requests",
+      "helper": "adp-usage.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--cursor",
+        "--end",
+        "--json",
+        "--max-pages",
+        "--page-size",
+        "--request-id",
+        "--run",
+        "--start"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/usage/me/**"
+        ],
+        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+      },
+      "tests": [
+        "tests/cli/test_adp_usage.py",
+        "tests/cli/test_command_manifest.py",
+        "tests/usage/test_cli_reads.py"
       ],
       "required_capabilities": []
     },
@@ -3256,1355 +4668,28 @@
       "required_capabilities": []
     },
     {
-      "command": "adp usage models",
-      "helper": "adp-usage.py",
+      "command": "adp version",
+      "helper": "adp",
       "status": "shipped",
       "mutates": false,
-      "operation": null,
-      "flags": [
-        "--end",
-        "--json",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
+      "operation": "",
+      "flags": [],
       "arguments": [],
       "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/me/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "local CLI contract"
       },
       "response": {
         "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
+        "schema": "adp_common JSON envelope or documented local output"
       },
       "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp usage requests",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--cursor",
-        "--end",
-        "--json",
-        "--max-pages",
-        "--page-size",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/me/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp usage request",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--cursor",
-        "--end",
-        "--json",
-        "--max-pages",
-        "--page-size",
-        "--run",
-        "--start"
-      ],
-      "arguments": [
-        "request_id"
-      ],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/me/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp logs list",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--cursor",
-        "--end",
-        "--json",
-        "--max-pages",
-        "--page-size",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/me/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp logs show",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--cursor",
-        "--end",
-        "--json",
-        "--max-pages",
-        "--page-size",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/me/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp logs export",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--cursor",
-        "--end",
-        "--format",
-        "--json",
-        "--max-pages",
-        "--page-size",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/me/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "ndjson",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp admin usage summary",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--end",
-        "--json",
-        "--org",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/managed/{org_id}/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp admin usage users",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--end",
-        "--json",
-        "--org",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/managed/{org_id}/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp admin usage departments",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--end",
-        "--json",
-        "--org",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/managed/{org_id}/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp admin usage requests",
-      "helper": "adp-usage.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--cursor",
-        "--end",
-        "--json",
-        "--max-pages",
-        "--org",
-        "--page-size",
-        "--request-id",
-        "--run",
-        "--start"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/usage/managed/{org_id}/**"
-        ],
-        "schema": "usage.cli_reads UsageReadResponse and aggregate projection"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; export format selects JSON, NDJSON or CSV with stderr continuation"
-      },
-      "tests": [
-        "tests/cli/test_adp_usage.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/usage/test_cli_reads.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp agent list",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--admin",
-        "--cursor",
-        "--json",
-        "--max-pages",
-        "--page-size"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/me/agent-invocations/**",
-          "/admin/agent-invocations/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_adp_launch.py",
         "tests/cli/test_command_manifest.py"
       ],
       "required_capabilities": []
-    },
-    {
-      "command": "adp agent chain",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--admin",
-        "--json"
-      ],
-      "arguments": [
-        "chain_id"
-      ],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/me/agent-invocations/**",
-          "/admin/agent-invocations/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp agent detail",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--admin",
-        "--json",
-        "--run"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/me/agent-invocations/**",
-          "/admin/agent-invocations/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp agent status",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--admin",
-        "--json",
-        "--run"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/me/agent-invocations/**",
-          "/admin/agent-invocations/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp agent ping",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--json",
-        "--run"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/activity/invocations/{invocation_id}/agent/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp agent state",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--json",
-        "--run"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/activity/invocations/{invocation_id}/agent/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp agent logs",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--admin",
-        "--follow",
-        "--json",
-        "--last-event-id",
-        "--run",
-        "--timeout"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/me/agent-invocations/**",
-          "/admin/agent-invocations/**",
-          "/activity/invocations/{invocation_id}/agent/events"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "ndjson",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp agent wait",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--admin",
-        "--interval",
-        "--json",
-        "--run",
-        "--timeout"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/me/agent-invocations/**",
-          "/admin/agent-invocations/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp agent abort",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": null,
-      "flags": [
-        "--command-id",
-        "--dry-run",
-        "--expected-generation",
-        "--json",
-        "--reason",
-        "--run",
-        "--yes"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "POST"
-        ],
-        "paths": [
-          "/activity/invocations/{invocation_id}/agent/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": [],
-      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
-    },
-    {
-      "command": "adp agent pause",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": null,
-      "flags": [
-        "--command-id",
-        "--dry-run",
-        "--expected-generation",
-        "--json",
-        "--reason",
-        "--run",
-        "--yes"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "POST"
-        ],
-        "paths": [
-          "/activity/invocations/{invocation_id}/agent/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": [],
-      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
-    },
-    {
-      "command": "adp agent resume",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": null,
-      "flags": [
-        "--command-id",
-        "--dry-run",
-        "--expected-generation",
-        "--json",
-        "--reason",
-        "--run",
-        "--yes"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "POST"
-        ],
-        "paths": [
-          "/activity/invocations/{invocation_id}/agent/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": [],
-      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
-    },
-    {
-      "command": "adp agent steer",
-      "helper": "adp-agent.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": null,
-      "flags": [
-        "--command-id",
-        "--dry-run",
-        "--expected-generation",
-        "--instruction",
-        "--json",
-        "--run",
-        "--yes"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "POST"
-        ],
-        "paths": [
-          "/activity/invocations/{invocation_id}/agent/**"
-        ],
-        "schema": "Activity schemas and control_schemas; per-run state capabilities gate mutation"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; logs --follow emits event envelopes"
-      },
-      "tests": [
-        "tests/cli/test_adp_agent.py",
-        "tests/cli/test_command_manifest.py"
-      ],
-      "required_capabilities": [],
-      "capability_source": "/activity/invocations/{invocation_id}/agent/state"
-    },
-    {
-      "command": "adp credential list",
-      "helper": "adp-vault.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--json",
-        "--scope"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/auth/credentials/**"
-        ],
-        "schema": "auth.vault_schemas; revision-required metadata adapter"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
-      },
-      "tests": [
-        "tests/cli/test_adp_vault.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/auth/test_vault_routes.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp credential show",
-      "helper": "adp-vault.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--json"
-      ],
-      "arguments": [
-        "id"
-      ],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/auth/credentials/**"
-        ],
-        "schema": "auth.vault_schemas; revision-required metadata adapter"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
-      },
-      "tests": [
-        "tests/cli/test_adp_vault.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/auth/test_vault_routes.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp credential add",
-      "helper": "adp-vault.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": "vault.credentials.register",
-      "flags": [
-        "--domain-app-id",
-        "--dry-run",
-        "--expires-at",
-        "--json",
-        "--label",
-        "--operation-id",
-        "--scope",
-        "--service",
-        "--strict",
-        "--type",
-        "--value-file",
-        "--value-stdin",
-        "--yes"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "PUT",
-          "PATCH",
-          "POST",
-          "DELETE"
-        ],
-        "paths": [
-          "/auth/credentials/**"
-        ],
-        "schema": "auth.vault_schemas; revision-required metadata adapter"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
-      },
-      "tests": [
-        "tests/cli/test_adp_vault.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/auth/test_vault_routes.py"
-      ],
-      "required_capabilities": [
-        "vault.credentials.register"
-      ]
-    },
-    {
-      "command": "adp credential update",
-      "helper": "adp-vault.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": "vault.credentials.metadata",
-      "flags": [
-        "--dry-run",
-        "--expected-revision",
-        "--expires-at",
-        "--json",
-        "--label",
-        "--strict",
-        "--yes"
-      ],
-      "arguments": [
-        "id"
-      ],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "PUT",
-          "PATCH",
-          "POST",
-          "DELETE"
-        ],
-        "paths": [
-          "/auth/credentials/**"
-        ],
-        "schema": "auth.vault_schemas; revision-required metadata adapter"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
-      },
-      "tests": [
-        "tests/cli/test_adp_vault.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/auth/test_vault_routes.py"
-      ],
-      "required_capabilities": [
-        "vault.credentials.metadata"
-      ]
-    },
-    {
-      "command": "adp credential delete",
-      "helper": "adp-vault.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": "vault.credentials.delete",
-      "flags": [
-        "--dry-run",
-        "--json",
-        "--yes"
-      ],
-      "arguments": [
-        "id"
-      ],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "PUT",
-          "PATCH",
-          "POST",
-          "DELETE"
-        ],
-        "paths": [
-          "/auth/credentials/**"
-        ],
-        "schema": "auth.vault_schemas; revision-required metadata adapter"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
-      },
-      "tests": [
-        "tests/cli/test_adp_vault.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/auth/test_vault_routes.py"
-      ],
-      "required_capabilities": [
-        "vault.credentials.delete"
-      ]
-    },
-    {
-      "command": "adp identity list",
-      "helper": "adp-vault.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": null,
-      "flags": [
-        "--json",
-        "--provider"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/auth/identities/**"
-        ],
-        "schema": "auth.vault_schemas; revision-required metadata adapter"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
-      },
-      "tests": [
-        "tests/cli/test_adp_vault.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/auth/test_vault_routes.py"
-      ],
-      "required_capabilities": []
-    },
-    {
-      "command": "adp identity link",
-      "helper": "adp-vault.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": "vault.identities.claim",
-      "flags": [
-        "--dry-run",
-        "--json",
-        "--provider",
-        "--provider-user-id",
-        "--resume",
-        "--yes"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "PUT",
-          "PATCH",
-          "POST",
-          "DELETE"
-        ],
-        "paths": [
-          "/auth/identities/**"
-        ],
-        "schema": "auth.vault_schemas; revision-required metadata adapter"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
-      },
-      "tests": [
-        "tests/cli/test_adp_vault.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/auth/test_vault_routes.py"
-      ],
-      "required_capabilities": [
-        "vault.identities.claim"
-      ]
-    },
-    {
-      "command": "adp identity unlink",
-      "helper": "adp-vault.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": "vault.identities.unlink",
-      "flags": [
-        "--dry-run",
-        "--json",
-        "--provider",
-        "--yes"
-      ],
-      "arguments": [
-        "id"
-      ],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "PUT",
-          "PATCH",
-          "POST",
-          "DELETE"
-        ],
-        "paths": [
-          "/auth/identities/**"
-        ],
-        "schema": "auth.vault_schemas; revision-required metadata adapter"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common envelope; secret-free metadata, pending identity verification"
-      },
-      "tests": [
-        "tests/cli/test_adp_vault.py",
-        "tests/cli/test_command_manifest.py",
-        "tests/auth/test_vault_routes.py"
-      ],
-      "required_capabilities": [
-        "vault.identities.unlink"
-      ]
-    },
-    {
-      "command": "adp admin budget delete",
-      "helper": "adp-budget.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": "budget.managed.write",
-      "flags": [
-        "--department",
-        "--dry-run",
-        "--expected-revision",
-        "--json",
-        "--org",
-        "--period",
-        "--scope",
-        "--team",
-        "--usage",
-        "--user",
-        "--yes"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "DELETE"
-        ],
-        "paths": [
-          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
-          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}/revision",
-          "/me/cli-capabilities"
-        ],
-        "schema": "Exact budget period or own budget envelope"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common JSON envelope"
-      },
-      "required_capabilities": [
-        "budget.managed.write"
-      ],
-      "tests": [
-        "tests/cli/test_adp_budget.py",
-        "tests/admin/test_budget_periods.py"
-      ]
-    },
-    {
-      "command": "adp admin budget list",
-      "helper": "adp-budget.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": "budget.managed.read",
-      "flags": [
-        "--json",
-        "--max-pages",
-        "--org",
-        "--page",
-        "--page-size"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/admin/organizations/{org_id}/budgets"
-        ],
-        "schema": "Exact budget period or own budget envelope"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common JSON envelope"
-      },
-      "required_capabilities": [
-        "budget.managed.read"
-      ],
-      "tests": [
-        "tests/cli/test_adp_budget.py",
-        "tests/admin/test_budget_periods.py"
-      ]
-    },
-    {
-      "command": "adp admin budget set",
-      "helper": "adp-budget.py",
-      "status": "shipped",
-      "mutates": true,
-      "operation": "budget.managed.write",
-      "flags": [
-        "--amount-usd",
-        "--department",
-        "--dry-run",
-        "--expect-absent",
-        "--expected-revision",
-        "--json",
-        "--mode",
-        "--org",
-        "--period",
-        "--scope",
-        "--team",
-        "--usage",
-        "--user",
-        "--yes"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET",
-          "PUT"
-        ],
-        "paths": [
-          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
-          "/me/cli-capabilities"
-        ],
-        "schema": "Exact budget period or own budget envelope"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common JSON envelope"
-      },
-      "required_capabilities": [
-        "budget.managed.write"
-      ],
-      "tests": [
-        "tests/cli/test_adp_budget.py",
-        "tests/admin/test_budget_periods.py"
-      ]
-    },
-    {
-      "command": "adp admin budget show",
-      "helper": "adp-budget.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": "budget.managed.read",
-      "flags": [
-        "--department",
-        "--json",
-        "--org",
-        "--period",
-        "--scope",
-        "--team",
-        "--usage",
-        "--user"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}"
-        ],
-        "schema": "Exact budget period or own budget envelope"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common JSON envelope"
-      },
-      "required_capabilities": [
-        "budget.managed.read"
-      ],
-      "tests": [
-        "tests/cli/test_adp_budget.py",
-        "tests/admin/test_budget_periods.py"
-      ]
-    },
-    {
-      "command": "adp admin budget status",
-      "helper": "adp-budget.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": "budget.managed.read",
-      "flags": [
-        "--department",
-        "--json",
-        "--org",
-        "--period",
-        "--scope",
-        "--team",
-        "--usage",
-        "--user"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
-          "/admin/organizations/{org_id}/budgets/{entity_type}/{entity_id}/{period_type}/status"
-        ],
-        "schema": "Exact budget period or own budget envelope"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common JSON envelope"
-      },
-      "required_capabilities": [
-        "budget.managed.read"
-      ],
-      "tests": [
-        "tests/cli/test_adp_budget.py",
-        "tests/admin/test_budget_periods.py"
-      ]
-    },
-    {
-      "command": "adp budget me",
-      "helper": "adp-budget.py",
-      "status": "shipped",
-      "mutates": false,
-      "operation": "budget.self.read",
-      "flags": [
-        "--json",
-        "--period"
-      ],
-      "arguments": [],
-      "request": {
-        "kind": "http",
-        "methods": [
-          "GET"
-        ],
-        "paths": [
-          "/me/budget"
-        ],
-        "schema": "Exact budget period or own budget envelope"
-      },
-      "response": {
-        "stream": "single-json",
-        "schema": "adp_common JSON envelope"
-      },
-      "required_capabilities": [
-        "budget.self.read"
-      ],
-      "tests": [
-        "tests/cli/test_adp_budget.py",
-        "tests/admin/test_budget_periods.py"
-      ]
     }
   ]
 }

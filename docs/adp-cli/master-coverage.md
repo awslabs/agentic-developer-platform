@@ -35,7 +35,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5627 | Rate-limit administration and client enforcement | Existing rate-limit services |
 | #5628 ([usage CLI](usage.md), source implementation; live held) | Usage, spend and request-log exports | Existing scoped readers |
 | #5629 | [Activity CLI](agent.md): list/chain/detail/status/wait/transcript/SSE and capability-gated controls; live acceptance held | Existing Activity/ControlService; Task input/cancel remain Task API operations |
-| #5630 | Recovery and integrated CLI qualification | Existing AI-DLC and regression runner |
+| #5630 | `flow node resume`, `flow recover-pr` with reviewed revisions; E37 nightly reads/refusals | Integrated inception/amendment and bounded live recovery acceptance pending |
 | #5631 | [Credential and identity CLI](vault.md), source implementation; live acceptance held | Existing vault and identity APIs; metadata revision adapter, protected input and unverified claim readback |
 | #5632 | Knowledge assets and indexing progress | Existing knowledge/indexing APIs |
 | #5633 | Personal Bedrock routing and administrator mappings | Existing routing helpers/services |

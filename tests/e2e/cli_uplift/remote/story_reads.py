@@ -208,12 +208,42 @@ def budget(cli, evidence):
     )
 
 
+def recovery(cli, evidence):
+    listing = detail(cli.json(["flow", "list", "--limit", "1"]))
+    common.require(isinstance(listing.get("flows"), list), "Flow listing is malformed")
+    # A malformed identifier must fail before reaching any mutation endpoint.
+    rc, refused = cli.run(
+        [
+            "flow",
+            "node",
+            "resume",
+            "invalid/id",
+            "--flow",
+            "invalid/id",
+            "--reason",
+            "nightly refusal",
+            "--dry-run",
+            "--json",
+        ]
+    )
+    common.require(
+        rc != 0 and isinstance(refused, dict) and refused.get("status") == "failed",
+        "Invalid recovery target was not refused",
+    )
+    evidence.update(
+        listed_flows=len(listing["flows"]),
+        malformed_target_refused=True,
+        live_acceptance_hold="Owned blocked flow and exact human acceptance/amendment fixtures are required for live recovery and continuation; no mutation dispatched.",
+    )
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
     "budget": budget,
+    "recovery": recovery,
 }
 
 

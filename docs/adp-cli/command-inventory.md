@@ -168,3 +168,12 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+### Engine node recovery (#5630)
+
+`adp flow node resume NODE_ID --flow FLOW_ID --reason TEXT` and
+`adp flow recover-pr FLOW_ID --node NODE_ID --request-file REQUEST.json` show
+read-only previews by default. Both accept `--dry-run`, `--json`, and
+`--yes --expect-revision REV --operation-id UUID`. The revision comes from the
+preview. See [flow recovery](flow-recovery.md). Worker pause/resume remains under
+`adp activity`; node recovery does not itself prove that a worker started.

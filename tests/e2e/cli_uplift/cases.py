@@ -299,6 +299,13 @@ CASES = (
         "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E37",
+        "#5630",
+        "story-reads",
+        "Flow reads and malformed recovery refusal through served CLI; owned accepted-flow recovery remains fixture-gated",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

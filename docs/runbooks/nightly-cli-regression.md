@@ -145,3 +145,8 @@ usage in the live test DB before making authenticated requests. This avoids
 assuming a fixed request price. Synthetic balances are removed between cases;
 case 7 independently verifies real model usage accrual. Spending through a cap
 with a newly triggered agent remains outside this key-scenario regression.
+
+E37 (#5630) checks served-client flow reads and malformed recovery-target refusal.
+It performs no recovery mutation. Full recovery/continuation acceptance requires
+an owned blocked flow plus the canonical inception/amendment and bounded-worker
+fixtures described in [flow recovery](../adp-cli/flow-recovery.md).

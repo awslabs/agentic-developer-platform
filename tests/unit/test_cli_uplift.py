@@ -8442,6 +8442,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E22",
         "E24",
         "E26",
+        "E37",
     }
 
 
@@ -10233,6 +10234,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E22",
         "E24",
         "E26",
+        "E37",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
@@ -10448,3 +10450,17 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     else:
         assert len(launches) == 1
         assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_recovery_nightly_reads_and_refuses_without_mutation(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {"status": "ok", "detail": {"flows": []}}
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.recovery(cli, evidence)
+    assert evidence["malformed_target_refused"] is True
+    assert "live_acceptance_hold" in evidence
+    assert all("--yes" not in call.args[0] for call in cli.method_calls)
+    assert cases.BY_ID["E37"].owner == "#5630"
+    assert stages.JOURNEY_DRIVERS["E37"] in bundle.purposes()
