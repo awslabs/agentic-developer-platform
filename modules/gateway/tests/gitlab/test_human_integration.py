@@ -247,3 +247,26 @@ async def test_probe_uses_exact_approved_base_path_without_redirect(db_session, 
         result = await service.probe(db_session, caller, {"url": base + "/"}, CREDENTIAL, "group/project")
         assert result["project_id"] == 42
         assert observed == [base + "/api/v4/user", base + "/api/v4/projects/group%2Fproject"]
+
+
+async def test_project_readiness_stays_unverified_through_cli_with_registry_opt_in(db_session, fixture, monkeypatch):
+    """Protected ingress availability is not proof of delivery or a hosted task."""
+    import importlib.util
+    from pathlib import Path
+
+    caller, configured, provider_client = fixture
+    monkeypatch.setenv("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", "true")
+    await service.mutate(db_session, caller, "connect", connect(configured["revision"]))
+    status = await service.describe(db_session, caller, repo="group/project", credential_id=CREDENTIAL)
+    path = Path(__file__).parents[2] / "cli/adp-gitlab.py"
+    spec = importlib.util.spec_from_file_location("gitlab_registry_cli", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    api = Mock()
+    api.request.return_value = status
+    result = module.execute(module.parser().parse_args(["gitlab", "status", "--repo", "group/project", "--credential", CREDENTIAL]), api)
+    assert result["detail"]["project_access"] == "verified"
+    assert result["detail"]["webhook_delivery"] == "unverified"
+    assert result["detail"]["agent_runtime"] == "unverified"
+    assert api.request.call_args.args[0] == "GET"
+    assert all(call.args[0].startswith(URL + "/api/v4/") for call in provider_client.get.call_args_list)
