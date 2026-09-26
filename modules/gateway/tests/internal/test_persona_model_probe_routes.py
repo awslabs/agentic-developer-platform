@@ -579,6 +579,9 @@ def test_task_profiles_match_worker_and_do_not_change_legacy_cycle():
     worker = Path(__file__).parents[3] / "agent-factory/agent/src/invocability-probe/task-profiles.json"
     profiles = json.loads(worker.read_text())
     for persona, profile in TASK_PERSONAS.items():
+        if profile.compatibility_class != "anthropic_messages":
+            assert persona not in profiles
+            continue
         assert profiles[persona] == {
             "revision": profile.harness_contract_revision,
             "body": profile.probe_json,
@@ -643,3 +646,17 @@ async def test_claim_route_explicit_task_profile_returns_exact_body(db_session, 
     assert rejected.status_code == 422
     assert response.status_code == 200
     assert response.json()["task_probe_json"] == TASK_PERSONAS["agent-task-cyber"].probe_json
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persona", ["agent-task-gpt-developer", "agent-task-gpt-intent-refinement"])
+async def test_codex_task_probe_denied_before_spend(db_session, monkeypatch, persona):
+    from src.internal.persona_model_probe_service import ProbeConflictError
+
+    _enable(monkeypatch)
+    db_session.add(_destination())
+    await db_session.commit()
+    with pytest.raises(ProbeConflictError) as denied:
+        await claim_probe(db_session, task_persona=persona)
+    assert denied.value.reason == "unsupported_task_probe_transport"
+    assert (await db_session.scalars(select(ModelProbeCycle))).all() == []

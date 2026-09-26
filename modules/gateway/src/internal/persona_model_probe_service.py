@@ -157,6 +157,8 @@ async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled", task_
     """Atomically reserve a Gateway-selected destination/model and worst-case spend."""
     if task_persona is not None and task_persona not in TASK_PERSONAS:
         raise ProbeConflictError("unknown_task_persona", "Unknown Task probe profile")
+    if task_persona is not None and TASK_PERSONAS[task_persona].compatibility_class != "anthropic_messages":
+        raise ProbeConflictError("unsupported_task_probe_transport", "Task probe worker does not support this transport")
     settings = get_settings()
     if reason := _configuration_reason(settings):
         return ClaimResult(claimed=False, reason=reason)

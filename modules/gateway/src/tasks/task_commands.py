@@ -28,6 +28,11 @@ from src.tasks.store import TaskStore, _is_conditional_failure, _iso, _serialize
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
 
+class _TransactionConflict(errors.TaskApiError):
+    def __init__(self):
+        super().__init__(409, "state_conflict", "Task changed concurrently; retry the same command ID.")
+
+
 def receipt(row: dict) -> dict:
     result = {
         key: row[key]
@@ -108,7 +113,7 @@ class TaskCommands:
             self.repo._client.transact_write_items(TransactItems=items)
         except (ClientError, BotoCoreError) as exc:
             if _is_conditional_failure(exc):
-                raise errors.state_conflict("Task changed concurrently; retry the same command ID.") from None
+                raise _TransactionConflict() from None
             raise errors.prerequisite_unavailable("Task transaction could not be confirmed.") from None
 
     def admit(self, *, task_id: str, command_id: str, kind: str, payload: dict, principal: str, tenant: str, expires_at: datetime) -> dict:
@@ -298,6 +303,20 @@ class TaskCommands:
         raise errors.state_conflict("Task execution grant fence is missing.")
 
     def finalize(self, identity: Any, body: dict, *, stop_only: bool = False, no_child: bool = False, expected_version: int | None = None) -> dict:
+        # A model receipt admitted before cancellation may settle after child exit.
+        # Retry only rejected atomic transactions, rebuilding all fences each time.
+        # Unknown write outcomes and caller-pinned versions must remain explicit.
+        for attempt in range(3):
+            try:
+                return self._finalize_once(identity, body, stop_only=stop_only, no_child=no_child, expected_version=expected_version)
+            except _TransactionConflict:
+                if expected_version is not None or attempt == 2:
+                    raise
+        raise AssertionError("Unreachable finalization retry")
+
+    def _finalize_once(
+        self, identity: Any, body: dict, *, stop_only: bool = False, no_child: bool = False, expected_version: int | None = None
+    ) -> dict:
         from datetime import timedelta
 
         from src.tasks.records import task_artifact_partition, task_capacity_partition, task_ops_partition, task_turns_partition
