@@ -245,6 +245,10 @@ ${local.agent_worker_pause_annotation}
                   - name: QUEUE_URL
                     value: ${aws_sqs_queue.agent_submit.url}
                   # Persona-name routing keeps Codex on this same queue/image.
+                  - name: ADP_CODEX_TASK_PERSONAS
+                    value: ${jsonencode(join(",", sort(tolist(var.codex_task_personas))))}
+                  - name: ADP_CODEX_OTEL_ENDPOINT
+                    value: ${jsonencode(var.codex_otel_endpoint)}
                   - name: CODEX_REVIEWER_APPLY_FIXES
                     value: "${var.codex_reviewer_apply_fixes}"
                   - name: CODEX_REVIEWER_MERGE_ENABLED

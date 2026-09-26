@@ -35,6 +35,7 @@ class TestPersonaParity:
         from src.admin.persona_models._personas import LABEL_TO_PERSONA as STAGED_LABELS
         from src.admin.persona_models._personas import MENTION_TO_PERSONA as STAGED_MENTIONS
         from src.admin.persona_models._personas import PERSONA_COMPATIBILITY_CLASS as STAGED_CLASSES
+        from src.admin.persona_models._personas import TASK_PERSONA_COMPATIBILITY_CLASS as STAGED_TASK_CLASSES
         from src.admin.persona_models._personas import VALID_PERSONAS as STAGED_VALID
 
         source_path = _repo_root() / "modules" / "agent-factory" / "webhook-ingress" / "lambda" / "common"
@@ -63,6 +64,8 @@ class TestPersonaParity:
         assert STAGED_LABELS == auth_module.LABEL_TO_PERSONA, "LABEL_TO_PERSONA mismatch"
         assert STAGED_MENTIONS == auth_module.MENTION_TO_PERSONA, "MENTION_TO_PERSONA mismatch"
         assert STAGED_CLASSES == auth_module.PERSONA_COMPATIBILITY_CLASS, "PERSONA_COMPATIBILITY_CLASS mismatch"
+        assert STAGED_TASK_CLASSES == auth_module.TASK_PERSONA_COMPATIBILITY_CLASS
+        assert not set(STAGED_TASK_CLASSES) & STAGED_VALID
 
     def test_harness_revisions_match_exact_runtime_pins(self):
         """Generated server metadata follows each owning SDK package pin."""

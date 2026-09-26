@@ -3,7 +3,7 @@
 Epic #5433; harness story #6195. See the source-bound
 [design](../../../docs/design-notes/5433-native-codex/README.md).
 
-This package is packaged in the worker image but remains unregistered and
+This package is packaged in the worker image with explicitly gated Task-only registrations and remains
 unqualified for production. The developer Task flow now runs the official SDK,
 host-mediated edits, immutable-image validation, scoped GitHub publication, and
 fresh provider-state completion checks. See the
@@ -31,7 +31,7 @@ Implemented components:
   capability qualification, authorization or production enablement. Effort settings
   are candidates to evaluate, not proven quality/cost optima.
 
-Still required for story closure: production registration and validation executor,
+Still required for story closure: production qualification and validation executor,
 GitHub mention and GitLab execution parity, pause/resume, connected role/delegation
 qualification, memory lifecycle/gateway integration, dashboards/alerts and a
 measured Claude comparison. The implemented Task path preserves admission,
@@ -164,3 +164,13 @@ Exporter queues/timeouts are bounded and shutdown waits at most 750 ms. The
 collector setting is not copied into the isolated SDK subprocess. This provides
 export plumbing; production collector routing, dashboards and alerts remain to
 be qualified.
+
+
+The packaged Task keys `agent-task-gpt-developer` and
+`agent-task-gpt-intent-refinement` have authoritative Codex compatibility metadata
+and resolve to this shared entrypoint only when the host explicitly includes them
+in `ADP_CODEX_TASK_PERSONAS`. The Terraform `codex_task_personas` setting defaults
+to an empty set in every environment; `codex_otel_endpoint` similarly defaults
+to disabled export. No legacy mention or automatic routing is added. The gateway
+still requires a reviewed catalogue, current model evidence and explicit service
+policy; enabling a worker is not an admission grant.

@@ -65,9 +65,9 @@ def persona_compatibility_class(persona_key: str) -> str | None:
     # Import here to avoid circular imports and to read from the staged copy.
     # The staged copy is asserted to match the authoritative source by a
     # parity test — see tests/admin/persona_models/test_persona_parity.py.
-    from src.admin.persona_models._personas import PERSONA_COMPATIBILITY_CLASS
+    from src.admin.persona_models._personas import PERSONA_COMPATIBILITY_CLASS, TASK_PERSONA_COMPATIBILITY_CLASS
 
-    return PERSONA_COMPATIBILITY_CLASS.get(persona_key)
+    return PERSONA_COMPATIBILITY_CLASS.get(persona_key) or TASK_PERSONA_COMPATIBILITY_CLASS.get(persona_key)
 
 
 def compatibility_class_harness_contract_revision(compatibility_class: str) -> str | None:

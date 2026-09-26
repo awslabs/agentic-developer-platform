@@ -289,15 +289,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         )
     )
     monkeypatch.setenv("ADP_CODEX_PERSONA_CATALOG_FILE", str(catalogue))
-    monkeypatch.setattr(
-        task_harness,
-        "persona_compatibility_class",
-        lambda name: "codex-sdk" if name == persona else None,
-    )
-    monkeypatch.setattr(
-        "src.admin.persona_models.catalogue.persona_compatibility_class",
-        lambda name: "codex-sdk" if name == persona else None,
-    )
+    monkeypatch.setenv("ADP_CODEX_TASK_PERSONAS", persona)
     client.update_item(
         TableName=storage.AUTHORITY_TABLE,
         Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "TASK_POLICY#svc-principal-1"}},
@@ -886,10 +878,16 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     )
     node = os.environ.get("ADP_CODEX_TEST_NODE", "node")
     entry = ROOT / "modules/agent-factory/codex-harness/dist/task-entry.mjs"
+    from lib.task_commands import task_agent_command
+    def packaged_command(selected):
+        command = task_agent_command(selected)
+        assert command == ["node", "/app/codex-harness/dist/task-entry.mjs", "--embedded"]
+        # Relocate only the packaged executable; exercise the real command registry.
+        return [node, str(entry), command[2]]
     host = TaskHost(
         client=gateway,
         work_root=tmp_path / "work",
-        command_resolver=lambda _: [node, str(entry), "--embedded"],
+        command_resolver=packaged_command,
     )
     result = host.run(
         assignment,

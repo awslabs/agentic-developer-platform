@@ -95,3 +95,13 @@ PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
     "superplane-operator": "claude-agent-sdk",
     "superplane-researcher": "claude-agent-sdk",
 }
+
+
+# Task-only shared Codex candidates. These are intentionally excluded from
+# VALID_PERSONAS and mention/automatic maps: the legacy spawn path must never
+# dispatch a Task candidate. A gateway-owned catalogue, service/model policy and
+# explicit worker enablement are required before execution.
+TASK_PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
+    "agent-task-gpt-developer": "codex-sdk",
+    "agent-task-gpt-intent-refinement": "codex-sdk",
+}

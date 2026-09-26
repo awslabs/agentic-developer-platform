@@ -45,7 +45,9 @@ recorded before claiming that suite passes. All tests use run-isolated.py.
 
 ## Remaining release gates
 
-The runtime command and authoritative Task persona registration are missing.
+Task-only metadata and the shared runtime command are now registered behind
+explicit worker enablement (default off). The developer integration uses the
+real registry, relocating only its packaged executable path.
 Production workers also need a trusted validation executor; the current executor
 requires local Docker. Full GitHub mention routing, GitLab provider qualification,
 pause/resume, connected AWS/delegation, memory hooks and gateway memory integration
