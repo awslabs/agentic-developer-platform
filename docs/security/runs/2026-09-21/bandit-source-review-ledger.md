@@ -12,11 +12,12 @@ non-applicable. Runtime and operator assertions still require review.
 
 | Original selector disposition | Count |
 | --- | ---: |
-| Fixed fail-soft logging gaps | 4 |
+| Fixed source controls | 199 |
 | Verified test assertions | 187 |
 | Reviewed parameterized SQL boundaries | 2 |
-| Fixed source boundary, runtime acceptance open | 2 |
-| Pending source review, owned by #6108 | 1275 |
+| Fixed source boundary, runtime acceptance open | 10 |
+| Reviewed assertions with explicit optimization-safe guards | 35 |
+| Pending source review, owned by #6108 | 1037 |
 | Total original selectors | 1470 |
 
 Every original selector is retained exactly once in
@@ -62,3 +63,28 @@ identity/severity and #6108 ownership remain, with runtime acceptance open.
 ## Optimization-safe validation follow-up
 
 203 retained B101 selectors now use explicit conditional failures that survive `python -O` and `python -OO`. These cover deployment target selection, archive identity, replay/journal state, workload inventory, recovery validation, pricing rollout and identity-policy invariants. The ten files retain the same guard expressions and AssertionError messages, verified by AST normalization. Six refusal regressions fail on baseline and pass on candidate; 243 component tests pass. No AWS deployment was performed. The eight gateway identity-module selectors retain runtime-open status pending the owning rollout. Evidence: `evidence/bandit-optimization-guards.json`. The full 1,470-selector inventory is preserved; 1,072 remain pending source review.
+
+## Superplane acceptance guard review
+
+35 original LOW B101 observations in `operation_receipts.py`, `live_observer.py`
+and `live_baseline.py` are type-narrowing assertions immediately preceded by
+explicit `require(...)` enforcement. Their source-specific review proves the
+same predicate (or the first conjunction) is checked in the immediately prior
+statement, with no intervening reassignment, and that the imported helper raises
+`EvidenceError` using ordinary conditional code. No production source edit or
+scanner suppression was needed. The remaining observer inventory invariant at
+original line 1924 has no such direct guard and stays pending.
+
+The verifier and per-selector receipt are
+`scripts/security/s21/verify_bandit_guarded_assertions.py` and
+`evidence/bandit-superplane-guard-review.json`. Sixteen negative/positive verifier
+regressions pass. The existing offline acceptance suites pass **420 tests in each
+of normal Python, -O and -OO**; synthetic transports cannot publish live evidence.
+The subject files are byte-identical to the original frozen source. A fresh
+Bandit 1.7.9 B101 scan still reports all **36** observations with zero errors:
+35 reviewed guards plus the one pending invariant. Native LOW severity is
+retained; scan disappearance is not the evidence for this review.
+
+All **1,470** original identities, severities and disposition-candidate joins are
+preserved; **1,037** observations remain pending source review. #6108 stays open,
+including its separate runtime acceptance holds.

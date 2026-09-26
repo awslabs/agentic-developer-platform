@@ -6,9 +6,10 @@
   "exact_input_manifest_commit": "74c48e78647afbe8c4eaf83ce3b01499e5cc61fe",
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
-    "pending-source-review": 1072,
+    "pending-source-review": 1037,
     "nonsecurity-test-assertion": 187,
     "fixed-source-runtime-open": 10,
+    "reviewed-optimization-safe-guard": 35,
     "fixed": 199,
     "reviewed-parameterized-sql": 2
   },
@@ -11597,8 +11598,10 @@
       "rule": "B101",
       "line": 344,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=805",
@@ -11611,8 +11614,10 @@
       "rule": "B101",
       "line": 385,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=806",
@@ -11681,8 +11686,10 @@
       "rule": "B101",
       "line": 707,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=811",
@@ -11695,8 +11702,10 @@
       "rule": "B101",
       "line": 964,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=812",
@@ -11709,8 +11718,10 @@
       "rule": "B101",
       "line": 1155,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=813",
@@ -11723,8 +11734,10 @@
       "rule": "B101",
       "line": 1335,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=814",
@@ -11779,8 +11792,10 @@
       "rule": "B101",
       "line": 336,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=818",
@@ -11849,8 +11864,10 @@
       "rule": "B101",
       "line": 471,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=823",
@@ -11863,8 +11880,10 @@
       "rule": "B101",
       "line": 477,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=824",
@@ -11877,8 +11896,10 @@
       "rule": "B101",
       "line": 724,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=825",
@@ -11891,8 +11912,10 @@
       "rule": "B101",
       "line": 783,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=826",
@@ -11905,8 +11928,10 @@
       "rule": "B101",
       "line": 789,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=827",
@@ -11919,8 +11944,10 @@
       "rule": "B101",
       "line": 815,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=828",
@@ -11933,8 +11960,10 @@
       "rule": "B101",
       "line": 850,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=829",
@@ -11947,8 +11976,10 @@
       "rule": "B101",
       "line": 856,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=830",
@@ -11961,8 +11992,10 @@
       "rule": "B101",
       "line": 896,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=831",
@@ -11975,8 +12008,10 @@
       "rule": "B101",
       "line": 1157,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=832",
@@ -11989,8 +12024,10 @@
       "rule": "B101",
       "line": 1630,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=833",
@@ -12017,8 +12054,10 @@
       "rule": "B101",
       "line": 324,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=835",
@@ -12031,8 +12070,10 @@
       "rule": "B101",
       "line": 335,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=836",
@@ -12045,8 +12086,10 @@
       "rule": "B101",
       "line": 343,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=837",
@@ -12059,8 +12102,10 @@
       "rule": "B101",
       "line": 354,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=838",
@@ -12073,8 +12118,10 @@
       "rule": "B101",
       "line": 365,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=839",
@@ -12087,8 +12134,10 @@
       "rule": "B101",
       "line": 381,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=840",
@@ -12101,8 +12150,10 @@
       "rule": "B101",
       "line": 950,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=841",
@@ -12115,8 +12166,10 @@
       "rule": "B101",
       "line": 974,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=842",
@@ -12129,8 +12182,10 @@
       "rule": "B101",
       "line": 1007,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=843",
@@ -12143,8 +12198,10 @@
       "rule": "B101",
       "line": 1052,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=844",
@@ -12157,8 +12214,10 @@
       "rule": "B101",
       "line": 1090,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=845",
@@ -12171,8 +12230,10 @@
       "rule": "B101",
       "line": 1104,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=846",
@@ -12185,8 +12246,10 @@
       "rule": "B101",
       "line": 1122,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=847",
@@ -12199,8 +12262,10 @@
       "rule": "B101",
       "line": 1332,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=848",
@@ -12213,8 +12278,10 @@
       "rule": "B101",
       "line": 1365,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=849",
@@ -12227,8 +12294,10 @@
       "rule": "B101",
       "line": 1387,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=850",
@@ -12241,8 +12310,10 @@
       "rule": "B101",
       "line": 1452,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-optimization-safe-guard",
+      "owner_issue": 6108,
+      "rationale": "The exact frozen assertion immediately follows an imported, non-shadowed explicit require guard with the same predicate (or first conjunction). The helper raises EvidenceError independently of assertions. Offline acceptance suites pass with assertions removed under -O and -OO; native B101 severity is retained.",
+      "evidence": "evidence/bandit-superplane-guard-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=851",
