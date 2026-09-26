@@ -17,6 +17,12 @@ RUN tar -xzf /tmp/upstream.tar.gz --strip-components=1 -C /source \
     && npm ci --include=dev --legacy-peer-deps --no-audit --no-fund
 ENV NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--max-old-space-size=4096
 RUN NODE_ENV=production npm run build
+# Install locked tar runtime packages with the builder npm; retain metadata and licenses.
+COPY security/next-tar/package.json security/next-tar/package-lock.json /opt/next-tar/
+RUN cd /opt/next-tar && npm ci --ignore-scripts --no-audit --no-fund
+COPY security/install-next-tar.py /opt/deepwiki-security/install-next-tar.py
+RUN python /opt/deepwiki-security/install-next-tar.py \
+    /source/.next/standalone/node_modules/next /opt/next-tar/node_modules
 
 FROM ghcr.io/asyncfuncai/deepwiki-open@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f
 # Replace the complete standalone UI built from the retained upstream commit.
@@ -39,10 +45,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /opt/adp-stdlib-security/check.py \
     && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# npm is needed only in web-builder; the runtime starts node server.js directly.
-RUN rm -rf /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx \
-    && test ! -e /usr/lib/node_modules/npm \
-    && ! command -v npm && ! command -v npx
+# Next's cold SWC fallback queries the registry through npm. Preserve that path
+# with the checksum-pinned fixed package manager, including its dependency tree.
+ADD --checksum=sha256:d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483 https://registry.npmjs.org/npm/-/npm-11.20.0.tgz /tmp/npm.tgz
+RUN rm -rf /usr/lib/node_modules/npm \
+    && mkdir -p /usr/lib/node_modules/npm \
+    && tar -xzf /tmp/npm.tgz --strip-components=1 -C /usr/lib/node_modules/npm \
+    && rm /tmp/npm.tgz \
+    && ln -sf /usr/lib/node_modules/npm/bin/npm-cli.js /usr/bin/npm \
+    && ln -sf /usr/lib/node_modules/npm/bin/npx-cli.js /usr/bin/npx \
+    && npm --version
 
 # Override default config with our LiteLLM-proxy-aware configs
 # These point the "openai" provider at our LiteLLM proxy which routes to Bedrock

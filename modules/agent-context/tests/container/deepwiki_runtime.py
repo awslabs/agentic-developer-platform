@@ -17,8 +17,9 @@ def main():
     assert os.getuid() == os.getgid() == 10001
     assert Path.home() == Path('/home/appuser')
     assert shutil.which('node')
-    assert shutil.which('npm') is None and shutil.which('npx') is None
-    assert not Path('/usr/lib/node_modules/npm').exists()
+    assert shutil.which('npm') and shutil.which('npx')
+    npm = subprocess.run(['npm', '--version'], capture_output=True, text=True, check=True)
+    assert npm.stdout.strip() == '11.20.0'
     node = subprocess.run(['node', '-e',
                            "const assert=require('node:assert'); const p=require('/app/node_modules/next/package.json'); assert.equal(p.version,'15.5.24'); const b=Buffer.from('fixture'); assert.equal(b.toString(),'fixture'); console.log(p.version)"],
                           capture_output=True, text=True, check=True)

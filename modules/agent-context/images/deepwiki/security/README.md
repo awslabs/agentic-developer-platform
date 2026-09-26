@@ -9,15 +9,20 @@ dependencies are included in the builder despite the base's production ENV.
 
 The runtime keeps Node, Python, Git, upstream API code, and `/app/start.sh`.
 Available Debian updates and GitPython3.1.59 install through normal package
-resolvers and `pip check`. npm/npx and their complete bundled dependency tree
-are removed only from the runtime: start.sh launches `node server.js` and
-`python -m api.main` directly. API subprocess consumers use Git; npm-related
-API configuration entries are repository filenames to exclude, not commands.
-The build stage retains npm.
+resolvers and `pip check`. npm/npx are retained at checksum-pinned11.20.0: although start.sh launches
+`node server.js` and `python -m api.main` directly, Next's cold SWC download
+fallback calls a registry helper that executes `npm config get registry`.
+The earlier API-only consumer audit missed this library fallback.
+
+Next15.5.24's compiled tar bundle matches its published source byte-for-byte
+and declares tar6.1.15. Replace only that exact bundle with locked tar7.5.21
+and its complete runtime dependencies/licenses. The adapter preserves Next's
+plain CommonJS default import; tar7's non-enumerable `__esModule` marker must
+not make Next expect a nonexistent `.default` export. Installation refuses
+unreviewed Next versions or original bundle hashes.
 
 `tests/container/deepwiki_runtime.py` must run with network disabled, read-only
 root, UID/GID10001, and disposable home, `/tmp`, and `.next/cache`. It tests
 actual API/UI startup, current/legacy cache save/read/delete, GitPython local
 commit and API branch detection, Node/Next loading, denied protected writes,
-and absent npm/npx. Runtime scan evidence must prove the removed dependency
-paths are absent. A build or fixture alone is not production acceptance.
+and the pinned npm/npx tools. The tar fixture additionally exercises the actual Next cold-download and cached-extraction consumer against a loopback registry, plus bounded malformed archive controls. Exact runtime scans retain all original findings for per-component review. A build or fixture alone is not production acceptance.
