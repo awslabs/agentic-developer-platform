@@ -711,6 +711,7 @@ def _journey_payload(cfg, ctx):
         "ui_contracts": ctx.get("ui_contracts") or {},
         "capability_contrast": cfg.get("capability_contrast") or {},
         "tenant_isolation": cfg.get("tenant_isolation") or {},
+        "usage_tenant": cfg.get("usage_tenant") or {},
         "human_task_coding": cfg.get("human_task_coding") or {},
         "human_task_chat": cfg.get("human_task_chat") or {},
         "vault_lifecycle": cfg.get("vault_lifecycle") or {},

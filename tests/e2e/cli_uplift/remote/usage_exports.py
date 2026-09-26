@@ -188,6 +188,15 @@ def exercise(cli, flags, evidence):
                 scope is None or meta["scope"] == scope,
                 "Export continuation changed scope",
             )
+            expected = evidence.get("usage_owner")
+            if expected:
+                common.require(
+                    all(
+                        meta["scope"].get(key) == value
+                        for key, value in expected.items()
+                    ),
+                    "Export changed verified owner or tenant",
+                )
             scope = meta["scope"]
             ids = {row["id"] for row in rows}
             common.require(not (seen & ids), "Export continuation duplicated a record")

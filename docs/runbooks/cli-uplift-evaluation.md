@@ -422,7 +422,7 @@ for exact scope, retained recovery intent and restoration. It is excluded from
 ### Explicit knowledge lifecycle diagnostic
 
 `login,knowledge-lifecycle` selects D04 (#5632); it is excluded from full/nightly. It requires an owned uploaded document receipt and caller-verified deployed attempt/spend bounds. See [the knowledge diagnostic guide](../adp-cli/knowledge-lifecycle-diagnostic.md). Without actual runtime cost evidence, leave the fixture unset and do not dispatch indexing.
-Nightly story reads explicitly select the native tenant verified by the login checkpoint and retained in its private session. Multiple memberships do not change that selection. A missing or mismatched native tenant fails before the story commands run; the harness never chooses the first visible membership. Owned cross-tenant diagnostics retain their separately declared fixtures.
+By default, nightly story reads explicitly select the native tenant verified by the login checkpoint and retained in its private session. Multiple memberships do not change that selection. A missing or mismatched native tenant fails before the story commands run; the harness never chooses the first visible membership. Owned cross-tenant diagnostics retain their separately declared fixtures.
 
 `login,capability-contrast` selects the existing E19 supported/disabled/permission and doctor scenario without the unrelated parity journeys. Its `fixtures_json.capability_contrast` accepts only the existing seven non-secret selectors from the evaluator config. The ordinary fixture reference can point to the existing admin fixture secret with `non_admin_username`/`non_admin_password`; E19 authenticates it freshly in memory when no `ordinary_session` is provided. It pins the verified native tenant and private `BG_CONFIG_DIR`, changes neither deployment feature flags nor operator settings, and compares the same HOME's two identity caches.
 
@@ -467,3 +467,15 @@ unchanged membership/session review after cleanup. It never revokes a session.
 This qualifies metadata lifecycle and read/denial coverage for #5624/#5625,
 not access-request approval, token revocation, or provider delivery. Access
 requests still need an independently verified GitHub actor fixture.
+
+E21 (`login,usage-exports`) optionally accepts `fixtures_json.usage_tenant` with
+exactly `login_user_id`, `canonical_user_id`, and `tenant_id`, identifying an
+existing login and workspace membership. This read-only fixture selects the
+existing membership through `ADP_TENANT` in the isolated CLI process, then verifies
+canonical owner and tenant through `models mappings list` before reading usage.
+Every usage/export scope must match that owner and tenant. The native login
+session and default nightly selection remain unchanged; no membership, role,
+credential, or shared configuration is changed. Without the fixture E21 keeps
+its verified native tenant. CSV/NDJSON still read at most two one-record pages per
+format; evidence reports counts and continuation, never the private records.
+Populated exports do not establish complete accounting or late settlement.

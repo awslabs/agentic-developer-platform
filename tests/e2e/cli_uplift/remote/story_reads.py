@@ -47,6 +47,18 @@ def capabilities(cli, evidence):
     evidence.update(operation_count=len(ids), checks=list(checks))
 
 
+def require_usage_owner(result, evidence):
+    expected = evidence.get("usage_owner")
+    if expected:
+        common.require(
+            all(
+                result.get("scope", {}).get(key) == value
+                for key, value in expected.items()
+            ),
+            "Usage read changed verified owner or tenant",
+        )
+
+
 def usage(cli, evidence):
     end = datetime.now(timezone.utc)
     flags = [
@@ -64,6 +76,7 @@ def usage(cli, evidence):
     ]
     for command in forms:
         result = detail(cli.json([*command, *flags]))
+        require_usage_owner(result, evidence)
         common.require(
             result.get("scope", {}).get("kind") == "own"
             and isinstance(result.get("items"), list),
@@ -77,6 +90,7 @@ def usage(cli, evidence):
     )
     common.require(isinstance(envelope, dict), "Export lacks JSON output")
     exported = envelope.get("detail") or {}
+    require_usage_owner(exported, evidence)
     complete = exported.get("complete")
     common.require(type(complete) is bool, "Export completeness is missing")
     common.require(
@@ -753,6 +767,21 @@ def execute(config, evidence):
         and tenant == session.get("org_id"),
         "Story reads require the verified login session native tenant",
     )
+    fixture = config.get("usage_tenant") if mode == "usage" else None
+    if fixture:
+        common.require(
+            isinstance(fixture, dict)
+            and set(fixture) == {"login_user_id", "canonical_user_id", "tenant_id"}
+            and all(
+                isinstance(value, str) and value.strip() for value in fixture.values()
+            ),
+            "Usage tenant requires exactly three explicit fixture identities",
+        )
+        common.require(
+            config.get("test_user_id") == fixture["login_user_id"],
+            "Usage tenant login identity mismatch",
+        )
+        tenant = fixture["tenant_id"]
     with tempfile.TemporaryDirectory(prefix="adp-story-reads-") as directory:
         home = Path(directory)
         os.chmod(home, 0o700)
@@ -772,6 +801,18 @@ def execute(config, evidence):
         cli = common.Cli(config["cli_path"], env, evidence["transcript"], timeout=30)
         evidence["tenant_id"] = tenant
         evidence["tenant_selection"] = "verified_native_login_session"
+        if fixture:
+            actor = detail(cli.json(["models", "mappings", "list"]))
+            common.require(
+                actor.get("principal_id") == fixture["canonical_user_id"]
+                and actor.get("tenant_id") == tenant,
+                "Usage tenant canonical owner or membership mismatch",
+            )
+            evidence["tenant_selection"] = "verified_existing_membership_fixture"
+            evidence["usage_owner"] = {
+                "org_id": tenant,
+                "user_id": fixture["canonical_user_id"],
+            }
         SCENARIOS[mode](cli, evidence)
         evidence["qualification"] = (
             "served CLI read/error regression; not full story acceptance"

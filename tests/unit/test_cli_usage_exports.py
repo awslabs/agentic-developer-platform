@@ -218,3 +218,33 @@ def test_usage_exports_alias_selects_existing_case_without_domain_dependencies()
     cases.record(matrix, "E21", cases.FAILED)
     assert cases.accept(matrix, ("usage-exports",))[0] == cases.FAILED
     assert "E21" in {case.id for case in cases.suite_cases("nightly")}
+
+
+@pytest.mark.parametrize("fault", [None, "tenant", "owner"])
+def test_export_checks_explicit_fixture_scope_before_accepting_records(
+    modules, monkeypatch, fault
+):
+    remote, served = modules
+    client = SimpleNamespace(binary="/isolated/adp", env={}, timeout=30, transcript=[])
+    flags = ["--start", "2026-09-26T00:00:00Z", "--end", "2026-09-26T01:00:00Z"]
+
+    def invoke(argv, **kwargs):
+        value = page()
+        value["detail"]["scope"] = {
+            "kind": "own",
+            "org_id": "wrong" if fault == "tenant" else "tenant",
+            "user_id": "wrong" if fault == "owner" else "human",
+        }
+        return emitted(served, value, argv[argv.index("--format") + 1])
+
+    monkeypatch.setattr(remote.common, "bounded", invoke)
+    evidence = {"usage_owner": {"org_id": "tenant", "user_id": "human"}}
+    if fault:
+        with pytest.raises(remote.common.RemoteError, match="verified owner"):
+            remote.exercise(client, flags, evidence)
+        assert "export_formats" not in evidence
+    else:
+        remote.exercise(client, flags, evidence)
+        assert all(
+            v["records_observed"] == 1 for v in evidence["export_formats"].values()
+        )

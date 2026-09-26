@@ -20,6 +20,7 @@ CONTRAST_KEYS = {
 }
 KEYS = {
     "tenant_isolation": {"tenant_ids"},
+    "usage_tenant": IDENTITY,
     "capability_contrast": CONTRAST_KEYS,
     "human_task_coding": IDENTITY
     | PAID
@@ -112,6 +113,8 @@ def validate_fixture(name, value):
             and re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", value[key]),
             f"{name}.{key} requires an explicit fixture identity",
         )
+    if name == "usage_tenant":
+        return
     if name == "knowledge_lifecycle":
         from .remote.knowledge_lifecycle_plan import validate_dispatch_fixture
 
