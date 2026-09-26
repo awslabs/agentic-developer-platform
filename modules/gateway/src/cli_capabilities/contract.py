@@ -376,6 +376,18 @@ OPERATIONS = (
         mutates=True,
     ),
     Operation(
+        "github.app.admin.maintenance.write",
+        summary="Maintain deployment GitHub App credentials",
+        platform_admin=True,
+        mutates=True,
+    ),
+    Operation(
+        "github.org_binding.write",
+        summary="Manage organization installation bindings",
+        platform_admin=True,
+        mutates=True,
+    ),
+    Operation(
         "github.connection.read",
         summary="Read your GitHub connection status",
     ),

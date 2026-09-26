@@ -1732,6 +1732,8 @@ Run a tool:
 Connect a repository (uses the platform's GitHub App — you supply no secrets):
     github connect --repo owner/name
                           Authorize a repository you have access to on GitHub
+    github disconnect --installation ID --dry-run|--yes
+                          Revoke locally and request installation uninstall
     github status [--repo owner/name]
                           Sign-in, repository access and agent integration state
 
@@ -1844,6 +1846,11 @@ Check what works here, and why something failed:
     admin setup           Check and resume first-time setup
     admin bedrock         Connect AWS destinations and manage model routing
     admin github          Configure this deployment's GitHub App and check it
+    admin github status --maintenance
+    admin github rotate-key|disconnect
+                          Review App/key revision with --dry-run before --yes
+    admin github org-binding list|add|remove --org ID
+                          Manage installation routing for an organization
     bedrock status        Show your effective Bedrock destination
     update [--to <version>]
                           Re-pull this CLI from your gateway; --to pins the exact

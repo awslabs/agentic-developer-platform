@@ -1007,6 +1007,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E17",
         "E18",
         "E19",
+        "E28",
         "E27",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
@@ -8426,6 +8427,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         # environment, so it blocks here exactly as the GitHub cases do.
         "E18",
         "E19",
+        "E28",
         "E27",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
@@ -10237,6 +10239,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E23",
         "E24",
         "E26",
+        "E28",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10416,6 +10419,35 @@ def test_budget_story_is_wired_into_nightly():
     assert cases.BY_ID["E26"].owner == "#5589"
     assert "E26" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E26"] in bundle.purposes()
+
+
+def test_github_maintenance_nightly_is_read_and_preview_only(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "contract": "app-maintenance-v1",
+                "app_id": "123",
+                "key_version": "revision",
+            },
+        },
+        {"status": "dry_run"},
+        {"status": "dry_run"},
+    ]
+    cli.run.return_value = (1, {"status": "failed"})
+    evidence = {}
+    module.github_maintenance(cli, evidence)
+    for call in cli.method_calls:
+        argv = call.args[0]
+        assert "--yes" not in argv
+        if any(action in argv for action in ("disconnect", "rotate-key")):
+            assert "--dry-run" in argv
+    assert "live_acceptance_hold" in evidence
+    assert cases.BY_ID["E28"].owner == "#5634"
+    assert "E28" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E28"] in bundle.purposes()
 
 
 @pytest.mark.parametrize("bad_group", [False, True])

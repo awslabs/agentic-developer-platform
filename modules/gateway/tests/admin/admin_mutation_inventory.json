@@ -98,6 +98,20 @@
     "classification": "durable-operation"
   },
   {
+    "method": "POST",
+    "path": "/admin/connections/github/app/maintenance/disconnect",
+    "module": "src.admin.connections.routes",
+    "endpoint": "github_app_disconnect_reviewed",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/connections/github/app/maintenance/rotate-key",
+    "module": "src.admin.connections.routes",
+    "endpoint": "github_app_activate_supplied_key",
+    "classification": "durable-operation"
+  },
+  {
     "method": "GET",
     "path": "/admin/connections/github/app/register-callback",
     "module": "src.admin.connections.routes",

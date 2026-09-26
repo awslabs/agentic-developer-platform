@@ -315,6 +315,13 @@ CASES = (
         "Two owned memberships retain explicit tenant scope during concurrent reads, local default changes and Cognito refresh; no model inference claim",
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
+    Case(
+        "E28",
+        "#5634",
+        "story-reads",
+        "GitHub maintenance status and reviewed previews never read supplied keys or change the shared App",
+        (EC2, PLATFORM, COGNITO, GITHUB_APP),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

@@ -357,6 +357,55 @@ def status(args, api):
     )
 
 
+def disconnect(args, api):
+    """Use the canonical durable revocation saga; never fabricate provider success."""
+    import http.client
+
+    command = "github disconnect"
+    rows = connections(api)
+    matches = [row for row in rows if str(row.get("installation_id")) == str(args.installation)]
+    if len(matches) != 1:
+        raise CliError("Installation is not uniquely visible in the selected tenant.", "not_found", 5)
+    if matches[0].get("is_active_tenant") is not True or matches[0].get("can_manage") is not True:
+        raise CliError("Installation is not manageable in the selected tenant.", "permission_denied", 3)
+    reviewed = detail_of(matches[0])
+    effect = {
+        "installation_id": args.installation,
+        "connection": reviewed,
+        "local_revocation": True,
+        "provider_uninstall_requested": True,
+        "impact": "Revokes this installation locally and requests its uninstall on GitHub. "
+        "Repository access and webhook agents using it stop; the shared App remains registered.",
+    }
+    if args.dry_run:
+        return common.envelope("dry_run", command, effect)
+    if not args.yes:
+        raise CliError("Review --dry-run, then pass --yes to revoke and uninstall this installation.", "confirmation_required", 1)
+    common.ensure_can_mutate("github.connection.write", request=api.request)
+    try:
+        result = api.request("DELETE", CONNECTIONS + "/github/" + str(args.installation))
+    except CliError as exc:
+        if exc.exit_code in {2, 3}:
+            raise
+        raise CliError("Revocation outcome is unconfirmed. Inspect the same installation before retrying.", "unknown_mutation_outcome", 4) from None
+    except (OSError, http.client.HTTPException):
+        raise CliError(
+            "Revocation outcome is unknown. Inspect the same installation before retrying; do not reconnect it automatically.",
+            "unknown_mutation_outcome",
+            4,
+        ) from None
+    if (
+        not isinstance(result, dict)
+        or result.get("installation_id") != args.installation
+        or type(result.get("deleted")) is not bool
+        or type(result.get("local_revoked")) is not bool
+        or not isinstance(result.get("residual"), list)
+    ):
+        raise CliError("Revocation acknowledgement is incomplete; reconcile the same installation.", "unknown_mutation_outcome", 4)
+    complete = result["deleted"] and result["local_revoked"] and result.get("provider_revoked") is True and not result["residual"]
+    return common.envelope("ok" if complete else "pending", command, result, "Local denial, provider uninstall and cleanup are separate outcomes.")
+
+
 def parser():
     root = common.Parser(prog="adp github", description="Connect an authorized GitHub repository to ADP.")
     commands = root.add_subparsers(dest="command", required=True)
@@ -373,10 +422,19 @@ def parser():
     status_command.add_argument("--repo", metavar="OWNER/NAME", help="Report on one repository")
     status_command.add_argument("--org", help="Filter to one ADP organization you already belong to")
     status_command.add_argument("--json", action="store_true", help="Print machine-readable output")
+    remove = commands.add_parser("disconnect", help="Revoke an owned installation and request GitHub uninstall")
+    remove.add_argument("--installation", required=True, type=int)
+    remove.add_argument("--yes", action="store_true")
+    remove.add_argument("--dry-run", action="store_true")
+    remove.add_argument("--json", action="store_true")
     return root
 
 
 def run(args, api):
+    if args.command == "disconnect":
+        if args.installation <= 0:
+            raise CliError("Installation must be positive.", "usage_error", 1)
+        return disconnect(args, api)
     if args.command == "connect" and not args.dry_run:
         common.ensure_can_mutate("github.connection.write", request=api.request)
     return connect(args, api) if args.command == "connect" else status(args, api)

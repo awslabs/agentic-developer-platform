@@ -767,4 +767,6 @@ PostgreSQL rate-limit concurrency still require release verification.
 Usage and redacted inference metadata: [Usage CLI](../../../docs/adp-cli/usage.md).
 Human run discovery, transcripts, explanation streaming and supported controls: [Agent Activity CLI](../../../docs/adp-cli/agent.md). Task submission continues to use `adp task`.
 
+GitHub maintenance: `adp github disconnect`, `adp admin github status --maintenance`, `rotate-key`, `disconnect`, and `org-binding list|add|remove` are documented in [GitHub maintenance](../../../docs/adp-cli/github-maintenance.md). Preview with `--dry-run`; App writes require reviewed App/key versions and `--yes`.
+
 Authorized tenant selection and concurrent terminal isolation: [Tenant CLI](../../../docs/adp-cli/tenant.md).

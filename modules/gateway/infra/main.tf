@@ -536,6 +536,14 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
         ]
       },
       {
+        # #5634: staged supplied-key activation moves only this deployment's
+        # GitHub App key version. Never grant version-stage writes to the vault.
+        Sid      = "GitHubAppKeyActivation"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:UpdateSecretVersionStage"]
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.environment}/github-app/adp-agent-platform-key-??????"
+      },
+      {
         # ListSecrets is account-wide by necessity (no resource-level scoping).
         # The gateway uses it to enumerate its own vault inventory (e.g. for
         # the orphan sweeper, admin listings, and per-user quota checks).

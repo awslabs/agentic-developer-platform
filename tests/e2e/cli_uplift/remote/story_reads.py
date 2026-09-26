@@ -208,12 +208,61 @@ def budget(cli, evidence):
     )
 
 
+def github_maintenance(cli, evidence):
+    current = detail(cli.json(["admin", "github", "status", "--maintenance"]))
+    common.require(
+        current.get("contract") == "app-maintenance-v1"
+        and isinstance(current.get("app_id"), str)
+        and isinstance(current.get("key_version"), str),
+        "App maintenance revision is missing",
+    )
+    review = [
+        "--expect-app-id",
+        current["app_id"],
+        "--expect-key-version",
+        current["key_version"],
+    ]
+    for action in ("disconnect", "rotate-key"):
+        extra = (
+            []
+            if action == "disconnect"
+            else [
+                "--operation-id",
+                str(uuid.uuid4()),
+                "--credentials-file",
+                "/nonexistent-cli-dry-run-key",
+            ]
+        )
+        preview = cli.json(["admin", "github", action, *review, *extra, "--dry-run"])
+        common.require(
+            preview.get("status") == "dry_run",
+            "App maintenance preview mutated or failed",
+        )
+    code, result = cli.run(
+        ["github", "disconnect", "--installation", "0", "--dry-run"], expected=None
+    )
+    common.require(
+        code == 1 and result.get("status") == "failed",
+        "Invalid installation was not refused",
+    )
+    evidence["cases"] = [
+        "app-maintenance-read",
+        "disconnect-preview",
+        "rotation-preview-without-key-read",
+        "invalid-installation",
+    ]
+    evidence["live_acceptance_hold"] = (
+        "No shared App writes; isolated OAuth/repository/webhook continuation and key rotation remain untested"
+    )
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
     "budget": budget,
+    "github_maintenance": github_maintenance,
 }
 
 
