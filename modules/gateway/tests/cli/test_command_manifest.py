@@ -156,6 +156,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-usage.py", ["adp"]),
         ("adp-agent.py", ["adp", "agent"]),
         ("adp-budget.py", ["adp"]),
+        ("adp-ratelimit.py", ["adp"]),
         ("adp-doctor.py", ["adp"]),
     ]
     checked_helpers = {helper for helper, _prefix in helper_prefixes} | {
@@ -184,6 +185,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     for area in ("org", "department", "team", "member", "tenant"):
         admin.pop("adp admin " + area)
     admin.pop("adp admin budget")
+    admin.pop("adp admin ratelimit")
     actual.update(admin)
     actual.update(parser_leaves("adp-bedrock.py", ["adp", "admin", "bedrock"]))
     actual.update(parser_leaves("adp-github-admin.py", ["adp", "admin", "github"]))

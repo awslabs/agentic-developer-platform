@@ -48,6 +48,8 @@ def parser():
     commands.add_parser("access-request", help="Review and decide exact tenant access requests")
     commands.add_parser("session", help="Inspect and revoke applicable gateway token families")
 
+
+    commands.add_parser("ratelimit", help="Inspect or manage scoped rate-limit overrides")
     for area in ("org", "department", "team", "member", "tenant"):
         commands.add_parser(area, help="Scoped hierarchy and membership administration")
     commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
@@ -159,6 +161,12 @@ def main(argv=None):
                 raise common.CliError("Access helper is missing. Run adp update.", "provider_unavailable", 4)
             return module.main(argv)
 
+
+        if argv and argv[0] == "ratelimit":
+            module = common.load_provider("adp-ratelimit.py")
+            if not module:
+                raise common.CliError("Rate-limit helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "ratelimit", *argv[1:]])
         if argv and argv[0] in {"org", "department", "team", "member", "tenant"}:
             module = common.load_provider("adp-hierarchy.py")
             if not module:

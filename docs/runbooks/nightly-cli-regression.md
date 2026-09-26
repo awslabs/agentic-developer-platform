@@ -148,6 +148,12 @@ with a newly triggered agent remains outside this key-scenario regression.
 
 E28 (#5634) runs in `story-reads`/default nightly with an existing GitHub App fixture. It performs App maintenance reads, disconnect/rotation previews (without opening key input), and invalid installation refusal. It never rotates or disconnects the shared App. Isolated live maintenance and OAuth/repository/webhook continuation remain separate acceptance holds.
 
+
+E36 (#5627) runs the served `adp ratelimit me --json` through the existing
+`story-reads` suite. It verifies a bounded own hierarchy, per-dimension sources,
+unknown worker convergence and the named actual-token TPM dependency. It makes
+no inference calls or configuration changes. Passing E36 is metadata regression
+only; real RPM, TPM/concurrency, client retry and cleanup acceptance remain held.
 E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.
 
 E33 (#5625) uses the served CLI to read current-tenant access status and a bounded

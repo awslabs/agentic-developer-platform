@@ -323,6 +323,14 @@ CASES = (
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
+        "E36",
+        "#5627",
+        "story-reads",
+        "Own rate-limit hierarchy and unavailable TPM are explicit; no inference or saved-limit mutation",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    ),
+    Case(
         "E33",
         "#5625",
         "story-reads",

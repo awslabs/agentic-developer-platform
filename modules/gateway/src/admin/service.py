@@ -892,6 +892,8 @@ class AdminService:
         Returns:
             Updated rate limit configuration
         """
+        # Serialize all supported writers, including absent-row creation, with the CLI adapter.
+        await self.db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
         result = await self.db.execute(
             select(RateLimitConfig).where(
                 RateLimitConfig.org_id == org_id,
@@ -2714,6 +2716,8 @@ class AdminService:
         Raises:
             ResourceConflictError: If rate limit already exists for this entity
         """
+        # Serialize all supported writers, including absent-row creation, with the CLI adapter.
+        await self.db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
         # Check for existing rate limit with same entity
         existing = await self.db.execute(
             select(RateLimitConfig).where(
@@ -2767,6 +2771,8 @@ class AdminService:
         Raises:
             ResourceNotFoundError: If rate limit not found
         """
+        # Serialize all supported writers, including absent-row creation, with the CLI adapter.
+        await self.db.execute(select(Organization.id).where(Organization.id == org_id).with_for_update())
         result = await self.db.execute(
             select(RateLimitConfig).where(
                 RateLimitConfig.org_id == org_id,

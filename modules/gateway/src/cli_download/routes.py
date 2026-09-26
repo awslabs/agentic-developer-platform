@@ -104,6 +104,7 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-access.py": (_CLI_DIR / "adp-access.py").resolve(),
     "adp-usage.py": (_CLI_DIR / "adp-usage.py").resolve(),
     "adp-agent.py": (_CLI_DIR / "adp-agent.py").resolve(),
+    "adp-ratelimit.py": (_CLI_DIR / "adp-ratelimit.py").resolve(),
     "adp-tenant.py": (_CLI_DIR / "adp-tenant.py").resolve(),
     "adp-hierarchy.py": (_CLI_DIR / "adp-hierarchy.py").resolve(),
     "adp-budget.py": (_CLI_DIR / "adp-budget.py").resolve(),
@@ -141,6 +142,7 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-tenant.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-hierarchy.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-budget.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-ratelimit.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-task.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp_task_client.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }

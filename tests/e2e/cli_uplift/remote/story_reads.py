@@ -303,7 +303,39 @@ def github_maintenance(cli, evidence):
     )
 
 
+def ratelimit(cli, evidence):
+    result = detail(cli.json(["ratelimit", "me"]))
+    runtime = result.get("runtime", {})
+    common.require(
+        runtime.get("tpm") == "unavailable_actual_usage_not_reconciled",
+        "TPM gap must remain explicit until actual-token accounting is qualified",
+    )
+    common.require(
+        runtime.get("worker_convergence") == "unknown",
+        "Worker convergence was asserted without proof",
+    )
+    common.require(
+        runtime.get("state") == "configured_not_probed", "Rate limiter is unavailable"
+    )
+    common.require(
+        isinstance(result.get("lines"), list) and 1 <= len(result["lines"]) <= 4,
+        "Missing bounded own hierarchy",
+    )
+    for line in result["lines"]:
+        common.require(
+            isinstance(line.get("effective"), dict)
+            and isinstance(line.get("sources"), dict),
+            "Missing effective dimensions and sources",
+        )
+    evidence.update(
+        dimensions=["rpm", "tpm", "concurrent_requests"],
+        enforcement_qualification="not_run",
+        tpm_dependency="actual usage not reconciled",
+    )
+
+
 SCENARIOS = {
+    'ratelimit': ratelimit,
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,

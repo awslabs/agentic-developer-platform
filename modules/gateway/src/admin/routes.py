@@ -2577,6 +2577,9 @@ from src.admin.audit_routes import router as _audit_sub_router  # noqa: E402
 
 router.include_router(_audit_sub_router)
 
+from src.admin.ratelimit_cli import router as _ratelimit_cli_router  # noqa: E402
+
+router.include_router(_ratelimit_cli_router)
 
 # Guarded CLI adapters reuse the services and permissions above.
 router.include_router(hierarchy_router)

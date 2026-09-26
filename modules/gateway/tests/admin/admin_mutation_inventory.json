@@ -323,6 +323,20 @@
   },
   {
     "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+    "module": "src.admin.ratelimit_cli",
+    "endpoint": "delete_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+    "module": "src.admin.ratelimit_cli",
+    "endpoint": "set_config",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
     "path": "/admin/organizations/{org_id}/ratelimit/{entity_type}/{entity_id}",
     "module": "src.admin.routes",
     "endpoint": "delete_ratelimit",

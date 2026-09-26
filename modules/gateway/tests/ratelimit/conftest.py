@@ -321,10 +321,12 @@ async def durable_rate_limit_store(monkeypatch):
     from sqlalchemy.pool import StaticPool
 
     from src.shared.models.audit import AuditLog
+    from src.shared.models.organization import Organization
     from src.shared.models.usage import RateLimitConfig as StoredConfig
 
     engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
     async with engine.begin() as connection:
+        await connection.run_sync(Organization.__table__.create)
         await connection.run_sync(StoredConfig.__table__.create)
         await connection.run_sync(AuditLog.__table__.create)
     factory = async_sessionmaker(engine, expire_on_commit=False)
