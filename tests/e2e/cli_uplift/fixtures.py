@@ -31,6 +31,7 @@ KEYS = {
         "instructions",
         "control_when",
         "running_wait_seconds",
+        "require_activity_list",
     },
     "human_task_chat": IDENTITY | PAID | {"max_tasks"},
     "knowledge_lifecycle": IDENTITY
@@ -198,6 +199,10 @@ def validate_fixture(name, value):
         "Coding fixture requires exactly one dispatch",
     )
     require(value.get("scenario") in {"complete", "cancel"}, "Unknown coding scenario")
+    require(
+        type(value.get("require_activity_list", False)) is bool,
+        "Activity list selection must be boolean",
+    )
     require(
         value.get("control_when", "observed") in {"observed", "running"},
         "Unknown coding control timing",

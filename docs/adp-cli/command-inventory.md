@@ -15,7 +15,7 @@ Options are parser options, excluding `--help`; shell launchers pass tool argume
 | `adp admin github status` |  | `--json` |
 | `adp admin login` |  | `--credentials-file`, `--credentials-stdin`, `--json` |
 | `adp admin setup` |  | `--dry-run`, `--json`, `--org`, `--yes` |
-| `adp agent list` |  | `--admin`, `--cursor`, `--json`, `--max-pages`, `--page-size` |
+| `adp agent list` |  | `--admin`, `--cursor`, `--json`, `--max-pages`, `--page-size`, `--tasks` |
 | `adp agent chain` | `chain_id` | `--admin`, `--json` |
 | `adp agent detail` |  | `--admin`, `--json`, `--run` |
 | `adp agent status` |  | `--admin`, `--json`, `--run` |

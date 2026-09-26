@@ -22,8 +22,10 @@ Task; its returned `invocation_id` resolves owner-only Activity detail through
 the canonical Task reader (`adp agent status --run INVOCATION_UUID`). Activity
 `/me/agent-invocations/{invocation_id}/transcript` returns a labelled retained
 Task report when available, not a full native client transcript. This direct-ID
-bridge requires Task reads and current human enrollment; it adds no Activity
-list projection, UI listing, or legacy remote controls. Task pause/resume are
+bridge requires Task reads and current human enrollment. `adp agent list --tasks`
+and the Activity screen’s “View my Tasks” list discover newly admitted Tasks using
+owner-scoped admission records. Historical Tasks remain direct-ID only; no
+automatic backfill or legacy remote controls are added. Task pause/resume are
 unavailable. Coding runtimes do not consume follow-up input, so E42 does not
 send steer commands. Abort acceptance remains pending until
 terminal cancellation readback; a timeout only detaches the client. Retry submissions with the same
@@ -116,3 +118,21 @@ and verifies the exact command receipt plus terminal cancellation. Set
 to wait for the same Task to run before cancellation. A Task that finishes first
 or never reaches running fails the active-control scenario; no replacement Task
 is created. These controls are retained in the immutable recovery plan.
+
+The owner-list/UI rollout requires the gateway artifact (admission store and read
+route), frontend artifact (Task list and stream viewer), and refreshed CLI asset
+(`agent list --tasks`) from the same reviewed source. The existing Task edge
+Lambda forwards the request to the gateway admission adapter; it does not package
+`src/tasks/store.py` and needs no change for this owner-discovery record. The
+existing exact `POST /v1/tasks` route remains unchanged. No database migration,
+new index, worker IAM change, or historical backfill is required. Until the gateway
+admission change is deployed, new Tasks will not acquire owner-list entries.
+
+E42 now counts only canonical durable events (not opening snapshots), then
+reconnects from an actual event cursor and requires the exact contiguous suffix
+through the terminal high-water cursor, with unchanged replayed payloads. This
+adds read-only verification to the same Task. After owner-list deployment, set
+`human_task_coding.require_activity_list: true` in the nightly fixture to require
+that newly admitted Task to appear once in `agent list --tasks` (up to five pages).
+The flag defaults to false so a direct-ID-only deployment can still run E42;
+its evidence explicitly records the list assertion as not requested.

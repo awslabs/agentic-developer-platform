@@ -182,3 +182,48 @@ def test_independent_task_identity_must_match_activity_identity(bridge):
     assert client.get(URL).status_code == 404
     caller.return_value = authz.Caller(PRINCIPAL, "other-tenant", frozenset({authz.SCOPE_READ}))
     assert client.get(URL).status_code == 404
+
+
+def test_owner_task_list_uses_canonical_authorization(bridge):
+    client, store, *_ = bridge
+    body = client.get("/me/agent-invocations/tasks").json()
+    assert [item["task_id"] for item in body["items"]] == [TASK]
+    store.tasks[TASK] = replace(store.tasks[TASK], owner_principal_id="human:foreign")
+    assert client.get("/me/agent-invocations/tasks?user_id=foreign").json()["items"] == []
+
+
+def test_owner_list_refuses_scope_disabled_and_bad_cursor(bridge, monkeypatch):
+    client, _, caller, *_ = bridge
+    assert client.get("/me/agent-invocations/tasks?last_key=foreign-key").status_code == 400
+    caller.return_value = authz.Caller(PRINCIPAL, "org-tenant-001", frozenset())
+    assert client.get("/me/agent-invocations/tasks").status_code == 403
+    monkeypatch.setenv("ADP_TASK_API_READ_ENABLED", "false")
+    assert client.get("/me/agent-invocations/tasks").status_code == 503
+
+
+def test_owner_list_omits_revoked_and_stale_but_reports_outage(bridge, monkeypatch):
+    client, store, *_ = bridge
+    monkeypatch.setattr(store, "require_policy", MagicMock(side_effect=errors.disallowed_scope("revoked")))
+    assert client.get("/me/agent-invocations/tasks").json()["items"] == []
+    store.fail = True
+    assert client.get("/me/agent-invocations/tasks").status_code == 503
+
+
+def test_owner_list_follows_stable_task_across_generation_and_omits_large_results(bridge):
+    client, store, *_ = bridge
+    store.tasks[TASK] = replace(store.tasks[TASK], generation=2, status="completed", result={"report": {"text": "x" * 300000}})
+    response = client.get("/me/agent-invocations/tasks")
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["task_snapshot"]["generation"] == 2
+    assert "result" not in item["task_snapshot"]
+    assert len(response.content) < 10000
+
+
+def test_owner_list_keeps_next_cursor_when_page_policy_denied(bridge, monkeypatch):
+    client, store, *_ = bridge
+    cursor = "2026-09-26T00:00:00Z#" + TASK
+    monkeypatch.setattr(store, "list_owned", lambda **kwargs: ([TASK], cursor))
+    monkeypatch.setattr(store, "require_policy", MagicMock(side_effect=errors.disallowed_scope("revoked")))
+    response = client.get("/me/agent-invocations/tasks").json()
+    assert response["items"] == [] and response["last_key"] == cursor

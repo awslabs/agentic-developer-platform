@@ -59,6 +59,7 @@ def parser():
         if action in {"list", "chain", "detail", "status", "logs", "wait"}:
             p.add_argument("--admin", action="store_true", help="Use tenant-admin read API; server authorization still applies")
         if action == "list":
+            p.add_argument("--tasks", action="store_true", help="List owned canonical Tasks admitted after owner discovery rollout")
             p.add_argument("--page-size", type=int, choices=range(1, 101), default=20, metavar="1..100")
             p.add_argument("--cursor")
             p.add_argument("--max-pages", type=positive, default=1)
@@ -324,6 +325,10 @@ def execute(args, client):
     prefix = "/admin" if getattr(args, "admin", False) else "/me"
     base = prefix + "/agent-invocations"
     if action == "list":
+        if args.tasks:
+            if args.admin or args.page_size > 20:
+                raise common.CliError("Task listing is owner-only and page-size must be 1..20.", "invalid_argument", 2)
+            base += "/tasks"
         cursor, items, seen = args.cursor, [], set()
         for _ in range(args.max_pages):
             query = {"page_size": args.page_size}

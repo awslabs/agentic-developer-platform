@@ -82,6 +82,44 @@ class DynamoTaskReadStore:
         if not policy or policy.get("status") != "active" or persona not in policy.get("personas", []):
             raise errors.disallowed_scope("The current task policy does not allow this operation.")
 
+    def list_owned(self, *, tenant: str, principal: str, limit: int, after: str | None) -> tuple[list[str], str | None]:
+        from src.tasks.records import task_owner_prefix
+
+        prefix = task_owner_prefix(tenant, principal)
+        kwargs = {}
+        if after is not None:
+            kwargs["ExclusiveStartKey"] = {"pk": {"S": "TENANT#" + tenant}, "sk": {"S": prefix + after}}
+        try:
+            response = self.repository._client.query(
+                TableName=self.repository.authority_table_name,
+                KeyConditionExpression="pk = :tenant AND begins_with(sk, :prefix)",
+                ExpressionAttributeValues={":tenant": {"S": "TENANT#" + tenant}, ":prefix": {"S": prefix}},
+                ConsistentRead=True,
+                ScanIndexForward=False,
+                Limit=limit,
+                **kwargs,
+            )
+            bindings = []
+            for item in response.get("Items", []):
+                row = durable._deserialize(item)
+                validate_task_id(row["task_id"])
+                if (
+                    row.get("pk") != "TENANT#" + tenant
+                    or row.get("sk") != prefix + row["created_at"] + "#" + row["task_id"]
+                    or row.get("tenant") != tenant
+                    or row.get("canonical_principal") != principal
+                    or row.get("record_type") != "TASK_OWNER_BINDING"
+                    or row.get("schema_version") != "1.0"
+                ):
+                    raise ValueError("incoherent owner binding")
+                bindings.append(row["task_id"])
+            key = durable._deserialize(response["LastEvaluatedKey"]) if response.get("LastEvaluatedKey") else None
+            if key and (key.get("pk") != "TENANT#" + tenant or not key["sk"].startswith(prefix)):
+                raise ValueError("incoherent owner cursor")
+            return bindings, key["sk"][len(prefix) :] if key else None
+        except (ClientError, BotoCoreError, KeyError, TypeError, ValueError) as exc:
+            raise TaskStoreError("Task owner discovery is unavailable") from exc
+
     def resolve_invocation(self, *, tenant: str, principal: str, invocation_id: str) -> tuple[str, int] | None:
         """Use the existing admission-transaction binding; no GSI or table scan.
 

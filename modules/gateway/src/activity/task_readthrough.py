@@ -1,7 +1,8 @@
 """Owner-only Activity detail/report bridge to canonical Task reads.
 
-No Activity list projection, dispatch, worker credential, or legacy control is
-created here. Run grants locate a Task; current Task policy authorizes its read.
+Direct-ID and owner-list discovery reuse canonical Task authorization.
+No legacy GSI projection, dispatcher, worker credential, or legacy control is
+created here. Discovery bindings locate Tasks; current policy authorizes reads.
 """
 
 import json
@@ -125,3 +126,40 @@ def report(record: TaskRecord) -> str:
         + fence
         + "\n"
     )
+
+
+async def list_owned(request: Request, db: AsyncSession, *, canonical_user_id: str, tenant_id: str, page_size: int, after: str | None):
+    from src.activity.schemas import InvocationListResponse
+
+    if after is not None and not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z#tsk_" + INVOCATION.pattern, after):
+        raise HTTPException(400, detail="Invalid Task page cursor")
+    try:
+        caller = await caller_for(request, db)
+        if caller.principal_id != "human:" + canonical_user_id or caller.tenant_id != tenant_id:
+            raise errors.not_found()
+        store = get_store()
+        bindings, cursor = await run_in_threadpool(store.list_owned, tenant=tenant_id, principal=caller.principal_id, limit=page_size, after=after)
+        items = []
+        for task_id in bindings:
+            try:
+                record = await run_in_threadpool(authz.authorize_task, caller, store, task_id)
+            except errors.TaskApiError as exc:
+                if exc.status in (403, 404):
+                    continue  # Expired/removed records and revoked personas are not listable.
+                raise
+            if record.status not in STATUS:
+                raise errors.prerequisite_unavailable("Task status is unavailable.")
+            item = detail(record, request)
+            # Listing carries only bounded identity/state fields. Full reports,
+            # command history, and results stay on the canonical detail read.
+            item.task_snapshot = {
+                key: value
+                for key, value in item.task_snapshot.items()
+                if key in {"task_id", "invocation_id", "status", "version", "generation", "execution_health", "recovery_required"}
+            }
+            items.append(item)
+        return InvocationListResponse(items=items, count=len(items), last_key=cursor)
+    except errors.TaskApiError as exc:
+        raise HTTPException(exc.status, detail={"error": exc.code, "message": exc.message}) from None
+    except (TaskStoreError, BotoCoreError, ClientError):
+        raise HTTPException(503, detail="Task storage is unavailable") from None
