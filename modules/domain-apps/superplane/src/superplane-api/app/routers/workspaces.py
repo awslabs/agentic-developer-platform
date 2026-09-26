@@ -3,11 +3,11 @@
 import json
 import logging
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -529,11 +529,23 @@ async def get_workspace(
     return _workspace_to_response(workspace, cluster)
 
 
+@router.get("/{workspace_id}/lifecycle")
+async def get_workspace_lifecycle(
+    workspace_id: uuid.UUID,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    """Bounded read-only review; does not reconcile or open a teardown operation."""
+    from app.services.cli_lifecycle import workspace_snapshot
+    return (await workspace_snapshot(db, org_id, workspace_id))[1]
+
+
 @router.delete("/{workspace_id}", response_model=WorkspaceDeleteResponse)
 async def delete_workspace(
     workspace_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> WorkspaceDeleteResponse:
     """Teardown a workspace — updates status and triggers teardown workflow."""
     result = await db.execute(
@@ -548,6 +560,12 @@ async def delete_workspace(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found"
         )
+
+    if expected_revision is not None:
+        from app.services.cli_lifecycle import workspace_snapshot
+        _, snapshot = await workspace_snapshot(db, org_id, workspace_id, lock=True)
+        if snapshot["revision"] != expected_revision:
+            raise HTTPException(409, "Workspace lifecycle changed; review again")
 
     # Prevent deletion of the platform's default workspace
     if workspace.is_default:

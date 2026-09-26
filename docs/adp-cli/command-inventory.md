@@ -175,3 +175,5 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+Superplane lifecycle #5638 adds `workspace delete`, `provider-connection create|show|validate|rotate|revoke`, `cluster list --eligible-for workspace-sharing`, `deploy profiles --workspace`, and `events --workspace [--follow --after]`. Deployment create/preview accepts `--namespace` as an assertion. See [the lifecycle contract](superplane.md#lifecycle-review-and-scoped-events-5638) for required mutation flags and source-versus-live qualification.

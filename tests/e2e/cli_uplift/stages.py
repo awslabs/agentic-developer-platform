@@ -805,6 +805,7 @@ JOURNEY_DRIVERS = {
     "E27": "tenant_isolation",
     "E24": "story_vault",
     "E26": "story_budget",
+    "E39": "story_superplane_lifecycle",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

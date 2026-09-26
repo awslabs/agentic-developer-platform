@@ -208,12 +208,48 @@ def budget(cli, evidence):
     )
 
 
+def superplane_lifecycle(cli, evidence):
+    workspaces = detail(cli.json(["superplane", "workspace", "list"])).get("workspaces")
+    common.require(
+        isinstance(workspaces, list) and 1 <= len(workspaces) <= 1000,
+        "Superplane needs an existing authorized workspace",
+    )
+    workspace = workspaces[0].get("id")
+    common.require(isinstance(workspace, str) and workspace, "Workspace ID missing")
+    preview = cli.json(["superplane", "workspace", "delete", workspace, "--dry-run"])
+    common.require(
+        preview.get("status") in {"dry_run", "unavailable"},
+        "Workspace deletion preview returned an unexpected outcome",
+    )
+    before = preview.get("detail", {}).get("before", {})
+    common.require(
+        before.get("workspace_id") == workspace
+        and before.get("billing_state") == "unconfirmed",
+        "Lifecycle preview confused scope or billing proof",
+    )
+    events = detail(
+        cli.json(["superplane", "events", "--workspace", workspace, "--limit", "1"])
+    )
+    common.require(
+        events.get("workspace_id") == workspace
+        and isinstance(events.get("events"), list),
+        "Workspace audit read lost scope",
+    )
+    evidence.update(
+        workspace_id=workspace,
+        lifecycle_qualification="read and preview only",
+        compute_qualification="not_run",
+        mutations=0,
+    )
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
     "budget": budget,
+    "superplane_lifecycle": superplane_lifecycle,
 }
 
 

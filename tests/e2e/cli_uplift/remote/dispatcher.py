@@ -32,6 +32,7 @@ PURPOSES = {
     "story_capabilities": ("story_reads", {"mode": "capabilities"}),
     "story_usage": ("story_reads", {"mode": "usage"}),
     "story_budget": ("story_reads", {"mode": "budget"}),
+    "story_superplane_lifecycle": ("story_reads", {"mode": "superplane_lifecycle"}),
     "story_activity": ("story_reads", {"mode": "activity"}),
     "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),
     "tenant_isolation": ("tenant_isolation", {"mode": "isolation"}),

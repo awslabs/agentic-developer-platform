@@ -291,6 +291,7 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.WORKSPACE,
         Permission.SPEND,
     ),
+    ("GET", "/workspaces/{workspace_id}/lifecycle"): (Scope.WORKSPACE, Permission.READ),
     ("GET", "/workspaces/{workspace_id}/quota"): (Scope.WORKSPACE, Permission.READ),
     ("PATCH", "/workspaces/{workspace_id}/quota"): (Scope.WORKSPACE, Permission.SPEND),
     # -- Cost / budget (workspace-scoped reads) ------------------------------
@@ -298,6 +299,7 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
     ("GET", "/workspaces/{workspace_id}/budget"): (Scope.WORKSPACE, Permission.READ),
     # -- Events: org collection, filtered to the caller's workspaces ---------
     ("GET", "/events"): (Scope.ORGANIZATION, Permission.READ),
+    ("GET", "/events/workspaces/{workspace_id}"): (Scope.WORKSPACE, Permission.READ),
     ("POST", "/workspaces/preview"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("POST", "/workspaces/adopt"): (Scope.ORGANIZATION, Permission.PROVISION),
     ("POST", "/workspaces/{workspace_id}/retirement/preview"): (

@@ -1008,6 +1008,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E18",
         "E19",
         "E27",
+        "E39",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
@@ -8427,6 +8428,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E18",
         "E19",
         "E27",
+        "E39",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.
@@ -10237,6 +10239,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E23",
         "E24",
         "E26",
+        "E39",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10453,3 +10456,27 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     else:
         assert len(launches) == 1
         assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_superplane_lifecycle_story_is_bounded_preview(tmp_path):
+    assert cases.BY_ID["E39"].owner == "#5638"
+    assert cases.SUPERPLANE_DOMAIN in cases.BY_ID["E39"].requires
+    assert "E39" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E39"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"workspaces": [{"id": "workspace"}]}},
+        {
+            "status": "dry_run",
+            "detail": {
+                "before": {"workspace_id": "workspace", "billing_state": "unconfirmed"}
+            },
+        },
+        {"status": "ok", "detail": {"workspace_id": "workspace", "events": []}},
+    ]
+    evidence = {}
+    module.superplane_lifecycle(cli, evidence)
+    assert evidence["mutations"] == 0
+    assert cli.json.call_args_list[1].args[0][-1] == "--dry-run"
+    cli.run.assert_not_called()

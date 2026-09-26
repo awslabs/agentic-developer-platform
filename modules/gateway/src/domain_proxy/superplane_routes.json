@@ -318,5 +318,13 @@
   [
     "GET",
     "/workspaces/{workspace_id}/batch-jobs/{job_id}/result"
+  ],
+  [
+    "GET",
+    "/workspaces/{workspace_id}/lifecycle"
+  ],
+  [
+    "GET",
+    "/events/workspaces/{workspace_id}"
   ]
 ]
