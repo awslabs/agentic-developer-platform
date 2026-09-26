@@ -209,8 +209,8 @@ def image_contract() -> dict:
     from superplane_contracts.version import CONTRACT_VERSION, check_version
     from superplane_executor.deployment_plan import build_deployment_preview
 
-    from app.adapters.operation_dispatch import OperationDispatcher, ProducerTransport
     from app.adapters.adp_vault_client import AdpVaultClient
+    from app.adapters.operation_dispatch import OperationDispatcher, ProducerTransport
 
     for owner, methods in (
         (OperationFacadeService, ("open_operation", "report_progress")),
@@ -269,6 +269,7 @@ def main(argv=None) -> int:
     try:
         if args.action in {"adapter-stage", "adapter-active"}:
             import sys
+
             from app.adapter_stage import verify_stage
 
             expected = json.loads(sys.stdin.read(65537))
@@ -350,10 +351,10 @@ def main(argv=None) -> int:
             database_check(migrating=args.action == "migrate", verify_role_default=True)
         )
         if args.action == "migrate":
-            from app.database import engine
             from alembic import command
             from alembic.config import Config
             from alembic.script import ScriptDirectory
+            from app.database import engine
 
             expected = os.environ["SUPERPLANE_EXPECTED_SCHEMA"]
             config = Config("/app/alembic.ini")
