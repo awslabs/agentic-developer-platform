@@ -16,6 +16,7 @@ import calendar
 import hashlib
 import copy
 import json
+import io
 import os
 import pathlib
 import re
@@ -12681,3 +12682,63 @@ def test_story_reads_pin_verified_native_tenant_with_multiple_memberships(
         assert len(calls) == 1
         assert evidence["detail"]["tenant_id"] == "native-tenant"
         assert evidence["detail"]["tenant_selection"] == "verified_native_login_session"
+
+
+def test_capability_contrast_can_be_selected_without_unrelated_parity_mutations():
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    fixture = capability_contrast_config()["capability_contrast"]
+    assert (
+        parse(json.dumps({"capability_contrast": fixture}))["capability_contrast"]
+        == fixture
+    )
+    assert [case.id for case in cases.suite_cases("capability-contrast")] == ["E19"]
+    with pytest.raises(config.ConfigError):
+        parse(
+            json.dumps({"capability_contrast": {**fixture, "access_token": "private"}})
+        )
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_capability_ordinary_fixture_login_uses_existing_secret_without_token_store(
+    tmp_path, monkeypatch, fails
+):
+    module, common = shipped_script(tmp_path, "capability_contrast")
+    cfg = {
+        "gateway_url": "https://gateway/api",
+        "region": "us-east-1",
+        "sts_endpoint": "https://sts",
+    }
+    contrast = {"ordinary_fixture_name": "owned-fixture"}
+
+    def secret(config, env, key, **kwargs):
+        assert config["credential_secret"] == "owned-fixture"
+        return {
+            "ordinary_session": None,
+            "non_admin_username": "ordinary",
+            "non_admin_password": "private-password",
+        }[key]
+
+    monkeypatch.setattr(common, "fixture_secret", secret)
+
+    def open_request(request, timeout):
+        assert request.full_url == "https://gateway/api/auth/cli/password"
+        assert json.loads(request.data) == {
+            "username": "ordinary",
+            "password": "private-password",
+        }
+        assert timeout == 45
+        if fails:
+            raise RuntimeError("private-password private-token")
+        return io.BytesIO(json.dumps({"access_token": "private-token"}).encode())
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", open_request)
+    if fails:
+        with pytest.raises(
+            common.RemoteError, match="^Ordinary fixture authentication failed$"
+        ):
+            module.ordinary_session(cfg, contrast)
+    else:
+        assert module.ordinary_session(cfg, contrast) == {
+            "access_token": "private-token"
+        }

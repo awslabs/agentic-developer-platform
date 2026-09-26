@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 import common
@@ -75,22 +76,64 @@ def _validate_release_evidence(config, version, capabilities):
     )
 
 
-def execute(config, evidence):
-    contrast = config.get("capability_contrast") or {}
-    common.require(contrast, "No capability_contrast fixture was supplied")
-    common.require(config.get("cli_path"), "install_auth did not retain the served CLI")
-    admin = common.session_tokens(config)
+def ordinary_session(config, contrast):
     fixture_config = {**config, "credential_secret": contrast["ordinary_fixture_name"]}
     fixture = common.fixture_secret(
-        fixture_config, common.clean_env(config), "ordinary_session"
+        fixture_config, common.clean_env(config), "ordinary_session", default=None
     )
+    if fixture is None:
+        # Fixture authentication only; product operations below use the served CLI.
+        fixture_env = common.clean_env(config)
+        username = common.fixture_secret(
+            fixture_config, fixture_env, "non_admin_username"
+        )
+        password = common.fixture_secret(
+            fixture_config, fixture_env, "non_admin_password"
+        )
+        request = urllib.request.Request(
+            config["gateway_url"].rstrip("/") + "/auth/cli/password",
+            data=json.dumps({"username": username, "password": password}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                fixture = json.load(response)
+        except Exception:
+            raise common.RemoteError("Ordinary fixture authentication failed") from None
     common.require(
         isinstance(fixture, dict) and fixture.get("access_token"),
         "The ordinary fixture session is absent",
     )
 
+    return fixture
+
+
+def execute(config, evidence):
+    contrast = config.get("capability_contrast") or {}
+    common.require(contrast, "No capability_contrast fixture was supplied")
+    common.require(config.get("cli_path"), "install_auth did not retain the served CLI")
+    admin = common.session_tokens(config)
+    fixture = ordinary_session(config, contrast)
+
     home = Path(tempfile.mkdtemp(prefix="adp-e18-"))
-    env = common.clean_env(config, HOME=str(home))
+    common.require(config.get("org_id"), "Verified native tenant required")
+    env = common.clean_env(config, HOME=str(home), ADP_TENANT=config["org_id"])
+    env["BG_CONFIG_DIR"] = str(home / ".bedrock-gateway")
+    for name in (
+        "ADP_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "KIMI_HOME",
+    ):
+        directory = home / name
+        directory.mkdir(mode=0o700)
+        env[name] = str(directory)
     cli = common.Cli(
         config["cli_path"],
         env,
