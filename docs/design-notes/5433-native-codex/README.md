@@ -317,6 +317,48 @@ retrieval, extraction, retries and review repairs. Compare disabled memory and e
 provider on the same versioned tasks and model/effort settings; prevent evaluation
 answer leakage. Do not equate a cache hit or retrieved record with improved quality.
 
+#### Memory lifecycle hooks
+
+Memory needs explicit harness hooks, not merely a callable storage adapter.
+Agent-written selective memories are the primary path; selective transcript
+analysis is a bounded supplementary path. The trusted host emits lifecycle events;
+an admitted `memory.propose` tool lets a persona nominate a useful lesson during
+work. The model cannot mint a validation/review event or mark its own lesson verified.
+
+| Hook | Trigger and action |
+| --- | --- |
+| `run.admitted` | After current memory authority is verified and before initial planning, retrieve a bounded relevant set and record the exact IDs/versions supplied to the run. |
+| `memory.proposed` | The agent identifies a reusable discovery, convention, failed approach or decision and submits a concise candidate with evidence references. Validate and journal it rather than storing every tool result. |
+| `validation.settled` | A trusted check receipt becomes durable. Attach its exact commit/check evidence to relevant candidates; a passing test verifies only the claim it supports. Repeated unchanged failures do not create repeated memories. |
+| `review.feedback_recorded` | Authorized review feedback becomes durable, potentially after the originating run ends. Record requirement gaps and corrections; connect later repair/acceptance evidence without treating reviewer prose alone as a universal rule. |
+| `run.checkpointed` | Before context compaction or at a confirmed pause, persist pending candidate references and working-state pointers. Keep temporary resume state separate from reusable memory; no new inference or external write after confirmed pause. |
+| `run.resumed` / `run.steering_applied` | Revalidate memory access and applicability. Retrieve an incremental set only when the task context changed or a prior record was revoked/expired; do not re-extract the entire history. |
+| `run.terminal` | After durable completion/failure/cancellation, enqueue bounded learning finalization from selected candidates and trusted receipts. It must not delay termination, cleanup or queue acknowledgement. |
+| `change.acceptance_recorded` | A durable PR/MR review, merge, rejection or revert outcome arrives. Link the outcome to relevant lessons and update confidence or retire contradicted guidance; merge alone is not proof of every requirement. |
+
+Each event carries schema version, event ID, run/generation, immutable provider
+binding, scoped evidence IDs and parent trace context. Use a durable outbox or
+equivalent committed-event journal; a process-local callback or `finally` block
+alone loses hooks on crash. Record accepted, pending, stored, rejected and unknown
+write outcomes. Idempotency binds the event and lesson identity; changed payloads
+conflict, redelivery does not duplicate learning, and late events cannot overwrite
+newer verified evidence. Process terminal events under narrow post-run authority,
+not a reused expired agent credential; revocation still applies.
+
+Policies can disable individual hooks or memory entirely and bound candidate
+count, size, extraction time and model spend. A hook need not invoke a model:
+ordinary discoveries use the agent's concise proposal and evidence; expensive
+transcript extraction is selective and asynchronous. Do not run a learning pass
+after every tool call. Pending checkpoints are durable before acknowledging pause;
+best-effort learning remains separate from mandatory execution state.
+
+Hook qualification must show real call sites firing during admitted SDK runs,
+validation failure/repair and human review, plus pause/resume, steering, terminal
+failure and abort. Kill a worker between event commit and delivery and verify
+recovery without duplicate memories. Show a subsequent relevant task consuming the
+lesson and an unrelated/unauthorized task not receiving it. Measure overhead and
+show that disabled memory performs no backend calls or extraction inference.
+
 Initial implementation: `src/memory.ts` defines the provider port, disabled backend
 and a scoped boundary validating provenance fields, expiry, duplicate IDs, context
 byte bounds and write receipts. Its tests use an injected provider. Gateway
