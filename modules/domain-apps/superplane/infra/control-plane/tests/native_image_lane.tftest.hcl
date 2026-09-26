@@ -27,7 +27,8 @@ variables {
 }
 
 run "native_lane_has_bounded_cloud_authority" {
-  command = plan
+  # Provider is mocked: apply resolves computed mock ARNs, never contacts AWS.
+  command = apply
   module { source = "../native-image" }
   override_resource {
     target = aws_iam_role.helper
