@@ -53,3 +53,7 @@ The resulting CLI is a common terminal surface for identity, infrastructure conn
 Completion requires parser/help/manifest/install/update/download parity, stable machine output, authorization/refusal tests and each story's required live evidence. Source merged, bundle published and live accepted are distinct states.
 
 The [command inventory](command-inventory.md) lists parser-backed command forms and options, including the delegated Superplane onboarding helper. Task and capability publication are tracked in the [qualification record](../design-notes/5644-cli-control-qualification/README.md).
+
+Access/session #5625 supplies seven additional source forms and nightly E33;
+see [scope and examples](access-and-sessions.md). Live membership/spend and
+revocation timing are not inferred from those source forms.

@@ -45,6 +45,8 @@ def parser():
         commands.add_parser("bedrock", help="Connect and verify Bedrock destinations; inspect routing")
     if Path(__file__).with_name("adp-github-admin.py").is_file():
         commands.add_parser("github", help="Configure this deployment's GitHub App; check sign-in and repository access")
+    commands.add_parser("access-request", help="Review and decide exact tenant access requests")
+    commands.add_parser("session", help="Inspect and revoke applicable gateway token families")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
 
@@ -147,6 +149,11 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     as_json = "--json" in argv
     try:
+        if argv and argv[0] in {"access-request", "session"}:
+            module = common.load_provider("adp-access.py")
+            if not module:
+                raise common.CliError("Access helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv)
         if argv and argv[0] == "usage":
             module = common.load_provider("adp-usage.py")
             if not module:

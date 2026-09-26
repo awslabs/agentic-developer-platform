@@ -768,3 +768,6 @@ Usage and redacted inference metadata: [Usage CLI](../../../docs/adp-cli/usage.m
 Human run discovery, transcripts, explanation streaming and supported controls: [Agent Activity CLI](../../../docs/adp-cli/agent.md). Task submission continues to use `adp task`.
 
 Authorized tenant selection and concurrent terminal isolation: [Tenant CLI](../../../docs/adp-cli/tenant.md).
+
+`adp access`, `adp admin access-request`, and `adp admin session revoke-user` are
+documented in [access and sessions](../../../docs/adp-cli/access-and-sessions.md).

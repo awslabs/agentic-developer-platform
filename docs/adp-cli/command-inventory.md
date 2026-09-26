@@ -163,3 +163,8 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 | `adp identity list` |  | `--json`, `--provider` |
 | `adp identity link` |  | `--dry-run`, `--json`, `--provider`, `--provider-user-id`, `--resume`, `--yes` |
 | `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |
+
+Access/session story #5625 adds seven forms: `access status|request`,
+`admin access-request list|show|approve|deny`, and `admin session revoke-user`.
+See [access and sessions](access-and-sessions.md) for exact review flags and the
+limited gateway-token revocation effect. Nightly E33 covers safe reads.

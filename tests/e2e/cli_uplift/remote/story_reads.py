@@ -181,11 +181,27 @@ def vault(cli, evidence):
     ]
 
 
+def access(cli, evidence):
+    selected = detail(cli.json(["tenant", "current"]))
+    tenant_id = selected.get("tenant_id")
+    common.require(isinstance(tenant_id, str) and tenant_id, "No current tenant")
+    status = detail(cli.json(["access", "status", "--tenant", tenant_id]))
+    common.require(status.get("tenant_id") == tenant_id, "Access status changed target")
+    common.require(
+        status.get("spend_eligibility") == "not_evaluated",
+        "Membership must not assert spend eligibility",
+    )
+    page = detail(cli.json(["admin", "access-request", "list", "--limit", "5"]))
+    common.require(isinstance(page.get("items"), list), "Access request page missing")
+    evidence["cases"] = ["tenant-access-status", "bounded-admin-review"]
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
+    "access": access,
 }
 
 

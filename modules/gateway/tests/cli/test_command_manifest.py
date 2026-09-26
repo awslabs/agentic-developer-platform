@@ -158,6 +158,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     ]
     checked_helpers = {helper for helper, _prefix in helper_prefixes} | {
         "adp-admin.py",
+        "adp-access.py",
         "adp-github-admin.py",
     }
     manifested = {row["command"]: row for row in shipped if row["helper"] in checked_helpers}
@@ -169,6 +170,14 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     admin.pop("adp admin bedrock")
     admin.pop("adp admin github")
     admin.pop("adp admin usage")
+    admin.pop("adp admin access-request")
+    admin.pop("adp admin session")
+    actual.update(
+        {
+            name.replace("adp access-request", "adp admin access-request").replace("adp session", "adp admin session"): row
+            for name, row in parser_leaves("adp-access.py", ["adp"]).items()
+        }
+    )
     actual.update(admin)
     actual.update(parser_leaves("adp-bedrock.py", ["adp", "admin", "bedrock"]))
     actual.update(parser_leaves("adp-github-admin.py", ["adp", "admin", "github"]))

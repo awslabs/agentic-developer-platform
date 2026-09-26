@@ -8432,7 +8432,20 @@ def test_example_config_leaves_unestablished_fixtures_absent():
     # take down the cases that do not depend on it.
     assert {
         case_id for case_id, entry in matrix.items() if entry["status"] == cases.NOT_RUN
-    } == {"E01", "E02", "E03", "E13", "E14", "E15", "E20", "E21", "E22", "E23", "E24"}
+    } == {
+        "E01",
+        "E02",
+        "E03",
+        "E13",
+        "E14",
+        "E15",
+        "E20",
+        "E21",
+        "E22",
+        "E23",
+        "E24",
+        "E33",
+    }
 
 
 # --------------------------------------------------------------------------
@@ -10223,6 +10236,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E22",
         "E23",
         "E24",
+        "E33",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",

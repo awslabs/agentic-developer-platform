@@ -4465,6 +4465,274 @@
       "required_capabilities": [
         "vault.identities.unlink"
       ]
+    },
+    {
+      "command": "adp access request",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "access.self.request",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--reason",
+        "--tenant",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.self.request"
+      ]
+    },
+    {
+      "command": "adp access status",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "access.self.read",
+      "flags": [
+        "--json",
+        "--tenant"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.self.read"
+      ]
+    },
+    {
+      "command": "adp admin access-request approve",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "access.managed.decide",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--expected-role",
+        "--expected-scope",
+        "--json",
+        "--operation-id",
+        "--reason",
+        "--request",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.managed.decide"
+      ]
+    },
+    {
+      "command": "adp admin access-request deny",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "access.managed.decide",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--expected-role",
+        "--expected-scope",
+        "--json",
+        "--operation-id",
+        "--reason",
+        "--request",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.managed.decide"
+      ]
+    },
+    {
+      "command": "adp admin access-request list",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "access.managed.read",
+      "flags": [
+        "--cursor",
+        "--json",
+        "--limit"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.managed.read"
+      ]
+    },
+    {
+      "command": "adp admin access-request show",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "access.managed.read",
+      "flags": [
+        "--json",
+        "--request"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "access.managed.read"
+      ]
+    },
+    {
+      "command": "adp admin session revoke-user",
+      "helper": "adp-access.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "auth.session.revoke",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--reason",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/access/**",
+          "/admin/access-requests/**",
+          "/auth/admin/revoke-user-tokens/**"
+        ],
+        "schema": "exact access and token-family review"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "tests": [
+        "tests/cli/test_adp_access.py"
+      ],
+      "required_capabilities": [
+        "auth.session.revoke"
+      ]
     }
   ]
 }

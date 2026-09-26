@@ -6,7 +6,7 @@ Issue #2961: D5 data foundation — tenant_memberships table.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, new_uuid, utcnow
@@ -25,6 +25,7 @@ class TenantAccessRequest(Base):
     target_login: Mapped[str] = mapped_column(String(255), nullable=False)
     motivation: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    decision_receipt: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     decided_by: Mapped[str | None] = mapped_column(String(255))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decision_note: Mapped[str | None] = mapped_column(Text)

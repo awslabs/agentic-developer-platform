@@ -129,6 +129,7 @@ class TestCliScriptDownload:
             "adp-task.py",
             "adp-tenant.py",
             "adp-vault.py",
+            "adp-access.py",
             "adp-usage.py",
             "adp-agent.py",
             "adp_task_client.py",

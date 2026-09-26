@@ -30,6 +30,8 @@ from src.shared.schemas.auth import TokenContext
 
 from .approval import approve_request, attach_approved_member, deny_request
 from .approval_decision import ApprovalDecision, derive_approval_decision, target_account_for_request
+from .cli_contract import request_lock, submit_lock
+from .cli_contract import router as cli_router
 from .schemas import (
     RESERVED_TENANT_IDS,
     TENANT_ID_PATTERN,
@@ -50,6 +52,7 @@ from .trusted_identity import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(route_class=AuditedAdminRoute)
+router.include_router(cli_router)
 
 
 @dataclass(frozen=True)
@@ -483,9 +486,14 @@ async def _pick_tenant_id(db: AsyncSession, base_slug: str, cognito_sub: str) ->
     if existing_org is not None:
         return None
     # Collision check 2: someone else's pending request for the same tenant
-    stmt = select(TenantAccessRequest).where(
-        TenantAccessRequest.proposed_tenant_id == base_slug,
-        TenantAccessRequest.status == "pending",
+    stmt = (
+        select(TenantAccessRequest)
+        .where(
+            TenantAccessRequest.proposed_tenant_id == base_slug,
+            TenantAccessRequest.status == "pending",
+        )
+        .order_by(TenantAccessRequest.created_at, TenantAccessRequest.id)
+        .limit(1)
     )
     result = await db.execute(stmt)
     other = result.scalar_one_or_none()
@@ -675,6 +683,7 @@ async def get_access_status(
     request_in: Request,
     current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    target_tenant: str | None = None,
 ) -> AccessStatusResponse:
     """Check if the caller has a user row (registered) or needs to onboard.
 
@@ -683,6 +692,30 @@ async def get_access_status(
     (via GitHub org membership) that were created after their initial onboarding.
     """
     cognito_sub = current_user.user_id
+    if target_tenant is not None:
+        from src.shared.identity.workspaces import workspace_user
+
+        account = await workspace_user(db, cognito_sub, target_tenant)
+        membership = None
+        if account is not None:
+            membership = await db.scalar(
+                select(TenantMembership).where(TenantMembership.user_id == account.id, TenantMembership.tenant_id == target_tenant)
+            )
+        if membership is not None and getattr(membership, "revoked_at", None) is None:
+            return AccessStatusResponse(status="member", tenant_id=target_tenant, membership_role=membership.role)
+        pending = await db.scalar(
+            select(TenantAccessRequest)
+            .where(
+                TenantAccessRequest.cognito_sub == cognito_sub,
+                TenantAccessRequest.proposed_tenant_id == target_tenant,
+                TenantAccessRequest.status == "pending",
+            )
+            .order_by(TenantAccessRequest.created_at)
+            .limit(1)
+        )
+        return AccessStatusResponse(
+            status="pending" if pending else "no_membership", request_id=pending.id if pending else None, tenant_id=target_tenant
+        )
 
     # Check if user already exists
     stmt = select(User).where(User.cognito_sub == cognito_sub).order_by(User.org_id, User.id).limit(1)
@@ -726,9 +759,14 @@ async def get_access_status(
         return AccessStatusResponse(status="registered")
 
     # Check if there's a pending request
-    stmt = select(TenantAccessRequest).where(
-        TenantAccessRequest.cognito_sub == cognito_sub,
-        TenantAccessRequest.status == "pending",
+    stmt = (
+        select(TenantAccessRequest)
+        .where(
+            TenantAccessRequest.cognito_sub == cognito_sub,
+            TenantAccessRequest.status == "pending",
+        )
+        .order_by(TenantAccessRequest.created_at, TenantAccessRequest.id)
+        .limit(1)
     )
     result = await db.execute(stmt)
     pending = result.scalar_one_or_none()
@@ -738,7 +776,7 @@ async def get_access_status(
     return AccessStatusResponse(status="new")
 
 
-@router.post("/access/request", response_model=AccessRequestResponse)
+@router.post("/access/request", response_model=AccessRequestResponse, dependencies=[Depends(submit_lock)])
 async def submit_access_request(
     request_in: Request,
     payload: AccessRequestPayload,
@@ -764,11 +802,49 @@ async def submit_access_request(
         )
 
     cognito_sub = current_user.user_id
+    if payload.target_tenant is not None:
+        target = await db.get(Organization, payload.target_tenant)
+        if target is None:
+            raise HTTPException(404, "Target organization not found; use platform onboarding for a new organization")
+        existing = await db.scalar(
+            select(TenantAccessRequest)
+            .where(
+                TenantAccessRequest.cognito_sub == cognito_sub,
+                TenantAccessRequest.proposed_tenant_id == target.id,
+                TenantAccessRequest.status == "pending",
+            )
+            .order_by(TenantAccessRequest.created_at)
+            .limit(1)
+        )
+        if existing:
+            return _onboarding_result(AccessRequestResponse(status="pending", request_id=existing.id, tenant_id=target.id))
+        claims = _decode_jwt_claims(request_in.headers.get("authorization"))
+        login, provider_id = _extract_github_identity(claims, cognito_sub)
+        if await _proven_link_conflict(db, cognito_sub, provider_id):
+            raise HTTPException(409, "GitHub identity requires administrator review")
+        mark_admin_effects()
+        row = TenantAccessRequest(
+            cognito_sub=cognito_sub,
+            provider="github",
+            provider_user_id=provider_id,
+            proposed_tenant_id=target.id,
+            target_login=login,
+            motivation=payload.motivation,
+            status="pending",
+        )
+        db.add(row)
+        await db.flush()
+        return _onboarding_result(AccessRequestResponse(status="pending", request_id=row.id, tenant_id=target.id))
 
     # Idempotency first — if this user already has a pending request, reuse it.
-    stmt = select(TenantAccessRequest).where(
-        TenantAccessRequest.cognito_sub == cognito_sub,
-        TenantAccessRequest.status == "pending",
+    stmt = (
+        select(TenantAccessRequest)
+        .where(
+            TenantAccessRequest.cognito_sub == cognito_sub,
+            TenantAccessRequest.status == "pending",
+        )
+        .order_by(TenantAccessRequest.created_at, TenantAccessRequest.id)
+        .limit(1)
     )
     result = await db.execute(stmt)
     dup_request = result.scalar_one_or_none()
@@ -1071,7 +1147,7 @@ async def _authorize_decision(
     return role, allowed_org_id
 
 
-@router.post("/admin/access-requests/{request_id}/approve", response_model=AdminApprovalResponse)
+@router.post("/admin/access-requests/{request_id}/approve", response_model=AdminApprovalResponse, dependencies=[Depends(request_lock)])
 async def approve_access_request(
     request_id: str,
     body: AdminDecisionPayload | None = None,
@@ -1125,6 +1201,12 @@ async def approve_access_request(
         request,
         role_for_existing_org=_determine_role_for_matched_user,
     )
+
+    if body and (
+        (body.expected_role and body.expected_role != decision.granted_role)
+        or (body.expected_scope and body.expected_scope != decision.request_class.value)
+    ):
+        raise HTTPException(409, "Proposed grant changed; review this request again")
 
     mark_admin_effects()
     if role != AdminRole.PLATFORM_ADMIN:
@@ -1254,7 +1336,7 @@ def _log_decision(caller: TokenContext, role: AdminRole, request: TenantAccessRe
     )
 
 
-@router.post("/admin/access-requests/{request_id}/deny")
+@router.post("/admin/access-requests/{request_id}/deny", dependencies=[Depends(request_lock)])
 async def deny_access_request(
     request_id: str,
     body: AdminDecisionPayload | None = None,

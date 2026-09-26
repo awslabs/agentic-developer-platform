@@ -28,6 +28,7 @@ logger = logging.getLogger("bedrockgateway")
 UNIT_MODULES = [
     "src.domain_proxy.superplane",
     "src.auth.routes",
+    "src.auth.session_admin",
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
     "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
