@@ -60,3 +60,5 @@ fixture IDs and restore baseline to recover manually, then exact owned IDs to
 clean resources. Do not dispatch another evaluation ID to conceal pending work.
 Source fault tests cover lost creation reply, wrong actor/foreign baseline,
 revocation not enforced, failed restoration/cleanup, and pre-dispatch persistence.
+
+Organization creation also creates its canonical default department and team. The v2 recovery plan records their exact IDs before create transport. Cleanup removes them child-first only when parent, default name/description, and team department still match; changed children remain pending. This includes accepted creation with a lost reply.

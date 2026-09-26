@@ -181,7 +181,11 @@ def execute(config, evidence):
             ("org", plan["org_id"], plan["org_id"]),
             ("department", plan["department_id"], tenant),
         ] + [("team", value, tenant) for value in plan["team_ids"]]
-        for kind, identifier, org in owned:
+        default_children = [
+            ("department", plan["default_department_id"], plan["org_id"]),
+            ("team", plan["default_team_id"], plan["org_id"]),
+        ]
+        for kind, identifier, org in owned + default_children:
             common.require(
                 target(kind, identifier, org) is None,
                 "Preexisting owned target requires explicit recovery, not a fresh diagnostic",
@@ -233,6 +237,10 @@ def execute(config, evidence):
                 if kind == "team":
                     args += ["--department", plan["department_id"]]
                 attempted.append((kind, identifier, org))
+                if kind == "org":
+                    # Canonical organization creation creates these children
+                    # atomically. Retain them before transport, including a lost ACK.
+                    attempted.extend(default_children)
                 mutate(args)
                 common.require(
                     target(kind, identifier, org), "Created hierarchy target missing"
@@ -410,8 +418,23 @@ def execute(config, evidence):
                 try:
                     row = target(kind, identifier, org)
                     if row:
+                        resource = row["resource"]
+                        is_default = (kind, identifier, org) in default_children
+                        if is_default:
+                            common.require(
+                                resource.get("org_id") == plan["org_id"]
+                                and resource.get("name") == "Default"
+                                and resource.get("description") == "Default " + kind
+                                and (
+                                    kind != "team"
+                                    or resource.get("department_id")
+                                    == plan["default_department_id"]
+                                ),
+                                "Default child ownership or content changed; retain it",
+                            )
                         common.require(
-                            row["resource"].get("name")
+                            is_default
+                            or resource.get("name")
                             in {identifier, identifier + "-renamed"},
                             "Owned ID now names an unexpected resource; preserve it for manual recovery",
                         )
