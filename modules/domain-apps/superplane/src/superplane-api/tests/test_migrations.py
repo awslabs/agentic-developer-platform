@@ -515,7 +515,7 @@ def _tables_created_by_migrations() -> set[str]:
                     continue
                 func = node.func
                 name = func.attr if isinstance(func, ast.Attribute) else ""
-                if name != "create_table":
+                if name not in {"create_table", "execute"}:
                     continue
                 try:
                     argument = node.args[0]
@@ -525,7 +525,19 @@ def _tables_created_by_migrations() -> set[str]:
                 except (ValueError, SyntaxError):
                     continue
                 if isinstance(table, str):
-                    created.add(table)
+                    if name == "create_table":
+                        created.add(table)
+                    else:
+                        # Revisions 040/041 execute each prepared DDL statement
+                        # directly. Count only literal SQL passed by upgrade(),
+                        # not unrelated strings or rollback-only definitions.
+                        created.update(
+                            re.findall(
+                                r"\bCREATE\s+TABLE\s+([a-z_][a-z0-9_]*)\s*\(",
+                                table,
+                                flags=re.IGNORECASE,
+                            )
+                        )
     return created
 
 
