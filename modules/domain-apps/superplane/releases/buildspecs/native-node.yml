@@ -1,0 +1,12 @@
+version: 0.2
+phases:
+  build:
+    commands:
+      - >-
+        python3 modules/domain-apps/superplane/images/native-node/build.py
+        --lock "$NATIVE_IMAGE_LOCK"
+        --bundle "$NATIVE_RUNTIME_BUNDLE"
+        --dependency-review "$NATIVE_DEPENDENCY_REVIEW"
+        --packer "$NATIVE_PACKER_BINARY"
+        --amazon-plugin "$NATIVE_AMAZON_PLUGIN_BINARY"
+        --output "$NATIVE_IMAGE_OUTPUT"
