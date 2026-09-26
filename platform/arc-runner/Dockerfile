@@ -33,6 +33,27 @@ RUN git apply --check /tmp/terraform-security-dependencies.patch \
         -o /out/terraform . \
     && sha256sum -c /tmp/terraform-modules.sha256
 
+# Signed maintained Kaniko release; rebuild only executor with reviewed dependencies.
+FROM ghcr.io/osscontainertools/kaniko:v1.28.5@sha256:738807f0e31daf07743f89260a95956dcc6ee4f62553f4f6344c990cabab8675 AS kaniko-release
+FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS kaniko-build
+ENV GOTOOLCHAIN=local CGO_ENABLED=0
+WORKDIR /src
+RUN git init . \
+    && git remote add origin https://github.com/osscontainertools/kaniko.git \
+    && git fetch --depth=1 origin 9c3dcc112b7a71bed4de3bc8c4ed089ef98cbf0c \
+    && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = 9c3dcc112b7a71bed4de3bc8c4ed089ef98cbf0c
+COPY kaniko-security-dependencies.patch /tmp/kaniko-security-dependencies.patch
+RUN git apply --check /tmp/kaniko-security-dependencies.patch \
+    && git apply /tmp/kaniko-security-dependencies.patch \
+    && sha256sum go.mod go.sum > /tmp/kaniko-modules.sha256 \
+    && go mod download \
+    && go mod verify \
+    && go build -mod=readonly -p 1 -buildvcs=false -trimpath \
+        -ldflags "-s -w -X github.com/osscontainertools/kaniko/pkg/version.version=v1.28.5" \
+        -o /out/executor ./cmd/executor \
+    && sha256sum -c /tmp/kaniko-modules.sha256
+
 FROM ghcr.io/actions/actions-runner:2.337.0
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -157,9 +178,12 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && docker --version
 
 # ── Kaniko executor (daemonless container builds; no Docker daemon needed) ──
-# Pinned to v1.24.0 (final release; repo archived 2025-06-03).
-# Do NOT use :latest — pin tag + digest to avoid silent CVE regression.
-COPY --from=gcr.io/kaniko-project/executor:v1.24.0@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698 /kaniko /kaniko
+# Maintained v1.28.5 helpers plus executor rebuilt with patched dependencies.
+# Keep the release digest and exact source commit aligned.
+COPY --from=kaniko-release /kaniko /kaniko
+COPY --from=kaniko-build /out/executor /kaniko/executor
+COPY --from=kaniko-build /src/LICENSE /usr/local/share/licenses/kaniko/LICENSE
+COPY kaniko-security-NOTICE /usr/local/share/licenses/kaniko/NOTICE
 RUN chmod -R 777 /kaniko
 ENV PATH="/kaniko:${PATH}"
 

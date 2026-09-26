@@ -15,7 +15,7 @@ Added tooling:
 - **IaC:** Terraform 1.14.9 (ADP security rebuild with Go 1.26.8 and pinned dependencies)
 - **K8s:** kubectl 1.35.9, Helm 3.22.0 (archive checksum verified)
 - **Git/GitHub:** git, gh CLI
-- **Container:** Docker CLI (for ECR login/push; no DinD daemon), Kaniko executor (daemonless image builds)
+- **Container:** Docker CLI (for ECR login/push; no DinD daemon), Kaniko 1.28.5 (ADP security rebuild; daemonless image builds)
 - **Utilities:** zip, unzip, jq, curl, wget, sudo
 
 ## Build + push (CI)
@@ -69,3 +69,17 @@ with the binary under `/usr/local/share/licenses/terraform/`.
 Refresh the patch from the pinned upstream commit when updating dependencies;
 review the complete resolved graph and run isolated lifecycle and upstream
 compatibility tests before publishing. Runner rollout is a separate operation.
+
+## Kaniko security rebuild
+
+The maintained `osscontainertools/kaniko` v1.28.5 release supplies credential
+helpers and certificates from its digest-pinned image. A separate Go 1.26.8
+builder checks out the exact upstream commit and applies
+`kaniko-security-dependencies.patch`, updating x/crypto to 0.57.0 and its
+resolved dependencies. Module verification and checksum guards prevent
+compilation from silently changing the reviewed graph. The rebuilt executor
+ships with the upstream license and an ADP modification notice.
+
+Telemetry remains disabled unless explicitly configured through Kaniko's
+telemetry endpoint setting. Image publication and runner rollout require
+separate acceptance; a local build does not establish deployed remediation.
