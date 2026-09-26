@@ -37,12 +37,31 @@ one user/assistant history pair each. It refuses to start turn two if turn one
 is uncertain or needs clarification. It does not guess an answer to a pending
 question or generate replacement request IDs.
 
-Before each dispatch the original endpoint, body and request ID are saved in a
+Before invoking the worker, construct `payload["recovery_plan"]` with
+`tests.e2e.cli_uplift.remote.chat_plan.recovery_plan(payload)` and pass the
+existing externally backed run manifest to
+`run_worker(instance_id, "hosted_chat", payload, manifest=manifest)`.
+The worker transport critically pushes the immutable plan through the manifest's
+existing durable sink before sending SSM. Missing sinks, changed request inputs,
+and failed pushes refuse dispatch. The remote script independently checks the
+same plan against its fixture and messages. Diagnostic intents are retained
+recovery evidence, not resource entries that the generic sweeper deletes.
+
+After losing an instance or its entire SSM reply, recover the plan from
+`diagnostic_intents["hosted_chat:" + evaluation_id]`. Reauthenticate the original
+fixture, select the recorded tenant, and preview the original start request ID
+and message to recover its session ID without dispatch. Never mint another ID.
+Read that owned session and reconcile only a recorded attempted original turn; do not dispatch
+the second turn merely to perform cleanup. An unknown attempt boundary remains
+pending until the original session and Task state establish what happened.
+The generic cleanup sweep does not automate these chat reconciliation steps.
+
+On the worker, each original endpoint, body and request ID are also saved in a
 private recovery file and emitted in `detail`. A lost receipt replays the same
 request at most once and can recover the committed task from owned session
 readback. Failure cleanup cancels only retained owned tasks and waits for a
 terminal snapshot. Unknown acceptance or pending cleanup remains a failure;
-its exact request data survives in dispatcher evidence even if EC2 is removed.
+its original request inputs survive in the caller manifest even when no dispatcher output returns.
 No passwords, tokens or session vault content enter recovery evidence.
 
 Collect the returned `detail` into the diagnostic result/report before removing

@@ -238,8 +238,28 @@ def _run_worker(ssm, cfg, install):
     was never delivered.
     """
 
-    def run(instance_id, purpose, payload):
+    def run(instance_id, purpose, payload, *, manifest=None):
         bundle.require_purpose(purpose)
+        if purpose in {"hosted_chat", "vault_lifecycle"}:
+            if manifest is None:
+                raise ports_module.PortError(
+                    "Owned diagnostics require a durable caller manifest before dispatch"
+                )
+            plan = payload.get("recovery_plan")
+            if not isinstance(plan, dict) or plan.get("evaluation_id") != payload.get(
+                "evaluation_id"
+            ):
+                raise ports_module.PortError(
+                    "Missing or mismatched diagnostic recovery plan"
+                )
+            if purpose == "hosted_chat":
+                from .remote.chat_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError(
+                        "Chat recovery inputs differ from the remote payload"
+                    )
+            manifest.record_diagnostic(purpose, plan)
         install(instance_id, payload.get("evaluation_id") or "")
         remote = f"{bundle.REMOTE_DIR}/{purpose}.json"
         commands = [

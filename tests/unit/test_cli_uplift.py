@@ -11000,6 +11000,7 @@ def test_shipped_hosted_chat_two_turns_and_durable_unknown(tmp_path, monkeypatch
            "evaluation_id": "stable-chat-evaluation",
            "human_task_chat": {"enrollment_verified": True, "shared_budget_authorized": True, "max_tasks": 2,
                                "max_task_usd": 0.25, "login_user_id": "fixture-login", "canonical_user_id": "fixture-user", "tenant_id": "fixture-tenant"}}
+    cfg["recovery_plan"] = module.recovery_plan(cfg)
     evidence = {"success": False, "transcript": []}
     if fault in {"unknown_second", "wrong_fixture", "watch_pending"}:
         with pytest.raises(remote_common.RemoteError):
@@ -11044,3 +11045,57 @@ def test_hosted_chat_fixture_is_explicit_and_not_e40(tmp_path):
     assert not module.valid_fixture({})
     assert "hosted_chat" not in stages.JOURNEY_DRIVERS.values()
     assert "hosted_chat" in bundle.purposes()
+
+
+@pytest.mark.parametrize("fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"])
+def test_hosted_chat_intent_precedes_ssm_and_survives_instance_loss(tmp_path, fault):
+    from tests.e2e.cli_uplift.remote.chat_plan import recovery_plan
+
+    cfg = {"evaluation_id": "durable-chat", "gateway_url": "https://gateway", "test_user_id": "login",
+           "human_task_chat": {"tenant_id": "tenant", "canonical_user_id": "human", "max_tasks": 2, "max_task_usd": 0.25}}
+    cfg["recovery_plan"] = recovery_plan(cfg)
+    durable = []
+    calls = []
+
+    def push(document, *, critical):
+        assert critical is True
+        if fault == "sink_failure":
+            raise RuntimeError("durable sink unavailable")
+        durable.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "chat", on_change=push)
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            calls.append("ssm")
+            assert durable[-1]["diagnostic_intents"]["hosted_chat:durable-chat"] == recovery_plan(cfg)
+            raise RuntimeError("EC2 terminated after acceptance, before any result")
+
+    worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
+    if fault == "changed_plan":
+        cfg["recovery_plan"]["turns"][0]["message"] = "replacement paid request"
+    with pytest.raises((RuntimeError, ValueError, PortError)):
+        worker("i-owned", "hosted_chat", cfg, manifest=None if fault == "no_manifest" else manifest)
+    if fault == "instance_loss":
+        assert calls == ["install", "ssm"]
+        # Worker state and output are absent. An independent caller can still
+        # reconstruct exactly the original requests from the external snapshot.
+        import shutil
+        shutil.rmtree(tmp_path)
+        retained = durable[-1]["diagnostic_intents"]["hosted_chat:durable-chat"]
+        assert retained["turns"] == recovery_plan(cfg)["turns"]
+        assert len({turn["request_id"] for turn in retained["turns"]}) == 2
+    else:
+        assert calls == []
+
+
+def test_diagnostic_manifest_refuses_replacement_request_and_local_only_sink(tmp_path):
+    plan = {"evaluation_id": "same", "turns": [{"request_id": "original"}]}
+    local = cleanup.Manifest(tmp_path / "local" / "manifest.json", "chat")
+    with pytest.raises(ValueError, match="external durable"):
+        local.record_diagnostic("hosted_chat", plan)
+    manifest = cleanup.Manifest(tmp_path / "durable" / "manifest.json", "chat", on_change=lambda *a, **k: None)
+    manifest.record_diagnostic("hosted_chat", plan)
+    manifest.record_diagnostic("hosted_chat", plan)
+    with pytest.raises(ValueError, match="different inputs"):
+        manifest.record_diagnostic("hosted_chat", {**plan, "turns": [{"request_id": "replacement"}]})
