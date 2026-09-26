@@ -708,3 +708,463 @@ def test_archive_source_attestation_binds_git_tree_without_git_metadata(
     os.symlink("/etc/passwd", checkout / "alias")
     with pytest.raises(recipe.ImageRefused, match="source differs"):
         provenance.verify(checkout, attestation, digest, revision)
+
+
+@pytest.fixture
+def native_transport(producer_modules, monkeypatch):
+    path = ROOT / "lane" / "transport.py"
+    module_spec = importlib.util.spec_from_file_location("native_transport", path)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+def test_lane_omits_image_tags_but_binds_atomic_resources_to_caller(
+    producer_modules, producer_plan, tmp_path
+):
+    template = producer_modules["producer"].template(
+        producer_plan,
+        tmp_path / "source",
+        tmp_path,
+        "build",
+        caller="AROAFIXTURE:build-one",
+    )
+    source = template["source"]["amazon-ebssurrogate"]["native"]
+    assert source["tags"] == {}
+    for key in ("run_tags", "run_volume_tags", "snapshot_tags"):
+        assert source[key]["superplane-native-caller"] == "AROAFIXTURE:build-one"
+        assert source[key]["superplane-native-build"] == "build"
+
+
+@pytest.mark.parametrize("bad", ["../outside", "/absolute", "alias/child"])
+def test_native_source_zip_refuses_escape_before_writes(
+    native_transport, tmp_path, bad
+):
+    import stat
+    import zipfile
+
+    archive = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        alias = zipfile.ZipInfo("alias")
+        alias.external_attr = (stat.S_IFLNK | 0o777) << 16
+        output.writestr(alias, "/tmp")
+        output.writestr(bad, "untrusted")
+    destination = tmp_path / "extracted"
+    with pytest.raises(recipe.ImageRefused):
+        native_transport.extract(archive, destination)
+    assert not destination.exists()
+
+
+def test_native_source_zip_preserves_modes_and_bounds_emitted_size(
+    native_transport, tmp_path, monkeypatch
+):
+    import stat
+    import zipfile
+
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        tool = zipfile.ZipInfo("nested/tool")
+        tool.external_attr = (stat.S_IFREG | 0o755) << 16
+        output.writestr(tool, "#!/bin/sh\n")
+        alias = zipfile.ZipInfo("alias")
+        alias.external_attr = (stat.S_IFLNK | 0o777) << 16
+        output.writestr(alias, "nested/tool")
+    destination = tmp_path / "extracted"
+    native_transport.extract(archive, destination)
+    assert (destination / "nested/tool").stat().st_mode & 0o111
+    assert (destination / "alias").is_symlink()
+    monkeypatch.setattr(native_transport, "MAX_ARCHIVE_BYTES", 1)
+    with pytest.raises(recipe.ImageRefused, match="bound"):
+        native_transport.extract(archive, tmp_path / "over-limit")
+    assert not (tmp_path / "over-limit").exists()
+
+
+def test_native_versioned_transport_refuses_digest_drift(
+    native_transport, tmp_path, monkeypatch
+):
+    def fake_aws(region, *args):
+        Path(args[-1]).write_bytes(b"wrong bytes")
+        return {"VersionId": "original-version"}
+
+    monkeypatch.setattr(native_transport, "aws", fake_aws)
+    pointer = {
+        "bucket": "fixture-native-input",
+        "key": "native-input/run/input",
+        "version": "original-version",
+        "sha256": "a" * 64,
+    }
+    with pytest.raises(recipe.ImageRefused, match="digest differs"):
+        native_transport.download(
+            "us-east-1", pointer, tmp_path / "input", "fixture-native-input"
+        )
+    pointer["version"] = "null"
+    with pytest.raises(recipe.ImageRefused, match="scope/version"):
+        native_transport.download(
+            "us-east-1", pointer, tmp_path / "input", "fixture-native-input"
+        )
+
+
+@pytest.fixture
+def native_dispatch(native_transport, monkeypatch):
+    monkeypatch.setitem(sys.modules, "transport", native_transport)
+    path = ROOT / "lane" / "dispatch.py"
+    module_spec = importlib.util.spec_from_file_location("native_dispatch", path)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def approved_native_project():
+    return {
+        "name": "fixture-native",
+        "serviceRole": "arn:aws:iam::111122223333:role/native-build",
+        "environment": {
+            "image": "image@sha256:" + "a" * 64,
+            "type": "LINUX_CONTAINER",
+            "computeType": "BUILD_GENERAL1_MEDIUM",
+            "privilegedMode": True,
+            "imagePullCredentialsType": "CODEBUILD",
+            "environmentVariables": [
+                {
+                    "name": "NATIVE_ACCOUNT_ID",
+                    "value": "111122223333",
+                    "type": "PLAINTEXT",
+                }
+            ],
+        },
+        "vpcConfig": {
+            "vpcId": "vpc-original",
+            "subnets": ["subnet-original"],
+            "securityGroupIds": ["sg-original"],
+        },
+        "timeoutInMinutes": 150,
+        "queuedTimeoutInMinutes": 30,
+        "concurrentBuildLimit": 1,
+        "source": {
+            "type": "S3",
+            "location": "native-input/source.zip",
+            "buildspec": "modules/domain-apps/superplane/releases/buildspecs/native-node-lane.yml",
+        },
+        "artifacts": {"type": "NO_ARTIFACTS"},
+    }
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "serviceRole",
+        "image",
+        "vpcId",
+        "subnets",
+        "securityGroupIds",
+        "computeType",
+        "privilegedMode",
+        "concurrentBuildLimit",
+        "timeoutInMinutes",
+        "queuedTimeoutInMinutes",
+    ],
+)
+def test_native_project_drift_refuses_unchanged_name_and_buildspec(
+    native_dispatch, approved_native_project, field
+):
+    original = approved_native_project
+    deployment = {
+        "project_name": original["name"],
+        "project": native_dispatch.project_view(original),
+    }
+    observed = copy.deepcopy(original)
+    if field in observed["environment"]:
+        observed["environment"][field] = (
+            False if field == "privilegedMode" else "changed"
+        )
+    elif field in observed["vpcConfig"]:
+        observed["vpcConfig"][field] = ["changed"] if field != "vpcId" else "changed"
+    else:
+        observed[field] = "changed"
+    with pytest.raises(recipe.ImageRefused, match="approved lane deployment"):
+        native_dispatch.verify_project(observed, deployment)
+
+
+def test_native_plan_and_artifact_mutation_cannot_replace_approved_upload(
+    native_transport, producer_plan, tmp_path, monkeypatch
+):
+    import hashlib
+
+    path = tmp_path / "plan.json"
+    raw = runner.canonical(producer_plan).encode()
+    path.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    native_transport.approved_plan(path, digest)
+    changed = copy.deepcopy(producer_plan)
+    changed["budget_approval_reference"] = "changed-after-review"
+    changed["build_timeout_minutes"] = 120
+    path.write_text(runner.canonical(changed))
+    with pytest.raises(recipe.ImageRefused, match="approved plan digest"):
+        native_transport.approved_plan(path, digest)
+    with pytest.raises(recipe.ImageRefused, match="staged input"):
+        native_transport.freeze(path, tmp_path / "frozen" / "plan.json", digest)
+
+    artifact = tmp_path / "tool"
+    artifact.write_bytes(b"approved")
+    digest = hashlib.sha256(b"approved").hexdigest()
+    frozen = native_transport.freeze(artifact, tmp_path / "frozen" / "tool", digest)
+    artifact.write_bytes(b"replaced original")
+    observed = []
+
+    def fake_s3(region, *args):
+        uploaded = Path(args[args.index("--body") + 1]).read_bytes()
+        observed.append(uploaded)
+        import base64
+
+        checksum = base64.b64encode(hashlib.sha256(uploaded).digest()).decode()
+        assert args[args.index("--checksum-sha256") + 1] == checksum
+        return {"VersionId": "immutable", "ChecksumSHA256": checksum}
+
+    monkeypatch.setattr(native_transport, "aws", fake_s3)
+    pointer = native_transport.upload(
+        "us-east-1", "bucket", "key", frozen, expected_digest=digest
+    )
+    assert observed == [b"approved"]
+    assert pointer["sha256"] == digest
+    frozen.chmod(0o600)
+    frozen.write_bytes(b"tampered staging")
+    with pytest.raises(recipe.ImageRefused, match="approved digest"):
+        native_transport.upload(
+            "us-east-1", "bucket", "key", frozen, expected_digest=digest
+        )
+    assert len(observed) == 1
+
+
+def test_native_dispatch_claim_survives_other_output_and_lost_reply(
+    native_dispatch, native_transport, producer_plan, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    args = SimpleNamespace(
+        dispatch_id="once",
+        project="native",
+        account_id="111122223333",
+        region="us-east-1",
+        plan_sha256="a" * 64,
+        deployment_sha256="b" * 64,
+        output_bucket="native-output",
+        output=str(tmp_path / "first"),
+    )
+    objects = {}
+    lose_response = True
+
+    def conditional_s3(region, *values):
+        nonlocal lose_response
+        assert values[values.index("--if-none-match") + 1] == "*"
+        key = values[values.index("--key") + 1]
+        if key in objects:
+            raise RuntimeError("PreconditionFailed")
+        objects[key] = Path(values[values.index("--body") + 1]).read_bytes()
+        if lose_response:
+            lose_response = False
+            raise OSError("reply lost after durable write")
+        return {
+            "VersionId": "one",
+            "ChecksumSHA256": values[values.index("--checksum-sha256") + 1],
+        }
+
+    monkeypatch.setattr(native_transport, "aws", conditional_s3)
+    with pytest.raises(OSError, match="reply lost"):
+        native_dispatch.claim_dispatch(args, producer_plan)
+    args.output = str(tmp_path / "fresh-local-directory")
+    with pytest.raises(RuntimeError, match="PreconditionFailed"):
+        native_dispatch.claim_dispatch(args, producer_plan)
+    assert len(objects) == 1
+    claim = json.loads(next(iter(objects.values())))
+    assert claim["approved_plan_sha256"] == args.plan_sha256
+    assert claim["approved_deployment_sha256"] == args.deployment_sha256
+
+
+@pytest.mark.parametrize("failure", ["plan-race", "lost-start-reply"])
+def test_native_dispatch_refuses_race_and_never_restarts_claimed_id(
+    native_dispatch,
+    native_transport,
+    producer_plan,
+    approved_native_project,
+    tmp_path,
+    monkeypatch,
+    failure,
+):
+    import hashlib
+    from types import SimpleNamespace
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(runner.canonical(producer_plan))
+    account, region = producer_plan["account_id"], producer_plan["region"]
+    role = f"arn:aws:iam::{account}:role/dispatcher"
+    project = approved_native_project
+    project["environment"]["environmentVariables"] = [
+        {"name": key, "value": value, "type": "PLAINTEXT"}
+        for key, value in {
+            "NATIVE_ACCOUNT_ID": account,
+            "AWS_REGION": region,
+            "NATIVE_INPUT_BUCKET": "native-input",
+            "NATIVE_OUTPUT_BUCKET": "native-output",
+            "NATIVE_DISPATCHER_ROLE_ARN": role,
+        }.items()
+    ]
+    deployment = {
+        "version": 1,
+        "account_id": account,
+        "region": region,
+        "dispatcher_role_arn": role,
+        "project_name": project["name"],
+        "project": native_dispatch.project_view(project),
+    }
+    deployment_path = tmp_path / "deployment.json"
+    deployment_path.write_text(json.dumps(deployment))
+    args = SimpleNamespace(
+        checkout=str(tmp_path / "checkout"),
+        plan=str(plan_path),
+        plan_sha256=hashlib.sha256(plan_path.read_bytes()).hexdigest(),
+        deployment=str(deployment_path),
+        deployment_sha256=hashlib.sha256(deployment_path.read_bytes()).hexdigest(),
+        project=project["name"],
+        dispatcher_role=role,
+        account_id=account,
+        region=region,
+        bucket="native-input",
+        output_bucket="native-output",
+        dispatch_id="one-id",
+        output=str(tmp_path / "first"),
+    )
+    claimed, starts = set(), []
+
+    def fake_aws(region, *values):
+        if values[0] == "sts":
+            return {
+                "Account": account,
+                "Arn": f"arn:aws:sts::{account}:assumed-role/dispatcher/fixture",
+            }
+        if values[0] == "codebuild":
+            return {"projects": [project]}
+        key = values[values.index("--key") + 1]
+        if key in claimed:
+            raise RuntimeError("PreconditionFailed")
+        claimed.add(key)
+        return {
+            "VersionId": "claim",
+            "ChecksumSHA256": values[values.index("--checksum-sha256") + 1],
+        }
+
+    def prepare(values):
+        output = Path(values.output)
+        output.mkdir()
+        (output / "dispatch.json").write_text(
+            json.dumps(
+                {
+                    "envelope": {"sha256": "a" * 64},
+                    "status": "START_PENDING",
+                    "build_id": None,
+                }
+            )
+        )
+        if failure == "plan-race":
+            changed = copy.deepcopy(producer_plan)
+            changed["budget_approval_reference"] = "replaced-between-check-and-start"
+            plan_path.write_text(runner.canonical(changed))
+
+    def start(*args, **kwargs):
+        starts.append("shared-dispatch-invoked")
+        raise OSError("lost start reply")
+
+    monkeypatch.setattr(native_transport, "aws", fake_aws)
+    monkeypatch.setattr(native_transport, "prepare", prepare)
+    monkeypatch.setattr(
+        native_transport, "upload", lambda *args, **kwargs: {"version": "receipt"}
+    )
+    monkeypatch.setattr(native_dispatch.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(native_dispatch.subprocess, "Popen", start)
+    with pytest.raises((recipe.ImageRefused, OSError)):
+        native_dispatch.dispatch(args)
+    assert len(starts) == (0 if failure == "plan-race" else 1)
+    if failure == "lost-start-reply":
+        assert (
+            json.loads((Path(args.output) / "child.json").read_text())["status"]
+            == "UNKNOWN_REVIEW_REQUIRED"
+        )
+        args.output = str(tmp_path / "fresh-output")
+        with pytest.raises(RuntimeError, match="PreconditionFailed"):
+            native_dispatch.dispatch(args)
+        assert len(starts) == 1
+        assert not Path(args.output).exists()
+
+
+def test_durable_native_receipts_survive_bulk_expiry_and_bind_original_plan(
+    native_transport, producer_modules, producer_plan, tmp_path, monkeypatch
+):
+    import hashlib
+    import shutil
+
+    monkeypatch.setitem(sys.modules, "transport", native_transport)
+    loaded = {}
+    for name in ("retain", "reconcile"):
+        module_spec = importlib.util.spec_from_file_location(
+            "native_" + name, ROOT / "lane" / (name + ".py")
+        )
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        loaded[name] = module
+    work = tmp_path / "bulk"
+    result = work / "result"
+    result.mkdir(parents=True)
+    raw = runner.canonical(producer_plan).encode()
+    (result / "approved-plan.json").write_bytes(raw)
+    start = {
+        "build_id": "superplane-native-" + "a" * 32,
+        "account_id": producer_plan["account_id"],
+        "region": producer_plan["region"],
+        "approved_plan_sha256": hashlib.sha256(raw).hexdigest(),
+        "source_revision": producer_plan["source_revision"],
+        "source_attestation_sha256": producer_plan["source_attestation_sha256"],
+    }
+    (result / "state.json").write_text(
+        runner.canonical({**start, "phase": "failed", "cleanup": "unknown"})
+    )
+    (result / "cleanup-inventory.json").write_text(
+        '{"images":[{"ImageId":"ami-retained"}]}'
+    )
+    objects = {"receipts/build/native-start.json": runner.canonical(start).encode()}
+
+    def upload(region, bucket, key, path):
+        objects[key] = Path(path).read_bytes()
+        return {
+            "key": key,
+            "version": "original",
+            "sha256": hashlib.sha256(objects[key]).hexdigest(),
+        }
+
+    monkeypatch.setattr(native_transport, "upload", upload)
+    receipt = loaded["retain"].retain(
+        work, "private-evidence", "build", producer_plan["region"], 1
+    )
+    assert receipt["cleanup"] == "unknown"
+    assert all(key.startswith("receipts/") for key in objects)
+    shutil.rmtree(work)  # Expiring bulk inputs/logs cannot remove these receipts.
+    preserved_plan = json.loads(objects["receipts/build/approved-plan.json"])
+    preserved_start = json.loads(objects["receipts/build/native-start.json"])
+    calls = []
+
+    def identity(*args):
+        calls.append("identity")
+        return {"Account": producer_plan["account_id"]}
+
+    monkeypatch.setattr(loaded["reconcile"].build, "aws", identity)
+    monkeypatch.setattr(
+        producer_modules["producer"],
+        "observe",
+        lambda *args: {"images": [{"ImageId": "ami-retained"}]},
+    )
+    inventory = loaded["reconcile"].reconcile(preserved_plan, preserved_start)
+    assert inventory["inventory"]["images"][0]["ImageId"] == "ami-retained"
+    assert inventory["cleanup"] == "review_required"
+    preserved_plan["budget_approval_reference"] = "different-plan"
+    with pytest.raises(recipe.ImageRefused, match="original plan/source"):
+        loaded["reconcile"].reconcile(preserved_plan, preserved_start)
+    assert calls == ["identity"]
