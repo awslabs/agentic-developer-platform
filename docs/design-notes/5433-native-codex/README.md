@@ -317,6 +317,46 @@ retrieval, extraction, retries and review repairs. Compare disabled memory and e
 provider on the same versioned tasks and model/effort settings; prevent evaluation
 answer leakage. Do not equate a cache hit or retrieved record with improved quality.
 
+#### Gateway memory integration
+
+Owner requirement (2026-09-26): support introducing memory through the ADP
+Gateway as well as harness hooks. The gateway model path can retrieve and attach
+authorized memory context, expose scoped memory proposal/read operations, and
+emit evidence references for selected learning candidates. Reuse the same provider
+port and record contract; gateway and harness must not maintain independent memory
+stores or incompatible learning policies.
+
+Select context ownership explicitly in the admitted run policy: disabled,
+harness-attached, or gateway-attached. A coordinated mode may combine the two only
+with a shared context manifest identifying record IDs/versions and their insertion
+point. Never retrieve or insert the same material independently on every request.
+Keep stable memory context reusable across turns where applicable, invalidate it
+on revocation or relevant context changes, and preserve prompt-cache opportunities.
+
+Gateway attachment occurs before the effective request is budgeted, hashed and
+dispatched. Persist the memory manifest and effective-request identity alongside
+the original SDK request identity so retries and continuation preserve exactly
+which context was sent. Do not mutate signed source requests, tool-call history or
+streamed results invisibly; define and qualify the transport-specific augmentation
+contract for the restricted Responses profile. Count added context tokens and
+retrieval/extraction costs against the admitted run budget and deadline. Record
+whether context was supplied by gateway or harness without including its content
+in default telemetry. Unsupported augmentation must refuse or use an explicitly
+configured no-memory mode, never silently alter the model contract.
+
+Gateway traffic is evidence, not sufficient proof that a task succeeded or a
+lesson is correct. Use host validation, repository review and lifecycle receipts
+to interpret selected request/response references. Keep extraction selective and
+asynchronous where possible; gateway availability and model streaming must not
+depend on a memory backend being healthy. Scope, redaction, retention, deletion,
+idempotency and authorization rules are identical at both integration points.
+
+Qualification covers no duplicate context, unchanged tool history, truthful
+effective-request metering, replay with the same memory versions, revocation,
+provider outage, latency overhead and gateway/harness trace correlation. Gateway
+memory attachment is a required future integration, not enabled by the initial
+provider port.
+
 #### Memory lifecycle hooks
 
 Memory needs explicit harness hooks, not merely a callable storage adapter.
