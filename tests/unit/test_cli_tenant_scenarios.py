@@ -72,3 +72,134 @@ def test_two_tenant_scenario_refreshes_but_does_not_claim_inference(scenario):
     assert ["refresh"] in cli.calls
     assert "remain separate acceptance" in evidence["qualification"]
     assert not any("workspaces/select" in call or "task" in call for call in cli.calls)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [None, "foreign_identity", "leaked_default", "command_error", "partial_write"],
+)
+def test_user_switch_restores_original_stores_and_rejects_false_passes(
+    scenario, tmp_path, monkeypatch, failure
+):
+    import json
+
+    directory = tmp_path / ".bedrock-gateway"
+    directory.mkdir()
+    originals = {
+        "config.json": b'{"gateway_url":"https://original","client_id":"keep"}',
+        "tokens.json": b'{"access_token":"original-fixture"}',
+    }
+    for name, content in originals.items():
+        (directory / name).write_bytes(content)
+    monkeypatch.setattr(
+        scenario, "ordinary_session", lambda *args: {"access_token": "ordinary-fixture"}
+    )
+    if failure == "partial_write":
+
+        def interrupted_write(*args):
+            (directory / "config.json").write_text("partial")
+            raise OSError("fixture write interrupted")
+
+        monkeypatch.setattr(scenario, "_write_session", interrupted_write)
+
+    class SwitchingClient:
+        def __init__(self):
+            self.saved = False
+
+        def json(self, args):
+            ordinary = (
+                json.loads((directory / "tokens.json").read_text())["access_token"]
+                == "ordinary-fixture"
+            )
+            if ordinary and failure == "command_error":
+                raise scenario.common.RemoteError("fixture read refused")
+            if args == ["tenant", "list"]:
+                data = {"items": [{"org_id": "native"}]}
+            elif "capabilities" in args:
+                data = {"tenant": {"org_id": "native"}}
+            else:
+                if args[:2] == ["tenant", "use"]:
+                    self.saved = True
+                data = {
+                    "identity": "ordinary"
+                    if ordinary and failure != "foreign_identity"
+                    else "original",
+                    "tenant_id": "native" if ordinary else "managed",
+                    "selection_source": "saved_default"
+                    if not ordinary or self.saved or failure == "leaked_default"
+                    else "single_membership",
+                }
+            return {"status": "ok", "detail": data}
+
+    evidence = {}
+    fixture = {
+        "ordinary_fixture_name": "owned-fixture",
+        "ordinary_login_user_id": "ordinary",
+        "ordinary_tenant_id": "native",
+    }
+    if failure:
+        with pytest.raises((scenario.common.RemoteError, OSError)):
+            scenario.user_switch_reads(
+                SwitchingClient(),
+                {"gateway_url": "https://gateway"},
+                fixture,
+                tmp_path,
+                evidence,
+            )
+        assert "user_switch" not in evidence
+    else:
+        scenario.user_switch_reads(
+            SwitchingClient(),
+            {"gateway_url": "https://gateway"},
+            fixture,
+            tmp_path,
+            evidence,
+        )
+        assert evidence["user_switch"]["original_default_preserved"]
+    for name, content in originals.items():
+        assert (directory / name).read_bytes() == content
+        assert (directory / name).stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "switch",
+    [
+        None,
+        {},
+        {"ordinary_fixture_name": "fixture"},
+        {
+            "ordinary_fixture_name": "fixture",
+            "ordinary_login_user_id": "member",
+            "ordinary_tenant_id": "native",
+            "password": "not-allowed",
+        },
+    ],
+)
+def test_user_switch_fixture_requires_exact_nonsecret_identifiers(switch):
+    import json
+    from tests.e2e.cli_uplift.fixtures import parse
+    from tests.e2e.cli_uplift.config import ConfigError
+
+    with pytest.raises(ConfigError):
+        parse(
+            json.dumps(
+                {"tenant_isolation": {"tenant_ids": ["a", "b"], "user_switch": switch}}
+            )
+        )
+
+
+def test_user_switch_fixture_preserves_optional_existing_nightly_contract():
+    import json
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    fixture = {
+        "tenant_isolation": {
+            "tenant_ids": ["a", "b"],
+            "user_switch": {
+                "ordinary_fixture_name": "adp/owned-fixture",
+                "ordinary_login_user_id": "member",
+                "ordinary_tenant_id": "native",
+            },
+        }
+    }
+    assert parse(json.dumps(fixture)) == fixture

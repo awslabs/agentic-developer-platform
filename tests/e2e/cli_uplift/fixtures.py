@@ -19,7 +19,7 @@ CONTRAST_KEYS = {
     "ordinary_fixture_name",
 }
 KEYS = {
-    "tenant_isolation": {"tenant_ids"},
+    "tenant_isolation": {"tenant_ids", "user_switch"},
     "usage_tenant": IDENTITY | {"usage_run_id"},
     "capability_contrast": CONTRAST_KEYS,
     "human_task_coding": IDENTITY
@@ -96,6 +96,26 @@ def validate_fixture(name, value):
             and len(set(tenants)) == 2,
             "Two distinct explicit existing tenant IDs required",
         )
+        if "user_switch" in value:
+            switch = value["user_switch"]
+            require(
+                isinstance(switch, dict)
+                and set(switch)
+                == {
+                    "ordinary_fixture_name",
+                    "ordinary_login_user_id",
+                    "ordinary_tenant_id",
+                },
+                "User switch requires an exact ordinary fixture, login identity and tenant",
+            )
+            require(
+                all(
+                    isinstance(item, str)
+                    and re.fullmatch(r"[A-Za-z0-9/_.:@+=-]{1,128}", item)
+                    for item in switch.values()
+                ),
+                "Invalid user-switch fixture identifier",
+            )
         return
     if name == "capability_contrast":
         require(
