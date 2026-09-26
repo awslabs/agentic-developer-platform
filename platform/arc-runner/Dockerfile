@@ -187,6 +187,25 @@ COPY kaniko-security-NOTICE /usr/local/share/licenses/kaniko/NOTICE
 RUN chmod -R 777 /kaniko
 ENV PATH="/kaniko:${PATH}"
 
+# Preserve the runner Node runtimes and install compatible patched npm 11.
+COPY security/check-npm-tar.cjs /tmp/check-npm-tar.cjs
+RUN curl -fsSL https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -o /tmp/runner-npm.tgz \
+    && echo "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483  /tmp/runner-npm.tgz" | sha256sum -c - \
+    && rm -rf /home/runner/externals/node20/lib/node_modules/npm \
+    && mkdir -p /home/runner/externals/node20/lib/node_modules/npm \
+    && tar -xzf /tmp/runner-npm.tgz -C /home/runner/externals/node20/lib/node_modules/npm --strip-components=1 --no-same-owner \
+    && /home/runner/externals/node20/bin/node /home/runner/externals/node20/lib/node_modules/npm/bin/npm-cli.js --version \
+    && /home/runner/externals/node20/bin/node /tmp/check-npm-tar.cjs /home/runner/externals/node20/lib/node_modules/npm/node_modules/tar \
+    && rm /tmp/runner-npm.tgz
+RUN curl -fsSL https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -o /tmp/runner-npm.tgz \
+    && echo "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483  /tmp/runner-npm.tgz" | sha256sum -c - \
+    && rm -rf /home/runner/externals/node24/lib/node_modules/npm \
+    && mkdir -p /home/runner/externals/node24/lib/node_modules/npm \
+    && tar -xzf /tmp/runner-npm.tgz -C /home/runner/externals/node24/lib/node_modules/npm --strip-components=1 --no-same-owner \
+    && /home/runner/externals/node24/bin/node /home/runner/externals/node24/lib/node_modules/npm/bin/npm-cli.js --version \
+    && /home/runner/externals/node24/bin/node /tmp/check-npm-tar.cjs /home/runner/externals/node24/lib/node_modules/npm/node_modules/tar \
+    && rm /tmp/runner-npm.tgz
+
 # ── Cleanup ─────────────────────────────────────────────────────────────────
 RUN apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \

@@ -83,3 +83,16 @@ ships with the upstream license and an ADP modification notice.
 Telemetry remains disabled unless explicitly configured through Kaniko's
 telemetry endpoint setting. Image publication and runner rollout require
 separate acceptance; a local build does not establish deployed remediation.
+
+## Bundled runner npm security updates
+
+The runner retains its bundled Node 20 and Node 24 executables. Their npm
+installations use npm 11.20.0, which supports both installed Node versions.
+Checksum-verified upstream package archives include tar 7.5.22 and patched
+transitive dependencies. Node 20 moves from npm 10 to npm 11; package packing,
+installation, execution and clean installation are tested under each runtime. The Docker build exercises tar's default decompression-ratio limit
+with an 8 MiB synthetic fixture and verifies a valid archive still extracts.
+This bounded check does not exhaust disk or require external services.
+
+Validate offline package packing, installation, execution and clean installation
+under each bundled Node runtime before publishing a changed npm package.
