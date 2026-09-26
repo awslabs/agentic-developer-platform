@@ -30,6 +30,8 @@ The later [configuration lifecycle run 36215959470](../evaluations/cli-uplift/bu
 
 [Run 36216938747](../evaluations/cli-uplift/tenant-hierarchy-machine-36216938747.md) subsequently passed all five selected cases, including E27 concurrent tenant reads/default/refresh, D03's 13 hierarchy checks and corrected D05's six canonical-principal checks. Membership restoration, resource cleanup and EC2 termination were verified. Simultaneous tenant inference, role-change authority, provider identity lifecycle and actual session revocation remain separate acceptance gaps.
 
+[Claude completion run 36218768106](../evaluations/cli-uplift/claude-completion-36218768106.md) passed E42 on gateway `8cfd14826112915ee984ebf3b38d2c0a65bedb4c`: canonical completion, idempotent submission, Activity detail/list and cursor replay through the terminal event. Its returned CLI help patch was reviewed separately. Codex, running cancellation and full story acceptance remain pending.
+
 ## Available in baseline source
 
 | Area | Current command groups |
