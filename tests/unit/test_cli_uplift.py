@@ -13593,3 +13593,25 @@ def test_usage_run_filters_every_read_and_refuses_unrelated_rows(
         script.usage(cli, evidence)
         assert len(calls) == 6
         assert serialized[0][serialized[0].index("--run") + 1] == run
+
+
+def test_coding_command_ids_match_task_uuid4_contract_and_retain_identity():
+    import uuid
+    from tests.e2e.cli_uplift.remote.coding_plan import recovery_plan
+
+    config = {
+        "evaluation_id": "coding-command-contract",
+        "gateway_url": "https://gateway",
+        "human_task_coding": diagnostic_fixture("human_task_coding"),
+    }
+    plan = recovery_plan(config)
+    assert plan == recovery_plan(config)
+    assert plan["schema"] == "hosted-coding-recovery-v2"
+    for key in ("command_id", "cleanup_command_id"):
+        value = uuid.UUID(plan[key])
+        assert value.version == 4 and value.variant == uuid.RFC_4122
+        assert str(value) == plan[key]
+    assert plan["command_id"] != plan["cleanup_command_id"]
+    different = recovery_plan({**config, "evaluation_id": "another-run"})
+    assert different["command_id"] != plan["command_id"]
+    assert different["cleanup_command_id"] != plan["cleanup_command_id"]

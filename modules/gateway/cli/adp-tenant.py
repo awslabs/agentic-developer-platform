@@ -142,7 +142,7 @@ def parser():
         p.add_argument("--json", action="store_true")
         if name == "use":
             p.add_argument("tenant", help="Authorized tenant ID or unique visible tenant name.")
-            p.add_argument("--dry-run", action="store_true")
+            p.add_argument("--dry-run", action="store_true", help="Show the selected tenant without saving it as the default.")
     return root
 
 

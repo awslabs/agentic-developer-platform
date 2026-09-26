@@ -34,6 +34,8 @@ The later [configuration lifecycle run 36215959470](../evaluations/cli-uplift/bu
 
 The later [Codex/Cognito checkpoint 36219042697](../evaluations/cli-uplift/codex-cognito-failure-36219042697.md) remained **0 passed, 2 failed**: D05 stopped at a Cognito permission rejection after canonical cleanup, and E42 stopped before model dispatch because the worker omitted its deadline. Exact client absence, retained incomplete registration, zero model/turn records and EC2 termination were independently verified. Only the proven unused Codex reservation was reconciled; original failures and the shared $5 ceiling remain. Subsequent fixes require fresh live acceptance.
 
+[Codex completion run 36220558371](../evaluations/cli-uplift/codex-completion-36220558371.md) passed all three selected cases: real Codex runtime completion with the policy-selected Haiku model, canonical/Cognito lifecycle and empty usage exports. Activity list/detail and stream cursor replay passed; the initial monitor timed out. The returned tenant help patch is independently reviewed in #6333. Populated export probes passed separately, and #6335 adds the explicit existing-workspace fixture for nightly regression. Running cancellation and other story acceptance gaps remain open.
+
 ## Available in baseline source
 
 | Area | Current command groups |
