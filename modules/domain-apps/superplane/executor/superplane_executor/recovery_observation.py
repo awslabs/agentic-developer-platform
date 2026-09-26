@@ -87,6 +87,17 @@ async def observe_request(
     """
     from .node_command_plan import KINDS
 
+    if operation_kind == "delete_cluster" and plan.cleanup_graph is not None:
+        from .staged_cleanup import observe
+
+        if target is None or call is None or not callable(authorize):
+            return "unknown", None
+        try:
+            return await observe(
+                provider, operation, target, plan, call, authorize, request_id
+            )
+        except Exception:  # noqa: BLE001 - uncertainty cannot authorize stage replay
+            return "unknown", None
     if operation_kind in {"deploy", "status"}:
         from .recovery_workload import observe
 

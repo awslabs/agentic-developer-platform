@@ -268,12 +268,12 @@ schema:
     # Explicit cluster scope children preserve maintained organization grant authority.
     # #5927 adds the original-instance native command journal.
     # #5928 records cleanup ownership and exact pre-POST workload specifications.
-    version_files: 55
+    version_files: 56
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 041_controller_workload_submissions
+    head: 042_controller_cleanup_snapshots
     base: 001_initial
   compatible_with: null
   blocked_by:

@@ -1071,9 +1071,13 @@ def test_native_dispatch_refuses_race_and_never_restarts_claimed_id(
             plan_path.write_text(runner.canonical(changed))
 
     def start(*args, **kwargs):
+        assert kwargs["env"]["AWS_MAX_ATTEMPTS"] == "1"
+        assert kwargs["env"]["AWS_RETRY_MODE"] == "standard"
         starts.append("shared-dispatch-invoked")
         raise OSError("lost start reply")
 
+    monkeypatch.setenv("AWS_MAX_ATTEMPTS", "9")
+    monkeypatch.setenv("AWS_RETRY_MODE", "adaptive")
     monkeypatch.setattr(native_transport, "aws", fake_aws)
     monkeypatch.setattr(native_transport, "prepare", prepare)
     monkeypatch.setattr(
@@ -1168,3 +1172,162 @@ def test_durable_native_receipts_survive_bulk_expiry_and_bind_original_plan(
     with pytest.raises(recipe.ImageRefused, match="original plan/source"):
         loaded["reconcile"].reconcile(preserved_plan, preserved_start)
     assert calls == ["identity"]
+
+
+@pytest.fixture
+def cni_v2_plan(producer_plan):
+    plan = copy.deepcopy(producer_plan)
+    plan["version"] = 2
+    upstream = plan["upstream"]
+    del upstream["cni_image"]
+    del upstream["cni_files"]
+    upstream["cni_sources"] = [
+        {
+            "image": "public.ecr.aws/fixture/daemon@sha256:" + "a" * 64,
+            "files": {"/app/aws-cni": "aws-cni"},
+        },
+        {
+            "image": "public.ecr.aws/fixture/init@sha256:" + "b" * 64,
+            "files": {"/init/loopback": "loopback"},
+        },
+    ]
+    return plan
+
+
+@pytest.fixture
+def fake_cni_docker(producer_modules, monkeypatch):
+    from types import SimpleNamespace
+
+    upstream = producer_modules["upstream"]
+    state = {"calls": [], "created": {}, "missing": None}
+
+    def create(argv, **kwargs):
+        assert argv[:2] == ["docker", "create"]
+        identity = str(len(state["created"]) + 1) * 64
+        state["created"][identity] = argv[-1]
+        state["calls"].append(argv)
+        return SimpleNamespace(stdout=identity)
+
+    def command(argv, **kwargs):
+        state["calls"].append(argv)
+        assert argv[1] in {"pull", "cp", "rm"}, "CNI containers must never start"
+        if argv[1] == "cp":
+            identity, source = argv[2].split(":", 1)
+            if source != state["missing"]:
+                Path(argv[-1]).write_bytes(
+                    (state["created"][identity] + source).encode()
+                )
+
+    monkeypatch.setattr(upstream.subprocess, "run", create)
+    monkeypatch.setattr(upstream, "command", command)
+    return state
+
+
+def test_two_cni_sources_union_and_provenance_pass_real_runtime_verifier(
+    producer_modules, cni_v2_plan, fake_cni_docker, installed, tmp_path
+):
+    import shutil
+
+    producer_modules["producer"].validate_plan(cni_v2_plan)
+    before = runner.canonical(cni_v2_plan)
+    stage = tmp_path / "assembled-cni"
+    provenance = producer_modules["upstream"].assemble_cni(cni_v2_plan, stage)
+    assert set(path.name for path in stage.iterdir()) == {"aws-cni", "loopback"}
+    for expected, actual in zip(
+        cni_v2_plan["upstream"]["cni_sources"], provenance, strict=True
+    ):
+        assert actual["image"] == expected["image"]
+        for source, name in expected["files"].items():
+            assert actual["files"][source] == {
+                "destination": name,
+                "sha256": recipe.file_sha(stage / name),
+            }
+            shutil.copyfile(stage / name, runner.CNI_ROOT / name)
+    assert runner.canonical(cni_v2_plan) == before
+    assert [call[2] for call in fake_cni_docker["calls"] if call[1] == "rm"] == [
+        "1" * 64,
+        "2" * 64,
+    ]
+    installed["closure"]["trees"][str(runner.CNI_ROOT)] = runner.tree_digest(
+        runner.CNI_ROOT
+    )
+    raw, descriptor = recipe.manifest(installed)
+    runner.MANIFEST_PATH.write_bytes(raw)
+    contract = {
+        "purpose": "node-bootstrap",
+        "runtime_manifest": descriptor["runtime_manifest"],
+        "wrapper_sha256": descriptor["bootstrap_wrapper_sha256"],
+    }
+    runner.verify_installation(
+        contract, runner.RUNTIME_ROOT / "node_bootstrap_runner.py"
+    )
+    (runner.CNI_ROOT / "loopback").write_bytes(b"different-addon-binary")
+    with pytest.raises(runner.RunnerRefused, match="closure differs"):
+        runner.verify_installation(
+            contract, runner.RUNTIME_ROOT / "node_bootstrap_runner.py"
+        )
+
+
+def test_missing_second_cni_image_file_cleans_each_created_container(
+    producer_modules, cni_v2_plan, fake_cni_docker, tmp_path
+):
+    fake_cni_docker["missing"] = "/init/loopback"
+    with pytest.raises(recipe.ImageRefused, match="regular executable"):
+        producer_modules["upstream"].assemble_cni(cni_v2_plan, tmp_path / "cni")
+    assert [call[2] for call in fake_cni_docker["calls"] if call[1] == "rm"] == [
+        "1" * 64,
+        "2" * 64,
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad", ["duplicate", "unpinned", "noncanonical", "source-count", "file-count"]
+)
+def test_invalid_cni_source_set_refuses_before_any_command(
+    producer_modules, cni_v2_plan, fake_cni_docker, tmp_path, bad
+):
+    sources = cni_v2_plan["upstream"]["cni_sources"]
+    if bad == "duplicate":
+        sources[1]["files"] = {"/init/aws-cni": "aws-cni"}
+    elif bad == "unpinned":
+        sources[1]["image"] = "public.ecr.aws/fixture/init:latest"
+    elif bad == "noncanonical":
+        sources[1]["files"] = {"/init/./loopback": "loopback"}
+    elif bad == "source-count":
+        sources.append(copy.deepcopy(sources[0]))
+    else:
+        sources[1]["files"] = {
+            f"/init/bin{index}": f"bin{index}" for index in range(65)
+        }
+    with pytest.raises(recipe.ImageRefused):
+        producer_modules["upstream"].assemble_cni(cni_v2_plan, tmp_path / "cni")
+    assert fake_cni_docker["calls"] == []
+    assert not (tmp_path / "cni").exists()
+
+
+def test_archived_v1_cni_plan_validation_and_bytes_are_unchanged(
+    producer_modules, producer_plan
+):
+    # v1 admitted this path form; only the new v2 schema tightens canonical paths.
+    producer_plan["upstream"]["cni_files"] = {"/app/./aws-cni": "aws-cni"}
+    raw = runner.canonical(producer_plan)
+    producer_modules["producer"].validate_plan(producer_plan)
+    sources = producer_modules["upstream"].cni_sources(producer_plan)
+    assert sources == [
+        {
+            "image": producer_plan["upstream"]["cni_image"],
+            "files": {"/app/./aws-cni": "aws-cni"},
+        }
+    ]
+    sources[0]["files"]["/app/new"] = "new"
+    assert runner.canonical(producer_plan) == raw
+
+
+def test_cni_plan_versions_do_not_silently_reinterpret_archived_fields(
+    producer_modules, producer_plan, cni_v2_plan
+):
+    producer_plan["version"] = 2
+    cni_v2_plan["version"] = 1
+    for incompatible in (producer_plan, cni_v2_plan):
+        with pytest.raises(recipe.ImageRefused):
+            producer_modules["producer"].validate_plan(incompatible)
