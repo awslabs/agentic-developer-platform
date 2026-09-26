@@ -168,6 +168,7 @@ def validate(env, lock):
                 network.network_address.is_unspecified
                 or network.network_address.is_multicast
                 or network.network_address.is_loopback
+                or network.network_address.is_link_local
             ),
             "paid_worker egress requires exact routable host CIDRs",
         )

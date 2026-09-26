@@ -130,3 +130,13 @@ def test_preflight_refuses_missing_shared_contract_before_tools(native):
     with pytest.raises(Refusal, match=paid_worker.UNAVAILABLE):
         Installer.preflight(installer)
     installer.phase.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "cidr", ["169.254.169.254/32", "169.254.170.2/32", "fe80::/128"]
+)
+def test_prepared_network_intent_rejects_link_local_endpoints(native, cidr):
+    env, lock = native
+    env["paid_worker"]["egress"]["gateway"]["cidr"] = cidr
+    with pytest.raises(Refusal, match="routable host CIDRs"):
+        paid_worker.validate(env, lock)

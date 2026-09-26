@@ -23,7 +23,7 @@ The existing installer's default offline plan can render an optional `paid_worke
 | `skypilot_url` | Selected installer's private SkyPilot service URL. |
 | `management_api_server` | Exact HTTPS management API origin. Live EKS identity matching is still required. |
 | `node_selector` | Explicit reviewed node labels. Actual schedulability/native-sidecar compatibility remains unverified. |
-| `egress` | Exactly `gateway`, `sts`, `database`, `skypilot`, `workspace`, and `management`, each with one host `cidr` and TCP `port`. These are intent for review, not an installed allow policy or proof of endpoint identity. |
+| `egress` | Exactly `gateway`, `sts`, `database`, `skypilot`, `workspace`, and `management`, each with one host `cidr` and TCP `port`. These are intent for review, not an installed allow policy or proof of endpoint identity. Link-local/metadata endpoints are refused. Host CIDRs do not verify Service or STS reachability and are not durable public DNS pins; actual selector/endpoint correspondence remains an activation prerequisite. |
 | `max_replica_count` | Intended eventual concurrency, 1–4. Rendered preparation stays at zero. |
 | `active_deadline_seconds` | Explicit bound, 1–3600 seconds. |
 
