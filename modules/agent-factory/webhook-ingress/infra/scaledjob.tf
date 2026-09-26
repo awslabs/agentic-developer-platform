@@ -255,7 +255,7 @@ ${local.agent_worker_pause_annotation}
                     value: "${var.codex_reviewer_merge_enabled}"
                   - name: CODEX_REVIEWER_MODEL
                     value: "${var.codex_reviewer_model}"
-%{for name, value in local.domain_worker_environment~}
+%{for name, value in merge(local.domain_worker_environment, local.codex_validation_service_environment)~}
                   - name: ${name}
                     value: ${jsonencode(value)}
 %{endfor~}

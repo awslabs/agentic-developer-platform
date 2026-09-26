@@ -567,3 +567,21 @@ run "mutable_worker_image_is_rejected" {
   }
   expect_failures = [var.agent_image]
 }
+
+run "validation_service_endpoint_is_opt_in" {
+  command = plan
+  assert {
+    condition     = length(local.codex_validation_service_environment) == 0
+    error_message = "Default workers must not require the validation service."
+  }
+}
+run "validation_service_passes_only_the_api_endpoint" {
+  command = plan
+  variables {
+    codex_validation_service_endpoint = "https://api.example/dev/tools/validation"
+  }
+  assert {
+    condition     = local.codex_validation_service_environment == tomap({ ADP_CODEX_VALIDATION_BACKEND = "service", ADP_CODEX_VALIDATION_SERVICE_ENDPOINT = "https://api.example/dev/tools/validation" })
+    error_message = "Shared workers receive only the service endpoint, never Kubernetes credentials."
+  }
+}

@@ -46,12 +46,15 @@ Deployment requires the canonical
 a reviewed plan for the confirmed account, and qualified validation isolation from
 `modules/agent-factory/webhook-ingress/infra/codex-validation.tf`. The supplied
 subnets/security groups must reach the EKS API, gateway Task endpoints, DynamoDB
-and Lambda APIs. Register the dedicated role in the gateway's existing internal
-service-account registry; otherwise the gateway refuses its transport. Publish
+and Lambda APIs. Supply the gateway's existing service-account registry table; the module registers
+the dedicated role with internal scope and no allowed models. The gateway still
+verifies the forwarded Task workload and credential on every operation. Publish
 the added API route through the platform's existing API deployment owner. This
 module does not create an alternate gateway identity store or enable a persona.
 
-After deployment qualification, host configuration selects:
+After deployment qualification, set webhook-ingress Terraform
+`codex_validation_service_endpoint` to the reviewed API route. This supplies the
+following host configuration without enabling personas:
 
 ```text
 ADP_CODEX_VALIDATION_BACKEND=service

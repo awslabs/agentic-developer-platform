@@ -38,3 +38,9 @@ variable "isolation_qualified" {
   default     = false
   description = "Operator has verified deny-all network enforcement, UID/root isolation and kubelet podPidsLimit <= 128 on the labelled validation nodes."
 }
+
+variable "agent_registry_table_name" {
+  type        = string
+  default     = ""
+  description = "Existing gateway service-account registry; service identity is provisioned with its role."
+}

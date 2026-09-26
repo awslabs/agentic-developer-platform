@@ -341,3 +341,11 @@ def test_local_cleanup_remains_available_after_stop(transport, monkeypatch):
     body = {"operation": "cancel_jobs"}
     assert run.tool("validation.cleanup", body) == handler.invoke.return_value
     handler.invoke.assert_called_once_with(body)
+
+
+def test_service_backend_does_not_add_dependencies_to_model_only_tasks(transport, monkeypatch):
+    monkeypatch.setenv("ADP_CODEX_VALIDATION_BACKEND", "service")
+    run = client.TaskRunClient()
+    run.bootstrap({"schema_version": "1.0", "task_id": "task-test", "invocation_id": "invocation-test"})
+    assert run._validation_applicable is False
+    assert run._hosted_validation() is None

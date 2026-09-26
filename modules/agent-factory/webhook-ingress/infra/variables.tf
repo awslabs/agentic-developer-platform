@@ -710,3 +710,13 @@ variable "codex_otel_endpoint" {
     error_message = "Use an HTTP(S) collector base URL without credentials, query or fragment."
   }
 }
+
+variable "codex_validation_service_endpoint" {
+  description = "Qualified dedicated validation API endpoint for Codex Tasks; empty preserves the current worker backend. Does not enable personas."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.codex_validation_service_endpoint == "" || can(regex("^https://[A-Za-z0-9.-]+(/[A-Za-z0-9_-]+)*/tools/validation$", var.codex_validation_service_endpoint))
+    error_message = "Use an HTTPS validation route without credentials, query, fragment or custom port."
+  }
+}

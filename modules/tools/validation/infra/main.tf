@@ -83,7 +83,11 @@ resource "aws_lambda_function" "service" {
   }
   lifecycle {
     precondition {
-      condition     = var.isolation_qualified && var.image_uri != "" && length(var.subnet_ids) > 0 && length(var.security_group_ids) > 0 && length(var.worker_role_arns) > 0
+      condition     = var.api_execution_arn == "arn:${data.aws_partition.current.partition}:execute-api:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.rest_api_id}" && alltrue([for arn in var.worker_role_arns : startswith(arn, "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/")])
+      error_message = "Validation API and worker roles must belong to the selected AWS account and region."
+    }
+    precondition {
+      condition     = var.isolation_qualified && var.image_uri != "" && length(var.subnet_ids) > 0 && length(var.security_group_ids) > 0 && length(var.worker_role_arns) > 0 && var.agent_registry_table_name != ""
       error_message = "Activation requires qualified isolation, immutable service image, private connectivity and explicit worker roles."
     }
   }
@@ -177,3 +181,23 @@ resource "aws_iam_role_policy" "worker" {
 }
 output "service_role_arn" { value = try(aws_iam_role.service[0].arn, null) }
 output "route_id" { value = try(aws_api_gateway_resource.service[0].id, null) }
+
+resource "aws_dynamodb_table_item" "registry" {
+  count      = local.active
+  table_name = var.agent_registry_table_name
+  hash_key   = "agent_id"
+  item = jsonencode({
+    agent_id              = { S = var.name }
+    role_arn              = { S = aws_iam_role.service[0].arn }
+    agent_name            = { S = var.name }
+    org_id                = { S = "__platform__" }
+    team_id               = { S = "__agents__" }
+    owner                 = { S = "platform" }
+    scope                 = { S = "internal" }
+    requires_run_identity = { BOOL = false }
+    status                = { S = "active" }
+    allowed_models        = { L = [] }
+    budget_config_id      = { S = "" }
+    description           = { S = "Dedicated Task validation transport; Task proof authorizes each operation" }
+  })
+}

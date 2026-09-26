@@ -11,6 +11,7 @@ mock_provider "aws" {
 }
 mock_provider "kubernetes" {}
 variables {
+  agent_registry_table_name = "fixture-registry"
   api_execution_arn         = "arn:aws:execute-api:us-east-1:123456789012:fixture"
   rest_api_id               = "fixture"
   stage_name                = "test"
@@ -58,4 +59,31 @@ run "dedicated_iam_and_bounded_runtime" {
     condition     = aws_eks_access_entry.service[0].kubernetes_groups == toset(["adp-validation-service"]) && kubernetes_role_binding.service[0].metadata[0].namespace == "adp-codex-validation"
     error_message = "Dedicated service group must be scoped to the validation namespace."
   }
+}
+
+run "registry_grants_no_models" {
+  command = plan
+  override_resource {
+    target = aws_iam_role.service[0]
+    override_during = plan
+    values = { arn = "arn:aws:iam::123456789012:role/validation-service" }
+  }
+  variables {
+    enabled = true
+    isolation_qualified = true
+  }
+  assert {
+    condition = length(aws_dynamodb_table_item.registry) == 1 && jsondecode(aws_dynamodb_table_item.registry[0].item).allowed_models.L == []
+    error_message = "Service must provision its gateway identity with the dedicated IAM role."
+  }
+}
+
+run "reject_cross_account_worker" {
+  command = plan
+  variables {
+    enabled = true
+    isolation_qualified = true
+    worker_role_arns = ["arn:aws:iam::999999999999:role/worker"]
+  }
+  expect_failures = [aws_lambda_function.service]
 }

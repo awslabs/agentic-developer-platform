@@ -20,6 +20,10 @@ variable "codex_validation_api_cidrs" {
 }
 
 locals {
+  codex_validation_service_environment = var.codex_validation_service_endpoint == "" ? {} : {
+    ADP_CODEX_VALIDATION_BACKEND          = "service"
+    ADP_CODEX_VALIDATION_SERVICE_ENDPOINT = var.codex_validation_service_endpoint
+  }
   codex_validation_namespace      = "adp-codex-validation"
   codex_validation_host_namespace = "adp-codex-validation-hosts"
   codex_validation_host_sa        = "validation-host"

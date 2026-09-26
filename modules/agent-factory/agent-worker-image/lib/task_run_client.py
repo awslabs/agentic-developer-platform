@@ -115,6 +115,7 @@ class TaskRunClient:
         self._validation_tool = None
         self._host_validation_executor = None
         self._validation_attempt = None
+        self._validation_applicable = None
         self._validation_backend = os.environ.get("ADP_CODEX_VALIDATION_BACKEND", "docker-local")
         self._publication_tool = None
         self._traceparent = None
@@ -269,6 +270,10 @@ class TaskRunClient:
         parent = response.get("harness", {}).get("traceparent")
         if parent is not None and (not isinstance(parent, str) or not re.fullmatch(_TRACE_PATTERN, parent)):
             raise TaskRunClientError("Invalid bootstrap trace context")
+        validation_applicable = any(tool.get("permission") == "validation.run" for tool in response.get("harness", {}).get("tools", []))
+        if renewal and validation_applicable != self._validation_applicable:
+            raise TaskRunClientError("Validation bootstrap capability changed")
+        self._validation_applicable = validation_applicable
         self._traceparent = parent
         self._binding, self._deadline = binding, deadline
         self._run_credential, self._credential_expiry = credential, expiry
@@ -353,6 +358,8 @@ class TaskRunClient:
         if self._validation_backend == "docker-local":
             return None
         if self._validation_backend == "service":
+            if self._validation_applicable is False:
+                return None
             if self._validation_attempt is None:
                 raise TaskRunClientError("Validation service attempt unavailable")
             if self._host_validation_executor is None:
@@ -386,6 +393,7 @@ class TaskRunClient:
                     or source.get("repository") != workspace.repository
                     or source.get("repository_id") != workspace.repository_id):
                 raise TaskRunClientError("Validation workspace authority differs")
+            self._validation_applicable = True
             self._validation_attempt = copy.deepcopy(attempt)
             executor = self._hosted_validation()
             if self._validation_backend == "service":
