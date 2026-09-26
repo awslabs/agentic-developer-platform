@@ -168,3 +168,26 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+## Bedrock routing lifecycle (#5633)
+
+Source implementation; live account-routing inference and restoration remain held. Both existing Bedrock entry points use the same helper; select/reset always target self. See [routing lifecycle](bedrock-routing.md).
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp bedrock select` |  | `--connection`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
+| `adp bedrock reset` |  | `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
+| `adp bedrock mappings list` |  | `--json`, `--org`, `--page`, `--page-size`, `--scope`, `--target` |
+| `adp bedrock mappings show` |  | `--json`, `--org`, `--scope`, `--target` |
+| `adp bedrock mappings set` |  | `--destination`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--org`, `--scope`, `--target`, `--yes` |
+| `adp bedrock mappings delete` |  | `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--org`, `--scope`, `--target`, `--yes` |
+| `adp bedrock connection-link add` |  | `--connection`, `--destination`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
+| `adp bedrock connection-link remove` |  | `--connection`, `--destination`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
+| `adp admin bedrock select` |  | `--connection`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
+| `adp admin bedrock reset` |  | `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
+| `adp admin bedrock mappings list` |  | `--json`, `--org`, `--page`, `--page-size`, `--scope`, `--target` |
+| `adp admin bedrock mappings show` |  | `--json`, `--org`, `--scope`, `--target` |
+| `adp admin bedrock mappings set` |  | `--destination`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--org`, `--scope`, `--target`, `--yes` |
+| `adp admin bedrock mappings delete` |  | `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--org`, `--scope`, `--target`, `--yes` |
+| `adp admin bedrock connection-link add` |  | `--connection`, `--destination`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |
+| `adp admin bedrock connection-link remove` |  | `--connection`, `--destination`, `--dry-run`, `--expect-revision`, `--json`, `--operation-id`, `--yes` |

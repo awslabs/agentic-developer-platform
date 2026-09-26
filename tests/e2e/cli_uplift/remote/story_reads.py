@@ -208,12 +208,58 @@ def budget(cli, evidence):
     )
 
 
+def bedrock_lifecycle(cli, evidence):
+    code, preview = cli.run(["bedrock", "reset", "--dry-run"], expected=None)
+    common.require(
+        isinstance(preview, dict), "Bedrock reset preview lacks structured output"
+    )
+    if code == 0:
+        before = (preview.get("detail") or {}).get("before") or {}
+        common.require(
+            preview.get("status") == "dry_run"
+            and before.get("revision")
+            and (before.get("effective") or {}).get("rung")
+            in {"user", "team", "org", "platform"},
+            "Bedrock preview lacks reviewed routing state",
+        )
+        evidence["personal"] = "previewed"
+    else:
+        common.require(
+            code == 3
+            and (preview.get("error") or {}).get("code") == "pinned_by_platform_admin",
+            "Unexpected personal Bedrock refusal",
+        )
+        evidence["personal"] = "admin-pinned-refusal"
+    code, invalid = cli.run(
+        [
+            "admin",
+            "bedrock",
+            "mappings",
+            "show",
+            "--scope",
+            "team",
+            "--target",
+            str(uuid.uuid4()),
+        ],
+        expected=None,
+    )
+    common.require(
+        code == 1 and (invalid.get("error") or {}).get("code") == "usage_error",
+        "An unbound team target was not refused locally",
+    )
+    evidence["cases"] = ["self-reset-preview-or-pin-refusal", "missing-team-parent"]
+    evidence["live_acceptance"] = (
+        "held: routing changes, recorded local/hosted billing, and mapping restoration not exercised"
+    )
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
     "budget": budget,
+    "bedrock_lifecycle": bedrock_lifecycle,
 }
 
 

@@ -38,7 +38,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5630 | Recovery and integrated CLI qualification | Existing AI-DLC and regression runner |
 | #5631 | [Credential and identity CLI](vault.md), source implementation; live acceptance held | Existing vault and identity APIs; metadata revision adapter, protected input and unverified claim readback |
 | #5632 | Knowledge assets and indexing progress | Existing knowledge/indexing APIs |
-| #5633 | Personal Bedrock routing and administrator mappings | Existing routing helpers/services |
+| #5633 | [Personal Bedrock routing and administrator mappings](bedrock-routing.md) | Revision-bound self selection/reset, exact mappings and compatible connection links; E34 previews; live inference/restoration held |
 | #5634 | GitHub installations, App keys and org bindings | Existing GitHub helpers/services |
 | #5635 | GitLab connection and agent readiness | Existing GitLab integration |
 | #5636 | Model defaults, runtime posture and persona cost | Existing model-policy APIs; retain upstream evidence dependencies |

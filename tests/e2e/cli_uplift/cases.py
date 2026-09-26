@@ -299,6 +299,13 @@ CASES = (
         "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E34",
+        "#5633",
+        "story-reads",
+        "Personal Bedrock reset preview preserves billing/source readback and exact team-target refusal; real routing inference remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

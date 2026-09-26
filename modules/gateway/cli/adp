@@ -1840,6 +1840,9 @@ Check what works here, and why something failed:
     admin bedrock         Connect AWS destinations and manage model routing
     admin github          Configure this deployment's GitHub App and check it
     bedrock status        Show your effective Bedrock destination
+    bedrock select|reset  Review and change only your own permitted route
+    admin bedrock mappings list|show|set|delete --scope SCOPE --target ID
+    admin bedrock connection-link add|remove --destination ID --connection ID
     update [--to <version>]
                           Re-pull this CLI from your gateway; --to pins the exact
                           version and installs nothing if it is not what is served
