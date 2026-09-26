@@ -7,11 +7,12 @@
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
     "reviewed-import-only-observation": 107,
-    "pending-source-review": 911,
+    "pending-source-review": 664,
     "nonsecurity-test-assertion": 187,
-    "fixed-source-runtime-open": 11,
+    "fixed": 405,
+    "fixed-source-runtime-open": 22,
+    "reviewed-nonsecret-literal": 48,
     "reviewed-optimization-safe-guard": 35,
-    "fixed": 217,
     "reviewed-parameterized-sql": 2
   },
   "scope_complete": false,
@@ -1883,8 +1884,10 @@
       "rule": "B101",
       "line": 201,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=119",
@@ -1897,8 +1900,10 @@
       "rule": "B101",
       "line": 202,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=120",
@@ -1911,8 +1916,10 @@
       "rule": "B101",
       "line": 203,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=121",
@@ -1925,8 +1932,10 @@
       "rule": "B101",
       "line": 204,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=122",
@@ -1939,8 +1948,10 @@
       "rule": "B101",
       "line": 206,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=123",
@@ -1953,8 +1964,10 @@
       "rule": "B101",
       "line": 208,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=124",
@@ -1967,8 +1980,10 @@
       "rule": "B101",
       "line": 233,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=125",
@@ -1981,8 +1996,10 @@
       "rule": "B101",
       "line": 234,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=126",
@@ -1995,8 +2012,10 @@
       "rule": "B101",
       "line": 235,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=127",
@@ -2009,8 +2028,10 @@
       "rule": "B101",
       "line": 240,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=128",
@@ -2023,8 +2044,10 @@
       "rule": "B101",
       "line": 241,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=129",
@@ -2037,8 +2060,10 @@
       "rule": "B101",
       "line": 242,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=130",
@@ -2051,8 +2076,10 @@
       "rule": "B101",
       "line": 243,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=131",
@@ -2065,8 +2092,10 @@
       "rule": "B101",
       "line": 247,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=132",
@@ -2079,8 +2108,10 @@
       "rule": "B101",
       "line": 251,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=133",
@@ -2093,8 +2124,10 @@
       "rule": "B101",
       "line": 255,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=134",
@@ -2107,8 +2140,10 @@
       "rule": "B101",
       "line": 265,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=135",
@@ -2121,8 +2156,10 @@
       "rule": "B101",
       "line": 272,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=136",
@@ -2135,8 +2172,10 @@
       "rule": "B101",
       "line": 284,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=137",
@@ -2149,8 +2188,10 @@
       "rule": "B101",
       "line": 286,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=138",
@@ -2163,8 +2204,10 @@
       "rule": "B101",
       "line": 287,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=139",
@@ -2177,8 +2220,10 @@
       "rule": "B101",
       "line": 290,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=140",
@@ -2191,8 +2236,10 @@
       "rule": "B101",
       "line": 298,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=141",
@@ -2205,8 +2252,10 @@
       "rule": "B101",
       "line": 301,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=142",
@@ -2219,8 +2268,10 @@
       "rule": "B101",
       "line": 303,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=143",
@@ -2233,8 +2284,10 @@
       "rule": "B101",
       "line": 304,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=144",
@@ -2247,8 +2300,10 @@
       "rule": "B101",
       "line": 309,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=145",
@@ -2261,8 +2316,10 @@
       "rule": "B101",
       "line": 310,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=146",
@@ -2275,8 +2332,10 @@
       "rule": "B101",
       "line": 311,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=147",
@@ -2289,8 +2348,10 @@
       "rule": "B101",
       "line": 319,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=148",
@@ -2303,8 +2364,10 @@
       "rule": "B101",
       "line": 320,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=149",
@@ -2317,8 +2380,10 @@
       "rule": "B101",
       "line": 325,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=150",
@@ -2331,8 +2396,10 @@
       "rule": "B101",
       "line": 326,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=151",
@@ -2345,8 +2412,10 @@
       "rule": "B101",
       "line": 327,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=152",
@@ -2359,8 +2428,10 @@
       "rule": "B101",
       "line": 333,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=153",
@@ -2373,8 +2444,10 @@
       "rule": "B101",
       "line": 341,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=154",
@@ -2387,8 +2460,10 @@
       "rule": "B101",
       "line": 345,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=155",
@@ -2401,8 +2476,10 @@
       "rule": "B101",
       "line": 351,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=156",
@@ -2415,8 +2492,10 @@
       "rule": "B101",
       "line": 352,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=157",
@@ -2429,8 +2508,10 @@
       "rule": "B101",
       "line": 353,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=158",
@@ -2443,8 +2524,10 @@
       "rule": "B101",
       "line": 367,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=159",
@@ -2457,8 +2540,10 @@
       "rule": "B101",
       "line": 371,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=160",
@@ -2471,8 +2556,10 @@
       "rule": "B101",
       "line": 377,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=161",
@@ -2485,8 +2572,10 @@
       "rule": "B101",
       "line": 387,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=162",
@@ -2499,8 +2588,10 @@
       "rule": "B101",
       "line": 404,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=163",
@@ -2513,8 +2604,10 @@
       "rule": "B101",
       "line": 405,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=164",
@@ -2527,8 +2620,10 @@
       "rule": "B101",
       "line": 409,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=165",
@@ -2541,8 +2636,10 @@
       "rule": "B101",
       "line": 413,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=166",
@@ -2555,8 +2652,10 @@
       "rule": "B101",
       "line": 420,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=167",
@@ -2569,8 +2668,10 @@
       "rule": "B101",
       "line": 433,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=168",
@@ -2583,8 +2684,10 @@
       "rule": "B101",
       "line": 434,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=169",
@@ -2597,8 +2700,10 @@
       "rule": "B101",
       "line": 438,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=170",
@@ -2611,8 +2716,10 @@
       "rule": "B101",
       "line": 439,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=171",
@@ -2625,8 +2732,10 @@
       "rule": "B101",
       "line": 440,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=172",
@@ -2639,8 +2748,10 @@
       "rule": "B101",
       "line": 441,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=173",
@@ -2653,8 +2764,10 @@
       "rule": "B101",
       "line": 445,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=174",
@@ -2695,8 +2808,10 @@
       "rule": "B101",
       "line": 452,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=177",
@@ -2709,8 +2824,10 @@
       "rule": "B101",
       "line": 453,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=178",
@@ -2723,8 +2840,10 @@
       "rule": "B101",
       "line": 454,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=179",
@@ -2737,8 +2856,10 @@
       "rule": "B101",
       "line": 455,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=180",
@@ -2751,8 +2872,10 @@
       "rule": "B101",
       "line": 475,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=181",
@@ -2765,8 +2888,10 @@
       "rule": "B101",
       "line": 481,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=182",
@@ -2779,8 +2904,10 @@
       "rule": "B101",
       "line": 490,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=183",
@@ -2793,8 +2920,10 @@
       "rule": "B101",
       "line": 496,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=184",
@@ -2835,8 +2964,10 @@
       "rule": "B101",
       "line": 504,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=187",
@@ -2849,8 +2980,10 @@
       "rule": "B101",
       "line": 514,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=188",
@@ -2863,8 +2996,10 @@
       "rule": "B101",
       "line": 517,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=189",
@@ -2877,8 +3012,10 @@
       "rule": "B101",
       "line": 519,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=190",
@@ -2891,8 +3028,10 @@
       "rule": "B101",
       "line": 533,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=191",
@@ -2905,8 +3044,10 @@
       "rule": "B101",
       "line": 566,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=192",
@@ -2919,8 +3060,10 @@
       "rule": "B101",
       "line": 567,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=193",
@@ -2933,8 +3076,10 @@
       "rule": "B101",
       "line": 568,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=194",
@@ -2947,8 +3092,10 @@
       "rule": "B101",
       "line": 569,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=195",
@@ -2961,8 +3108,10 @@
       "rule": "B101",
       "line": 578,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=196",
@@ -2975,8 +3124,10 @@
       "rule": "B101",
       "line": 579,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=197",
@@ -2989,8 +3140,10 @@
       "rule": "B101",
       "line": 580,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=198",
@@ -3003,8 +3156,10 @@
       "rule": "B101",
       "line": 581,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=199",
@@ -3017,8 +3172,10 @@
       "rule": "B101",
       "line": 587,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=200",
@@ -3031,8 +3188,10 @@
       "rule": "B101",
       "line": 590,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=201",
@@ -3045,8 +3204,10 @@
       "rule": "B101",
       "line": 594,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=202",
@@ -3059,8 +3220,10 @@
       "rule": "B101",
       "line": 595,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=203",
@@ -3073,8 +3236,10 @@
       "rule": "B101",
       "line": 596,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=204",
@@ -3087,8 +3252,10 @@
       "rule": "B101",
       "line": 608,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=205",
@@ -3101,8 +3268,10 @@
       "rule": "B101",
       "line": 611,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=206",
@@ -3115,8 +3284,10 @@
       "rule": "B101",
       "line": 614,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=207",
@@ -3129,8 +3300,10 @@
       "rule": "B101",
       "line": 623,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=208",
@@ -3171,8 +3344,10 @@
       "rule": "B101",
       "line": 643,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=211",
@@ -3185,8 +3360,10 @@
       "rule": "B101",
       "line": 644,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=212",
@@ -3199,8 +3376,10 @@
       "rule": "B101",
       "line": 650,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=213",
@@ -3213,8 +3392,10 @@
       "rule": "B101",
       "line": 651,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=214",
@@ -3227,8 +3408,10 @@
       "rule": "B101",
       "line": 664,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=215",
@@ -3269,8 +3452,10 @@
       "rule": "B101",
       "line": 693,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=218",
@@ -3283,8 +3468,10 @@
       "rule": "B101",
       "line": 696,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=219",
@@ -3297,8 +3484,10 @@
       "rule": "B101",
       "line": 697,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=220",
@@ -3311,8 +3500,10 @@
       "rule": "B101",
       "line": 702,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=221",
@@ -3325,8 +3516,10 @@
       "rule": "B101",
       "line": 706,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=222",
@@ -3339,8 +3532,10 @@
       "rule": "B101",
       "line": 707,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=223",
@@ -3381,8 +3576,10 @@
       "rule": "B101",
       "line": 721,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=226",
@@ -3395,8 +3592,10 @@
       "rule": "B101",
       "line": 722,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=227",
@@ -3409,8 +3608,10 @@
       "rule": "B101",
       "line": 723,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=228",
@@ -3423,8 +3624,10 @@
       "rule": "B101",
       "line": 724,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=229",
@@ -3437,8 +3640,10 @@
       "rule": "B101",
       "line": 725,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=230",
@@ -3451,8 +3656,10 @@
       "rule": "B101",
       "line": 728,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=231",
@@ -3465,8 +3672,10 @@
       "rule": "B101",
       "line": 730,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=232",
@@ -3479,8 +3688,10 @@
       "rule": "B101",
       "line": 740,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=233",
@@ -3493,8 +3704,10 @@
       "rule": "B101",
       "line": 741,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=234",
@@ -3535,8 +3748,10 @@
       "rule": "B101",
       "line": 755,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=237",
@@ -3549,8 +3764,10 @@
       "rule": "B101",
       "line": 756,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=238",
@@ -3563,8 +3780,10 @@
       "rule": "B101",
       "line": 757,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=239",
@@ -3605,8 +3824,10 @@
       "rule": "B101",
       "line": 766,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=242",
@@ -3619,8 +3840,10 @@
       "rule": "B101",
       "line": 767,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=243",
@@ -3633,8 +3856,10 @@
       "rule": "B101",
       "line": 768,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=244",
@@ -3647,8 +3872,10 @@
       "rule": "B101",
       "line": 769,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=245",
@@ -3661,8 +3888,10 @@
       "rule": "B101",
       "line": 772,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=246",
@@ -3675,8 +3904,10 @@
       "rule": "B101",
       "line": 773,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=247",
@@ -3689,8 +3920,10 @@
       "rule": "B101",
       "line": 781,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=248",
@@ -3703,8 +3936,10 @@
       "rule": "B101",
       "line": 782,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=249",
@@ -3717,8 +3952,10 @@
       "rule": "B101",
       "line": 791,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=250",
@@ -3731,8 +3968,10 @@
       "rule": "B101",
       "line": 792,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=251",
@@ -3745,8 +3984,10 @@
       "rule": "B101",
       "line": 793,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=252",
@@ -3759,8 +4000,10 @@
       "rule": "B101",
       "line": 802,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=253",
@@ -3773,8 +4016,10 @@
       "rule": "B101",
       "line": 816,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=254",
@@ -3787,8 +4032,10 @@
       "rule": "B101",
       "line": 817,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=255",
@@ -3801,8 +4048,10 @@
       "rule": "B101",
       "line": 824,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=256",
@@ -3815,8 +4064,10 @@
       "rule": "B101",
       "line": 825,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=257",
@@ -3829,8 +4080,10 @@
       "rule": "B101",
       "line": 826,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=258",
@@ -3843,8 +4096,10 @@
       "rule": "B101",
       "line": 833,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=259",
@@ -3857,8 +4112,10 @@
       "rule": "B101",
       "line": 834,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=260",
@@ -3871,8 +4128,10 @@
       "rule": "B101",
       "line": 835,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=261",
@@ -3885,8 +4144,10 @@
       "rule": "B101",
       "line": 837,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=262",
@@ -3899,8 +4160,10 @@
       "rule": "B101",
       "line": 838,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=263",
@@ -3913,8 +4176,10 @@
       "rule": "B101",
       "line": 845,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=264",
@@ -3927,8 +4192,10 @@
       "rule": "B101",
       "line": 846,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=265",
@@ -3941,8 +4208,10 @@
       "rule": "B101",
       "line": 852,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=266",
@@ -3955,8 +4224,10 @@
       "rule": "B101",
       "line": 853,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=267",
@@ -3969,8 +4240,10 @@
       "rule": "B101",
       "line": 862,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=268",
@@ -3983,8 +4256,10 @@
       "rule": "B101",
       "line": 864,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=269",
@@ -3997,8 +4272,10 @@
       "rule": "B101",
       "line": 865,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=270",
@@ -4039,8 +4316,10 @@
       "rule": "B101",
       "line": 874,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=273",
@@ -4053,8 +4332,10 @@
       "rule": "B101",
       "line": 875,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=274",
@@ -4095,8 +4376,10 @@
       "rule": "B101",
       "line": 894,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=277",
@@ -4109,8 +4392,10 @@
       "rule": "B101",
       "line": 897,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=278",
@@ -4123,8 +4408,10 @@
       "rule": "B101",
       "line": 898,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=279",
@@ -4137,8 +4424,10 @@
       "rule": "B101",
       "line": 904,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=280",
@@ -4151,8 +4440,10 @@
       "rule": "B101",
       "line": 929,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=281",
@@ -4165,8 +4456,10 @@
       "rule": "B101",
       "line": 930,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=282",
@@ -4179,8 +4472,10 @@
       "rule": "B101",
       "line": 931,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=283",
@@ -4193,8 +4488,10 @@
       "rule": "B101",
       "line": 933,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=284",
@@ -4207,8 +4504,10 @@
       "rule": "B101",
       "line": 940,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=285",
@@ -4221,8 +4520,10 @@
       "rule": "B101",
       "line": 941,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=286",
@@ -4235,8 +4536,10 @@
       "rule": "B101",
       "line": 942,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=287",
@@ -4249,8 +4552,10 @@
       "rule": "B101",
       "line": 943,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=288",
@@ -4263,8 +4568,10 @@
       "rule": "B101",
       "line": 951,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=289",
@@ -4277,8 +4584,10 @@
       "rule": "B101",
       "line": 952,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=290",
@@ -4291,8 +4600,10 @@
       "rule": "B101",
       "line": 954,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=291",
@@ -4305,8 +4616,10 @@
       "rule": "B101",
       "line": 961,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=292",
@@ -4319,8 +4632,10 @@
       "rule": "B101",
       "line": 962,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=293",
@@ -4333,8 +4648,10 @@
       "rule": "B101",
       "line": 968,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=294",
@@ -4347,8 +4664,10 @@
       "rule": "B101",
       "line": 969,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=295",
@@ -4361,8 +4680,10 @@
       "rule": "B101",
       "line": 972,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=296",
@@ -4375,8 +4696,10 @@
       "rule": "B101",
       "line": 973,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=297",
@@ -4389,8 +4712,10 @@
       "rule": "B101",
       "line": 974,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=298",
@@ -4403,8 +4728,10 @@
       "rule": "B101",
       "line": 976,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=299",
@@ -4417,8 +4744,10 @@
       "rule": "B101",
       "line": 978,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=300",
@@ -4431,8 +4760,10 @@
       "rule": "B101",
       "line": 983,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=301",
@@ -4445,8 +4776,10 @@
       "rule": "B101",
       "line": 984,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=302",
@@ -4459,8 +4792,10 @@
       "rule": "B101",
       "line": 985,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=303",
@@ -4473,8 +4808,10 @@
       "rule": "B101",
       "line": 986,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=304",
@@ -4487,8 +4824,10 @@
       "rule": "B101",
       "line": 989,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=305",
@@ -4501,8 +4840,10 @@
       "rule": "B101",
       "line": 990,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=306",
@@ -4515,8 +4856,10 @@
       "rule": "B101",
       "line": 996,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=307",
@@ -4529,8 +4872,10 @@
       "rule": "B101",
       "line": 997,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=308",
@@ -4543,8 +4888,10 @@
       "rule": "B101",
       "line": 998,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=309",
@@ -4557,8 +4904,10 @@
       "rule": "B101",
       "line": 999,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=310",
@@ -4571,8 +4920,10 @@
       "rule": "B101",
       "line": 1002,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=311",
@@ -4585,8 +4936,10 @@
       "rule": "B101",
       "line": 1003,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=312",
@@ -4599,8 +4952,10 @@
       "rule": "B101",
       "line": 1006,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=313",
@@ -4613,8 +4968,10 @@
       "rule": "B101",
       "line": 1007,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=314",
@@ -4627,8 +4984,10 @@
       "rule": "B101",
       "line": 1008,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=315",
@@ -4669,8 +5028,10 @@
       "rule": "B101",
       "line": 1017,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=318",
@@ -4683,8 +5044,10 @@
       "rule": "B101",
       "line": 1018,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=319",
@@ -4697,8 +5060,10 @@
       "rule": "B101",
       "line": 1048,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=320",
@@ -4711,8 +5076,10 @@
       "rule": "B101",
       "line": 1049,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=321",
@@ -4725,8 +5092,10 @@
       "rule": "B101",
       "line": 1050,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=322",
@@ -4739,8 +5108,10 @@
       "rule": "B101",
       "line": 1051,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=323",
@@ -4753,8 +5124,10 @@
       "rule": "B101",
       "line": 1052,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=324",
@@ -4767,8 +5140,10 @@
       "rule": "B101",
       "line": 1055,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=325",
@@ -4781,8 +5156,10 @@
       "rule": "B101",
       "line": 1058,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Security attestation checks now raise explicitly, preserving the entire frozen validator AST after reversing exactly 188 guard transformations. Tampered reconciliation, severity, source-byte hash, ownership schema/digest and README evidence is rejected by the actual CLI under normal, -O and -OO execution; no serving deployment is involved.",
+      "evidence": "evidence/bandit-triage-explicit-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=326",
@@ -8187,8 +8564,10 @@
       "rule": "B310",
       "line": 161,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=566",
@@ -8215,8 +8594,10 @@
       "rule": "B310",
       "line": 128,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=568",
@@ -8229,8 +8610,10 @@
       "rule": "B310",
       "line": 442,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=569",
@@ -8259,8 +8642,10 @@
       "rule": "B105",
       "line": 204,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "ADP_GH_TOKEN_BROKER_ENV names an environment switch. The value selects broker mode and cannot authenticate a request.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=571",
@@ -8287,8 +8672,10 @@
       "rule": "B105",
       "line": 346,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "ADP_TOKEN_MODE receives the public mode label mediated; credential-bearing variables are removed separately. This literal is not a token.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=573",
@@ -8315,8 +8702,10 @@
       "rule": "B105",
       "line": 453,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "token_source is compared to the public discriminator pat to select credential resolution; the actual PAT is read through GatewayCredentialClient.raw_read.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=575",
@@ -8329,8 +8718,10 @@
       "rule": "B105",
       "line": 455,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The pat comparison gates a warning when PAT execution is disabled; it neither contains nor verifies a credential.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=576",
@@ -8357,8 +8748,10 @@
       "rule": "B310",
       "line": 512,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=578",
@@ -8441,8 +8834,10 @@
       "rule": "B310",
       "line": 1036,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=584",
@@ -8455,8 +8850,10 @@
       "rule": "B310",
       "line": 1052,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=585",
@@ -8469,8 +8866,10 @@
       "rule": "B310",
       "line": 1074,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=586",
@@ -8497,8 +8896,10 @@
       "rule": "B105",
       "line": 1887,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The pat mode comparison chooses mediated-run routing. It compares configuration labels, not secret bytes.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=588",
@@ -8511,8 +8912,10 @@
       "rule": "B105",
       "line": 1907,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The empty token initializes a mediated run with no provider credential; gateway operation mediation provides authorization separately.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=589",
@@ -8525,8 +8928,10 @@
       "rule": "B105",
       "line": 1920,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The empty token_expires_at is absence of expiry metadata in mediated mode, not a hardcoded secret.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=590",
@@ -8539,8 +8944,10 @@
       "rule": "B105",
       "line": 1932,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The pat mode comparison selects already-resolved caller credential handling. The actual token value comes from credential resolution.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=591",
@@ -8553,8 +8960,10 @@
       "rule": "B105",
       "line": 2209,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The child environment ADP_TOKEN_MODE contains mediated, a public routing label; actual credentials are removed from this branch.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=592",
@@ -8567,8 +8976,10 @@
       "rule": "B105",
       "line": 2219,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The pat comparison selects child PAT export behavior; this constant is a mode discriminator, not the exported token.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=593",
@@ -8581,8 +8992,10 @@
       "rule": "B105",
       "line": 2220,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "ADP_TOKEN_MODE=pat is a public child-mode label. The actual GITHUB_TOKEN is a separate runtime value.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=594",
@@ -8595,8 +9008,10 @@
       "rule": "B105",
       "line": 2233,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The string /tmp/.adp-gh-token.tmp is a filename used by os.open, not a credential. Separate B108 temporary-path observation remains unresolved.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=595",
@@ -8609,8 +9024,10 @@
       "rule": "B108",
       "line": 2233,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "PAT publication creates an exclusive random0600 temporary in the destination directory and atomically replaces the destination entry. It never opens the predictable temporary path and cleans up on publication failure. Real filesystem fixtures prove symlink/hardlink/preexisting-readable-entry safety; rebuilt and serving worker image acceptance remains #6111.",
+      "evidence": "evidence/bandit-pat-private-publication.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=596",
@@ -8623,8 +9040,10 @@
       "rule": "B105",
       "line": 2234,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The string /tmp/.adp-gh-token is a final credential filename, not its contents. Separate B108 filesystem safety remains unresolved.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=597",
@@ -8637,8 +9056,10 @@
       "rule": "B108",
       "line": 2234,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "PAT publication creates an exclusive random0600 temporary in the destination directory and atomically replaces the destination entry. It never opens the predictable temporary path and cleans up on publication failure. Real filesystem fixtures prove symlink/hardlink/preexisting-readable-entry safety; rebuilt and serving worker image acceptance remains #6111.",
+      "evidence": "evidence/bandit-pat-private-publication.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=598",
@@ -8651,8 +9072,10 @@
       "rule": "B105",
       "line": 2257,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "ADP_TOKEN_MODE=app configures token-manager mode; GH_APP_TOKEN receives the separately minted runtime token.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=599",
@@ -8665,8 +9088,10 @@
       "rule": "B105",
       "line": 2412,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "The pat comparison selects git identity provenance. The resulting author name/email are public identifiers, not authentication.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=600",
@@ -9019,8 +9444,10 @@
       "rule": "B310",
       "line": 408,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=625",
@@ -9177,8 +9604,10 @@
       "rule": "B310",
       "line": 210,
       "severity": "MEDIUM",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "Credential-bearing HTTP request uses lib.authenticated_http same-origin-only redirect transport. Real loopback provider/client entrypoint fixtures verify foreign origin receives zero requests and same-origin compatibility. Actual rebuilt worker image and rollout acceptance remain owned by #6111; source and local test success do not satisfy runtime closure.",
+      "evidence": "evidence/bandit-worker-authenticated-redirect-revalidation.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=636",
@@ -9219,8 +9648,10 @@
       "rule": "B105",
       "line": 34,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "WORKLOAD_TOKEN_ENV names ADP_WORKLOAD_TOKEN_FILE; os.environ resolves a filename whose bytes are read later. The literal is not credential material.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=639",
@@ -9849,8 +10280,10 @@
       "rule": "B105",
       "line": 112,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "SIGNING_KEY_SECRET_ARN_ENV names the environment field passed to os.environ.get; its runtime ARN identifies the actual secret.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=680",
@@ -9975,8 +10408,10 @@
       "rule": "B105",
       "line": 38,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "CALLER_TOKEN_HEADER is the public HTTP header name X-Adp-Task-Caller-Token; caller-supplied token bytes are the header value.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=689",
@@ -10393,8 +10828,10 @@
       "rule": "B105",
       "line": 465,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "access is the required token_use discriminator in signed claims; signature, issuer and audience validation remain separate. This is not a shared secret.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=718",
@@ -10853,8 +11290,10 @@
       "rule": "B105",
       "line": 80,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "_TOKEN_CHECK names a PostgreSQL check constraint rejecting blank attempt tokens. Constraint names are schema identifiers, not attempt tokens.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=750",
@@ -11037,8 +11476,10 @@
       "rule": "B105",
       "line": 38,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "k8s-aws-v1. is the public EKS wire prefix; actual token content is separately generated from a presigned STS request and parsed after the prefix.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=763",
@@ -11121,8 +11562,10 @@
       "rule": "B105",
       "line": 72,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "superplane-system is the ExternalSecret namespace identifier, not secret data. This constant does not grant Kubernetes access.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=769",
@@ -11197,8 +11640,10 @@
       "rule": "B105",
       "line": 97,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "scoped-controller-test-token is confined to the test service async context: written into a TemporaryDirectory token file and compared by the injected local RPC authenticator. It is not installed production authentication.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=774",
@@ -11653,8 +12098,10 @@
       "rule": "B105",
       "line": 36,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "SUPERPLANE_LIVE_ADP_TOKEN is an environment variable name. The acceptance tool obtains the real value through os.environ.get.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=803",
@@ -11851,8 +12298,10 @@
       "rule": "B105",
       "line": 107,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "SUPERPLANE_LIVE_SKYPILOT_TOKEN is an environment variable name consumed through os.environ.get; missing real credentials block capture.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=816",
@@ -11865,8 +12314,10 @@
       "rule": "B105",
       "line": 110,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "SUPERPLANE_LIVE_PRODUCER_TOKEN is an environment variable name consumed through os.environ.get; the string itself is never accepted as authentication.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=817",
@@ -13607,8 +14058,10 @@
       "rule": "B105",
       "line": 14,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "GITHUB_TOKEN_URL is the public OAuth token endpoint URL; runtime client credentials and code are supplied separately to the exchange.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=931",
@@ -13621,8 +14074,10 @@
       "rule": "B105",
       "line": 158,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "An empty secret_client_id marks failed secret lookup and triggers configured public client-id fallback; a client ID is public metadata and the empty string is not a credential.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=932",
@@ -13691,8 +14146,10 @@
       "rule": "B105",
       "line": 23,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "TOKEN_MAP_URL is a public AWS pricing-data URL. Token refers to metered model usage units, not authentication.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=937",
@@ -16093,8 +16550,10 @@
       "rule": "B105",
       "line": 177,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "access chooses which signed Cognito claim identifies the client; the literal is the standard token_use discriminator.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1100",
@@ -16107,8 +16566,10 @@
       "rule": "B105",
       "line": 200,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "access limits dynamic client acceptance to access-token claims; authorization depends on separately validated claims and client registry.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1101",
@@ -16121,8 +16582,10 @@
       "rule": "B105",
       "line": 255,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "access chooses client_id rather than aud when reading validated claims. No secret is represented by the discriminator.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1102",
@@ -16251,8 +16714,10 @@
       "rule": "B105",
       "line": 687,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "github-installation-token is a route identifier. Request authorization and returned token bytes are separate from the route label.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1111",
@@ -16307,8 +16772,10 @@
       "rule": "B105",
       "line": 507,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "OPS_GITHUB_APP_ID_SECRET is an environment variable name used to choose a Secrets Manager SecretId.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1115",
@@ -16321,8 +16788,10 @@
       "rule": "B105",
       "line": 508,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "OPS_GITHUB_APP_KEY_SECRET is an environment variable name used to choose a Secrets Manager SecretId; it is not the key.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1116",
@@ -16335,8 +16804,10 @@
       "rule": "B105",
       "line": 511,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "adp/aws-e/gh-app-ops-id is a Secrets Manager lookup name; get_secret_value retrieves the actual runtime value with IAM authorization.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1117",
@@ -16349,8 +16820,10 @@
       "rule": "B105",
       "line": 512,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "adp/aws-e/gh-app-ops-key is a Secrets Manager lookup name; get_secret_value retrieves actual key material separately.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1118",
@@ -16407,8 +16880,10 @@
       "rule": "B105",
       "line": 110,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "ENGINE_COMMAND_SIGNING_KEY_SECRET_ARN is the common environment field name for signer/verifier key selection, not the signing key.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1121",
@@ -16421,8 +16896,10 @@
       "rule": "B105",
       "line": 189,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "BG_ORCH_MAX_DIAGNOSES_PER_PASS names a numeric pass-limit environment setting; pass means orchestration iteration, not password.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1122",
@@ -16449,8 +16926,10 @@
       "rule": "B105",
       "line": 267,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "BG_ORCH_MAX_COMMANDS_PER_PASS names a numeric dispatch-limit setting; the literal is configuration metadata.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1124",
@@ -16505,8 +16984,10 @@
       "rule": "B105",
       "line": 77,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "tick_report is the static logging marker passed to logger.info/logger.exception and deployment smoke checks. It does not authenticate.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1128",
@@ -16563,8 +17044,10 @@
       "rule": "B105",
       "line": 23,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "TOKEN_BUCKET_CONSUME_SCRIPT contains Lua rate-limit accounting code registered via Redis register_script; token means quota units.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1132",
@@ -16577,8 +17060,10 @@
       "rule": "B105",
       "line": 69,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "TOKEN_BUCKET_CHECK_SCRIPT contains Lua quota-inspection code registered via Redis register_script. It contains no credential value.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1133",
@@ -16747,8 +17232,10 @@
       "rule": "B105",
       "line": 34,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "oauth_token is a CredentialType enum label that describes how a separately stored credential is used; it is not a token.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1144",
@@ -16761,8 +17248,10 @@
       "rule": "B105",
       "line": 118,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "access is the standard token_use claim value required for client-credentials authorization. The literal is not an authentication secret.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1145",
@@ -16985,8 +17474,10 @@
       "rule": "B105",
       "line": 29,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "pass is the outcome enum label Result.PASS for deployment shape checks; it is not a password.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1161",
@@ -19165,8 +19656,10 @@
       "rule": "B105",
       "line": 94,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "pass is the Verdict.PASS outcome label for operator probes; it is not credential material.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1303",
@@ -19223,8 +19716,10 @@
       "rule": "B105",
       "line": 152,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "reviewed-nonsecret-literal",
+      "owner_issue": 6108,
+      "rationale": "WORKLOAD_TOKEN_DIR=/var/run/adp-workload is a projected-volume mount path used for manifest validation/rendering, not the projected token contents.",
+      "evidence": "evidence/bandit-nonsecret-literal-review.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1307",
