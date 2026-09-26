@@ -12,12 +12,12 @@ non-applicable. Runtime and operator assertions still require review.
 
 | Original selector disposition | Count |
 | --- | ---: |
-| Fixed source controls | 199 |
+| Fixed source controls | 200 |
 | Verified test assertions | 187 |
 | Reviewed parameterized SQL boundaries | 2 |
 | Fixed source boundary, runtime acceptance open | 10 |
 | Reviewed assertions with explicit optimization-safe guards | 35 |
-| Pending source review, owned by #6108 | 1037 |
+| Pending source review, owned by #6108 | 1036 |
 | Total original selectors | 1470 |
 
 Every original selector is retained exactly once in
@@ -88,3 +88,22 @@ retained; scan disappearance is not the evidence for this review.
 All **1,470** original identities, severities and disposition-candidate joins are
 preserved; **1,037** observations remain pending source review. #6108 stays open,
 including its separate runtime acceptance holds.
+
+## Explicit serving-inventory refusal
+
+Original LOW B101 selector `ri=833` (observer line 1924) now uses an explicit
+`require` guard before deriving any serving facts. An inconsistent inventory
+without its retained listing raises a static `EvidenceError` in normal Python,
+`-O` and `-OO`. The baseline already rejected the synthetic inconsistent state,
+but through `AssertionError` normally and `AttributeError` under optimization;
+this fixes predictable guard handling, not a demonstrated forged-evidence pass.
+
+All three rejection regressions fail on the baseline and pass after the change;
+the combined offline acceptance suites pass **423 tests**. The fixture constructs
+an observer without transports and forbids fact derivation, so no live observer
+or resource is contacted. A fresh Bandit 1.7.9 scan on the immutable candidate
+source leaves the other 12 B101 observations unchanged. Evidence:
+`evidence/bandit-superplane-inventory-guard.json`.
+
+The full **1,470** original identities/severities remain; **1,036** observations
+are still pending source review. #6108 and its separate runtime holds stay open.

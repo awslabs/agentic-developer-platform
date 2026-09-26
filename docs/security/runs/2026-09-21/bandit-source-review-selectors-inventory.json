@@ -6,11 +6,11 @@
   "exact_input_manifest_commit": "74c48e78647afbe8c4eaf83ce3b01499e5cc61fe",
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
-    "pending-source-review": 1037,
+    "pending-source-review": 1036,
     "nonsecurity-test-assertion": 187,
     "fixed-source-runtime-open": 10,
     "reviewed-optimization-safe-guard": 35,
-    "fixed": 199,
+    "fixed": 200,
     "reviewed-parameterized-sql": 2
   },
   "scope_complete": false,
@@ -12040,8 +12040,10 @@
       "rule": "B101",
       "line": 1924,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Serving-inventory consistency now uses explicit require/EvidenceError with the original predicate. Offline regression rejects the inconsistent state predictably before deriving facts in normal Python, -O and -OO. Baseline already failed with AssertionError/AttributeError; no prior forged-evidence acceptance or live rollout is claimed.",
+      "evidence": "evidence/bandit-superplane-inventory-guard.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=834",
