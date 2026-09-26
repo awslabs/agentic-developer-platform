@@ -61,7 +61,18 @@ async def installation_credential_evidence(
 
     from app.auth import authorize_workspace_operation
     from app.operation_activation import dispatch_enabled
-    from app.routers.provider_connections import _authorize, _load_or_404, _state
+    from sqlalchemy import select
+    from app.models.provider_connection import (
+        ProviderConnection,
+        ProviderConnectionBinding,
+    )
+    from app.routers.provider_connections import (
+        _authorize,
+        _load_or_404,
+        _state,
+        _mutation_authority,
+        _require_binding,
+    )
 
     if not management_only() or dispatch_enabled():
         raise HTTPException(
@@ -73,7 +84,27 @@ async def installation_credential_evidence(
     await authorize_workspace_operation(
         db, caller, workspace_id, Permission.RENEW_CREDENTIAL
     )
-    connection, binding = await _load_or_404(db, org_id, connection_id)
+    # Do not hold a connection lock across the external vault request. Capture
+    # immutable input state, then re-read and lock all release authority after it.
+    connection = await db.scalar(
+        select(ProviderConnection)
+        .where(
+            ProviderConnection.id == connection_id,
+            ProviderConnection.org_id == org_id,
+        )
+        .execution_options(populate_existing=True)
+    )
+    binding = await db.scalar(
+        select(ProviderConnectionBinding)
+        .where(
+            ProviderConnectionBinding.connection_id == connection_id,
+        )
+        .execution_options(populate_existing=True)
+    )
+    if connection is None or binding is None:
+        raise HTTPException(404, "provider connection not found")
+    original_state = _state(connection, binding)
+    original_binding_id = binding.id
     evidence = await _authorize(
         request=request,
         workspace_id=workspace_id,
@@ -82,7 +113,21 @@ async def installation_credential_evidence(
         org_id=org_id,
         require_renewal=True,
     )
+    # Roll back only the read-only lookup transaction, so no cached ORM grant
+    # or binding can survive the await. The route performs no durable writes.
+    await db.rollback()
+    connection, binding = await _load_or_404(db, org_id, connection_id)
+    await db.refresh(binding, with_for_update=True)
     state = _state(connection, binding)
+    _require_binding(workspace_id=workspace_id, state=state, binding=binding)
+    if binding.id != original_binding_id or state != original_state:
+        raise HTTPException(403, "credential connection changed during verification")
+    await _mutation_authority(
+        db, request, org_id, workspace_id, connection.provider, evidence
+    )
+    await authorize_workspace_operation(
+        db, caller, workspace_id, Permission.RENEW_CREDENTIAL
+    )
     return {
         "control_version": 1,
         "org_id": str(org_id),

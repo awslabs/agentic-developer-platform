@@ -28,7 +28,7 @@ and repeated restarts even before Kubernetes reports node memory pressure.
 
 ## Inputs and prerequisites
 
-Use Python 3.12 with `PyYAML`, `httpx` and `boto3`, Terraform matching the maintained module,
+Use Python 3.12 with the dependencies in [requirements.txt](requirements.txt) (`PyYAML`, `httpx` and `boto3`), Terraform matching the maintained module,
 AWS CLI v2 with conditional S3 PUT/DELETE support, and kubectl. Set
 `image_execution: cluster` for private RDS or machines without Docker. This path
 verifies ECR manifest/config digests and OCI source labels, tests actual
@@ -340,3 +340,11 @@ the receipt reports that limitation rather than inventing a version. Existing
 broad API TCP443/5432 egress remains; the selected Gateway peer receives only the
 explicit Service/target ports. Cluster-specific denied-neighbor network evidence
 and all behavioral tests still require remote CI and authorized live verification.
+
+The rotation check negotiates Kubernetes `PartialObjectMetadata` with no full
+Secret fallback. It does not request Secret `.data` or `.stringData`. Metadata
+annotations can nevertheless contain legacy embedded values (for example a
+`kubectl` last-applied annotation); they are received privately and discarded,
+never logged or persisted. Only the Secret UID and resourceVersion enter the
+receipt. Kubernetes still authorizes this operation through Secret `get` RBAC;
+metadata negotiation is response minimization, not a separate RBAC capability.

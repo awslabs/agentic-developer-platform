@@ -1,11 +1,78 @@
 """Receipt-bound adapter staging within the existing installer route fence."""
 
+import base64
 import copy
+import ssl
+
+import httpx
 import json
 from datetime import UTC, datetime, timedelta
 
 from .api_adapters import project, verify_role
 from .config import digest, require
+
+
+PARTIAL_METADATA = "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1"
+
+
+def secret_metadata(installer, cluster, name):
+    """Negotiate metadata at the API server; never request the Secret object.
+
+    No fallback Accept media type: a server without metadata projection must
+    refuse. Only UID/resourceVersion leave this helper; annotations are discarded.
+    The EKS bearer token is operator transport, never part of a receipt.
+    """
+    env = installer.env
+    require(
+        cluster.get("arn")
+        == f"arn:aws:eks:{env['region']}:{env['account_id']}:cluster/{env['cluster']}",
+        "Secret metadata target cluster differs",
+    )
+    context = ssl.create_default_context(
+        cadata=base64.b64decode(
+            cluster["certificateAuthority"]["data"], validate=True
+        ).decode()
+    )
+    token = installer.json(
+        installer.aws("eks", "get-token", "--cluster-name", env["cluster"])
+    )["status"]["token"]
+    try:
+        with httpx.Client(
+            verify=context, trust_env=False, follow_redirects=False, timeout=10
+        ) as client:
+            response = client.get(
+                cluster["endpoint"]
+                + f"/api/v1/namespaces/{env['namespace']}/secrets/{name}",
+                headers={
+                    "Accept": PARTIAL_METADATA,
+                    "Authorization": "Bearer " + token,
+                },
+            )
+            require(
+                response.status_code == 200, "Secret metadata projection was refused"
+            )
+            value = response.json()
+            require(
+                value.get("apiVersion") == "meta.k8s.io/v1"
+                and value.get("kind") == "PartialObjectMetadata"
+                and set(value) <= {"apiVersion", "kind", "metadata"},
+                "API did not return PartialObjectMetadata",
+            )
+            metadata = value["metadata"]
+            require(
+                metadata.get("name") == name
+                and metadata.get("namespace") == env["namespace"]
+                and all(
+                    isinstance(metadata.get(k), str) and metadata[k]
+                    for k in ("uid", "resourceVersion")
+                ),
+                "Secret metadata identity is incomplete",
+            )
+            return {k: metadata[k] for k in ("uid", "resourceVersion")}
+    except (httpx.HTTPError, ValueError, KeyError):
+        from .config import Refusal
+
+        raise Refusal("Secret metadata projection was unavailable") from None
 
 
 def snapshot(installer):
@@ -35,28 +102,15 @@ def snapshot(installer):
         "Selected vault Service transport changed",
     )
     ref = adapters["vault"]["secret_key_ref"]
-    # Never emit Secret data or annotations (last-applied can contain data).
-    metadata = installer.kube(
-        "get",
-        "secret",
-        ref["name"],
-        "-n",
-        env["namespace"],
-        "-o",
-        'jsonpath={.metadata.uid}{" "}{.metadata.resourceVersion}',
-    ).stdout.split()
-    require(
-        len(metadata) == 2 and all(metadata),
-        "Existing vault Secret metadata is unavailable",
-    )
+    cluster = installer.json(
+        installer.aws("eks", "describe-cluster", "--name", env["cluster"])
+    )["cluster"]
+    metadata = secret_metadata(installer, cluster, ref["name"])
     producer = adapters["dispatcher"]
     role_name = producer["role_arn"].rsplit("/", 1)[1]
     role = installer.json(installer.aws("iam", "get-role", "--role-name", role_name))[
         "Role"
     ]
-    cluster = installer.json(
-        installer.aws("eks", "describe-cluster", "--name", env["cluster"])
-    )["cluster"]
     policies = []
     for name in installer.json(
         installer.aws("iam", "list-role-policies", "--role-name", role_name)
@@ -115,8 +169,8 @@ def snapshot(installer):
         "secret": {
             "namespace": env["namespace"],
             **ref,
-            "uid": metadata[0],
-            "resource_version": metadata[1],
+            "uid": metadata["uid"],
+            "resource_version": metadata["resourceVersion"],
         },
         "service": {
             "uid": service["metadata"]["uid"],
@@ -182,6 +236,25 @@ def expected_runtime(installer):
     }
 
 
+PRIVATE_CONTROL_PROGRAM = """import json,sys,httpx
+from app.operation_activation import STAGED_ADMISSION_PROBE
+v=json.load(sys.stdin)
+with httpx.Client(base_url="http://127.0.0.1:8000",timeout=15,trust_env=False,follow_redirects=False) as c:
+ r=c.get(v["path"],headers={"Authorization":"Bearer "+v["token"]})
+ if r.status_code!=200: raise SystemExit("authenticated credential control refused")
+ value=r.json()
+ management=c.get("/workspaces",headers={"Authorization":"Bearer "+v["token"]})
+ if management.status_code!=200: raise SystemExit("authenticated management read refused")
+ # Deliberately no plan revision or approval: this cannot authorize spending
+ # even if the admission fence regresses. Require the staged 503, not any denial.
+ refused=c.post("/workspaces",headers={"Authorization":"Bearer "+v["token"]},json=STAGED_ADMISSION_PROBE)
+ if refused.status_code!=503 or refused.json().get("detail")!="operation admission is disabled for adapter verification": raise SystemExit("staged admission fence not observed")
+ value["management_read_verified"]=True
+ value["unapproved_admission_refused"]=True
+ print(json.dumps(value))
+"""
+
+
 def verify(installer, token):
     env = installer.env
     adapters = env["api_adapters"]
@@ -227,22 +300,7 @@ def verify(installer, token):
     control = adapters["verification"]
     path = f"/internal/installation/workspaces/{control['workspace_id']}/credential-evidence/{control['connection_id']}"
     # Authenticated caller token only through stdin, never argv/env or receipts.
-    program = """import json,sys,httpx
-v=json.load(sys.stdin)
-with httpx.Client(base_url="http://127.0.0.1:8000",timeout=15,trust_env=False,follow_redirects=False) as c:
- r=c.get(v["path"],headers={"Authorization":"Bearer "+v["token"]})
- if r.status_code!=200: raise SystemExit("authenticated credential control refused")
- value=r.json()
- management=c.get("/workspaces",headers={"Authorization":"Bearer "+v["token"]})
- if management.status_code!=200: raise SystemExit("authenticated management read refused")
- # Deliberately no plan revision or approval: this cannot authorize spending
- # even if the admission fence regresses. Require the staged 503, not any denial.
- refused=c.post("/workspaces",headers={"Authorization":"Bearer "+v["token"]},json={"name":"adapter-verification-no-approval"})
- if refused.status_code!=503 or refused.json().get("detail")!="operation admission is disabled for adapter verification": raise SystemExit("staged admission fence not observed")
- value["management_read_verified"]=True
- value["unapproved_admission_refused"]=True
- print(json.dumps(value))
-"""
+
     metadata = installer.json(
         installer.kube(
             "exec",
@@ -253,7 +311,7 @@ with httpx.Client(base_url="http://127.0.0.1:8000",timeout=15,trust_env=False,fo
             "--",
             "python",
             "-c",
-            program,
+            PRIVATE_CONTROL_PROGRAM,
             data=json.dumps({"path": path, "token": token}),
         )
     )
@@ -286,6 +344,8 @@ def activate(installer):
         stage.get("state") == "verified-disabled"
         and datetime.fromisoformat(stage["verified_at"])
         > datetime.now(UTC) - timedelta(minutes=5)
+        and datetime.fromisoformat(stage["credential_metadata"]["evidence_expires_at"])
+        > datetime.now(UTC)
         and stage["binding"] == snapshot(installer),
         "Adapter activation requires fresh unchanged verification",
     )
@@ -334,6 +394,27 @@ def restore_disabled(installer):
     installer.save()
 
 
+QUIESCENCE_PROGRAM = """import asyncio,json
+from sqlalchemy import text
+async def check(engine):
+ counts={}
+ async with engine.connect() as c:
+  for table,predicate in (
+   ("harness_operations", "state IN ('pending','running') OR cleanup_required"),
+   ("harness_operation_leases", "closed_at IS NULL"),
+   ("harness_dispatch_outbox", "delivered_at IS NULL AND abandoned_at IS NULL"),
+   ("workspaces", "status IN ('Provisioning','Teardown')"),
+   ("deployments", "status NOT IN ('Deleted','Failed','CancelledBeforeDispatch')")):
+   exists=await c.scalar(text("SELECT to_regclass(:table)"),{"table":table})
+   counts[table]=int(await c.scalar(text("SELECT count(*) FROM "+table+" WHERE "+predicate))) if exists else 0
+ return counts
+if __name__ == "__main__":
+ from app.database import engine
+ try: print(json.dumps(asyncio.run(check(engine))))
+ except Exception: raise SystemExit("operation quiescence read refused") from None
+"""
+
+
 def require_quiescent(installer):
     """Refuse to disable an API with admitted/active work; never cancel it."""
     from .config import LABEL
@@ -349,24 +430,7 @@ def require_quiescent(installer):
         current["metadata"].get("labels", {}).get(LABEL) == installer.owner,
         "Cannot stage a foreign API Deployment",
     )
-    program = """import asyncio,json
-from sqlalchemy import text
-from app.database import engine
-async def check():
- counts={}
- async with engine.connect() as c:
-  for table,predicate in (
-   ("harness_operations", "state IN ('pending','running') OR cleanup_required"),
-   ("harness_operation_leases", "closed_at IS NULL"),
-   ("harness_dispatch_outbox", "delivered_at IS NULL AND abandoned_at IS NULL"),
-   ("workspaces", "status IN ('Provisioning','Teardown')"),
-   ("deployments", "status NOT IN ('Deleted','Failed','CancelledBeforeDispatch')")):
-   exists=await c.scalar(text("SELECT to_regclass(:table)"),{"table":table})
-   counts[table]=int(await c.scalar(text("SELECT count(*) FROM "+table+" WHERE "+predicate))) if exists else 0
- return counts
-try: print(json.dumps(asyncio.run(check())))
-except Exception: raise SystemExit("operation quiescence read refused") from None
-"""
+
     counts = installer.json(
         installer.kube(
             "exec",
@@ -376,7 +440,7 @@ except Exception: raise SystemExit("operation quiescence read refused") from Non
             "--",
             "python",
             "-c",
-            program,
+            QUIESCENCE_PROGRAM,
         )
     )
     require(
