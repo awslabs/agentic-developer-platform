@@ -10462,18 +10462,27 @@ def test_knowledge_nightly_is_selected_and_has_no_dispatch(tmp_path):
         (0, {"status": "ok", "detail": {"items": []}}),
         (1, {"status": "failed", "error": {"code": "usage_error"}}),
     ]
-    cli.json.return_value = {"status": "preview", "detail": {"effect": "soft removal; index artifacts retained"}}
+    cli.json.return_value = {
+        "status": "preview",
+        "detail": {"effect": "soft removal; index artifacts retained"},
+    }
     evidence = {}
     module.knowledge(cli, evidence)
     assert evidence["live_acceptance"].startswith("held:")
     assert evidence["discovery"] == "available"
-    assert all(not {"--yes", "reindex", "add", "commit", "submit"}.intersection(call.args[0]) for call in cli.method_calls)
+    assert all(
+        not {"--yes", "reindex", "add", "commit", "submit"}.intersection(call.args[0])
+        for call in cli.method_calls
+    )
 
 
 @pytest.mark.parametrize("status", [401, 429, 500])
 def test_knowledge_nightly_does_not_hide_unexpected_errors(tmp_path, status):
     module, common = shipped_script(tmp_path, "story_reads")
     cli = Mock()
-    cli.run.return_value = (5, {"status": "failed", "error": {"message": f"HTTP {status}"}})
+    cli.run.return_value = (
+        5,
+        {"status": "failed", "error": {"message": f"HTTP {status}"}},
+    )
     with pytest.raises(common.RemoteError, match="Unexpected knowledge discovery"):
         module.knowledge(cli, {})
