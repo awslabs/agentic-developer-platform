@@ -257,6 +257,20 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       },
       {
+        # Authorized machine-agent lifecycle (#5624). Cognito client creation,
+        # protected credential delivery and terminal retirement all use this
+        # existing gateway pool. This is static gateway authority, not worker
+        # or per-task permission, and grants no client update/secret rotation.
+        Sid    = "CognitoMachineClientLifecycle"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:CreateUserPoolClient",
+          "cognito-idp:DescribeUserPoolClient",
+          "cognito-idp:DeleteUserPoolClient"
+        ]
+        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
+      },
+      {
         # Web CLI login (/auth/cli): mints tokens on the CLI app client the
         # same way the github-auth-broker does — fresh random permanent
         # password + admin auth. Only invoked after the signed-in browser

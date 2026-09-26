@@ -147,3 +147,18 @@ owned disposable IAM role fixture; shared worker/dev-box roles cannot substitute
 Cognito-to-canonical alias/mapping/attribution integration and actual concurrent
 provider delivery remain separate acceptance work. The extension does not close
 all CLI-11 criteria.
+
+The gateway service role must allow `cognito-idp:CreateUserPoolClient`,
+`cognito-idp:DescribeUserPoolClient`, and `cognito-idp:DeleteUserPoolClient` on
+its configured user pool for Cognito registration, private credential delivery
+and retirement. These are static gateway permissions in the canonical gateway
+Terraform policy; worker or per-task permissions do not supply them. No client
+update/rotation action is required by this lifecycle.
+
+A provider rejection after durable registration admission can leave the original
+operation pending even when no client was created. The current API deliberately
+cannot replay a started provider call without its completion receipt. Preserve
+the original failed evaluation and name/operation evidence; a permission repair
+alone does not resolve that receipt, authorize resetting it, or prove lifecycle
+acceptance. Determine exact client/metadata absence through labeled read-only
+reconciliation before deciding on further recovery work.
