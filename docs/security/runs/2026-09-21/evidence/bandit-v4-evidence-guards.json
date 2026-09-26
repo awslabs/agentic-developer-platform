@@ -1,0 +1,181 @@
+{
+  "issue": 6108,
+  "source_revision": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+  "candidate_source_commit": "054ebc1b6c0032d9108b267fc2296d3a8ee92f07",
+  "file": "scripts/task-api/verify_v4_evidence.py",
+  "candidate_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+  "method": "Replace all thirteen removable assertions with explicit _require guards preserving each original AST predicate; explicit AssertionError survives optimization and guard messages do not echo report objects or manifest values.",
+  "fixed_delta": 13,
+  "pending_before": 929,
+  "pending_after": 916,
+  "fixed_records": [
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1459",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 17,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 23,
+        "predicate_ast_sha256": "bd51c2f54d6e8bcf1870272c8fcd7c1485a9824b0985ee62bf89c985c179d076"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1460",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 18,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 24,
+        "predicate_ast_sha256": "bc616a3f2a2f11fc38808a779160397c9287d0f8dd0ec764de6a5f1b451c1575"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1461",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 20,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 26,
+        "predicate_ast_sha256": "29a5e41cd0074eed2e9aa4160049fa69b63a5dd27e1d8584cc3e7d3b38fa3403"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1462",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 21,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 27,
+        "predicate_ast_sha256": "12b10768b5a827b027346f1f7d0df44830c8d519e21781109045fb8327a68459"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1463",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 23,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 29,
+        "predicate_ast_sha256": "333afcec0e6d4a029c45ffcdac3670459ce09d6d299b72fe550d363bbd6c3386"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1464",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 26,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 34,
+        "predicate_ast_sha256": "a88d6ab443134b263f2371e207dab3632bc3c01057f3ffd8d3b9f219d19dc5ac"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1465",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 32,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 41,
+        "predicate_ast_sha256": "e6e1d68652ee932735ac5e9dc2509858259ce608bfc1b59eb1cb760bfdd19ac7"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1466",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 33,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 45,
+        "predicate_ast_sha256": "45930b454d50fe6d2ae70145106218fe297c492e6115c9b9d0cd379c18453676"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1467",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 38,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 53,
+        "predicate_ast_sha256": "c8ac351530c177998fc41f05f27baaf72813b3aff4a707eea2530f2378f59baf"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1468",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 39,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 57,
+        "predicate_ast_sha256": "0ecf6e08aa0ffb3c123794bfc2486ac5158c7c4f160d87415d0ef18780b37bd9"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1469",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 40,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 61,
+        "predicate_ast_sha256": "0d886f52b158d690118de3c5b82c183d1bd4870a231484461cd93ea82012cef5"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1470",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 50,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 74,
+        "predicate_ast_sha256": "c1837ed4b3737b16bf55c7e7598a4affd5c8f9d11acd597acf2b4a21a8700d52"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1471",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 51,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 78,
+        "predicate_ast_sha256": "23138912a2468c5da3bf792525e24317650460c9241d3d891bc6b99fe01524e4"
+      }
+    }
+  ],
+  "behavior_evidence": {
+    "baseline": "All 14 tampered fixture variants produced PASS under both -O and -OO; normal criterion refusal also echoed a synthetic private report field.",
+    "baseline_failed_regressions": 29,
+    "baseline_passed_regressions": 16,
+    "candidate_passed_regressions": 45,
+    "test_file": "scripts/task-api/tests/test_verify_v4_evidence.py",
+    "modes": [
+      "normal",
+      "-O",
+      "-OO"
+    ],
+    "valid_fixtures": 3,
+    "tampered_fixtures": 42,
+    "isolation": "run-isolated-cli-test.py; temporary synthetic receipt files only; no live qualification, imports from ADP CLI, provider calls or workload writes"
+  },
+  "fresh_scan": {
+    "tool": "bandit",
+    "version": "1.7.9",
+    "selected_rule": "B101",
+    "results": 0,
+    "errors": 0,
+    "raw_json_sha256": "0856dd00abca1cdacbf10267dfdfa7e744c0f54200fa4df67c24e3306bcc783c",
+    "local_raw_artifact": "/tmp/security6108-v4-bandit.json"
+  },
+  "scope_complete": false
+}

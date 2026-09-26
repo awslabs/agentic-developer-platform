@@ -12,13 +12,13 @@ non-applicable. Runtime and operator assertions still require review.
 
 | Original selector disposition | Count |
 | --- | ---: |
-| Fixed source controls | 200 |
+| Fixed source controls | 213 |
 | Verified test assertions | 187 |
 | Reviewed parameterized SQL boundaries | 2 |
 | Fixed source boundary, runtime acceptance open | 10 |
 | Reviewed assertions with explicit optimization-safe guards | 35 |
 | Reviewed import-only observations; execution scopes retained | 107 |
-| Pending source review, owned by #6108 | 929 |
+| Pending source review, owned by #6108 | 916 |
 | Total original selectors | 1470 |
 
 Every original selector is retained exactly once in
@@ -133,3 +133,25 @@ with zero errors; no source suppression or disappearance supplies the decision.
 All **1,470** original selectors and original disposition-candidate links remain;
 **929** observations are pending source review. #6108 stays open, including
 execution-boundary review and separate runtime acceptance holds.
+
+## V4 recorded-evidence integrity guards
+
+Thirteen original B101 observations in `scripts/task-api/verify_v4_evidence.py`
+now use explicit guards with the same AST predicates. The original verifier
+printed PASS for fourteen tampered receipt variants under both `-O` and `-OO`: its
+assertions had disappeared. A normal-mode criterion failure also echoed a
+synthetic private report field. The new guards survive optimization and use
+static errors without raw report objects or manifest values.
+
+All **45** fixture regressions pass: valid evidence in three interpreter modes
+and fourteen tampered variants in each mode. The baseline fails 29 of those
+checks. Fixtures cover missing criteria/evidence, failed verdicts, manifest
+digests, task/queue status, artifact size/hash/content and held-progress
+invariants. A fresh pinned Bandit scan reports zero B101 results for the
+immutable repaired verifier; predicate equivalence and behavior tests establish
+the fix. Receipt: `evidence/bandit-v4-evidence-guards.json`.
+
+The tool still checks recorded evidence integrity only; no test or source change
+performs live qualification. All **1,470** original identities/severities remain
+with **916** observations pending source review. #6108 and its runtime holds
+remain open.

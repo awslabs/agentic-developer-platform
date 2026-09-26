@@ -7,11 +7,11 @@
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
     "reviewed-import-only-observation": 107,
-    "pending-source-review": 929,
+    "pending-source-review": 916,
     "nonsecurity-test-assertion": 187,
     "fixed-source-runtime-open": 10,
     "reviewed-optimization-safe-guard": 35,
-    "fixed": 200,
+    "fixed": 213,
     "reviewed-parameterized-sql": 2
   },
   "scope_complete": false,
@@ -21527,8 +21527,10 @@
       "rule": "B101",
       "line": 17,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1460",
@@ -21541,8 +21543,10 @@
       "rule": "B101",
       "line": 18,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1461",
@@ -21555,8 +21559,10 @@
       "rule": "B101",
       "line": 20,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1462",
@@ -21569,8 +21575,10 @@
       "rule": "B101",
       "line": 21,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1463",
@@ -21583,8 +21591,10 @@
       "rule": "B101",
       "line": 23,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1464",
@@ -21597,8 +21607,10 @@
       "rule": "B101",
       "line": 26,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1465",
@@ -21611,8 +21623,10 @@
       "rule": "B101",
       "line": 32,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1466",
@@ -21625,8 +21639,10 @@
       "rule": "B101",
       "line": 33,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1467",
@@ -21639,8 +21655,10 @@
       "rule": "B101",
       "line": 38,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1468",
@@ -21653,8 +21671,10 @@
       "rule": "B101",
       "line": 39,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1469",
@@ -21667,8 +21687,10 @@
       "rule": "B101",
       "line": 40,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1470",
@@ -21681,8 +21703,10 @@
       "rule": "B101",
       "line": 50,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=1471",
@@ -21695,8 +21719,10 @@
       "rule": "B101",
       "line": 51,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed",
+      "owner_issue": 6108,
+      "rationale": "Recorded V4 receipt integrity now uses explicit guards preserving the original predicates under normal Python, -O and -OO. Tampered verdicts, manifests, artifact bodies and progress cannot produce PASS; guard errors do not echo raw report objects. Valid fixtures retain the recorded-integrity-only result; no live qualification is claimed.",
+      "evidence": "evidence/bandit-v4-evidence-guards.json"
     }
   ],
   "supplemental_scan": {
