@@ -57,6 +57,8 @@ def parser():
 
     for area in ("service-account", "agent", "service-principal"):
         commands.add_parser(area, help="Explicit machine identity lifecycle")
+
+    commands.add_parser("indexing", help="Inspect canonical indexing runs")
     commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
@@ -189,6 +191,12 @@ def main(argv=None):
             if not module:
                 raise common.CliError("Machine identity helper is missing. Run adp update.", "provider_unavailable", 4)
             return module.main(argv)
+
+        if argv and argv[0] == "indexing":
+            module = common.load_provider("adp-knowledge.py")
+            if not module:
+                raise common.CliError("Knowledge helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "indexing", *argv[1:]])
         if argv and argv[0] == "budget":
             module = common.load_provider("adp-budget.py")
             if not module:

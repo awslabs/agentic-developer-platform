@@ -316,6 +316,14 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
+        "E32",
+        "#5632",
+        "story-reads",
+        "Served knowledge discovery/status errors and soft-delete previews; live indexing and retrieval acceptance held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    ),
+    Case(
         "E34",
         "#5633",
         "story-reads",

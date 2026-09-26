@@ -166,6 +166,24 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 
 GitHub maintenance (#5634) adds six leaf commands: `github disconnect`, `admin github rotate-key`, `admin github disconnect`, and `admin github org-binding list|add|remove`. `admin github status --maintenance` reads the revision needed for reviewed App writes. See [GitHub maintenance](github-maintenance.md) for exact flags, staged key recovery and live acceptance holds. The checked manifest is the source inventory; deployed availability and functioning OAuth/webhook consumers require separate evidence.
 
+## Knowledge and indexing (#5632)
+
+Source implementation; dedicated live indexing/retrieval acceptance remains held. See [knowledge](knowledge.md).
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp knowledge add` |  | `--dry-run`, `--file`, `--json`, `--key`, `--yes` |
+| `adp knowledge list` |  | `--json`, `--page`, `--page-size`, `--scope`, `--status`, `--type` |
+| `adp knowledge show` | `asset_id` | `--json` |
+| `adp knowledge delete` | `asset_id` | `--dry-run`, `--json`, `--yes` |
+| `adp knowledge status` | `asset_id` | `--json` |
+| `adp knowledge watch` | `asset_id` | `--interval`, `--json`, `--timeout` |
+| `adp knowledge reindex` | `asset_id` | `--dry-run`, `--json`, `--key`, `--yes` |
+| `adp knowledge bulk preview` |  | `--file`, `--json` |
+| `adp knowledge bulk commit` |  | `--dry-run`, `--expect-hash`, `--json`, `--preview-id`, `--yes` |
+| `adp admin indexing list` |  | `--json`, `--page`, `--page-size` |
+| `adp admin indexing show` |  | `--json`, `--run` |
+
 CLI-11 #5624 adds [machine identity lifecycle commands](machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
 
 Access/session story #5625 adds seven forms: `access status|request`,

@@ -8243,6 +8243,474 @@
       "tests": [
         "tests/cli/test_adp_bedrock_lifecycle.py"
       ]
+    },
+    {
+      "command": "adp knowledge add",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--file",
+        "--json",
+        "--key",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/api/agent-context/assets",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge list",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--page",
+        "--page-size",
+        "--scope",
+        "--status",
+        "--type"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/api/agent-context/assets"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge show",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge delete",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--yes"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge status",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}/status"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge watch",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--interval",
+        "--json",
+        "--timeout"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}/status"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "ndjson"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge reindex",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--key",
+        "--yes"
+      ],
+      "arguments": [
+        "asset_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/api/agent-context/assets/{asset_id}/reindex?request_id={uuid}",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge bulk preview",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--file",
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/agent-context/assets/bulk/preview-json"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp knowledge bulk commit",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "knowledge.asset.write",
+      "flags": [
+        "--dry-run",
+        "--expect-hash",
+        "--json",
+        "--preview-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/api/agent-context/assets/bulk/commit",
+          "/me/cli-capabilities"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [
+        "knowledge.asset.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp admin indexing list",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/indexing/runs"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
+    },
+    {
+      "command": "adp admin indexing show",
+      "helper": "adp-knowledge.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": null,
+      "flags": [
+        "--json",
+        "--run"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/indexing/runs/{run_id}"
+        ]
+      },
+      "response": {
+        "stdout": "envelope-json-or-text",
+        "stderr": "errors",
+        "exit_codes": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          130
+        ],
+        "stream": "single-json"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_knowledge.py"
+      ]
     }
   ]
 }

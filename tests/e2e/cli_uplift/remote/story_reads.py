@@ -510,7 +510,48 @@ def bedrock_lifecycle(cli, evidence):
     )
 
 
+def knowledge(cli, evidence):
+    # Optional indexing deployments may explicitly refuse discovery. That is
+    # dependency coverage, never evidence that assets were indexed or retrieved.
+    code, envelope = cli.run(["knowledge", "list", "--page-size", "1"], expected=None)
+    common.require(
+        isinstance(envelope, dict), "Knowledge discovery lacks structured output"
+    )
+    if code == 0:
+        common.require(
+            envelope.get("status") == "ok"
+            and isinstance((envelope.get("detail") or {}).get("items"), list),
+            "Malformed knowledge asset list",
+        )
+        evidence["discovery"] = "available"
+    else:
+        message = (envelope.get("error") or {}).get("message", "")
+        common.require(
+            envelope.get("status") == "failed"
+            and any(f"HTTP {status}" in message for status in (403, 404, 503)),
+            "Unexpected knowledge discovery failure",
+        )
+        evidence["discovery"] = "unavailable-or-forbidden"
+    absent = str(uuid.uuid4())
+    preview = cli.json(["knowledge", "delete", absent])
+    common.require(
+        preview.get("status") == "preview"
+        and "artifacts retained" in (preview.get("detail") or {}).get("effect", ""),
+        "Knowledge delete preview omitted retained artifact semantics",
+    )
+    code, invalid = cli.run(["knowledge", "status", "not-a-uuid"], expected=None)
+    common.require(
+        code == 1 and (invalid.get("error") or {}).get("code") == "usage_error",
+        "Invalid knowledge target was not refused locally",
+    )
+    evidence["cases"] = ["discovery", "soft-delete-preview", "invalid-status-target"]
+    evidence["live_acceptance"] = (
+        "held: dedicated indexing fixture, indexed retrieval, task use, and cleanup not exercised"
+    )
+
+
 SCENARIOS = {
+    'knowledge': knowledge,
     'bedrock_lifecycle': bedrock_lifecycle,
     'machine': machine,
     'model_policy': model_policy,

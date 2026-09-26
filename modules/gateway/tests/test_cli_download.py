@@ -136,6 +136,7 @@ class TestCliScriptDownload:
             "adp-machine.py",
             "adp-usage.py",
             "adp-agent.py",
+            "adp-knowledge.py",
             "adp-budget.py",
             "adp-ratelimit.py",
             "adp_task_client.py",
