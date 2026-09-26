@@ -11,8 +11,8 @@ export function TaskActivity({ onOpen }: { onOpen: (item: InvocationItem) => voi
   const cursor = pages[pages.length - 1];
   const query = useQuery({ queryKey: ['owned-task-activity', instance, cursor], queryFn: () => getMyTaskActivity(cursor),
     enabled: expanded, refetchInterval: expanded ? 30000 : false, retry: false, gcTime: 0 });
-  return <section className="bg-white dark:bg-gray-800 rounded-lg p-4" aria-label="My coding Tasks">
-    <button type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)} className="font-semibold text-blue-600">
+  return <section className="blueprint-card activity-task bg-white dark:bg-gray-800 rounded-lg p-4" aria-label="My coding Tasks">
+    <button type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)} className="activity-task-toggle font-semibold text-blue-600">
       {expanded ? 'Hide Tasks' : 'View my Tasks'}
     </button>
     {expanded && <div className="mt-3 space-y-3">
