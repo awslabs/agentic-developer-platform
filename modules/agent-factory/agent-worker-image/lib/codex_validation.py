@@ -21,6 +21,8 @@ from pathlib import Path
 
 import rfc8785
 
+from lib.codex_source_limits import MAX_SOURCE_BYTES, MAX_SOURCE_ENTRIES, MAX_VALIDATION_ARCHIVE_BYTES
+
 
 @dataclass(frozen=True)
 class ValidationCheck:
@@ -129,9 +131,9 @@ class DockerValidationExecutor:
             tree = git("ls-tree", "-r", "-l", expected_head)
             sizes = [line.split(None, 4)[3] for line in tree.splitlines()]
             if (
-                len(sizes) > 10000
+                len(sizes) > MAX_SOURCE_ENTRIES
                 or any(size == b"-" for size in sizes)
-                or sum(int(size) for size in sizes) > 48 * 1024 * 1024
+                or sum(int(size) for size in sizes) > MAX_SOURCE_BYTES
             ):
                 raise ValidationUnavailable("Validation tree is oversized or contains submodules")
             archive = root / "source.tar"
@@ -167,7 +169,7 @@ class DockerValidationExecutor:
             )
             if result.returncode:
                 raise ValidationUnavailable("Validation source archive unavailable")
-            if archive.stat().st_size > 64 * 1024 * 1024:
+            if archive.stat().st_size > MAX_VALIDATION_ARCHIVE_BYTES:
                 raise ValidationUnavailable("Validation archive exceeds bound")
             digest = hashlib.sha256(archive.read_bytes()).hexdigest()
             result = self.run(
@@ -197,7 +199,7 @@ class DockerValidationExecutor:
             with archive.open("rb") as reader, source.open("wb") as writer:
                 while chunk := reader.read(65536):
                     total += len(chunk)
-                    if total > 64 * 1024 * 1024:
+                    if total > MAX_VALIDATION_ARCHIVE_BYTES:
                         raise ValueError("Validation source archive exceeds bound")
                     digest.update(chunk)
                     writer.write(chunk)

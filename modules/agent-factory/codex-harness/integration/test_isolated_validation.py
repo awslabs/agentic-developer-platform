@@ -225,3 +225,47 @@ def test_actual_cancellation_kills_validation_and_confirms_cleanup(tmp_path):
     assert result["status"] == "failed"
     assert result["reason"] == "cancelled"
     assert set(containers()) == before
+
+
+@pytest.mark.skipif(not os.environ.get("ADP_CODEX_FULL_REPOSITORY"), reason="explicit full repository qualification")
+def test_full_repository_materialization_and_detached_content_identity(tmp_path):
+    """Exercise a real committed tree, with every file checked inside isolation."""
+    import json
+    from lib.codex_workspace import CodexWorkspace
+
+    repository = Path(os.environ["ADP_CODEX_FULL_REPOSITORY"]).resolve(strict=True)
+
+    def git(*args):
+        return subprocess.check_output(["/usr/bin/git", *args], cwd=repository)
+
+    head = git("rev-parse", "HEAD").decode().strip()
+    tree = git("rev-parse", "HEAD^{tree}").decode().strip()
+    archive = git("archive", "--format=tar.gz", "--prefix=source/", head)
+    workspace = CodexWorkspace(
+        tmp_path / "full-repository", provider="github", repository="aws-e/adp",
+        source_revision=head, repository_id="1186991269",
+    )
+    state = workspace.materialize(archive, archive_sha256=hashlib.sha256(archive).hexdigest())
+    assert state["tree"] == tree  # No export-ignore, mode or source loss.
+    checksum_command = "find . -path ./.git -prune -o -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum"
+    expected = subprocess.check_output(["/bin/sh", "-c", checksum_command], cwd=workspace.root).decode().split()[0]
+    before = set(containers())
+    result = DockerValidationExecutor().run_repository(
+        repository=workspace.root, expected_head=state["localHead"],
+        check=ValidationCheck(
+            "full_source_identity", IMAGE,
+            ("/bin/sh", "-c", f'test "$( {checksum_command} )" = "{expected}  -" && echo full-source-verified'),
+            timeout_seconds=120,
+        ),
+    )
+    assert result["status"] == "passed", result
+    assert result["tree"] == tree
+    assert result["output"] == "full-source-verified\n"
+    assert set(containers()) == before
+    evidence = os.environ.get("ADP_CODEX_FULL_REPOSITORY_EVIDENCE")
+    if evidence:
+        Path(evidence).write_text(json.dumps({
+            "sourceRevision": head, "tree": tree, "compressedArchiveBytes": len(archive),
+            "fileCount": len(git("ls-tree", "-r", "--name-only", head).splitlines()),
+            "allFileContentDigest": expected, "validation": result,
+        }, indent=2) + "\n")

@@ -130,6 +130,26 @@ def test_conflicting_or_empty_archive_leaves_no_workspace(tmp_path, files):
     assert not workspace.root.exists()
 
 
+def test_expansion_limit_is_checked_before_writing_any_files(tmp_path, monkeypatch):
+    monkeypatch.setattr("lib.codex_workspace.MAX_SOURCE_BYTES", 8)
+    workspace = CodexWorkspace(
+        tmp_path / "repo", provider="github", repository="org/repo", source_revision="a" * 40
+    )
+    data = bundle({"root/a": b"1234", "root/b": b"56789"})
+    with pytest.raises(WorkspaceError, match="expansion"):
+        workspace.materialize(data, archive_sha256=hashlib.sha256(data).hexdigest())
+    assert not workspace.root.exists()
+
+
+def test_source_exactly_at_expansion_limit_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setattr("lib.codex_workspace.MAX_SOURCE_BYTES", 8)
+    workspace = CodexWorkspace(
+        tmp_path / "repo", provider="github", repository="org/repo", source_revision="a" * 40
+    )
+    data = bundle({"root/a": b"1234", "root/b": b"5678"})
+    assert workspace.materialize(data, archive_sha256=hashlib.sha256(data).hexdigest())["clean"]
+
+
 def test_hardlinked_host_file_cannot_be_read_or_replaced(workspace, tmp_path):
     import os
 

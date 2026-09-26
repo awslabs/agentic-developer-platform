@@ -167,3 +167,17 @@ The shared SDK session now permits at most two continuations after an explicit u
 Local validation: **92 harness unit tests**, **four real-SDK completion scenarios** (repair, exhausted continuations, revoked authority, unknown completion), **20 Task SDK tests** (one opt-in skip), **45 publication/completion tests**, and **13 gateway/worker/SDK scenarios** across the suite and targeted moved-head rerun. The report-only SDK session also passes with the additional current-authority check. Live validation image: `sha256:5c1c5d87388b6885e357c435f1c74703144146aac0d6a0edf3e6fc666f611512`. Model: `openai.gpt-6-sol`, medium effort; pinned official SDK `0.155.1`.
 
 Important qualification boundary: inference goes through the live ADP Gateway and GitHub operations are real, but the worker runs locally, Task admission/ledger use Moto, and GitHub installation authorization is substituted with the owner's operator credential. Budget fixture values are not measured dollar cost. No tenant-installed-App authorization, deployed Task routing or Kubernetes validation is claimed. The inspected deployed gateway has no shared Codex persona configuration. Foundation pause/resume, mentions, memory lifecycle/gateway integration, GitLab runtime parity and the other previously listed qualification gates remain open. No rollout or merge was performed. Live login/configuration stores were preserved.
+
+## Full ADP source qualification
+
+The host expansion limit is now 192 MiB, with a separate 208 MiB bound for
+uncompressed validation archives and unchanged compressed provider-transfer
+limits. Materialization and validation share these host-owned constants.
+The full committed ADP tree at `3c8292a4942ba5685cf68d13bdaa70ccb376e1e5`
+(7,550 files; 25,380,933 compressed archive bytes) materialized with exactly
+the original Git tree identity. A detached immutable container independently
+checked the content digest of every file. All ten Docker integration scenarios
+passed, including cancellation and cleanup. Evidence is in
+[evidence-20260926/full-repository-validation.json](evidence-20260926/full-repository-validation.json).
+This qualifies full-tree source handling locally; it does not qualify hosted
+Task execution or imply that ADP application tests ran.

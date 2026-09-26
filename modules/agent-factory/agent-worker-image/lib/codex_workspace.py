@@ -17,6 +17,8 @@ import subprocess
 import tarfile
 from pathlib import Path
 
+from lib.codex_source_limits import MAX_PROVIDER_ARCHIVE_BYTES, MAX_SOURCE_BYTES, MAX_SOURCE_ENTRIES
+
 
 class WorkspaceError(ValueError):
     pass
@@ -105,7 +107,7 @@ class CodexWorkspace:
     def materialize(self, archive: bytes, *, archive_sha256: str):
         if (
             not isinstance(archive, bytes)
-            or not 0 < len(archive) <= 64 * 1024 * 1024
+            or not 0 < len(archive) <= MAX_PROVIDER_ARCHIVE_BYTES
             or hashlib.sha256(archive).hexdigest() != archive_sha256
         ):
             raise WorkspaceError("Archive digest or size differs from host receipt")
@@ -119,7 +121,7 @@ class CodexWorkspace:
             entry_count = 0
             for member in bundle:
                 entry_count += 1
-                if entry_count > 10000 or member.size < 0:
+                if entry_count > MAX_SOURCE_ENTRIES or member.size < 0:
                     raise WorkspaceError("Archive expansion exceeds workspace bound")
                 raw = member.name.rstrip("/")
                 parts = self._parts(raw)
@@ -138,7 +140,7 @@ class CodexWorkspace:
                 if member.isfile():
                     file_paths.add(relative)
                 total += member.size
-                if len(seen) > 10000 or total > 48 * 1024 * 1024:
+                if len(seen) > MAX_SOURCE_ENTRIES or total > MAX_SOURCE_BYTES:
                     raise WorkspaceError("Archive expansion exceeds workspace bound")
                 members.append((member, relative))
             if prefix is None:
@@ -260,7 +262,7 @@ class CodexWorkspace:
                 if path
             )
         )
-        if len(paths) > 10000:
+        if len(paths) > MAX_SOURCE_ENTRIES:
             raise WorkspaceError("Workspace listing exceeds bound")
         paths = [path for path in paths if path.startswith(prefix)]
         return {
