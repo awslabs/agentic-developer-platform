@@ -160,6 +160,9 @@ class TaskStore(Protocol):
     def require_policy(self, *, tenant: str, principal: str, persona: str) -> None:
         """Require the current canonical task policy to allow this persona."""
 
+    def resolve_invocation(self, *, tenant: str, principal: str, invocation_id: str) -> tuple[str, int] | None:
+        """Resolve a scoped retained run binding, without granting Task access."""
+
     def load_task(self, *, task_id: str) -> TaskRecord | None:
         """Strongly consistent read of the task row, or None if absent.
 
@@ -251,6 +254,18 @@ class InMemoryTaskStore:
         """Seed a task. Test-only: production tasks are created by T2/T3."""
         self.tasks[record.task_id] = record
         self.events.setdefault(record.task_id, [])
+
+    def resolve_invocation(self, *, tenant: str, principal: str, invocation_id: str) -> tuple[str, int] | None:
+        if self.fail:
+            raise TaskStoreError("task store unavailable")
+        matches = [
+            record
+            for record in self.tasks.values()
+            if record.tenant_id == tenant and record.owner_principal_id == principal and record.invocation_id == invocation_id
+        ]
+        if len(matches) > 1:
+            raise TaskStoreError("ambiguous invocation binding")
+        return (matches[0].task_id, matches[0].generation) if matches else None
 
     def load_task(self, *, task_id: str) -> TaskRecord | None:
         if self.fail:

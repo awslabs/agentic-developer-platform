@@ -49,6 +49,11 @@ class InvocationItem(BaseModel):
     """A single agent invocation record."""
 
     invocation_id: str
+    source_type: Literal["activity", "task"] = "activity"
+    task_id: str | None = None
+    task_snapshot: dict | None = None
+    transcript_kind: Literal["task_report"] | None = None
+    transcript_status: Literal["available", "pending", "unavailable"] | None = None
     invoked_at: str
     channel: str | None = None
     status: str | None = None

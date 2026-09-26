@@ -129,6 +129,31 @@ def persist_recovery(path, value):
         os.fsync(stream.fileno())
 
 
+def activity_readback(cli, task_detail):
+    """Require the returned invocation identity to resolve the same canonical Task."""
+    invocation_id = task_detail.get("invocation_id")
+    common.require(bool(invocation_id), "Task readback omitted invocation identity")
+    response = cli.json(["agent", "status", "--run", invocation_id])
+    detail = (response or {}).get("detail") or {}
+    native = detail.get("task_snapshot") or {}
+    common.require(
+        detail.get("source_type") == "task"
+        and detail.get("invocation_id") == invocation_id
+        and detail.get("task_id") == task_detail.get("task_id")
+        and native.get("task_id") == task_detail.get("task_id")
+        and native.get("invocation_id") == invocation_id
+        and native.get("status") == task_detail.get("status"),
+        "Activity detail did not resolve the exact canonical Task",
+    )
+    return {
+        "invocation_id": invocation_id,
+        "task_id": detail["task_id"],
+        "task_status": native["status"],
+        "source_type": detail["source_type"],
+        "transcript_status": detail.get("transcript_status"),
+    }
+
+
 def execute(config, evidence):
     try:
         _execute(config, evidence)
@@ -377,6 +402,7 @@ def _execute(config, evidence):
                 "Requested terminal outcome was not observed",
             )
             evidence["result"] = detail.get("result")
+            evidence["activity_readback"] = activity_readback(cli, detail)
         finally:
             if submitted and not task_id:
                 task_id = reconcile_acceptance(cli, trigger, home)
