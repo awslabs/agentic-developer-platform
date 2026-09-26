@@ -13,13 +13,13 @@ with no raw candidate values or source-line content published.
 
 | Original scan record disposition | Count |
 | --- | ---: |
-| Existing Git object identifiers, independently resolved | 209 |
+| Existing Git object identifiers, independently resolved | 217 |
 | Exact AWS published example identifier or secret-access-key example | 72 |
 | Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 496 |
 | Derived checksums recomputed from immutable source inputs | 26 |
 | Resource references with explicit field/consumer binding | 33 |
-| Pending context review, retained by #6110 | 1017 |
+| Pending context review, retained by #6110 | 1009 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -139,3 +139,18 @@ verifier checks the complete original scan/audit joins and immutable Git blobs;
 context. This reaches **842 / 1,859** verified nonsecret records, with **1,017**
 pending. All original selectors, overlapping audit links and supplemental
 proposals remain intact. No candidate credential was exercised.
+
+A further **eight** source-revision findings resolve to locally available commit
+objects. The verifier rehashes each complete commit object with the Git object
+header, binds the complete candidate to its explicit source-revision field at
+the immutable source line, and checks the original scan index and full private
+audit hash join. Working-copy contents cannot supply this evidence. See
+`S21-detect-secrets-source-commit-review.json` and
+`scripts/security/s21/verify_secret_git_objects.py`. Fourteen regressions cover
+inexact selectors, full-hash mismatches, absent objects, context substitution,
+dirty worktrees and failure-output redaction. No network lookup or credential
+exercise occurred.
+
+Current verified nonsecret dispositions: **850/1859**, with **1,009** pending
+under #6110. All 3,708 original selector identities and audit joins are retained;
+these eight observations do not establish acceptance of the complete story.
