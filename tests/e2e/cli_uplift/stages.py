@@ -414,6 +414,7 @@ def ec2_stage(cfg, ports):
             "ec2",
             "run_instances",
             ImageId=ami,
+            ClientToken=ctx["attempt_id"],
             InstanceType=cfg.get("instance_type", "t3.small"),
             MinCount=1,
             MaxCount=1,
