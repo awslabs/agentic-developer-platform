@@ -22,7 +22,15 @@ from src.tasks.read_store import (
     TaskRecord,
     TaskStoreError,
 )
-from src.tasks.records import META_SORT_KEY, component_digest, task_artifact_partition, task_authority_partition, task_policy_sort_key
+from src.tasks.records import (
+    META_SORT_KEY,
+    TaskRecordError,
+    component_digest,
+    task_artifact_partition,
+    task_authority_partition,
+    task_policy_sort_key,
+    validate_task_id,
+)
 
 
 def artifact_object_key(tenant: str, principal: str, artifact_id: str, version: int) -> str:
@@ -75,6 +83,12 @@ class DynamoTaskReadStore:
             raise errors.disallowed_scope("The current task policy does not allow this operation.")
 
     def load_task(self, *, task_id: str) -> TaskRecord | None:
+        # A malformed public lookup cannot identify a stored Task. Keep it
+        # indistinguishable from an absent Task, without masking store outages.
+        try:
+            validate_task_id(task_id)
+        except TaskRecordError:
+            return None
         try:
             row = self.repository.read_task(task_id)
             if row is None:

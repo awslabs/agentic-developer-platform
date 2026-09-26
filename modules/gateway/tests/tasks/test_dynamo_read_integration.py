@@ -44,6 +44,26 @@ def test_real_acceptance_is_readable_with_durable_events(adapter, store):
     assert event.data["status"] == "accepted"
 
 
+@pytest.mark.parametrize("task_id", ["00000000-0000-0000-0000-000000000000", "tsk_bad", "tsk_x#META"])
+def test_malformed_task_lookup_is_absent_without_reading_storage(adapter, monkeypatch, task_id):
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("Malformed identifiers must not reach storage")
+
+    monkeypatch.setattr(adapter.repository, "read_task", unexpected_read)
+    assert adapter.load_task(task_id=task_id) is None
+
+
+def test_valid_task_lookup_still_reports_storage_outage(adapter, monkeypatch):
+    from src.tasks.store import TaskStoreError as DurableStoreError
+
+    def unavailable(*args, **kwargs):
+        raise DurableStoreError("unavailable")
+
+    monkeypatch.setattr(adapter.repository, "read_task", unavailable)
+    with pytest.raises(TaskStoreError):
+        adapter.load_task(task_id="tsk_00000000-0000-4000-8000-000000000000")
+
+
 def _artifact():
     content = b"input evidence"
     return ArtifactRecord(
