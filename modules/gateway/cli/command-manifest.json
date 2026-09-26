@@ -1047,7 +1047,8 @@
         "--cursor",
         "--json",
         "--max-pages",
-        "--page-size"
+        "--page-size",
+        "--tasks"
       ],
       "arguments": [],
       "request": {
