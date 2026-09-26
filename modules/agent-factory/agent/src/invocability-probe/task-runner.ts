@@ -31,7 +31,10 @@ export async function runTaskProbe(persona: string, gateway: ProbeGateway = new 
   }
   const start = await gateway.start(claim.slot_id, claim.lease_token, digest);
   // Refuse inconsistent credentials/destination metadata before any provider request.
-  if (start.slot_id !== claim.slot_id || start.model_id !== claim.model_id || !/^[a-z0-9-]+$/.test(start.region)) {
+  const credentialsExpiry = Date.parse(start.credentials_expires_at);
+  if (start.slot_id !== claim.slot_id || start.model_id !== claim.model_id || !/^[a-z0-9-]+$/.test(start.region) ||
+      !start.access_key_id || !start.secret_access_key || !start.session_token ||
+      !Number.isFinite(credentialsExpiry) || credentialsExpiry <= Date.now()) {
     await gateway.complete(claim.slot_id, claim.lease_token, { outcome: 'error', request_shape_sha256: digest,
       provider_request_id: null, error_code: 'no_request_emitted.start_mismatch' });
     throw new Error('Task probe start identity mismatch');

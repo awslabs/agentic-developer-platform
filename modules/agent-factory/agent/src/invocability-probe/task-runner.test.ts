@@ -7,7 +7,9 @@ function fixture(persona: keyof typeof profiles = 'agent-task-investigator') {
     compatibility_class: 'anthropic_messages', harness_contract_revision: profile.revision,
     task_probe_json: profile.body, expected_request_shape_sha256: profile.digest, timeout_seconds: 10 };
   const gateway: any = { claim: jest.fn().mockResolvedValue(claim),
-    start: jest.fn().mockResolvedValue({ slot_id: 'slot', model_id: 'model', region: 'us-east-1' }),
+    start: jest.fn().mockResolvedValue({ slot_id: 'slot', model_id: 'model', region: 'us-east-1',
+      access_key_id: 'test-access', secret_access_key: 'test-secret', session_token: 'test-token',
+      credentials_expires_at: new Date(Date.now() + 60000).toISOString() }),
     complete: jest.fn().mockResolvedValue({ evidence_recorded: true }) };
   return { claim, gateway };
 }
@@ -50,4 +52,12 @@ it('never invokes after uncertain start or mismatched start', async () => {
   await expect(runTaskProbe('agent-task-investigator', gateway, call)).rejects.toThrow('identity mismatch');
   expect(call).not.toHaveBeenCalled();
   expect(gateway.complete.mock.calls[0][2].error_code).toBe('no_request_emitted.start_mismatch');
+});
+
+
+it.each(['invalid', '2000-01-01T00:00:00Z'])('refuses invalid or expired destination credentials: %s', async expiry => {
+  const { gateway } = fixture(); const call = jest.fn();
+  const start = await gateway.start(); start.credentials_expires_at = expiry;
+  await expect(runTaskProbe('agent-task-investigator', gateway, call)).rejects.toThrow('identity mismatch');
+  expect(call).not.toHaveBeenCalled();
 });
