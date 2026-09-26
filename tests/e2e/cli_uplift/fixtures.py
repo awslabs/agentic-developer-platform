@@ -9,7 +9,17 @@ from .report import redact
 
 IDENTITY = {"login_user_id", "canonical_user_id", "tenant_id"}
 PAID = {"enrollment_verified", "shared_budget_authorized", "max_task_usd"}
+CONTRAST_KEYS = {
+    "disabled_feature",
+    "enabled_feature",
+    "disabled_operation",
+    "enabled_operation",
+    "denied_operation",
+    "foreign_request_id",
+    "ordinary_fixture_name",
+}
 KEYS = {
+    "capability_contrast": CONTRAST_KEYS,
     "human_task_coding": IDENTITY
     | PAID
     | {
@@ -41,6 +51,16 @@ def validate_fixture(name, value):
     require(set(value) <= KEYS[name], f"Unknown {name} fixture keys")
     no_secrets(value, name)
     require(redact(value) == value, f"{name} must contain no credential material")
+    if name == "capability_contrast":
+        require(
+            set(value) == CONTRAST_KEYS, "Complete capability contrast fixture required"
+        )
+        for key in CONTRAST_KEYS:
+            require(
+                isinstance(value[key], str) and 0 < len(value[key]) <= 128,
+                "Invalid capability contrast value",
+            )
+        return
     for key in IDENTITY:
         require(
             isinstance(value.get(key), str)

@@ -46,6 +46,7 @@ STATUSES = (PASSED, FAILED, BLOCKED, NOT_RUN)
 SUITES = (
     "full",
     "nightly",
+    "capability-contrast",
     "hosted-coding",
     "hosted-chat",
     "vault-lifecycle",
@@ -486,6 +487,8 @@ def suite_cases(suite):
             LOGIN_CHECKPOINT,
             *(case for case in CASES if case.suite in {"story-reads", "hosted-coding"}),
         )
+    if suite == "capability-contrast":
+        return (BY_ID["E19"],)
     if suite == "research":
         return (BY_ID["E25"],)
     if suite == "login":
