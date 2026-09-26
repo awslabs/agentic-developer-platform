@@ -729,6 +729,7 @@ def workspace(args, api):
         )
 
     if args.subcommand == "create":
+        operation_id = deployment_uuid(args.operation_id, "--operation-id") if args.operation_id else None
         if args.isolation == "research" and not args.account:
             raise CliError("Research workspaces need --account <name>.", "usage_error", 1)
         body = {"name": args.name, "isolation_mode": args.isolation}
@@ -742,7 +743,7 @@ def workspace(args, api):
         preview = mutation_guard(
             args,
             "superplane workspace create",
-            {"workspace": body},
+            {"workspace": body, **({"operation_id": operation_id} if operation_id else {})},
             f"Create workspace {args.name!r}?",
         )
         if preview:
@@ -755,6 +756,7 @@ def workspace(args, api):
             body,
             expected_name=args.name,
             id_field="id",
+            operation_id=operation_id,
         )
         if created["status"].lower() in CREATE_PENDING_STATUSES:
             return common.envelope(
@@ -1831,6 +1833,7 @@ def parser():
     workspace_subcommands = workspace_command.add_subparsers(dest="subcommand", required=True)
     create_workspace = mutation(leaf(workspace_subcommands, "create", help="Create a workspace"))
     create_workspace.add_argument("--name", required=True)
+    create_workspace.add_argument("--operation-id", help="Stable request UUID; retain externally and reuse unchanged after client loss")
     create_workspace.add_argument(
         "--isolation",
         default="dedicated",

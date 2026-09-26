@@ -293,10 +293,10 @@ def status_result(value, expected=None):
         or any(stage.get("status") in {"failed", "error"} for stage in value["stages"])
     )
     usable = (
-        value.get("status") in {"indexed", "completed", "ready"}
-        and value.get("run_status") in {"completed", "succeeded", "success", "verified"}
+        value.get("status") in {"indexed", "complete", "completed", "ready"}
+        and value.get("run_status") in {"complete", "completed", "succeeded", "success", "verified"}
         and bool(value.get("run_id"))
-        and bool(value["stages"])
+        and any(stage.get("status") in {"completed", "succeeded", "success", "verified"} for stage in value["stages"])
         and all(stage.get("status") in {"completed", "succeeded", "success", "verified", "skipped"} for stage in value["stages"])
     )
     detail = safe(value)

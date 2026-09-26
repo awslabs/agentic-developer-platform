@@ -492,3 +492,20 @@ def test_task_handles_use_canonical_task_helper(monkeypatch, action):
         assert task.command.call_args.args[1] == ("cancel" if action == "abort" else "messages")
     else:
         assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize("persona", ["agent-task-claude-developer", "agent-task-codex-developer"])
+@pytest.mark.parametrize("mode", ["--dry-run", "--yes"])
+def test_coding_steer_is_unavailable_before_any_command(monkeypatch, persona, mode):
+    from types import SimpleNamespace
+
+    task_id = "tsk_67eb5564-4dce-4fa0-9320-72cf728ca140"
+    task = Mock()
+    task.snapshot.return_value = {"task_id": task_id, "status": "running", "persona": persona}
+    helper = SimpleNamespace(TaskClient=Mock(return_value=task), token_expiry=lambda _: 9999999999)
+    monkeypatch.setattr(agent.common, "load_provider", lambda name: helper)
+    monkeypatch.setattr(agent.common, "gateway_url", lambda: "https://gateway.example")
+    options = agent.parser().parse_args(["steer", "--run", task_id, "--command-id", ID, "--instruction", "marker", mode])
+    result = agent.execute(options, Mock(token="pinned-human-token"))
+    assert result["status"] == "unavailable"
+    task.command.assert_not_called()

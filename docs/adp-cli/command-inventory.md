@@ -114,7 +114,7 @@ Options are parser options, excluding `--help`; shell launchers pass tool argume
 | `adp superplane quota set` |  | `--allowed-clouds`, `--dry-run`, `--json`, `--max-cost-per-day`, `--max-gpus`, `--max-nodes`, `--workspace`, `--yes` |
 | `adp superplane quota show` |  | `--json`, `--workspace` |
 | `adp superplane user` |  |  |
-| `adp superplane workspace create` |  | `--account`, `--budget-daily`, `--budget-gpus`, `--dry-run`, `--isolation`, `--json`, `--name`, `--yes` |
+| `adp superplane workspace create` |  | `--account`, `--budget-daily`, `--budget-gpus`, `--dry-run`, `--isolation`, `--json`, `--name`, `--operation-id`, `--yes` |
 | `adp superplane workspace describe` |  | `--json`, `--workspace` |
 | `adp superplane workspace kubeconfig` |  | `--json`, `--workspace` |
 | `adp superplane workspace list` |  | `--json` |

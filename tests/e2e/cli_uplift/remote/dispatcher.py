@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 PURPOSES = {
     "hosted_coding": ("hosted_coding", {}),
     "hierarchy_lifecycle": ("hierarchy_lifecycle", {}),
+    "knowledge_lifecycle": ("knowledge_lifecycle", {}),
     "machine_lifecycle": ("machine_lifecycle", {}),
     "budget_lifecycle": ("budget_lifecycle", {}),
     "vault_lifecycle": ("vault_lifecycle", {}),

@@ -12508,6 +12508,91 @@ def test_hierarchy_plan_precedes_instance_loss_and_rejects_changed_inputs(tmp_pa
 
 
 @pytest.mark.parametrize(
+    "fault",
+    [
+        "lost_create_reply",
+        "lost_client",
+        "sink_failure",
+        "changed_scope",
+        "changed_payload",
+    ],
+)
+def test_workspace_create_intent_is_external_and_immutable_before_transport(
+    tmp_path, fault
+):
+    from tests.e2e.cli_uplift.workspace_recovery import create_intent, dispatch_create
+
+    plan = create_intent(
+        evaluation_id="stable-workspace-run",
+        gateway_url="https://gateway",
+        tenant_id="tenant",
+        principal_id="ordinary",
+        session_secret_name="adp/eval/ordinary",
+        operation_id="d03af966-58ed-4d9b-8bf9-cc9ae17fbcad",
+        name="owned-workspace",
+    )
+    retained, calls = [], []
+
+    def push(document, *, critical):
+        assert critical
+        if fault == "sink_failure":
+            raise RuntimeError("No durable sink")
+        retained.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "workspace", on_change=push)
+
+    def dispatch(original):
+        calls.append(original)
+        assert (
+            retained[-1]["diagnostic_intents"][
+                "superplane_workspace:stable-workspace-run"
+            ]
+            == plan
+        )
+        raise RuntimeError("Accepted create but transport output lost")
+
+    with pytest.raises(RuntimeError):
+        dispatch_create(manifest, plan, dispatch)
+    if fault == "sink_failure":
+        assert calls == []
+        return
+    assert len(calls) == 1
+    recovered = retained[-1]["diagnostic_intents"][
+        "superplane_workspace:stable-workspace-run"
+    ]
+    import shutil
+
+    shutil.rmtree(tmp_path)
+    replacement = cleanup.Manifest(
+        tmp_path / "replacement.json", "workspace", on_change=push
+    )
+    replacement.record_diagnostic("superplane_workspace", recovered)
+    if fault == "changed_scope":
+        recovered = {**recovered, "principal_id": "foreign"}
+    if fault == "changed_payload":
+        recovered = {**recovered, "argv": ["replacement"]}
+    if fault in {"changed_scope", "changed_payload"}:
+        with pytest.raises(ValueError):
+            dispatch_create(
+                replacement,
+                recovered,
+                lambda _: pytest.fail("No foreign or changed dispatch"),
+            )
+    else:
+        result = dispatch_create(
+            replacement,
+            recovered,
+            lambda p: {
+                "operation_id": p["operation_id"],
+                "resource_id": "exact-created-id",
+            },
+        )
+        assert result["operation_id"] == plan["operation_id"]
+        assert recovered["request"] == plan["request"]
+    assert "access_token" not in json.dumps(retained)
+
+
+@pytest.mark.parametrize(
     "states,expected",
     [
         (["queued", "running"], "running"),
