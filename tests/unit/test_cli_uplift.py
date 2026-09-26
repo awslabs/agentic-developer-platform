@@ -8445,6 +8445,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E23",
         "E24",
         "E26",
+        "E41",
     }
 
 
@@ -10237,6 +10238,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E23",
         "E24",
         "E26",
+        "E41",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
         "#5621",
@@ -10453,3 +10455,27 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     else:
         assert len(launches) == 1
         assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_platform_e41_is_read_only_and_retains_live_holds(tmp_path):
+    assert cases.BY_ID["E41"].owner == "#5641"
+    assert "E41" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E41"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "full_deployment_verified": False,
+            "environment_verified": False,
+            "artifact_verification": "unknown",
+            "components": dict.fromkeys(
+                ["gateway", "factory", "webhook", "models", "github_wiring"], {}
+            ),
+        },
+    }
+    evidence = {}
+    module.platform(cli, evidence)
+    assert "authorized-teardown-cleanup" in evidence["live_holds"]
+    assert cli.json.call_args.args[0] == ["platform", "status", "--environment", "dev"]
+    cli.run.assert_not_called()

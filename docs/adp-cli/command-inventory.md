@@ -175,3 +175,16 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+## Platform lifecycle (#5641)
+
+See [canonical platform facade](platform.md).
+
+| Command | Options |
+|---|---|
+| `adp platform status` | `--environment`, `--json` |
+| `adp platform plan` | `--environment`, `--json`, `--output`, `--profile`, `--region`, `--scope`, `--source-checkout`, `--source-revision` |
+| `adp platform apply` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file` |
+| `adp platform resume` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file`, `--state-file` |
+| `adp platform teardown plan` | `--environment`, `--json`, `--output`, `--profile`, `--region`, `--source-checkout`, `--source-revision` |
+| `adp platform teardown apply` | `--confirm-account`, `--expect-plan-hash`, `--json`, `--plan-file` |

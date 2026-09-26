@@ -4705,6 +4705,192 @@
         "tests/cli/test_adp_budget.py",
         "tests/admin/test_budget_periods.py"
       ]
+    },
+    {
+      "command": "adp platform status",
+      "helper": "adp-platform.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "capabilities.read",
+      "flags": [
+        "--environment",
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/cli-capabilities"
+        ],
+        "schema": "Capability metadata only"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope; canonical tool output on stderr"
+      },
+      "tests": [
+        "tests/cli/test_adp_platform.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "capabilities.read"
+      ]
+    },
+    {
+      "command": "adp platform plan",
+      "helper": "adp-platform.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--environment",
+        "--json",
+        "--output",
+        "--profile",
+        "--region",
+        "--scope",
+        "--source-checkout",
+        "--source-revision"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Pinned canonical invocation preview/account/hash and local receipt; canonical scripts own AWS/TF"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope; canonical tool output on stderr"
+      },
+      "tests": [
+        "tests/cli/test_adp_platform.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp platform apply",
+      "helper": "adp-platform.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--confirm-account",
+        "--expect-plan-hash",
+        "--json",
+        "--plan-file"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Pinned canonical invocation preview/account/hash and local receipt; canonical scripts own AWS/TF"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope; canonical tool output on stderr"
+      },
+      "tests": [
+        "tests/cli/test_adp_platform.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp platform resume",
+      "helper": "adp-platform.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--confirm-account",
+        "--expect-plan-hash",
+        "--json",
+        "--plan-file",
+        "--state-file"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Pinned canonical invocation preview/account/hash and local receipt; canonical scripts own AWS/TF"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope; canonical tool output on stderr"
+      },
+      "tests": [
+        "tests/cli/test_adp_platform.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp platform teardown plan",
+      "helper": "adp-platform.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--environment",
+        "--json",
+        "--output",
+        "--profile",
+        "--region",
+        "--source-checkout",
+        "--source-revision"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Pinned canonical invocation preview/account/hash and local receipt; canonical scripts own AWS/TF"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope; canonical tool output on stderr"
+      },
+      "tests": [
+        "tests/cli/test_adp_platform.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp platform teardown apply",
+      "helper": "adp-platform.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--confirm-account",
+        "--expect-plan-hash",
+        "--json",
+        "--plan-file"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "local",
+        "methods": [],
+        "paths": [],
+        "schema": "Pinned canonical invocation preview/account/hash and local receipt; canonical scripts own AWS/TF"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope; canonical tool output on stderr"
+      },
+      "tests": [
+        "tests/cli/test_adp_platform.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
     }
   ]
 }

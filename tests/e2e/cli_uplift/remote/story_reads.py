@@ -208,12 +208,41 @@ def budget(cli, evidence):
     )
 
 
+def platform(cli, evidence):
+    result = detail(cli.json(["platform", "status", "--environment", "dev"]))
+    common.require(
+        result.get("full_deployment_verified") is False,
+        "Platform metadata falsely claims deployment verification",
+    )
+    common.require(
+        result.get("artifact_verification") == "unknown"
+        and result.get("environment_verified") is False,
+        "Platform status incorrectly certifies artifacts or environment",
+    )
+    common.require(
+        isinstance(result.get("components"), dict)
+        and set(result["components"])
+        == {"gateway", "factory", "webhook", "models", "github_wiring"},
+        "Platform components are missing",
+    )
+    evidence.update(
+        scope="read_only_selected_gateway_metadata",
+        live_holds=[
+            "authorized-update",
+            "interrupted-resume",
+            "placeholder-verification",
+            "authorized-teardown-cleanup",
+        ],
+    )
+
+
 SCENARIOS = {
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,
     "vault": vault,
     "budget": budget,
+    "platform": platform,
 }
 
 
