@@ -18,6 +18,13 @@ def reconcile(plan, receipt):
         plan["region"],
     ):
         raise image.ImageRefused("reconciliation scope differs")
+    if (
+        receipt.get("approved_plan_sha256")
+        != image.sha(image.runner.canonical(plan).encode())
+        or receipt.get("source_revision") != plan["source_revision"]
+        or receipt.get("source_attestation_sha256") != plan["source_attestation_sha256"]
+    ):
+        raise image.ImageRefused("durable original plan/source binding differs")
     if build.aws(plan, "sts", "get-caller-identity")["Account"] != plan["account_id"]:
         raise image.ImageRefused("reconciliation account differs")
     try:

@@ -60,7 +60,7 @@ value; the dedicated dispatcher policy includes readonly history access. Inspect
 versioned `dispatch/<dispatch-id>/child.json` and local dispatcher log. Stopping
 local polling does not stop or clean the cloud build.
 
-Before any helper launch, the producer publishes `builds/<CodeBuild UUID>/native-start.json`
+Before any helper launch, the producer publishes `receipts/<CodeBuild UUID>/native-start.json`
 with original native build/account/region identity. If that upload fails, it refuses
 to launch. This survives a killed CodeBuild worker that cannot execute finalization.
 Normal finalization uploads logs, state and provenance even after a failed producer;
@@ -111,3 +111,13 @@ shared CLI after a lost StartBuild reply. Claims and dispatcher receipts have no
 automatic expiration or build-role write/delete authority; deleting a claim under
 separate operator authority explicitly relinquishes this replay guard. Native build
 artifacts and input archives retain their configured lifecycle policies.
+
+Compact original approved-plan/source binding, start identity and final/unknown
+state live under non-expiring `receipts/<CodeBuild UUID>/`. Initial approved plan,
+source provenance and native-start upload must all succeed before helper launch.
+Finalization retains original root-volume/image/snapshot/cleanup JSON evidence and
+a version-bound retention receipt independently of bulk logs. A killed finalizer
+leaves the original start receipt and unknown cleanup, not inferred absence. The
+readonly reconciler verifies the retained plan/source binding before discovery.
+These receipts persist until separately authorized explicit resolved cleanup;
+build identity may write versions under receipts but cannot change dispatch claims.

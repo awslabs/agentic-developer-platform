@@ -1094,3 +1094,77 @@ def test_native_dispatch_refuses_race_and_never_restarts_claimed_id(
             native_dispatch.dispatch(args)
         assert len(starts) == 1
         assert not Path(args.output).exists()
+
+
+def test_durable_native_receipts_survive_bulk_expiry_and_bind_original_plan(
+    native_transport, producer_modules, producer_plan, tmp_path, monkeypatch
+):
+    import hashlib
+    import shutil
+
+    monkeypatch.setitem(sys.modules, "transport", native_transport)
+    loaded = {}
+    for name in ("retain", "reconcile"):
+        module_spec = importlib.util.spec_from_file_location(
+            "native_" + name, ROOT / "lane" / (name + ".py")
+        )
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        loaded[name] = module
+    work = tmp_path / "bulk"
+    result = work / "result"
+    result.mkdir(parents=True)
+    raw = runner.canonical(producer_plan).encode()
+    (result / "approved-plan.json").write_bytes(raw)
+    start = {
+        "build_id": "superplane-native-" + "a" * 32,
+        "account_id": producer_plan["account_id"],
+        "region": producer_plan["region"],
+        "approved_plan_sha256": hashlib.sha256(raw).hexdigest(),
+        "source_revision": producer_plan["source_revision"],
+        "source_attestation_sha256": producer_plan["source_attestation_sha256"],
+    }
+    (result / "state.json").write_text(
+        runner.canonical({**start, "phase": "failed", "cleanup": "unknown"})
+    )
+    (result / "cleanup-inventory.json").write_text(
+        '{"images":[{"ImageId":"ami-retained"}]}'
+    )
+    objects = {"receipts/build/native-start.json": runner.canonical(start).encode()}
+
+    def upload(region, bucket, key, path):
+        objects[key] = Path(path).read_bytes()
+        return {
+            "key": key,
+            "version": "original",
+            "sha256": hashlib.sha256(objects[key]).hexdigest(),
+        }
+
+    monkeypatch.setattr(native_transport, "upload", upload)
+    receipt = loaded["retain"].retain(
+        work, "private-evidence", "build", producer_plan["region"], 1
+    )
+    assert receipt["cleanup"] == "unknown"
+    assert all(key.startswith("receipts/") for key in objects)
+    shutil.rmtree(work)  # Expiring bulk inputs/logs cannot remove these receipts.
+    preserved_plan = json.loads(objects["receipts/build/approved-plan.json"])
+    preserved_start = json.loads(objects["receipts/build/native-start.json"])
+    calls = []
+
+    def identity(*args):
+        calls.append("identity")
+        return {"Account": producer_plan["account_id"]}
+
+    monkeypatch.setattr(loaded["reconcile"].build, "aws", identity)
+    monkeypatch.setattr(
+        producer_modules["producer"],
+        "observe",
+        lambda *args: {"images": [{"ImageId": "ami-retained"}]},
+    )
+    inventory = loaded["reconcile"].reconcile(preserved_plan, preserved_start)
+    assert inventory["inventory"]["images"][0]["ImageId"] == "ami-retained"
+    assert inventory["cleanup"] == "review_required"
+    preserved_plan["budget_approval_reference"] = "different-plan"
+    with pytest.raises(recipe.ImageRefused, match="original plan/source"):
+        loaded["reconcile"].reconcile(preserved_plan, preserved_start)
+    assert calls == ["identity"]

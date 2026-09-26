@@ -487,27 +487,37 @@ def run(args):
         "region": plan["region"],
         "phase": "preflight",
         "cleanup": "not_started",
+        "approved_plan_sha256": image.sha(image.runner.canonical(plan).encode()),
+        "source_revision": plan["source_revision"],
+        "source_attestation_sha256": plan["source_attestation_sha256"],
+        "source_tree": provenance["tree"],
     }
     build.write(output / "state.json", state)
     if os.environ.get("SUPERPLANE_NATIVE_LANE") == "caller-bound-no-ami-tags":
         receipt = os.environ.get("NATIVE_STATE_RECEIPT_URI", "")
         image.pattern(
             receipt,
-            r"s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/builds/[A-Za-z0-9-]+/native-start.json",
+            r"s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]/receipts/[A-Za-z0-9-]+/native-start.json",
         )
         # A killed worker may never upload final evidence. Publish the original
         # native identity before even preflight, and refuse launch on lost upload.
-        build.run(
-            [
-                "aws",
-                "s3",
-                "cp",
-                str(output / "state.json"),
-                receipt,
-                "--region",
-                plan["region"],
-            ]
-        )
+        build.write(output / "approved-plan.json", plan)
+        for source, name in (
+            (output / "approved-plan.json", "approved-plan.json"),
+            (output / "source-provenance.json", "source-provenance.json"),
+            (output / "state.json", "native-start.json"),
+        ):
+            build.run(
+                [
+                    "aws",
+                    "s3",
+                    "cp",
+                    str(source),
+                    receipt.rsplit("/", 1)[0] + "/" + name,
+                    "--region",
+                    plan["region"],
+                ]
+            )
     try:
         base = preflight(plan)
         build.write(output / "base-provenance.json", base)

@@ -1,6 +1,13 @@
 # Run the sibling app-owned native root in the existing credential-free CI job.
 # Terraform test alternate module paths resolve from this root, not this file.
-mock_provider "aws" {}
+mock_provider "aws" {
+  mock_resource "aws_iam_policy" {
+    defaults = { arn = "arn:aws:iam::111122223333:policy/native-fixture" }
+  }
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/native-fixture" }
+  }
+}
 
 variables {
   lane = {
@@ -74,4 +81,13 @@ run "native_lane_has_bounded_cloud_authority" {
     condition     = alltrue([for bucket in aws_s3_bucket_public_access_block.native : bucket.block_public_acls && bucket.block_public_policy && bucket.ignore_public_acls && bucket.restrict_public_buckets]) && alltrue([for bucket in aws_s3_bucket.native : !bucket.force_destroy])
     error_message = "Source and evidence remain private and cannot be force-destroyed."
   }
+  assert {
+    condition     = alltrue(flatten([for lifecycle in aws_s3_bucket_lifecycle_configuration.native : [for rule in lifecycle.rule : contains(["native-input/", "codebuild/", "builds/"], rule.filter[0].prefix)]]))
+    error_message = "Dispatch claims and durable receipts must not be covered by automatic expiry."
+  }
+  assert {
+    condition     = alltrue([for statement in local.build_statements : strcontains(jsonencode(statement.Resource), "/receipts/*") && !strcontains(jsonencode(statement.Resource), "/dispatch/") if statement.Sid == "EvidenceWrite"])
+    error_message = "Build may retain reconciliation receipts but must not overwrite dispatcher claims."
+  }
+
 }
