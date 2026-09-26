@@ -213,3 +213,81 @@ async def test_retention_window_metadata_distinguishes_empty_history_without_cla
     assert result.raw_retention_start == summary["raw_retention_start"] == observed - timedelta(days=90)
     assert summary["cost_status"] == "unknown"
     assert "expired" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "fault,expected",
+    [
+        (None, 200),
+        ("foreign_owner", 404),
+        ("foreign_tenant", 404),
+        ("caller_mismatch", 404),
+        ("revoked", 403),
+        ("storage", 503),
+        ("stale_generation", 404),
+    ],
+)
+async def test_task_run_usage_uses_real_activity_adapter_and_policy(db_session, org_user_context, monkeypatch, fault, expected):
+    from dataclasses import replace
+
+    from src.activity import task_readthrough
+    from src.activity.service import ActivityService
+    from src.tasks import authz, errors
+    from src.tasks.read_store import InMemoryTaskStore, TaskRecord
+
+    invocation = "57e3ed64-0794-4df0-828f-565479f9ddac"
+    task_id = "tsk_6011c464-98d4-4cb3-95f7-6cf7937c4819"
+    task = TaskRecord(
+        task_id,
+        invocation,
+        "org-001",
+        "human:user-001",
+        "agent-task-codex-developer",
+        "completed",
+        4,
+        "2026-09-25T00:00:00Z",
+        "2026-09-25T00:01:00Z",
+        "2026-09-25T01:00:00Z",
+    )
+    if fault == "foreign_owner":
+        task = replace(task, owner_principal_id="human:foreign")
+    if fault == "foreign_tenant":
+        task = replace(task, tenant_id="foreign")
+    store = InMemoryTaskStore()
+    store.tasks[task_id] = task
+    if fault == "storage":
+        store.fail = True
+    if fault == "revoked":
+        monkeypatch.setattr(store, "require_policy", Mock(side_effect=errors.disallowed_scope("revoked")))
+    if fault == "stale_generation":
+        monkeypatch.setattr(store, "resolve_invocation", lambda **kw: (task_id, 2))
+    monkeypatch.setenv("ADP_TASK_API_READ_ENABLED", "true")
+    monkeypatch.setattr(task_readthrough, "get_store", lambda: store)
+    monkeypatch.setattr(authz, "authenticate", Mock(return_value=(org_user_context, frozenset({authz.SCOPE_READ}))))
+    caller = AsyncMock(
+        return_value=authz.Caller("human:other" if fault == "caller_mismatch" else "human:user-001", "org-001", frozenset({authz.SCOPE_READ}))
+    )
+    monkeypatch.setattr(authz, "resolve_caller", caller)
+    monkeypatch.setattr(ActivityService, "__init__", lambda self: None)
+    monkeypatch.setattr(ActivityService, "get_invocation", Mock(return_value=None))
+    db_session.add_all(
+        [
+            record("owned-task", user="worker-service", run=invocation),
+            record("other-run", user="worker-service", run="other"),
+            record("other-tenant", org="foreign", user="worker-service", run=invocation),
+        ]
+    )
+    await db_session.commit()
+    app = FastAPI()
+    app.include_router(reads.router, prefix="/usage")
+    app.dependency_overrides[get_current_user] = lambda: org_user_context
+    app.dependency_overrides[get_db] = lambda: db_session
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/usage/me/requests?start=2026-09-25T00:00:00Z&end=2026-09-26T00:00:00Z&run_id={invocation}")
+    assert response.status_code == expected, response.text
+    if expected == 200:
+        body = response.json()
+        assert [item["id"] for item in body["items"]] == ["owned-task"]
+        assert body["items"][0]["root_human_id"] == "user-001"
+        assert body["scope"]["coverage"] == "selected_run"
+        caller.assert_awaited_once()
