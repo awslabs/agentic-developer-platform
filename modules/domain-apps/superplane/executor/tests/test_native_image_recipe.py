@@ -708,3 +708,97 @@ def test_archive_source_attestation_binds_git_tree_without_git_metadata(
     os.symlink("/etc/passwd", checkout / "alias")
     with pytest.raises(recipe.ImageRefused, match="source differs"):
         provenance.verify(checkout, attestation, digest, revision)
+
+
+@pytest.fixture
+def native_transport(producer_modules, monkeypatch):
+    path = ROOT / "lane" / "transport.py"
+    module_spec = importlib.util.spec_from_file_location("native_transport", path)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+def test_lane_omits_image_tags_but_binds_atomic_resources_to_caller(
+    producer_modules, producer_plan, tmp_path
+):
+    template = producer_modules["producer"].template(
+        producer_plan,
+        tmp_path / "source",
+        tmp_path,
+        "build",
+        caller="AROAFIXTURE:build-one",
+    )
+    source = template["source"]["amazon-ebssurrogate"]["native"]
+    assert source["tags"] == {}
+    for key in ("run_tags", "run_volume_tags", "snapshot_tags"):
+        assert source[key]["superplane-native-caller"] == "AROAFIXTURE:build-one"
+        assert source[key]["superplane-native-build"] == "build"
+
+
+@pytest.mark.parametrize("bad", ["../outside", "/absolute", "alias/child"])
+def test_native_source_zip_refuses_escape_before_writes(
+    native_transport, tmp_path, bad
+):
+    import stat
+    import zipfile
+
+    archive = tmp_path / "bad.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        alias = zipfile.ZipInfo("alias")
+        alias.external_attr = (stat.S_IFLNK | 0o777) << 16
+        output.writestr(alias, "/tmp")
+        output.writestr(bad, "untrusted")
+    destination = tmp_path / "extracted"
+    with pytest.raises(recipe.ImageRefused):
+        native_transport.extract(archive, destination)
+    assert not destination.exists()
+
+
+def test_native_source_zip_preserves_modes_and_bounds_emitted_size(
+    native_transport, tmp_path, monkeypatch
+):
+    import stat
+    import zipfile
+
+    archive = tmp_path / "source.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        tool = zipfile.ZipInfo("nested/tool")
+        tool.external_attr = (stat.S_IFREG | 0o755) << 16
+        output.writestr(tool, "#!/bin/sh\n")
+        alias = zipfile.ZipInfo("alias")
+        alias.external_attr = (stat.S_IFLNK | 0o777) << 16
+        output.writestr(alias, "nested/tool")
+    destination = tmp_path / "extracted"
+    native_transport.extract(archive, destination)
+    assert (destination / "nested/tool").stat().st_mode & 0o111
+    assert (destination / "alias").is_symlink()
+    monkeypatch.setattr(native_transport, "MAX_ARCHIVE_BYTES", 1)
+    with pytest.raises(recipe.ImageRefused, match="bound"):
+        native_transport.extract(archive, tmp_path / "over-limit")
+    assert not (tmp_path / "over-limit").exists()
+
+
+def test_native_versioned_transport_refuses_digest_drift(
+    native_transport, tmp_path, monkeypatch
+):
+    def fake_aws(region, *args):
+        Path(args[-1]).write_bytes(b"wrong bytes")
+        return {"VersionId": "original-version"}
+
+    monkeypatch.setattr(native_transport, "aws", fake_aws)
+    pointer = {
+        "bucket": "fixture-native-input",
+        "key": "native-input/run/input",
+        "version": "original-version",
+        "sha256": "a" * 64,
+    }
+    with pytest.raises(recipe.ImageRefused, match="digest differs"):
+        native_transport.download(
+            "us-east-1", pointer, tmp_path / "input", "fixture-native-input"
+        )
+    pointer["version"] = "null"
+    with pytest.raises(recipe.ImageRefused, match="scope/version"):
+        native_transport.download(
+            "us-east-1", pointer, tmp_path / "input", "fixture-native-input"
+        )
