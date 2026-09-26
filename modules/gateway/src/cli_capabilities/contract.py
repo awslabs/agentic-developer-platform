@@ -241,7 +241,6 @@ OPERATIONS = (
     ),
     Operation("hierarchy.platform.write", summary="Create organizations and place existing members", permission=Permission.ORG_CREATE, mutates=True),
     Operation("hierarchy.member.write", summary="Update scoped membership roles", permission=Permission.USER_MANAGE, mutates=True),
-
     Operation(
         "machine.agent.registry.manage",
         summary="Guarded IAM registry lifecycle",

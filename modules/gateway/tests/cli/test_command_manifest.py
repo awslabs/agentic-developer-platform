@@ -147,6 +147,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-bedrock.py", ["adp", "bedrock"]),
         ("adp-github.py", ["adp", "github"]),
         ("adp-superplane.py", ["adp", "superplane"]),
+        ("adp-superplane-research.py", ["adp", "superplane", "research"]),
         ("adp-models.py", ["adp", "models"]),
         ("adp-model-policy.py", ["adp", "admin", "models"]),
         ("adp-flow.py", ["adp", "flow"]),
@@ -155,7 +156,6 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-hierarchy.py", ["adp", "admin"]),
         ("adp-vault.py", ["adp"]),
         ("adp-machine.py", ["adp", "admin"]),
-
         ("adp-gitlab.py", ["adp"]),
         ("adp-usage.py", ["adp"]),
         ("adp-knowledge.py", ["adp"]),
@@ -188,6 +188,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     )
 
     for area in ("org", "department", "team", "member", "tenant"):
+        admin.pop("adp admin " + area)
 
     for area in ("service-account", "agent", "service-principal"):
         admin.pop("adp admin " + area)

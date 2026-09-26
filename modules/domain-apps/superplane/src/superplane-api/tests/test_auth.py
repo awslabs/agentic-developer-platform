@@ -1559,7 +1559,7 @@ class TestRouteInventoryCoverage:
             for method, path in self._mounted()
             if path.startswith("/api/v1/research/")
         }
-        assert len(served) == 12, (
+        assert len(served) == 13, (
             f"the research surface is now {len(served)} routes; update the count "
             "in endpoint_inventory.py and domain_guard.py docstrings"
         )

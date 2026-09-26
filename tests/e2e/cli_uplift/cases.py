@@ -47,6 +47,7 @@ SUITES = (
     "full",
     "nightly",
     "story-reads",
+    "research",
     "tenant-isolation",
     "login",
     "install",
@@ -89,6 +90,7 @@ class Case:
 
 # Fixture classes. Preflight proves each of these independently; a case is
 # blocked when any class it requires is unavailable.
+SUPERPLANE_RESEARCH = "superplane_research_read_fixture"
 PLATFORM = "platform"
 DESTINATION = "destination"
 SECOND_DESTINATION = "second_destination"
@@ -302,6 +304,13 @@ CASES = (
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
+        "E25",
+        "#5639",
+        "story-reads",
+        "Served research reads preserve scoped findings/proposal IDs and pagination; no scan, mutation or decision",
+        (EC2, PLATFORM, COGNITO, SUPERPLANE_RESEARCH),
+    ),
+    Case(
         "E26",
         "#5589",
         "story-reads",
@@ -316,59 +325,11 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
-        "E30",
-        "#5635",
+        "E28",
+        "#5634",
         "story-reads",
-        "GitLab approved-provider discovery and invalid project refusal through the served CLI; no provider writes",
-        (EC2, PLATFORM, COGNITO),
-    ),
-    ),
-    Case(
-        "E37",
-        "#5630",
-        "story-reads",
-        "Flow reads and malformed recovery refusal through served CLI; owned accepted-flow recovery remains fixture-gated",
-        (EC2, PLATFORM, COGNITO),
-    ),
-    ),
-    Case(
-        "E32",
-        "#5632",
-        "story-reads",
-        "Served knowledge discovery/status errors and soft-delete previews; live indexing and retrieval acceptance held",
-        (EC2, PLATFORM, COGNITO),
-    ),
-    ),
-    Case(
-        "E34",
-        "#5633",
-        "story-reads",
-        "Personal Bedrock reset preview preserves billing/source readback and exact team-target refusal; real routing inference remains held",
-        (EC2, PLATFORM, COGNITO),
-    ),
-    ),
-    Case(
-        "E31",
-        "#5624",
-        "story-reads",
-        "Explicit SQL IAM, IAM registry and Cognito client metadata reads retain tenant scope; no secret or mutation lifecycle claim",
-        (EC2, PLATFORM, COGNITO),
-    ),
-    ),
-    Case(
-        "E38",
-        "#5636",
-        "story-reads",
-        "Persona cost/catalog readback retains unknown amounts and capability evidence; no platform mutation/inference claim",
-        (EC2, PLATFORM, COGNITO),
-    ),
-    ),
-    Case(
-        "E35",
-        "#5626",
-        "story-reads",
-        "Own person limits retain source and self-write refusal; no spend-through or enforcement claim",
-        (EC2, PLATFORM, COGNITO),
+        "GitHub maintenance status and reviewed previews never read supplied keys or change the shared App",
+        (EC2, PLATFORM, COGNITO, GITHUB_APP),
     ),
     Case(
         "E29",
@@ -378,10 +339,24 @@ CASES = (
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
-        "E36",
-        "#5627",
+        "E30",
+        "#5635",
         "story-reads",
-        "Own rate-limit hierarchy and unavailable TPM are explicit; no inference or saved-limit mutation",
+        "GitLab approved-provider discovery and invalid project refusal through the served CLI; no provider writes",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E31",
+        "#5624",
+        "story-reads",
+        "Explicit SQL IAM, IAM registry and Cognito client metadata reads retain tenant scope; no secret or mutation lifecycle claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E32",
+        "#5632",
+        "story-reads",
+        "Served knowledge discovery/status errors and soft-delete previews; live indexing and retrieval acceptance held",
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
@@ -392,11 +367,39 @@ CASES = (
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
-        "E28",
-        "#5634",
+        "E34",
+        "#5633",
         "story-reads",
-        "GitHub maintenance status and reviewed previews never read supplied keys or change the shared App",
-        (EC2, PLATFORM, COGNITO, GITHUB_APP),
+        "Personal Bedrock reset preview preserves billing/source readback and exact team-target refusal; real routing inference remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E35",
+        "#5626",
+        "story-reads",
+        "Own person limits retain source and self-write refusal; no spend-through or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E36",
+        "#5627",
+        "story-reads",
+        "Own rate-limit hierarchy and unavailable TPM are explicit; no inference or saved-limit mutation",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E37",
+        "#5630",
+        "story-reads",
+        "Flow reads and malformed recovery refusal through served CLI; owned accepted-flow recovery remains fixture-gated",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E38",
+        "#5636",
+        "story-reads",
+        "Persona cost/catalog readback retains unknown amounts and capability evidence; no platform mutation/inference claim",
+        (EC2, PLATFORM, COGNITO),
     ),
 )
 
@@ -424,6 +427,8 @@ def suite_cases(suite):
             LOGIN_CHECKPOINT,
             *(case for case in CASES if case.suite == "story-reads"),
         )
+    if suite == "research":
+        return (BY_ID["E25"],)
     if suite == "login":
         return (BY_ID["E01"], LOGIN_CHECKPOINT)
     return tuple(case for case in CASES if case.suite == suite)

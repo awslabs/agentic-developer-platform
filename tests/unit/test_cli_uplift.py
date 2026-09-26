@@ -1008,6 +1008,7 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
         "E18",
         "E19",
         "E28",
+        "E25",
         "E27",
     }
     assert matrix["E01"]["status"] == cases.NOT_RUN
@@ -8428,6 +8429,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E18",
         "E19",
         "E28",
+        "E25",
         "E27",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
@@ -8448,21 +8450,14 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E24",
         "E33",
         "E29",
-
         "E31",
         "E26",
         "E36",
-
         "E35",
-
         "E38",
-
         "E34",
-
         "E32",
-
         "E37",
-
         "E30",
     }
 
@@ -10256,25 +10251,17 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E23",
         "E24",
         "E33",
-
         "E31",
+        "E25",
         "E26",
         "E28",
-
-
         "E36",
         "E29",
-
         "E35",
-
         "E38",
-
         "E34",
-
         "E32",
-
         "E37",
-
         "E30",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22", "E23")} == {
@@ -10444,6 +10431,7 @@ def test_hierarchy_read_refuses_foreign_row(tmp_path):
     with pytest.raises(common.RemoteError, match="Foreign hierarchy"):
         module.hierarchy(cli, {})
 
+
 def test_machine_story_reads_are_wired_to_existing_nightly(tmp_path):
     assert cases.BY_ID["E31"].owner == "#5624"
     assert "E31" in {case.id for case in cases.resolve_suites(("nightly",))}
@@ -10540,6 +10528,7 @@ def test_github_maintenance_nightly_is_read_and_preview_only(tmp_path):
     assert "E28" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E28"] in bundle.purposes()
 
+
 def test_bedrock_lifecycle_nightly_preview_has_no_probes_or_writes(tmp_path):
     assert cases.BY_ID["E34"].owner == "#5633"
     assert "E34" in {case.id for case in cases.resolve_suites(("nightly",))}
@@ -10574,6 +10563,7 @@ def test_bedrock_lifecycle_nightly_does_not_hide_missing_server(tmp_path):
     )
     with pytest.raises(common.RemoteError, match="Unexpected personal Bedrock refusal"):
         module.bedrock_lifecycle(cli, {})
+
 
 def test_gitlab_nightly_does_not_claim_live_delivery_or_write(tmp_path):
     module, _ = shipped_script(tmp_path, "story_reads")
@@ -10664,6 +10654,7 @@ def test_ratelimit_story_wired_and_read_only(tmp_path):
     with pytest.raises(common.RemoteError, match="TPM gap"):
         module.ratelimit(cli, {})
 
+
 def test_person_budget_story_is_wired_into_nightly():
     assert cases.BY_ID["E35"].owner == "#5626"
     assert "E35" in {case.id for case in cases.resolve_suites(("nightly",))}
@@ -10671,11 +10662,6 @@ def test_person_budget_story_is_wired_into_nightly():
 
 
 def test_person_budget_story_retains_authority_and_refusal(tmp_path):
-
-def test_model_policy_e38_is_wired_and_retains_live_holds(tmp_path):
-    assert cases.BY_ID["E38"].owner == "#5636"
-    assert "E38" in {case.id for case in cases.resolve_suites(("nightly",))}
-    assert stages.JOURNEY_DRIVERS["E38"] in bundle.purposes()
     module, common = shipped_script(tmp_path, "story_reads")
     cli = Mock()
     cli.json.side_effect = [
@@ -10703,6 +10689,16 @@ def test_model_policy_e38_is_wired_and_retains_live_holds(tmp_path):
     assert evidence["self_write_refusals"] == 2
     assert "spend-through-and-restoration" in evidence["live_holds"]
 
+
+def test_model_policy_e38_is_wired_and_retains_live_holds(tmp_path):
+    assert cases.BY_ID["E38"].owner == "#5636"
+    assert "E38" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E38"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
             "detail": {"tenant_id": "org", "persona_key": "architect", "models": []},
         },
         {
@@ -10720,6 +10716,7 @@ def test_model_policy_e38_is_wired_and_retains_live_holds(tmp_path):
     module.model_policy(cli, evidence)
     assert "posture-rollback" in evidence["live_holds"]
     cli.run.assert_not_called()
+
 
 def test_knowledge_nightly_is_selected_and_has_no_dispatch(tmp_path):
     assert cases.BY_ID["E32"].owner == "#5632"
@@ -10755,6 +10752,7 @@ def test_knowledge_nightly_does_not_hide_unexpected_errors(tmp_path, status):
     )
     with pytest.raises(common.RemoteError, match="Unexpected knowledge discovery"):
         module.knowledge(cli, {})
+
 
 def test_recovery_nightly_reads_and_refuses_without_mutation(tmp_path):
     module, _ = shipped_script(tmp_path, "story_reads")

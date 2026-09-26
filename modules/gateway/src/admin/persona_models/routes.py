@@ -118,7 +118,7 @@ async def get_service_principal_persona_costs(
             **report.__dict__,
             "status": report.status.value,
             "entries": [entry.__dict__ for entry in report.entries],
-        }
+        },
     )
 
 

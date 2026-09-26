@@ -97,6 +97,7 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-superplane.py": (_CLI_DIR / "adp-superplane.py").resolve(),
     "adp-superplane-onboarding.py": (_CLI_DIR / "adp-superplane-onboarding.py").resolve(),
     "adp-knowledge.py": (_CLI_DIR / "adp-knowledge.py").resolve(),
+    "adp-superplane-research.py": (_CLI_DIR / "adp-superplane-research.py").resolve(),
     "adp-models.py": (_CLI_DIR / "adp-models.py").resolve(),
     "adp-model-policy.py": (_CLI_DIR / "adp-model-policy.py").resolve(),
     "adp-flow.py": (_CLI_DIR / "adp-flow.py").resolve(),
@@ -105,7 +106,6 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-gitlab.py": (_CLI_DIR / "adp-gitlab.py").resolve(),
     "adp-vault.py": (_CLI_DIR / "adp-vault.py").resolve(),
     "adp-access.py": (_CLI_DIR / "adp-access.py").resolve(),
-
     "adp-machine.py": (_CLI_DIR / "adp-machine.py").resolve(),
     "adp-usage.py": (_CLI_DIR / "adp-usage.py").resolve(),
     "adp-agent.py": (_CLI_DIR / "adp-agent.py").resolve(),
@@ -137,6 +137,7 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-superplane.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-superplane-onboarding.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-knowledge.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-superplane-research.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-models.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-model-policy.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-flow.py": PYTHON_SCRIPT_MEDIA_TYPE,
@@ -145,7 +146,6 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-gitlab.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-vault.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-access.py": PYTHON_SCRIPT_MEDIA_TYPE,
-
     "adp-machine.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-usage.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-agent.py": PYTHON_SCRIPT_MEDIA_TYPE,

@@ -801,28 +801,21 @@ JOURNEY_DRIVERS = {
     "E20": "story_capabilities",
     "E21": "story_usage",
     "E22": "story_activity",
+    "E25": "story_research",
     "E23": "tenant_smoke",
     "E27": "tenant_isolation",
     "E29": "story_hierarchy",
     "E24": "story_vault",
     "E28": "story_github_maintenance",
-
     "E33": "story_access",
-
     "E31": "story_machine",
-
     "E32": "story_knowledge",
-
     "E30": "story_gitlab",
     "E26": "story_budget",
     "E36": "story_ratelimit",
-
     "E35": "story_person_budget",
-
     "E38": "story_model_policy",
-
     "E34": "story_bedrock_lifecycle",
-
     "E37": "story_recovery",
 }
 

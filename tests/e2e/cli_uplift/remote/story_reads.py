@@ -623,14 +623,14 @@ def gitlab(cli, evidence):
 
 
 SCENARIOS = {
-    'gitlab': gitlab,
-    'recovery': recovery,
-    'knowledge': knowledge,
-    'bedrock_lifecycle': bedrock_lifecycle,
-    'machine': machine,
-    'model_policy': model_policy,
-    'person_budget': person_budget,
-    'ratelimit': ratelimit,
+    "gitlab": gitlab,
+    "recovery": recovery,
+    "knowledge": knowledge,
+    "bedrock_lifecycle": bedrock_lifecycle,
+    "machine": machine,
+    "model_policy": model_policy,
+    "person_budget": person_budget,
+    "ratelimit": ratelimit,
     "capabilities": capabilities,
     "usage": usage,
     "activity": activity,

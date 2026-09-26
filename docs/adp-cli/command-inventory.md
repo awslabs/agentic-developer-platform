@@ -144,6 +144,22 @@ Usage and metadata commands added by #5628 (source implementation; live acceptan
 | `adp admin usage departments` |  | `--end`, `--json`, `--org`, `--request-id`, `--run`, `--start` |
 | `adp admin usage requests` |  | `--cursor`, `--end`, `--json`, `--max-pages`, `--org`, `--page-size`, `--request-id`, `--run`, `--start` |
 
+Research #5639 adds 11 forms: findings list/show, sources, stats, proposal list/show/create/generate/approve/reject, and scan. Scan/generate currently return unavailable without dispatch; [research contracts](research.md) document remaining acceptance.
+
+| Command | Positional arguments | Options |
+|---|---|---|
+| `adp superplane research findings list` |  | `--end`, `--json`, `--max-pages`, `--page`, `--page-size`, `--source`, `--start`, `--workspace` |
+| `adp superplane research findings show` | `id` | `--json` |
+| `adp superplane research proposal list` |  | `--end`, `--json`, `--max-pages`, `--page`, `--page-size`, `--start`, `--status`, `--workspace` |
+| `adp superplane research proposal show` | `id` | `--json` |
+| `adp superplane research proposal create` |  | `--dry-run`, `--json`, `--request-file`, `--request-id`, `--yes` |
+| `adp superplane research proposal generate` |  | `--dry-run`, `--json`, `--request-file`, `--request-id`, `--yes` |
+| `adp superplane research proposal approve` | `id` | `--dry-run`, `--expect-revision`, `--json`, `--yes` |
+| `adp superplane research proposal reject` | `id` | `--dry-run`, `--expect-revision`, `--json`, `--reason`, `--yes` |
+| `adp superplane research sources` |  | `--json` |
+| `adp superplane research stats` |  | `--json` |
+| `adp superplane research scan` |  | `--dry-run`, `--json`, `--request-file`, `--request-id`, `--yes` |
+
 Tenant selection (#5622 source implementation; live acceptance held). Global `--tenant TENANT_ID` precedes the command; `ADP_TENANT` selects per terminal.
 
 | Command | Positional arguments | Options |

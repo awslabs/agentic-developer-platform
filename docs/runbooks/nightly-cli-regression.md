@@ -164,6 +164,8 @@ fixtures described in [flow recovery](../adp-cli/flow-recovery.md).
 
 E30 (#5635) joins `story-reads`/default nightly: served-CLI GitLab discovery and invalid project refusal, without provider writes. Unconfigured GitLab reports no approved providers. The scenario cannot satisfy real project connect, delivered webhook/agent artifact or cleanup acceptance.
 
+E25 (#5639) adds bounded research findings/proposal/source/stat reads to the existing nightly client. Select `--suite research` for this case alone. An existing-domain fixture must declare `research_readback: true` through the existing run config/binding overlay; absent configuration is blocked. This gate is separate from E18 mutation recovery, and actual authenticated CLI reads must prove service readiness. No scan/generate/approve/reject is run by E25.
+
 E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.
 
 E33 (#5625) uses the served CLI to read current-tenant access status and a bounded

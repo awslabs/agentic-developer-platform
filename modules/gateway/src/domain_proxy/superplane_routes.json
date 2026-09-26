@@ -318,5 +318,9 @@
   [
     "GET",
     "/workspaces/{workspace_id}/batch-jobs/{job_id}/result"
+  ],
+  [
+    "GET",
+    "/api/v1/research/cli-support"
   ]
 ]
