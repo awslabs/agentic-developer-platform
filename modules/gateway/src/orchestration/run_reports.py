@@ -181,7 +181,9 @@ def reviewer_artifact_assignment(row: OrchestrationRunReport) -> bool:
     )
 
 
-def record_terminal(row: OrchestrationRunReport, outcome: str) -> dict:
+def record_terminal(row: OrchestrationRunReport, outcome: str, *, failure: dict | None = None) -> dict:
+    if failure is not None and outcome != "failed":
+        raise RunReportError("failure_requires_failed_outcome")
     if outcome not in {"complete", "failed"}:
         raise RunReportError("invalid_terminal_outcome")
     if outcome == "complete" and row.dispatch_metadata.get("pr_binding_required"):
@@ -212,6 +214,8 @@ def record_terminal(row: OrchestrationRunReport, outcome: str) -> dict:
     if outcome == "complete" and row.dispatch_metadata.get("review_expect") and not (row.review_receipt or {}).get("recorded"):
         raise RunReportError("review_result_unacknowledged", retryable=True)
     if row.terminal_receipt:
+        if failure is not None and row.terminal_receipt.get("failure") != failure:
+            raise RunReportError("terminal_failure_conflict")
         if row.terminal_receipt["outcome"] != outcome:
             raise RunReportError("terminal_outcome_conflict")
         return row.terminal_receipt
@@ -221,6 +225,7 @@ def record_terminal(row: OrchestrationRunReport, outcome: str) -> dict:
         "attempt": row.attempt,
         "outcome": outcome,
         "recorded_at": utcnow().isoformat(),
+        **({"failure": failure} if failure is not None else {}),
     }
     return row.terminal_receipt
 

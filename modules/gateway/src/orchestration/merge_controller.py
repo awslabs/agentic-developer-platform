@@ -144,11 +144,14 @@ class MergeObservation(HandlerObservation):
 class MergeServices:
     def __init__(self, factory, *, authority=None, provider=None, storage=None):
         self.factory = factory
-        from .review_cycle_dispatch import cycle_services
-
-        self.authority = authority or cycle_services(factory)
+        self.authority = authority
         self.provider = provider or MergeProvider()
         self.storage = storage
+
+    async def authority_for(self, context):
+        from .review_cycle_dispatch import cycle_services
+
+        return self.authority or await cycle_services(self.factory, context)
 
     async def state(self, session, context):
         loaded = await load_execution(session, identity=context.identity)
@@ -164,8 +167,9 @@ class MergeServices:
         )
         if node is None or node.kind != "story" or node.attempts != context.identity.cycle or node.state not in {"running", "awaiting_merge"}:
             raise CycleBlockedError("merge_outer_gate_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
+        authority = await self.authority_for(context)
         flow = await session.get(OrchestrationFlow, node.flow_id)
-        if flow is None or (flow.state != "running" and not (flow.state == "pending" and getattr(self.authority, "allows_pending_flow", False))):
+        if flow is None or (flow.state != "running" and not (flow.state == "pending" and getattr(authority, "allows_pending_flow", False))):
             raise CycleBlockedError("merge_flow_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
         binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
         if binding is None or binding.role != "implementation" or not binding_scope_matches(binding, node):
@@ -183,7 +187,8 @@ class MergeServices:
         return node, binding, claim.active_run_id
 
     async def review(self, session, context, node, binding, run_id, provider_state):
-        raw = await self.authority.protected(node.org_id, run_id)
+        authority = await self.authority_for(context)
+        raw = await authority.protected(node.org_id, run_id)
         if not raw or raw.get("status", {}).get("S") in {"revoked", "cancelled"}:
             raise CycleBlockedError("reviewer_authority_revoked", BlockCode.AUTHORITY_UNVERIFIABLE)
         if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
@@ -213,7 +218,8 @@ class MergeServices:
 
         async def current_authority():
             current_node, current_binding, current_run = await self.state(session, context)
-            facts = await self.authority.authority_context(session, context, current_node, current_binding, current_run, Action.MERGE)
+            authority = await self.authority_for(context)
+            facts = await authority.authority_context(session, context, current_node, current_binding, current_run, Action.MERGE)
             # The engine uses the typed, single-repository merge adapter. The
             # worker-token selector intentionally exposes no MERGE capability.
             # Actual scoped token minting must still succeed in M1/provider I/O.

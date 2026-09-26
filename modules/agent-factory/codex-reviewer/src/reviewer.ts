@@ -17,7 +17,7 @@ import {
   formatReviewComment,
   GitHubClient,
 } from "./github.js";
-import { run } from "./process.js";
+import { ProcessError, run } from "./process.js";
 import { runResumableTurn } from "./turn.js";
 
 const SDK_VERSION = "0.155.1";
@@ -40,7 +40,7 @@ export interface ReviewRuntime {
   /** Default/developer installation token prepared by the shared worker entrypoint. */
   githubToken: string;
   /** Renew through the shared worker before API calls and authenticated git. */
-  getGitHubToken?: () => Promise<string>;
+  getGitHubToken?: (force?: boolean) => Promise<string>;
   /** Existing gateway-only loopback proxy, ending in /openai/v1. */
   proxyBaseUrl: string;
 }
@@ -64,6 +64,19 @@ function issueReviewPrompt(
   request: string,
 ): string {
   return `${persona}\n\nReview this GitHub issue:\n# ${issue.title}\n${issue.body ?? "(no body)"}\n\nThe human requested:\n${request}\n\nInspect the current repository where useful. Assess whether the issue is clear, feasible, consistent with the codebase, and testable. Identify missing acceptance criteria, security or operational risks, dependency gaps, and ambiguous product decisions. Return only the requested structured verdict. Do not modify files.`;
+}
+
+/** Retry only an explicit authentication rejection, never a lost push reply. */
+export async function authenticatedGit(runtime: ReviewRuntime, args: string[]) {
+  for (let attempt = 0; ; attempt++) {
+    const token = runtime.getGitHubToken ? await runtime.getGitHubToken(attempt > 0) : runtime.githubToken;
+    try { return await run("git", args, { cwd: runtime.workspace, env: gitEnvironment(token) }); }
+    catch (error) {
+      const rejected = error instanceof ProcessError && error.result.exitCode === 128
+        && /Authentication failed|Invalid username or token|Bad credentials/i.test(error.result.stderr);
+      if (attempt >= 1 || !runtime.getGitHubToken || !rejected) throw error;
+    }
+  }
 }
 
 export function gitEnvironment(token: string): NodeJS.ProcessEnv {
@@ -97,16 +110,12 @@ export function repositoryUrl(repository: string): string {
 }
 
 async function remoteHead(
-  workspace: string,
+  runtime: ReviewRuntime,
   repository: string,
   branch: string,
-  env: NodeJS.ProcessEnv,
 ): Promise<string> {
-  const result = await run(
-    "git",
-    ["ls-remote", repositoryUrl(repository), `refs/heads/${branch}`],
-    { cwd: workspace, env },
-  );
+  const result = await authenticatedGit(runtime,
+    ["ls-remote", repositoryUrl(repository), `refs/heads/${branch}`]);
   return result.stdout.trim().split(/\s+/)[0] ?? "";
 }
 
@@ -283,7 +292,6 @@ async function runPullRequestReview(
     return { status: "stale", expected, actual: initialPr.head.sha };
   }
 
-  const gitEnv = async () => gitEnvironment(await tokenProvider());
   const workspace = runtime.workspace;
   {
     const checkedOutSha = (
@@ -294,10 +302,9 @@ async function runPullRequestReview(
     }
     if (
       (await remoteHead(
-        workspace,
+        runtime,
         envelope.repository,
         envelope.pull_request.head_ref,
-        await gitEnv(),
       )) !== expected
     ) {
       return { status: "stale", expected, actual: initialPr.head.sha };
@@ -319,10 +326,9 @@ async function runPullRequestReview(
     );
 
     const current = await remoteHead(
-      workspace,
+      runtime,
       envelope.repository,
       envelope.pull_request.head_ref,
-      await gitEnv(),
     );
     if (current !== expected) return { status: "stale", expected, actual: current };
 
@@ -354,10 +360,9 @@ async function runPullRequestReview(
         return { status: "changes_requested", blockers: verdict.findings.filter((finding) => finding.blocking).length };
       }
       const beforePush = await remoteHead(
-        workspace,
+        runtime,
         envelope.repository,
         envelope.pull_request.head_ref,
-        await gitEnv(),
       );
       if (beforePush !== expected) return { status: "stale", expected, actual: beforePush };
       const localGitEnv = childEnvironment();
@@ -382,21 +387,18 @@ async function runPullRequestReview(
       if (parentSha !== expected) {
         throw new Error(`Codex autofix commit does not descend directly from ${expected}`);
       }
-      await run(
-        "git",
+      await authenticatedGit(runtime,
         [
           "push",
           `--force-with-lease=refs/heads/${envelope.pull_request.head_ref}:${expected}`,
           repositoryUrl(envelope.repository),
           `HEAD:refs/heads/${envelope.pull_request.head_ref}`,
         ],
-        { cwd: workspace, env: await gitEnv() },
       );
       const pushedHead = await remoteHead(
-        workspace,
+        runtime,
         envelope.repository,
         envelope.pull_request.head_ref,
-        await gitEnv(),
       );
       if (pushedHead !== newSha) {
         return { status: "stale", expected: newSha, actual: pushedHead };

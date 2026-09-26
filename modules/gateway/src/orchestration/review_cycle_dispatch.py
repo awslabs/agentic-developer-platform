@@ -615,13 +615,35 @@ class ReviewCycleServices:
         )
 
 
-def cycle_services(factory):
-    """Select a deployed transport; accepted policy still gates each flow."""
-    if (
-        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").strip().lower() != "true"
-        and os.environ.get("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false").strip().lower() == "true"
-    ):
-        from .shared_cycle import SharedCycleServices
+async def cycle_services(factory, context):
+    """Route by the accepted flow contract, never by a global mode fallback.
 
-        return SharedCycleServices(factory)
-    return ReviewCycleServices(factory)
+    Both transports may coexist during a rollout. Disabling a transport blocks
+    its existing flows explicitly; it never reinterprets their authority.
+    Every service still revalidates policy, ownership and receipts at use.
+    """
+    from .models import OrchestrationAcceptedPlan
+
+    async with factory() as session:
+        plan = await session.scalar(
+            select(OrchestrationAcceptedPlan).where(
+                OrchestrationAcceptedPlan.org_id == context.identity.org_id,
+                OrchestrationAcceptedPlan.flow_id == context.execution.flow_id,
+                OrchestrationAcceptedPlan.superseded_at.is_(None),
+            )
+        )
+        if plan is None or plan.version != context.identity.accepted_plan_version:
+            raise CycleBlockedError("continuation_plan_changed", BlockCode.AUTHORITY_UNVERIFIABLE)
+        marker = (plan.plan_document or {}).get("execution_continuation")
+        if marker is not None:
+            if not isinstance(marker, dict) or marker.get("mode") != "shared_worker_role" or marker.get("contract_version") != 1:
+                raise CycleBlockedError("continuation_mode_unrecognized", BlockCode.AUTHORITY_UNVERIFIABLE)
+            if os.environ.get("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false").strip().lower() != "true":
+                raise CycleBlockedError("shared_worker_continuation_disabled", BlockCode.HUMAN_INPUT_REQUIRED)
+            from .shared_cycle import SharedCycleServices, shared_marker
+
+            await shared_marker(session, org_id=context.identity.org_id, flow_id=context.execution.flow_id)
+            return SharedCycleServices(factory)
+        if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").strip().lower() != "true":
+            raise CycleBlockedError("protected_authority_required", BlockCode.HUMAN_INPUT_REQUIRED)
+        return ReviewCycleServices(factory)

@@ -1,6 +1,6 @@
 /** The shared worker owns broker policy, expiry and atomic token-file publication. */
 interface TokenManager {
-  getRuntimeGitHubToken(): Promise<string>;
+  getRuntimeGitHubToken(force?: boolean): Promise<string>;
 }
 
 export async function loadWorkerTokenManager(): Promise<TokenManager> {
@@ -15,13 +15,13 @@ export async function loadWorkerTokenManager(): Promise<TokenManager> {
 }
 
 export async function withGitHubTokenRenewal<T>(
-  run: (getToken: () => Promise<string>, initialToken: string) => Promise<T>,
+  run: (getToken: (force?: boolean) => Promise<string>, initialToken: string) => Promise<T>,
   loadManager = loadWorkerTokenManager,
   intervalMs = 5 * 60 * 1000,
   warn: () => void = () => console.error("GitHub token renewal failed; next operation will retry through the shared worker broker"),
 ): Promise<T> {
   const manager = await loadManager();
-  const getToken = () => manager.getRuntimeGitHubToken();
+  const getToken = (force = false) => manager.getRuntimeGitHubToken(force);
   // Fail closed for mediated runs/missing renewal configuration. PAT behavior
   // and the real bootstrap expiry are governed by the shared manager as well.
   const initialToken = await getToken();

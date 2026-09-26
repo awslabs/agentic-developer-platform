@@ -132,14 +132,14 @@ function isRootedPath(path: string): boolean {
 export class GitHubClient {
   constructor(
     private readonly repository: string,
-    private readonly tokenProvider: () => Promise<string>,
+    private readonly tokenProvider: (force?: boolean) => Promise<string>,
   ) {}
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, refreshed = false): Promise<T> {
     if (!isRootedPath(path)) {
       throw new Error(`GitHub request path must start with "/": ${path}`);
     }
-    const token = await this.tokenProvider();
+    const token = await this.tokenProvider(refreshed);
     const options: RequestInit = {
       ...init,
       headers: {
@@ -176,6 +176,13 @@ export class GitHubClient {
       throw new Error(
         `GitHub ${init.method ?? "GET"} ${path} was redirected off api.github.com`,
       );
+    }
+    // A rejected credential did not authorize the request. Refresh once for
+    // an explicit 401 only. Network errors and lost write replies are never
+    // replayed here; they retain operation-specific reconciliation.
+    if (response.status === 401 && !refreshed) {
+      await response.body?.cancel();
+      return this.request<T>(path, init, true);
     }
     if (!response.ok) {
       throw new GitHubRequestError(

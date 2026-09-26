@@ -283,3 +283,50 @@ test("a same-origin redirect, as GitHub issues for renamed repositories, is acce
     globalThis.fetch = originalFetch;
   }
 });
+
+test("authentication rejection refreshes reads once and stops on repeated rejection", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const forced: boolean[] = [];
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return new Response("Bad credentials", { status: 401 }); };
+  const github = new GitHubClient("org/repo", async force => { forced.push(force === true); return "token"; });
+  await assert.rejects(github.getPullRequest(7), /401/);
+  assert.equal(calls, 2);
+  assert.deepEqual(forced, [false, true]);
+});
+
+test("fresh credentials recover explicit rejection without replaying uncertain mutations", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    if (init?.method === "POST" || (init?.headers as Record<string, string>).authorization === "Bearer old") {
+      if (init?.method === "POST") throw new Error("connection reset after write");
+      return new Response("Bad credentials", { status: 401 });
+    }
+    return Response.json({ number: 7 });
+  };
+  const github = new GitHubClient("org/repo", async force => force ? "fresh" : "old");
+  assert.equal((await github.getPullRequest(7)).number, 7);
+  assert.equal(calls, 2);
+  await assert.rejects(github.comment(7, "review"), /connection reset/);
+  assert.equal(calls, 3);
+});
+
+
+test("explicitly unauthorized mutation can refresh once without changing its payload", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const bodies: unknown[] = [];
+  globalThis.fetch = async (_url, init) => {
+    bodies.push(init?.body);
+    return bodies.length === 1 ? new Response("Bad credentials", { status: 401 }) : Response.json({ merged: true });
+  };
+  const forced: boolean[] = [];
+  const github = new GitHubClient("org/repo", async force => { forced.push(force === true); return "token"; });
+  await github.merge(7, "a".repeat(40), "rebase");
+  assert.deepEqual(forced, [false, true]);
+  assert.equal(bodies[0], bodies[1]);
+});

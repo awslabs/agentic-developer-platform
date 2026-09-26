@@ -25,6 +25,13 @@ from lib.sts_assume import assume_customer_role
 
 # --- Fixtures ---
 
+@pytest.fixture(autouse=True)
+def stub_agent_process(monkeypatch):
+    # Entrypoint tests stub execution; process-tree deadlines have real-process tests.
+    import subprocess
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))
+
+
 
 def _subprocess_side_effect_fresh_branch(*args, **kwargs):
     """Default subprocess.run side_effect for tests simulating a fresh issue.
@@ -4818,3 +4825,15 @@ def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, t
     monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
     assert entrypoint.main() == agent_exit
     assert events == ["agent", "upload", "terminal"]
+
+
+def test_developer_cause_is_in_the_first_terminal_status_write(monkeypatch):
+    import entrypoint
+
+    status = MagicMock()
+    monkeypatch.setattr(entrypoint, "update_invocation_status", status)
+    monkeypatch.setattr(entrypoint, "_post_comment", MagicMock())
+    assert entrypoint._handle_failure("org/repo", 7, "developer", "run", "now", 1,
+                                     failure_error="Agent developer exit 1: budget_exceeded") == 1
+    status.assert_called_once_with("run", "now", "failed", summary="Agent `developer` failed with exit code 1.",
+                                   error_message="Agent developer exit 1: budget_exceeded")

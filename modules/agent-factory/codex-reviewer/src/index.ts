@@ -33,6 +33,12 @@ async function main(): Promise<void> {
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   main().catch((error) => {
     console.error("agent-codex-reviewer failed", error);
+    // The worker reads this only on nonzero exit. It is not a review receipt.
+    // Renewal/logging can otherwise obscure the cause in a stderr tail.
+    console.log(JSON.stringify({ status: "review_failed", error: {
+      name: error instanceof Error ? error.name : "Error",
+      message: (error instanceof Error ? error.message : String(error)).slice(0, 8192),
+    } }));
     process.exitCode = 1;
   });
 }

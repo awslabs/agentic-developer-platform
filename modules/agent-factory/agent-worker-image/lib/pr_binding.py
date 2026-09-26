@@ -136,7 +136,7 @@ def resume_handoff() -> bool:
             owner = (snapshot.get("worker_receipt") or {}).get("ownership_nonce")
             if not owner or owner != spool["ownership_nonce"]:
                 raise run_report.RunReportError("delivery_recovery_required", retryable=False)
-            run_report.terminal("failed")
+            run_report.terminal("failed", **({"failure": spool["failure"]} if spool.get("failure") else {}))
             return True
         if run_report.can_retry_start(spool, snapshot):
             return False

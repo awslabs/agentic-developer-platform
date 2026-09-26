@@ -2956,7 +2956,16 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         run_options = {"cwd": WORK_DIR, "env": agent_env}
         if is_codex_review:
             run_options.update({"input": raw_message, "text": True, "capture_output": True})
-        result = subprocess.run(command, **run_options)
+        from lib.agent_process import run_agent
+
+        with tempfile.TemporaryDirectory(prefix="adp-failure-") as diagnostic_dir:
+            diagnostic_file = Path(diagnostic_dir) / "failure.json"
+            agent_env["ADP_FAILURE_REPORT_FILE"] = str(diagnostic_file)
+            result = run_agent(command, **run_options)
+            if not is_codex_review and result.returncode != 0 and diagnostic_file.is_file():
+                with diagnostic_file.open() as diagnostic:
+                    result.stdout = diagnostic.read(16 * 1024)
+
     finally:
         if task_config_path:
             Path(task_config_path).unlink(missing_ok=True)
@@ -3007,13 +3016,22 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             _delete_message(queue_url, region, receipt_handle)
             logger.info("Codex review completed and shared queue message was acknowledged")
             return 0
-        error = (result.stderr or summary or "Codex review failed")[-1024:]
+        from lib.codex_failure import failure_details, failure_summary
+
+        error = failure_summary(result)
         if cycle_input is not None and run_report.enabled():
-            run_report.spool_undelivered_failure()
-            run_report.terminal("failed")
+            try:
+                run_report.spool_undelivered_failure(failure=failure_details(result))
+                run_report.terminal("failed", failure=failure_details(result))
+            except run_report.RunReportError as exc:
+                logger.error("Codex failure reporting deferred (%s); original cause: %s", exc.code, error)
+                return AGENT_EXIT_RETRYABLE
             _delete_message(queue_url, region, receipt_handle)
         update_invocation_status(message_id, arrived_at, "failed", error_message=error)
-        logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
+        if cycle_input is not None and run_report.enabled():
+            logger.error("Codex review failed; terminal failure recorded and queue message acknowledged: %s", error)
+        else:
+            logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
         return result.returncode or 1
 
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
@@ -3036,6 +3054,12 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # on purpose, and `_handle_failure`'s status write would already have landed by
     # the time anything could correct it. One terminal handler runs, never two.
     abort_outcome = _resolve_abort_outcome(message_id, control_registered)
+    if result.returncode != 0 and abort_outcome is None:
+        from lib.codex_failure import failure_summary
+
+        error = failure_summary(result).replace("Codex reviewer", f"Agent {persona}", 1)
+        logger.error("%s", error)
+
     # Only meaningful when `abort_outcome` is set; `_handle_abort` assigns the real
     # value. Defaulted to False so a future edit that reads it on a non-abort path
     # errs toward "not proven durable" rather than toward a silent claim.
@@ -3072,7 +3096,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         )
     else:
         exit_code = _handle_failure(
-            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url, **review_options
+            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url, failure_error=error, **review_options
         )
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
@@ -3213,8 +3237,12 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             # material stays recoverable.
             aborted = abort_outcome is not None
             if exit_code != 0 or aborted:
-                run_report.spool_undelivered_failure()
-            run_report.terminal("failed" if (exit_code != 0 or aborted) else "complete")
+                from lib.codex_failure import failure_details
+
+                run_report.spool_undelivered_failure(failure=failure_details(result, aborted=aborted))
+                run_report.terminal("failed", failure=failure_details(result, aborted=aborted))
+            else:
+                run_report.terminal("complete")
         except run_report.RunReportError as exc:
             logger.warning("Engine terminal report deferred: %s", exc.code)
             return AGENT_EXIT_RETRYABLE
@@ -4657,6 +4685,7 @@ def _handle_failure(
     exit_code: int,
     check_run_url: str = "",
     review_note: str = "",
+    failure_error: str = "",
 ) -> int:
     """Step 12: Post failure comment, exit nonzero."""
     summary = f"Agent `{persona}` failed with exit code {exit_code}."
@@ -4666,6 +4695,7 @@ def _handle_failure(
         arrived_at,
         "failed",
         summary=summary,
+        **({"error_message": failure_error} if failure_error else {}),
     )
     return exit_code
 

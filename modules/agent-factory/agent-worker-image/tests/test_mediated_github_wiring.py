@@ -48,6 +48,8 @@ _BROKER_RESULT = (_BROKERED_TOKEN, _BROKERED_APP_ID, "2099-01-01T00:00:00Z")
 
 
 def _prepare(monkeypatch, tmp_path, entrypoint, *, mediated: str | None):
+    # Runtime execution is stubbed here; process-group deadlines use real-process tests.
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: entrypoint.subprocess.run(command, **options))
     monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setattr(entrypoint, "BootstrapLogger", MagicMock())

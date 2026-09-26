@@ -13,6 +13,15 @@ export interface RunResult {
   exitCode: number;
 }
 
+export class ProcessError extends Error {
+  constructor(command: string, args: string[], public readonly result: RunResult, signal: string | null) {
+    const diagnostics = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n").slice(0, 8192);
+    const invocation = `${command} ${args.join(" ")}`.slice(0, 512);
+    super(`${invocation} exited ${signal ? `on signal ${signal}` : result.exitCode}: ${diagnostics}`);
+    this.name = "ProcessError";
+  }
+}
+
 export async function run(
   command: string,
   args: string[],
@@ -32,14 +41,10 @@ export async function run(
     child.stdout.on("data", (chunk: string) => (stdout += chunk));
     child.stderr.on("data", (chunk: string) => (stderr += chunk));
     child.on("error", reject);
-    child.on("close", (exitCode) => {
+    child.on("close", (exitCode, signal) => {
       const result = { stdout, stderr, exitCode: exitCode ?? 1 };
       if (result.exitCode !== 0 && !options.allowFailure) {
-        reject(
-          new Error(
-            `${command} ${args.join(" ")} exited ${result.exitCode}: ${stderr.trim()}`,
-          ),
-        );
+        reject(new ProcessError(command, args, result, signal));
       } else {
         resolve(result);
       }

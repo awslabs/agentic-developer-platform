@@ -48,7 +48,15 @@ class CycleBlockedError(Exception):
 
 
 def block(reason: str, code: BlockCode = BlockCode.DEPENDENCY_UNSATISFIED) -> BlockRecord:
-    return BlockRecord(code=code, owner="orchestration-owner", required_input=f"Resolve review cycle condition: {reason}", detail=reason)
+    required_input = {
+        "shared_worker_continuation_disabled": (
+            "The accepted flow uses shared workers, but that transport is disabled. "
+            "Have the platform operator restore the approved transport or migrate the flow before resuming."
+        ),
+        "protected_authority_required": "Have the platform operator restore protected execution support before resuming this flow.",
+        "continuation_mode_unrecognized": "Reconcile the accepted continuation contract; no alternate authority mode will be selected.",
+    }.get(reason, f"Resolve review cycle condition: {reason}")
+    return BlockRecord(code=code, owner="orchestration-owner", required_input=required_input, detail=reason)
 
 
 @dataclass(frozen=True)
@@ -58,10 +66,6 @@ class CycleObservation(HandlerObservation):
 
 class ReviewCycleHandler:
     def __init__(self, factory, services=None):
-        if services is None:
-            from .review_cycle_dispatch import cycle_services
-
-            services = cycle_services(factory)
         self.factory, self.services = factory, services
 
     async def observe(self, context: RunnerContext) -> HandlerObservation:
@@ -75,6 +79,9 @@ class ReviewCycleHandler:
             return CycleObservation(ObservationKind.BLOCKED, block=block("review_cycle_evidence_unavailable", BlockCode.PROVIDER_UNAVAILABLE))
 
     async def _observe(self, context):
+        from .review_cycle_dispatch import cycle_services
+
+        services = self.services or await cycle_services(self.factory, context)
         async with self.factory() as session:
             loaded = await load_execution(session, identity=context.identity)
             if loaded is None or loaded.kind is not OutcomeKind.APPLIED or loaded.record is None:
@@ -86,7 +93,7 @@ class ReviewCycleHandler:
                 raise CycleBlockedError("outer_gate_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
             binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
             if binding is None:
-                if not await self.services.development_complete(context, node):
+                if not await services.development_complete(context, node):
                     return CycleObservation(ObservationKind.WAITING, detail="Development is still producing its bound PR.")
                 raise CycleBlockedError("implementation_pr_missing", BlockCode.HUMAN_INPUT_REQUIRED)
             if not binding_scope_matches(binding, node):
@@ -112,7 +119,7 @@ class ReviewCycleHandler:
             # Resolve every policy/claim/grant before a provider read, and again at
             # dispatch. No cached decision licenses a new worker.
             if pending is not None:
-                return await self.services.observe_dispatch(context, pending)
+                return await services.observe_dispatch(context, pending)
             if dispatches:
                 from .review_cycle_dispatch import continuation_run_id
                 from .run_reports import OrchestrationRunReport
@@ -123,7 +130,7 @@ class ReviewCycleHandler:
                     and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True
                     and (report.review_receipt or {}).get("recorded") is True
                 ):
-                    head = await self.services.head(binding)
+                    head = await services.head(binding)
                     for evidence in reversed(rows):
                         data = evidence.detail or {}
                         cycle = json.loads(data.get("cycle_input", "{}"))
@@ -150,19 +157,19 @@ class ReviewCycleHandler:
                                 },
                                 receipt_ref=evidence.receipt_ref,
                             )
-            recover = getattr(self.services, "recovery_snapshot", None)
+            recover = getattr(services, "recovery_snapshot", None)
             recovered = await recover(session, context, node, binding, dispatches) if recover else None
             if recovered is not None:
-                waiting = await self.services.dispatch_readiness(session, context, node, binding, recovered["active_run_id"], Action.REVIEW)
+                waiting = await services.dispatch_readiness(session, context, node, binding, recovered["active_run_id"], Action.REVIEW)
                 return waiting or CycleObservation(ObservationKind.READY, snapshot=recovered)
-            facts = await self.services.facts(session, context, node, binding, dispatches)
+            facts = await services.facts(session, context, node, binding, dispatches)
             if not facts["worker_complete"]:
                 return CycleObservation(ObservationKind.WAITING, detail="Waiting for the current protected worker to finish.")
             if not dispatches:
                 from .results import _delivery_receipt
 
                 receipt = await _delivery_receipt(session, node=node, lock=False)
-                shared_handoff = getattr(self.services, "has_delivery_handoff", None)
+                shared_handoff = getattr(services, "has_delivery_handoff", None)
                 if receipt is None and not (shared_handoff and await shared_handoff(session, context, node)):
                     raise CycleBlockedError("development_handoff_missing")
             snapshot = {
@@ -219,7 +226,7 @@ class ReviewCycleHandler:
                     review, data = max(matching, key=lambda pair: pair[1].get("observed_at", ""))
                     if review.detail.get("complete_review") == "true":
                         # Observe authority/head again before the pure phase move.
-                        await self.services.recheck(session, context, node, binding, facts)
+                        await services.recheck(session, context, node, binding, facts)
                         return CycleObservation(
                             ObservationKind.SUCCEEDED,
                             snapshot={**snapshot, "merge_ready": True},
@@ -244,8 +251,8 @@ class ReviewCycleHandler:
                         review_artifact=review.artifact_ref,
                         author_run_id=latest.detail["author_run_id"],
                     )
-            await self.services.recheck(session, context, node, binding, facts)
-            readiness = getattr(self.services, "dispatch_readiness", None)
+            await services.recheck(session, context, node, binding, facts)
+            readiness = getattr(services, "dispatch_readiness", None)
             if readiness is not None:
                 waiting = await readiness(session, context, node, binding, facts["active_run_id"], Action(snapshot["next_action"]))
                 if waiting is not None:
@@ -314,7 +321,14 @@ class ReviewCycleHandler:
         )
 
     async def perform(self, context, effect):
-        return await self.services.dispatch(context, effect)
+        from .execution_runner import EffectOutcome, EffectResult
+        from .review_cycle_dispatch import cycle_services
+
+        try:
+            services = self.services or await cycle_services(self.factory, context)
+        except CycleBlockedError as error:
+            return EffectResult(EffectOutcome.UNCERTAIN, detail=error.reason)
+        return await services.dispatch(context, effect)
 
 
 def handlers(factory):

@@ -44,7 +44,7 @@ async def recover_pending_reports(session, *, config, report) -> None:
     only this delivery never increments the story attempt or launches a new run.
     SQS deduplication plus the worker's atomic start receipt handles lost replies.
     """
-    if not reporting_enabled() or not config.configured or os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+    if not reporting_enabled() or not config.configured:
         return
     from .dispatch_pass import PendingPublish, attempt_run_id, message_deduplication_id, message_group_id
     from .genesis import resolve_engine_genesis
@@ -83,6 +83,8 @@ async def recover_pending_reports(session, *, config, report) -> None:
             or row.flow_id != node.flow_id
             or row.attempt != node.attempts
         ):
+            continue
+        if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true" and not row.dispatch_metadata.get("execution_continuation"):
             continue
         if row.dispatch_metadata.get("review_cycle_input"):
             try:

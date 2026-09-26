@@ -386,3 +386,13 @@ def test_failure_spool_rejects_malformed_or_success_claims(spool, change):
     spool[1][key] = json.dumps(json.loads(spool[1][key]) | change).encode()
     with pytest.raises(run_report.RunReportError, match="report_spool_scope_mismatch"):
         run_report.read_spool()
+
+
+def test_failure_diagnostics_survive_terminal_outage(spool, monkeypatch):
+    run_report.begin_delivery()
+    failure = {"category": "deadline", "exit_code": 124}
+    run_report.spool_undelivered_failure(failure=failure)
+    terminal = MagicMock(return_value={})
+    monkeypatch.setattr(run_report, "terminal", terminal)
+    assert resume_handoff() is True
+    terminal.assert_called_once_with("failed", failure=failure)
