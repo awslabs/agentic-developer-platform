@@ -130,7 +130,8 @@ async def test_refreshed_pricing_requotes_with_original_task_budget(model):
     assert model.enforcement.check_budget_hierarchy.call_args.args[1] == Decimal("0.01")
     module.confirm_quote_spendable.assert_awaited_once()
     model.service.budget._target.assert_called_once_with(
-        scope="task:" + model.identity.task_id, cap=grant["limits"]["max_usd"],
+        scope="task:" + model.identity.task_id,
+        cap=grant["limits"]["max_usd"],
     )
     model.provider.assert_awaited_once()
 
@@ -177,12 +178,18 @@ async def test_refreshed_pricing_budget_denial_still_prevents_handoff(model):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field,value", [
-    ("model_id", "another-model"), ("transport", "another-transport"),
-    ("model_policy_version", "another-policy"), ("request_shape_version", "another-shape"),
-    ("invocability_verified", False), ("pricing_evidence_version", ""),
-    ("pricing_evidence_version", None),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("model_id", "another-model"),
+        ("transport", "another-transport"),
+        ("model_policy_version", "another-policy"),
+        ("request_shape_version", "another-shape"),
+        ("invocability_verified", False),
+        ("pricing_evidence_version", ""),
+        ("pricing_evidence_version", None),
+    ],
+)
 async def test_pricing_refresh_does_not_relax_other_model_bindings(model, field, value):
     binding, policy, target = model.service.readiness.return_value
     changed = {**binding, "pricing_evidence_version": "refreshed", field: value}
