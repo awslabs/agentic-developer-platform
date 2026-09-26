@@ -47,7 +47,10 @@ def test_production_mount_modes_and_reader_group_are_consistent(module):
     )
     deployment = next(doc for doc in yaml.safe_load_all(rendered) if doc["kind"] == "Deployment")
     pod = deployment["spec"]["template"]["spec"]
-    assert pod["securityContext"] == {"supplementalGroups": [1001]}
+    assert pod["securityContext"] == {
+        "supplementalGroups": [1001],
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
     readers = pod["initContainers"] + pod["containers"]
     mounts = [
         mount

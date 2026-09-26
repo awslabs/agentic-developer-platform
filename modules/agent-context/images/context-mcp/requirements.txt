@@ -1,4 +1,5 @@
 # Context MCP Server dependencies — pinned to latest compatible versions (#6122)
+anyio>=4.14.2,<5.0.0
 fastapi>=0.110.0,<1.0.0
 uvicorn[standard]>=0.27.0,<1.0.0
 httpx>=0.27.0,<1.0.0
