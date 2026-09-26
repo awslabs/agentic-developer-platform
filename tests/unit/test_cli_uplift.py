@@ -10997,6 +10997,7 @@ def test_shipped_hosted_chat_two_turns_and_durable_unknown(tmp_path, monkeypatch
     monkeypatch.setattr(remote_common, "session_tokens", lambda cfg: {"access_token": "must-not-escape"})
     monkeypatch.setattr(module, "_write_session", lambda *args: None)
     cfg = {"gateway_url": "https://gateway", "cli_path": "/installed/adp", "work_dir": str(work), "test_user_id": "fixture-login",
+           "evaluation_id": "stable-chat-evaluation",
            "human_task_chat": {"enrollment_verified": True, "shared_budget_authorized": True, "max_tasks": 2,
                                "max_task_usd": 0.25, "login_user_id": "fixture-login", "canonical_user_id": "fixture-user", "tenant_id": "fixture-tenant"}}
     evidence = {"success": False, "transcript": []}
@@ -11028,7 +11029,12 @@ def test_shipped_hosted_chat_two_turns_and_durable_unknown(tmp_path, monkeypatch
         assert evidence["success"] is True
         assert evidence["detail"]["context_recalled"] is True
         assert len(requests) == 2 and len(set(attempts)) == 2
+        assert attempts[0].startswith("chatdiag-") and attempts[0].endswith("-0")
         assert all(row["phase"] == "completed" for row in evidence["detail"]["turns"])
+        rerun = {"success": False, "transcript": []}
+        module.execute(cfg, rerun)
+        assert rerun["success"] is True and len(requests) == 2 and len(set(attempts)) == 2
+        assert [row["request_id"] for row in rerun["detail"]["turns"]] == [row["request_id"] for row in evidence["detail"]["turns"]]
     encoded = json.dumps(remote_common.redact(evidence))
     assert "must-not-escape" not in encoded and len(encoded.encode()) < 24000
 

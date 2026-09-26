@@ -6,7 +6,7 @@ neither success nor cleanup claims shared-spend reconciliation.
 
 Run it only on the harness-owned installed EC2 fixture using the existing
 `_run_worker`/SSM dispatcher transport. Supply the ordinary journey payload
-(`cli_path`, `work_dir`, gateway/account/instance binding, `test_user_id`, and
+(`evaluation_id`, `cli_path`, `work_dir`, gateway/account/instance binding, `test_user_id`, and
 the existing on-instance session-vault reference) plus:
 
 ```json
@@ -30,7 +30,9 @@ server's chat capabilities must match the exact canonical human and tenant.
 
 The diagnostic asks the investigator to remember a unique label, then asks for
 that label in a second task without repeating it in the second prompt. Both
-requests have stable IDs, bounded replay, exact task-correlated completion and
+requests derive stable IDs and the label from the evaluation/fixture identity,
+so restarting the same diagnostic cannot manufacture replacement turns. They
+have bounded replay, exact task-correlated completion and
 one user/assistant history pair each. It refuses to start turn two if turn one
 is uncertain or needs clarification. It does not guess an answer to a pending
 question or generate replacement request IDs.
