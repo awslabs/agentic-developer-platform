@@ -10,6 +10,13 @@
 # in the runtime stage and image rebuilds pick up Debian security fixes.
 # Issue #6112: documented base image posture for security scan reconciliation.
 #
+# Rebuild the existing Debian curl flavor with the reviewed vendor security fix.
+# Native build dependencies and test tooling remain outside the runtime image.
+FROM public.ecr.aws/docker/library/python:3.13-slim AS curl-security
+COPY security/curl/ /opt/curl-security/
+RUN /opt/curl-security/build.sh prepare
+RUN --network=none /opt/curl-security/build.sh compile
+
 # Build stage
 FROM public.ecr.aws/docker/library/python:3.13-slim AS builder
 WORKDIR /app
@@ -44,13 +51,14 @@ FROM public.ecr.aws/docker/library/python:3.13-slim
 ARG GATEWAY_RELEASE=""
 ENV GATEWAY_RELEASE=${GATEWAY_RELEASE}
 ENV DEBIAN_FRONTEND=noninteractive
+COPY --from=curl-security /out/ /tmp/curl-security/
 RUN apt-get update && apt-get -y upgrade \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends /tmp/curl-security/*.deb ca-certificates \
     && curl -fsSL --retry 3 \
          -o /etc/ssl/certs/rds-global-bundle.pem \
          https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
     && test -s /etc/ssl/certs/rds-global-bundle.pem \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/curl-security
 
 # Issue #5675: run the gateway as an unprivileged account instead of root.
 #
@@ -120,7 +128,9 @@ COPY cli/ cli/
 #
 # The Lambda path (orchestration tick, issue #4203) overrides entry_point but not
 # the user, so it inherits this too.
+COPY security/curl/check.py /opt/gateway-curl-security-check.py
 USER 65532:65532
+RUN --network=none python /opt/gateway-curl-security-check.py
 
 EXPOSE 8080
 CMD ["uvicorn", "src.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]
