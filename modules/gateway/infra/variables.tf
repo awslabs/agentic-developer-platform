@@ -289,7 +289,7 @@ variable "task_api_lambda_function_name" {
 
 variable "enable_task_api_route" {
   type        = bool
-  description = "Publish the explicit POST /v1/tasks route on the main API Gateway. Default off; publishing the route does not admit any task on its own."
+  description = "Publish the explicit POST /v1/tasks route on the main API Gateway and exact /api/v1/tasks CloudFront route. Default off; publishing the route does not admit any task on its own."
   default     = false
 }
 

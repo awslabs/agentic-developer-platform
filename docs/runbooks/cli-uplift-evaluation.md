@@ -423,6 +423,13 @@ Nightly story reads explicitly select the native tenant verified by the login ch
 
 `login,capability-contrast` selects the existing E19 supported/disabled/permission and doctor scenario without the unrelated parity journeys. Its `fixtures_json.capability_contrast` accepts only the existing seven non-secret selectors from the evaluator config. The ordinary fixture reference can point to the existing admin fixture secret with `non_admin_username`/`non_admin_password`; E19 authenticates it freshly in memory when no `ordinary_session` is provided. It pins the verified native tenant and private `BG_CONFIG_DIR`, changes neither deployment feature flags nor operator settings, and compares the same HOME's two identity caches.
 
+E42 retains the served CLI's tenant-scoped Task journal before its temporary
+home is removed. A missing journal means acceptance is unknown, not that no Task
+was submitted. Recovery must first reconcile the original request ID and any
+existing artifact; never upload a replacement snapshot to resolve uncertainty.
+Reports retain only bounded trigger status, error code and HTTP status fields,
+not response bodies or credential-bearing error prose.
+
 ### D05: owned machine metadata and access/session boundaries
 
 Select `login,machine-lifecycle` explicitly in the existing EC2 evaluation
