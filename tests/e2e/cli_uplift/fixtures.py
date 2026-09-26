@@ -19,6 +19,7 @@ CONTRAST_KEYS = {
     "ordinary_fixture_name",
 }
 KEYS = {
+    "tenant_isolation": {"tenant_ids"},
     "capability_contrast": CONTRAST_KEYS,
     "human_task_coding": IDENTITY
     | PAID
@@ -76,6 +77,20 @@ def validate_fixture(name, value):
     require(set(value) <= KEYS[name], f"Unknown {name} fixture keys")
     no_secrets(value, name)
     require(redact(value) == value, f"{name} must contain no credential material")
+    if name == "tenant_isolation":
+        tenants = value.get("tenant_ids")
+        require(
+            isinstance(tenants, list)
+            and len(tenants) == 2
+            and all(
+                isinstance(tenant, str)
+                and re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", tenant)
+                for tenant in tenants
+            )
+            and len(set(tenants)) == 2,
+            "Two distinct explicit existing tenant IDs required",
+        )
+        return
     if name == "capability_contrast":
         require(
             set(value) == CONTRAST_KEYS, "Complete capability contrast fixture required"

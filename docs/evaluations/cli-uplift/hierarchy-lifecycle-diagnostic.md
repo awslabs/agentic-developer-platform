@@ -62,3 +62,28 @@ Source fault tests cover lost creation reply, wrong actor/foreign baseline,
 revocation not enforced, failed restoration/cleanup, and pre-dispatch persistence.
 
 Organization creation also creates its canonical default department and team. The v2 recovery plan records their exact IDs before create transport. Cleanup removes them child-first only when parent, default name/description, and team department still match; changed children remain pending. This includes accepted creation with a lost reply.
+
+The acceptance extension retains explicit department/organization and
+team/department parentage. Cleanup also fences those parents and preserves a
+resource whose parent changed. It attempts an ordinary user's hierarchy read and
+update through the served CLI, requires refusals and unchanged administrator
+readback, and verifies that `--name Default` cannot substitute for a canonical
+team ID. The CLI supports canonical selectors only; this is a name-selector
+refusal, not implemented name resolution. A write may be stopped by the CLI's
+permission preflight or its protected snapshot read; the diagnostic does not
+claim a denied PATCH reached the server when it did not.
+
+One team create is retried with the exact same caller ID and body: the current
+server must return a conflict and the original snapshot must remain unchanged.
+Its deletion is retried with the original ID/revision after cleanup and must
+report absence. Neither outcome is relabeled a successful idempotent mutation.
+The original failed evaluations remain failed; this extended case requires a
+new independently reported execution before it supplies live evidence.
+
+Member role-change authority remains a concrete hold. Placing the existing
+ordinary person in the disposable organization creates an org-local identity;
+removing its membership intentionally retains that row and prevents clean
+organization deletion. The served CLI has no identity-deletion command, so D03
+keeps its disposable organization empty. It never elevates the shared tenant's
+ordinary member or changes AWS IAM. Role-transition qualification needs an
+explicit owned membership fixture with a supported retention/cleanup contract.

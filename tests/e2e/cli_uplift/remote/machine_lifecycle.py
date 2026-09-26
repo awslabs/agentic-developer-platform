@@ -405,3 +405,4 @@ def execute(config, evidence):
         )
         state["checks"].append("terminal_retirement_and_ordinary_access_preserved")
         save()
+        evidence.update(success=True, stage_reached="complete")

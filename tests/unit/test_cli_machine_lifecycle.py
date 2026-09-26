@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -54,10 +55,14 @@ def config(tmp_path):
         "foreign_alias",
         "wrong_ordinary",
         "wrong_admin",
+        "cleanup_failure",
+        "final_access_drift",
+        "final_family_drift",
+        "final_save_failure",
     ],
 )
 def test_owned_lifecycle_has_exact_cleanup_and_never_revokes_reusable_session(
-    scenario, monkeypatch, tmp_path, fault
+    scenario, monkeypatch, tmp_path, capsys, fault
 ):
     cfg = config(tmp_path)
     cfg["recovery_plan"] = scenario.recovery_plan(cfg)
@@ -104,7 +109,11 @@ def test_owned_lifecycle_has_exact_cleanup_and_never_revokes_reusable_session(
                     "status": "ok",
                     "detail": {
                         "tenant_id": args[-1],
-                        "status": "approved",
+                        "status": "denied"
+                        if fault == "final_access_drift"
+                        and state["row"] is not None
+                        and state["row"]["status"] == "retired"
+                        else "approved",
                         "spend_eligibility": "not_evaluated",
                     },
                 }
@@ -119,7 +128,11 @@ def test_owned_lifecycle_has_exact_cleanup_and_never_revokes_reusable_session(
                         "org": fixture()["tenant_id"],
                         "credential_families": ["gateway_jwt"],
                         "cognito_sessions_revoked": False,
-                        "revision": "family-revision",
+                        "revision": "changed-family"
+                        if fault == "final_family_drift"
+                        and state["row"] is not None
+                        and state["row"]["status"] == "retired"
+                        else "family-revision",
                     },
                 }
             assert args[:2] == ["admin", "service-principal"]
@@ -175,6 +188,8 @@ def test_owned_lifecycle_has_exact_cleanup_and_never_revokes_reusable_session(
                 state["row"]["aliases"].append(alias)
                 changed()
             elif action == "alias-remove":
+                if fault == "cleanup_failure":
+                    raise scenario.common.RemoteError("Alias cleanup unavailable")
                 row_id = args[args.index("--alias-row-id") + 1]
                 next(row for row in state["row"]["aliases"] if row["id"] == row_id)[
                     "is_active"
@@ -201,19 +216,52 @@ def test_owned_lifecycle_has_exact_cleanup_and_never_revokes_reusable_session(
     monkeypatch.setattr(scenario.common, "session_tokens", lambda _: {})
     monkeypatch.setattr(scenario, "ordinary_tokens", lambda *args: {})
     monkeypatch.setattr(scenario, "_write_session", lambda *args: None)
-    evidence = {"transcript": []}
-    if fault:
-        with pytest.raises(scenario.common.RemoteError):
-            scenario.execute(cfg, evidence)
+    evidence = {}
+    original_fsync = scenario.os.fsync
+
+    def fsync(fd):
+        if (
+            fault == "final_save_failure"
+            and len(evidence.get("detail", {}).get("checks", [])) == 6
+        ):
+            raise OSError("Final durable save failed")
+        original_fsync(fd)
+
+    monkeypatch.setattr(scenario.os, "fsync", fsync)
+    monkeypatch.setattr(scenario.common, "assert_owned_instance", lambda _: None)
+    payload = tmp_path / "payload.json"
+    payload.write_text(json.dumps(cfg))
+
+    def execute(config, result):
+        nonlocal evidence
+        evidence = result
+        scenario.execute(config, result)
+
+    result = scenario.common.run_script(execute, [str(payload)])
+    emitted = json.loads(capsys.readouterr().out)
+    assert result == int(fault is not None)
+    assert emitted["success"] is (fault is None)
+    if fault is None:
+        assert emitted["stage_reached"] == "complete"
+        assert len(emitted["detail"]["checks"]) == 6
     else:
-        scenario.execute(cfg, evidence)
-        assert len(evidence["detail"]["checks"]) == 6
-    if fault in {None, "alias_failure", "replay_failure"}:
+        assert emitted.get("stage_reached") != "complete"
+    if fault in {
+        None,
+        "alias_failure",
+        "replay_failure",
+        "final_access_drift",
+        "final_family_drift",
+        "final_save_failure",
+    }:
         assert state["row"]["status"] == "retired"
         assert all(not row["is_active"] for row in state["row"]["aliases"])
         assert (
             evidence["detail"]["cleanup"] == "retired_aliases_revoked_history_retained"
         )
+    elif fault == "cleanup_failure":
+        assert state["row"]["status"] == "suspended"
+        assert evidence["detail"]["cleanup"] == "not_started"
     elif fault == "foreign_alias":
         assert state["row"]["status"] == "active"
         assert not any(
