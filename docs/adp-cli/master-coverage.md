@@ -32,6 +32,8 @@ The later [configuration lifecycle run 36215959470](../evaluations/cli-uplift/bu
 
 [Claude completion run 36218768106](../evaluations/cli-uplift/claude-completion-36218768106.md) passed E42 on gateway `8cfd14826112915ee984ebf3b38d2c0a65bedb4c`: canonical completion, idempotent submission, Activity detail/list and cursor replay through the terminal event. Its returned CLI help patch was reviewed separately. Codex, running cancellation and full story acceptance remain pending.
 
+The later [Codex/Cognito checkpoint 36219042697](../evaluations/cli-uplift/codex-cognito-failure-36219042697.md) remained **0 passed, 2 failed**: D05 stopped at a Cognito permission rejection after canonical cleanup, and E42 stopped before model dispatch because the worker omitted its deadline. Exact client absence, retained incomplete registration, zero model/turn records and EC2 termination were independently verified. Only the proven unused Codex reservation was reconciled; original failures and the shared $5 ceiling remain. Subsequent fixes require fresh live acceptance.
+
 ## Available in baseline source
 
 | Area | Current command groups |
