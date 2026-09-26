@@ -158,3 +158,14 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 | `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |
 
 CLI-11 #5624 adds [machine identity lifecycle commands](machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
+
+Budget additions ([contract and examples](budgets.md)); source implemented, live enforcement acceptance pending:
+
+| Command | Purpose |
+|---|---|
+| `adp budget me` | Existing own-budget envelope for one explicit period |
+| `adp admin budget list` | Bounded managed cap pages |
+| `adp admin budget show` | Exact tenant/target/ledger/period configuration and revision |
+| `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
+| `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
+| `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |

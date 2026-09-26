@@ -5023,6 +5023,246 @@
       "required_capabilities": [
         "machine.principal.manage"
       ]
+    },
+    {
+      "command": "adp admin budget delete",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.managed.write",
+      "flags": [
+        "--department",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--period",
+        "--scope",
+        "--team",
+        "--usage",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}/revision",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin budget list",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.managed.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budgets"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin budget set",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "budget.managed.write",
+      "flags": [
+        "--amount-usd",
+        "--department",
+        "--dry-run",
+        "--expect-absent",
+        "--expected-revision",
+        "--json",
+        "--mode",
+        "--org",
+        "--period",
+        "--scope",
+        "--team",
+        "--usage",
+        "--user",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin budget show",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.managed.read",
+      "flags": [
+        "--department",
+        "--json",
+        "--org",
+        "--period",
+        "--scope",
+        "--team",
+        "--usage",
+        "--user"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp admin budget status",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.managed.read",
+      "flags": [
+        "--department",
+        "--json",
+        "--org",
+        "--period",
+        "--scope",
+        "--team",
+        "--usage",
+        "--user"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/budget/{entity_type}/{entity_id}/{period_type}",
+          "/admin/organizations/{org_id}/budgets/{entity_type}/{entity_id}/{period_type}/status"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.managed.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
+    },
+    {
+      "command": "adp budget me",
+      "helper": "adp-budget.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "budget.self.read",
+      "flags": [
+        "--json",
+        "--period"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/me/budget"
+        ],
+        "schema": "Exact budget period or own budget envelope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "budget.self.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_budget.py",
+        "tests/admin/test_budget_periods.py"
+      ]
     }
   ]
 }

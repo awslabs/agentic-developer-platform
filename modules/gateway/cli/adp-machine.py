@@ -472,11 +472,20 @@ def agent_command(args, client):
         except ValueError:
             raise common.CliError("--operation-id must be a UUID.", "usage_error", 1) from None
     before = agent_snapshot(client, kind, args.org, args.id) if args.action != "register" else None
-    effect = (
-        "IAM disabled status prevents future authorizer checks; existing/cached authorization and runs are not terminated."
-        if kind == "iam-registry"
-        else "Cognito retirement deletes the client and prevents new token minting; existing JWTs expire normally and runs are not stopped."
-    )
+    if args.action == "deregister":
+        effect = (
+            "Future IAM authorizer checks refuse the disabled identity; cached authorization and existing runs are not terminated."
+            if kind == "iam-registry"
+            else "Cognito client deletion prevents new token minting; existing JWTs expire normally and runs are not stopped."
+        )
+    elif args.action == "register":
+        effect = "Register the explicitly selected authentication identity."
+    else:
+        effect = (
+            "Update IAM registry metadata; disabled status is enforced on future authorizer checks."
+            if kind == "iam-registry"
+            else "Update Cognito client metadata; status metadata alone does not invalidate tokens."
+        )
     if args.dry_run:
         return common.envelope(
             "dry_run",

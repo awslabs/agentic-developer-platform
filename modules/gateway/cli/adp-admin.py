@@ -47,6 +47,7 @@ def parser():
         commands.add_parser("github", help="Configure this deployment's GitHub App; check sign-in and repository access")
     for area in ("service-account", "agent", "service-principal"):
         commands.add_parser(area, help="Explicit machine identity lifecycle")
+    commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
 
@@ -154,6 +155,11 @@ def main(argv=None):
             if not module:
                 raise common.CliError("Machine identity helper is missing. Run adp update.", "provider_unavailable", 4)
             return module.main(argv)
+        if argv and argv[0] == "budget":
+            module = common.load_provider("adp-budget.py")
+            if not module:
+                raise common.CliError("Budget helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "budget", *argv[1:]])
         if argv and argv[0] == "usage":
             module = common.load_provider("adp-usage.py")
             if not module:

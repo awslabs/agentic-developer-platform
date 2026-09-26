@@ -266,6 +266,12 @@ OPERATIONS = (
         permission=Permission.BUDGET_READ,
     ),
     Operation(
+        "budget.managed.write",
+        summary="Change exact-period budgets for entities you administer",
+        permission=Permission.BUDGET_UPDATE,
+        mutates=True,
+    ),
+    Operation(
         "usage.self.read",
         summary="Read your own request history",
     ),
