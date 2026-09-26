@@ -161,7 +161,7 @@ def test_owned_lifecycle_has_exact_cleanup_and_never_revokes_reusable_session(
                 return {"status": "ok", "detail": copy.deepcopy(state["row"])}
             expected = args[args.index("--expected-revision") + 1]
             if expected != state["row"]["revision"]:
-                return fail(409, "revision_conflict")
+                return fail(409, "stale_revision")
             if action == "alias-add":
                 if fault == "alias_failure":
                     return {"status": "pending"}
