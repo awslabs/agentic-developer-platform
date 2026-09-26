@@ -900,7 +900,7 @@ async def worker_runtime(workload, tmp_path):
             lease = await acquire(
                 connection,
                 operation_id=result.operation_id,
-                holder="real-invocation#" + uuid.uuid4().hex,
+                holder="real-invocation:" + uuid.uuid4().hex,
                 attempt_id=uuid.uuid4().hex if continuation else original["attempt_id"],
             )
         principal = ResolvedPrincipal(

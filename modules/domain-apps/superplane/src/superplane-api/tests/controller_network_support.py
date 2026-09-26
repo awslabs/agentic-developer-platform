@@ -34,7 +34,7 @@ def configure(profile):
     profile["regions"] = [
         {
             "region": region,
-            "image_id": "ami-0123456789abcdef0",
+            "image_id": "ami-" + str(index) * 8,
             "vpc_name": "approved",
             "security_group": "approved",
             "instance_profile": "approved-nodes",
