@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -118,13 +118,51 @@ async def test_budget_denial_prevents_send(model):
 async def test_refreshed_pricing_requotes_with_original_task_budget(model):
     binding, policy, target = model.service.readiness.return_value
     model.service.readiness.return_value = ({**binding, "pricing_evidence_version": "refreshed"}, policy, target)
+    grant = model.repository._get_authority(
+        "TENANT#" + model.identity.tenant,
+        f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}",
+    )
+    model.service.budget._target = Mock(wraps=model.service.budget._target)
     receipt = await execute(model)
     assert receipt["operation_status"] == "confirmed"
     module.quote_request.assert_awaited_once()
     model.enforcement.check_budget_hierarchy.assert_awaited_once()
     assert model.enforcement.check_budget_hierarchy.call_args.args[1] == Decimal("0.01")
     module.confirm_quote_spendable.assert_awaited_once()
+    model.service.budget._target.assert_called_once_with(
+        scope="task:" + model.identity.task_id, cap=grant["limits"]["max_usd"],
+    )
     model.provider.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("original", [None, "", 7])
+async def test_pricing_refresh_requires_original_admission_evidence(model, monkeypatch, original):
+    # Exercise the model boundary independently of the earlier work-digest
+    # validation, which also rejects an externally corrupted grant.
+    current = model.service._current(model.identity)
+    monkeypatch.setattr(model.service, "_current", lambda identity: current)
+    binding, policy, target = model.service.readiness.return_value
+    model.service.readiness.return_value = ({**binding, "pricing_evidence_version": "refreshed"}, policy, target)
+    read = model.repository._get_authority
+    grant_sk = f"TASK_RUN#{model.identity.invocation_id}#GEN#{model.identity.generation:010d}"
+
+    def missing_evidence(pk, sk):
+        row = read(pk, sk)
+        if sk == grant_sk:
+            row = {**row, "model_binding": dict(row["model_binding"])}
+            if original is None:
+                row["model_binding"].pop("pricing_evidence_version")
+            else:
+                row["model_binding"]["pricing_evidence_version"] = original
+        return row
+
+    monkeypatch.setattr(model.repository, "_get_authority", missing_evidence)
+    with pytest.raises(TaskStoreError, match="binding changed"):
+        await execute(model)
+    module.quote_request.assert_not_awaited()
+    model.provider.assert_not_awaited()
+    assert model.service._read(model.identity.task_id, model.turn_id) is None
 
 
 @pytest.mark.asyncio

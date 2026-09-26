@@ -396,8 +396,10 @@ class TaskModel:
         # operation below still quotes current rates and reserves that quote
         # against the original Task cap before any provider handoff.
         current_pricing = binding.get("pricing_evidence_version")
+        admitted_pricing = grant["model_binding"].get("pricing_evidence_version")
         expected_binding = {**grant["model_binding"], "pricing_evidence_version": current_pricing}
-        if not isinstance(current_pricing, str) or not current_pricing or binding != expected_binding:
+        if (not isinstance(admitted_pricing, str) or not admitted_pricing
+                or not isinstance(current_pricing, str) or not current_pricing or binding != expected_binding):
             raise TaskStoreError("task model binding changed")
         operation, owned = await run_in_threadpool(
             self._claim, identity=identity, turn_id=turn_id, digest=request_digest, model_id=binding["model_id"]
