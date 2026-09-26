@@ -398,11 +398,24 @@ resource "aws_iam_role_policy" "gateway_agent_authority" {
           "dynamodb:UpdateItem",
           "dynamodb:ConditionCheckItem",
         ]
-        # No /index/* entry: the store performs single-item GetItem calls only.
-        # There is no Query grant either, deliberately — a Query could match more
-        # than one item, and every authorization lookup here must resolve to the
-        # exact principal or invocation the verified credential named.
+        # Authorization reads remain exact GetItem calls. Activity discovery
+        # has a separate tenant-partition Query grant below; its locators never
+        # grant authority without reauthorizing the canonical Task.
         Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        Sid      = "TaskActivityDiscovery"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAllValues:StringLike" = {
+            "dynamodb:LeadingKeys" = ["TENANT#*"]
+          }
+          "Null" = {
+            "dynamodb:LeadingKeys" = "false"
+          }
+        }
       },
       {
         # The table is encrypted with the customer-managed CMK, so the dynamodb

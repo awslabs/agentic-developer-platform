@@ -28,6 +28,37 @@ mock_provider "kubernetes" {}
 mock_provider "helm" {}
 mock_provider "tls" {}
 
+override_resource {
+  target          = aws_dynamodb_table.agent_authority
+  override_during = plan
+  values = {
+    arn = "arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-agent-authority"
+  }
+}
+
+run "gateway_task_activity_discovery" {
+  command = plan
+  plan_options {
+    target = [aws_iam_role_policy.gateway_agent_authority]
+  }
+  assert {
+    condition = one([
+      for statement in jsondecode(aws_iam_role_policy.gateway_agent_authority.policy).Statement : statement
+      if statement.Sid == "TaskActivityDiscovery"
+      ]) == {
+      Sid      = "TaskActivityDiscovery"
+      Effect   = "Allow"
+      Action   = ["dynamodb:Query"]
+      Resource = [aws_dynamodb_table.agent_authority.arn]
+      Condition = {
+        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["TENANT#*"] }
+        "Null"                    = { "dynamodb:LeadingKeys" = "false" }
+      }
+    }
+    error_message = "Activity discovery needs tenant-partition Query on the authority table only, without Scan, indexes, or writes."
+  }
+}
+
 # Authority-on plans also validate the gateway's existing marker key. Keep the
 # fixture deterministic: provider-generated strings may be shorter than 32 bytes.
 override_data {
