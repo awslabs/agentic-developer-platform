@@ -68,6 +68,7 @@ import argparse
 import base64
 import binascii
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -492,6 +493,11 @@ class Deployment:
         self._root = self._legacy_root if self.legacy else deployments_root() / self.id
         self._state = legacy_state_dir() if self.legacy else self._root / "state"
         self._logs = adp_home() / "logs" if self.legacy else self._root / "logs"
+        # Immutable process pin: runtime/state paths are separate, while the
+        # Cognito refresh token continues to have exactly one store and lock.
+        tenant = os.environ.get("ADP_TENANT_ID")
+        subject = os.environ.get("ADP_TENANT_SUB")
+        self.tenant_namespace = hashlib.sha256((subject + "\0" + tenant).encode()).hexdigest()[:24] if tenant and subject else None
 
     @property
     def root(self):
@@ -504,7 +510,7 @@ class Deployment:
 
     @property
     def state_dir(self):
-        return self._state
+        return self._state / "tenants" / self.tenant_namespace if self.tenant_namespace else self._state
 
     @property
     def runtime_dir(self):
@@ -519,11 +525,12 @@ class Deployment:
         alone. Named deployments, having no such history, keep theirs together
         with the rest of their private files.
         """
-        return self.root if self.legacy else self.root / "runtime"
+        base = self.root if self.legacy else self.root / "runtime"
+        return base / "tenants" / self.tenant_namespace if self.tenant_namespace else base
 
     @property
     def log_dir(self):
-        return self._logs
+        return self._logs / "tenants" / self.tenant_namespace if self.tenant_namespace else self._logs
 
     def validate_config(self):
         config = _read_json(self.config_dir / "config.json")
@@ -904,7 +911,7 @@ def _process_start(pid):
 
 def setup_port(deployment):
     """Keep bare Codex's saved endpoint stable across proxy restarts."""
-    if deployment.legacy:
+    if deployment.legacy and not deployment.tenant_namespace:
         return 9191
     with _RegistryLock():
         path = deployment.runtime_dir / "setup-port.json"
@@ -933,6 +940,13 @@ def setup_port(deployment):
 def helper_command(deployment, adp_path):
     environment = deployment.environment()
     environment["ADP_DEPLOYMENT_SOURCE"] = "setup"
+    # Claude invokes this persisted helper outside the setup shell. Preserve
+    # its identity and membership pin so another terminal cannot retarget it.
+    # Keep these out of Deployment.environment(): raw-token acquisition uses
+    # that environment after deliberately clearing tenant pins.
+    for key in ("ADP_TENANT_ID", "ADP_TENANT_SUB", "ADP_TENANT_SOURCE", "ADP_TENANT_MODE", "ADP_TENANT_MEMBERSHIP"):
+        if key in os.environ:
+            environment[key] = os.environ[key]
     return shlex.join(["env", "-u", "ADP_DEPLOYMENT", *[f"{key}={value}" for key, value in environment.items()], adp_path, "token"])
 
 
@@ -1071,7 +1085,8 @@ def _busy_reason(deployment):
     ownership, rather than the file's existence or a successful kill -0.
     """
     runtime = deployment.runtime_dir
-    for path in (runtime / "leases").glob("*.json"):
+    runtimes = [runtime, *[path for path in (runtime / "tenants").glob("*") if path.is_dir()]]
+    for path in [entry for directory in runtimes for entry in (directory / "leases").glob("*.json")]:
         value = _read_json(path) or {}
         start = _process_start(int(value.get("pid", 0)))
         if start and start == value.get("start"):
@@ -1079,9 +1094,10 @@ def _busy_reason(deployment):
     daemon = Path.home() / "Library/LaunchAgents" / f"com.adp.gateway-proxy.{deployment.id}.plist"
     if daemon.exists():
         return "an always-on proxy is installed; run adp daemon uninstall for this deployment"
-    owner = proxy_owner(runtime, deployment.id, deployment.gateway_url)
-    if owner:
-        return f"a proxy is running (pid {owner['pid']})"
+    for directory in runtimes:
+        owner = proxy_owner(directory, deployment.id, deployment.gateway_url)
+        if owner:
+            return f"a proxy is running (pid {owner['pid']})"
     if (deployment.config_dir / "refresh.lock").exists():
         return "a token refresh or login is in progress"
     return None

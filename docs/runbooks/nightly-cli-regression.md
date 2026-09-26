@@ -34,7 +34,7 @@ credentials.
 |---|---|---|---|
 | 1 | CLI onboarding | [A: gate off, B: approval matrix, C5–C10: complete CLI installation, discovery, token import, permissions, direct inference, Claude Code and Codex; D: restore/cleanup](../../platform/evals/cli-onboarding/README.md) | Clean EKS pod |
 | 2 | Budgets and rate limits | [Cases 1–12 and H: user/team/department/org budgets, reset boundaries, tenant isolation, accounting, RPM/TPM/concurrency and agent attribution](../../platform/evals/budget-ratelimit/README.md) | Clean EKS pod; real API/DB enforcement |
-| 3 | CLI Uplift key scenarios | [E01 install; C01 login/refresh; E20 capabilities/doctor; E21 usage/export; E22 Activity reads/errors; cleanup/recovery](../../tests/e2e/cli_uplift/cases.py) | Disposable EC2 |
+| 3 | CLI Uplift key scenarios | [E01 install; C01 login/refresh; E20 capabilities/doctor; E21 usage/export; E22 Activity reads/errors; E23 tenant selection/errors; cleanup/recovery](../../tests/e2e/cli_uplift/cases.py) | Disposable EC2 |
 
 The daily EC2 invocation selects **`nightly`**: E01 install, C01 native login and
 refresh, E20 capabilities/doctor (#5621), E21 own usage views and bounded export
@@ -44,7 +44,7 @@ These three new scenarios add no inference or platform mutations. Missing CLI
 helpers, endpoint errors, malformed JSON, or inconsistent exit codes fail the run.
 
 `ec2_scope=login` retains the narrow install/login diagnostic. `ec2_scope=full`
-selects E01–E22; blocked/not-run cases keep it red. E02–E19 remain outside the
+selects the registered E01–E23 cases plus fixture-gated E27; blocked/not-run cases keep it red. E02–E19 remain outside the
 nightly scope. Passing read regressions does not establish active remote-control
 acceptance, marked usage/spend reconciliation, or capability permission contrasts.
 
@@ -147,3 +147,5 @@ case 7 independently verifies real model usage accrual. Spending through a cap
 with a newly triggered agent remains outside this key-scenario regression.
 
 CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
+
+E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.

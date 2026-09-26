@@ -127,6 +127,7 @@ class TestCliScriptDownload:
             COMMAND_MANIFEST,
             # Task commands and reusable protocol code; no embedded credentials.
             "adp-task.py",
+            "adp-tenant.py",
             "adp-vault.py",
             "adp-machine.py",
             "adp-usage.py",

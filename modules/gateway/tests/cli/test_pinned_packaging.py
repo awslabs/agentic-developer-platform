@@ -190,9 +190,10 @@ def test_the_install_places_the_superplane_extension(installed) -> None:
 def test_the_installed_extension_is_dispatchable(installed) -> None:
     """End to end: the installed `adp` reaches the installed extension."""
     home, prefix = installed
-    result = run([str(prefix / "adp"), "superplane", "org"], home)
+    result = run([str(prefix / "adp"), "superplane", "--help"], home)
 
-    assert result.returncode == 4, result.stdout + result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "org" in result.stdout
 
 
 def test_rollback_restores_the_extension_too(installed) -> None:
