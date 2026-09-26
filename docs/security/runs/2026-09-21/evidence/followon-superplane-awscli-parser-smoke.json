@@ -1,0 +1,43 @@
+{
+  "scope": "offline parser/service-model only; no cloud or credential calls",
+  "results": [
+    {
+      "version": "aws-cli/2.31.22 Python/3.13.7 Linux/7.0.0-1012-aws exe/x86_64.debian.13",
+      "launcher_sha256": "5c203778bfffb2d0315dc76a5d6837dde7d7b5dd0236dc15679c2ec2abae0b24",
+      "service_model_input_skeletons": [
+        "eks describe-cluster",
+        "eks describe-access-entry",
+        "eks list-associated-access-policies",
+        "eks list-access-entries",
+        "ec2 describe-security-group-rules",
+        "ec2 describe-security-groups",
+        "ec2 describe-vpc-endpoints",
+        "iam simulate-principal-policy",
+        "sts get-caller-identity",
+        "sts assume-role",
+        "s3api head-object",
+        "ssm get-parameter"
+      ],
+      "invalid_command_refused": true
+    },
+    {
+      "version": "aws-cli/2.37.4 Python/3.14.6 Linux/7.0.0-1012-aws exe/x86_64.debian.13",
+      "launcher_sha256": "f8b07be1ad7c2cc63c5c14238d927e5f48bd278173fc1c71ae40f4a12ff88e49",
+      "service_model_input_skeletons": [
+        "eks describe-cluster",
+        "eks describe-access-entry",
+        "eks list-associated-access-policies",
+        "eks list-access-entries",
+        "ec2 describe-security-group-rules",
+        "ec2 describe-security-groups",
+        "ec2 describe-vpc-endpoints",
+        "iam simulate-principal-policy",
+        "sts get-caller-identity",
+        "sts assume-role",
+        "s3api head-object",
+        "ssm get-parameter"
+      ],
+      "invalid_command_refused": true
+    }
+  ]
+}

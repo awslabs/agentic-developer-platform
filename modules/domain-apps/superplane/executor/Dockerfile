@@ -31,17 +31,14 @@ RUN test "$TARGETARCH" = amd64 && apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg unzip && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /tools
-# Pin both the AWS CLI version and the official AWS signing key fingerprint.
-# A keyserver response cannot replace that identity or approve unsigned bytes.
+COPY modules/domain-apps/superplane/executor/awscli-build /awscli-build
+# Pin the official renewed key and release bytes; reject expired/error statuses.
 RUN curl --fail --silent --show-error --location \
-      'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xFB5DB77FD5C118B80511ADA8A6310ACC4672475C' -o aws-signing.asc && \
-    test "$(gpg --show-keys --with-colons aws-signing.asc | awk -F: '$1=="fpr" {print $10; exit}')" = FB5DB77FD5C118B80511ADA8A6310ACC4672475C && \
-    gpg --batch --import aws-signing.asc && \
+      https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.37.4.zip -o awscliv2.zip && \
     curl --fail --silent --show-error --location \
-      https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.31.22.zip -o awscliv2.zip && \
-    curl --fail --silent --show-error --location \
-      https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.31.22.zip.sig -o awscliv2.zip.sig && \
-    gpg --batch --verify awscliv2.zip.sig awscliv2.zip && \
+      https://awscli.amazonaws.com/awscli-exe-linux-x86_64-2.37.4.zip.sig -o awscliv2.zip.sig && \
+    python /awscli-build/verify.py awscliv2.zip awscliv2.zip.sig && \
+    echo '0c59444563f4df735eeb5481f6165f95dae546c33761760d8be9855d5cfe2d12  awscliv2.zip' | sha256sum -c - && \
     unzip -q awscliv2.zip && ./aws/install --install-dir /opt/aws-cli --bin-dir /opt/aws-bin
 
 FROM ${PYTHON_IMAGE} AS build
