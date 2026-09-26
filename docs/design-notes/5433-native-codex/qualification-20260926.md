@@ -56,3 +56,34 @@ pause/resume, connected AWS/delegation, memory hooks and gateway memory integrat
 remain incomplete. No completed story count is claimed. Qualification must cover
 real repository publication and independent requirements review before enabling
 the developer for users.
+
+
+## Follow-up qualification and discovered failures
+
+A live run after the merge failed at final reporting despite completed code checks
+and fixture publication. Another ran out of the fixture's legacy eight-turn budget
+after publication. These are failures, not accepted changes. The live scenario now
+explicitly admits the implemented 20-turn Codex budget, gives an exact report shape,
+and retains failure evidence instead of writing evidence only after success.
+
+A subsequent run completed in 31.07 seconds (6 model calls, 5 tools), but its report
+cited instructions as evidence of implementation. Developer findings now require
+host-known execution artifacts; inputs cannot stand in for execution evidence.
+The stronger gate passed a live retry story in 32.48 seconds (7 model calls,
+6 tools, 21.877 seconds summed model latency). Its final report cites the actual
+implementation, check and publication artifacts. This still uses a fixture provider
+and does not prove arbitrary feature quality or independent human acceptance.
+
+The test images now default to UID/GID 65534, matching the executor's enforced
+runtime user. Retry image: `sha256:66f98bf345199ea509277367682d0dfafd110f2898a82c9f05c905c63aeee6ca`.
+Detached basic image: `sha256:65f2bd9245887d593a59f7d880d9bf4d2b5118c637138f59dafc15c44d666e1b`.
+
+CI exposed a random UUID in pytest parameter IDs, causing divergent xdist
+collection; the test now uses a stable foreign attempt identity (33 tests pass
+under two xdist workers). The OTLP fixture also attempted export assertions after
+its Docker-dependent story skipped; that fixture now skips before setup, while a
+new report-only SDK export scenario runs without Docker. That CI-shaped suite
+passes 9 scenarios and explicitly skips 9 requiring image/live configuration.
+Gateway lint and formatting checks pass across all source and tests. The local
+scanner test has 6 passes and 1 skip because Checkov is unavailable locally; CI
+must confirm the image hardening fix. Runtime registration remains default off.

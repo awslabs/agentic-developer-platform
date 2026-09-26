@@ -182,32 +182,50 @@ async def observe_task_change(*, db, tenant, task_id, frozen, receipt, reauthori
     validate_frozen_repository(frozen)
     binding = frozen["binding"]
     branch = "adp/task-" + task_id.removeprefix("tsk_")
-    if (receipt.get("task_id") != task_id or receipt.get("repository_id") != binding["repository_id"]
-        or receipt.get("provider") != "github" or receipt.get("branch") != branch
-        or type(receipt.get("number")) is not int or receipt["number"] < 1):
+    if (
+        receipt.get("task_id") != task_id
+        or receipt.get("repository_id") != binding["repository_id"]
+        or receipt.get("provider") != "github"
+        or receipt.get("branch") != branch
+        or type(receipt.get("number")) is not int
+        or receipt["number"] < 1
+    ):
         raise OperationRefusedError("Completion publication identity differs")
+
     async def authorize():
         await reauthorize()
         return await authorize_source_connection(db=db, tenant=tenant, binding=binding)
+
     installation = await authorize()
-    token = await installation_token(org_id=tenant, installation_id=installation, repository=binding["repository"],
-        permissions={"contents": "read", "pull_requests": "read", "metadata": "read"})
+    token = await installation_token(
+        org_id=tenant,
+        installation_id=installation,
+        repository=binding["repository"],
+        permissions={"contents": "read", "pull_requests": "read", "metadata": "read"},
+    )
+
     class Observer(GitHubProvider):
         async def _call(self, method, path, **kwargs):
             if method != "GET":
                 raise OperationRefusedError("Completion cannot mutate provider state")
             await authorize()
             return await super()._call(method, path, **kwargs)
+
     assignment = SourceAssignment(binding["repository"], int(binding["repository_id"]), branch, binding["base_branch"])
     async with Observer(token=token, assignment=assignment, client=provider_client) as provider:
         state = await provider.read_repository()
         pull = await provider._call("GET", f"/repos/{provider.repo}/pulls/{receipt['number']}")
         provider._require_assigned_pull_request(pull)
         commit = await provider._call("GET", f"/repos/{provider.repo}/git/commits/{receipt['provider_head']}")
-        if (state["branch_head"] != receipt["provider_head"] or pull.get("head", {}).get("sha") != receipt["provider_head"]
-            or pull.get("state") != "open" or pull.get("draft") is not False
-            or pull.get("html_url") != receipt["url"] or commit.get("tree", {}).get("sha") != receipt["tree"]
-            or [parent.get("sha") for parent in commit.get("parents", [])] != [receipt["source_revision"]]):
+        if (
+            state["branch_head"] != receipt["provider_head"]
+            or pull.get("head", {}).get("sha") != receipt["provider_head"]
+            or pull.get("state") != "open"
+            or pull.get("draft") is not False
+            or pull.get("html_url") != receipt["url"]
+            or commit.get("tree", {}).get("sha") != receipt["tree"]
+            or [parent.get("sha") for parent in commit.get("parents", [])] != [receipt["source_revision"]]
+        ):
             raise ProviderConflictError("Published change no longer matches validated completion")
         await authorize()
         return dict(receipt)

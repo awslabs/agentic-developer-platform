@@ -143,7 +143,6 @@ class Harness(Closed):
     policy: Policy
     tools: Annotated[list[RuntimeTool], Field(min_length=1, max_length=64)] | None = None
 
-
     @field_validator("traceparent")
     @classmethod
     def valid_traceparent(cls, value):

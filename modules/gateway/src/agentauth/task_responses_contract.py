@@ -93,8 +93,10 @@ class ResponsesUsage(ClosedModel):
     def consistent_counts(self):
         if self.input_tokens_details and self.input_tokens_details.cached_tokens > self.input_tokens:
             raise ValueError("cache exceeds inclusive input")
-        if (self.input_tokens_details
-            and self.input_tokens_details.cached_tokens + (self.input_tokens_details.cache_write_tokens or 0) > self.input_tokens):
+        if (
+            self.input_tokens_details
+            and self.input_tokens_details.cached_tokens + (self.input_tokens_details.cache_write_tokens or 0) > self.input_tokens
+        ):
             raise ValueError("cache read/write exceeds inclusive input")
         if self.output_tokens_details and self.output_tokens_details.reasoning_tokens > self.output_tokens:
             raise ValueError("reasoning exceeds inclusive output")
@@ -132,6 +134,7 @@ def normalize_provider_result(document):
     unknown fields still fail validation. Preserve inclusive cache-write usage.
     """
     import copy
+
     result = {key: copy.deepcopy(document.get(key)) for key in ("id", "status", "output", "usage")}
     usage = result["usage"]
     if isinstance(usage, dict) and "total_tokens" in usage:

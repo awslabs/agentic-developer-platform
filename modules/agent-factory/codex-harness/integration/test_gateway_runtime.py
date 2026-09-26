@@ -55,9 +55,12 @@ spec.loader.exec_module(worker)
 
 @pytest.fixture(autouse=True)
 def sdk_otel_collector(request, monkeypatch):
-    if getattr(request.node, "callspec", None) is None or request.node.callspec.params.get("scenario") != "tools_developer_otel":
+    if getattr(request.node, "callspec", None) is None or request.node.callspec.params.get("scenario") not in {"success_otel", "tools_developer_otel"}:
         yield
         return
+    developer = request.node.callspec.params["scenario"] == "tools_developer_otel"
+    if developer and not os.environ.get("ADP_CODEX_DETACHED_IMAGE"):
+        pytest.skip("requires explicit immutable Docker validation image")
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import threading
     documents = []
@@ -94,7 +97,8 @@ def sdk_otel_collector(request, monkeypatch):
         turns = [span for span in spans if span["name"] == "adp.codex.turn"]
         assert turns and all(span["traceId"] == run["traceId"] for span in turns)
         assert any(path == "/v1/metrics" for path, _ in documents)
-        assert {"adp.codex.model", "adp.codex.tool", "adp.codex.completion"} <= {span["name"] for span in spans}
+        required = {"adp.codex.model", "adp.codex.tool", "adp.codex.completion"} if developer else {"adp.codex.model"}
+        assert required <= {span["name"] for span in spans}
         records = [record for path, doc in documents if path == "/v1/logs"
             for resource in doc["resourceLogs"] for scope in resource["scopeLogs"] for record in scope["logRecords"]]
         assert records and all(record["traceId"] == run["traceId"] and record["spanId"] for record in records)
@@ -110,6 +114,7 @@ def sdk_otel_collector(request, monkeypatch):
     "scenario",
     [
         "success",
+        "success_otel",
         "repair",
         "steer",
         "cancel",
@@ -141,6 +146,13 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     if actual_live:
         monkeypatch.syspath_prepend(str(Path(__file__).parent))
     live_metrics = []
+    live_messages = []
+    runtime_source = None
+    if actual_live:
+        difference = subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=ROOT)
+        runtime_source = {"commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+            "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)),
+            "diff_sha256": hashlib.sha256(difference).hexdigest()}
     actual_developer = scenario.startswith("tools_developer")
     persona = "agent-task-gpt-developer" if actual_developer else "agent-task-gpt-intent-refinement"
     golden = json.loads(
@@ -316,7 +328,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             "max_usd_per_task": 1,
         },
     }
-    if many_turns:
+    if many_turns or actual_live:
         policy["limits"]["codex_max_turns"] = 20
     if actual_workspace:
         policy["repositories"] = {
@@ -455,6 +467,8 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 events.append("live-inference-refused:" + type(error).__name__ + (":" + str(error) if isinstance(error, RuntimeError) else ""))
                 raise
             live_metrics.append(measurement)
+            live_messages.extend(part["text"] for item in document.get("output", []) if item.get("type") == "message"
+                for part in item.get("content", []) if part.get("type") == "output_text")
             from src.agentauth.task_responses_tools_contract import TaskToolsResponsesResult
             try:
                 from src.agentauth.task_responses_contract import normalize_provider_result
@@ -464,6 +478,15 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 raise
             return {"content": [], "stop_reason": "completed", "responses_response": result, "usage": result["usage"],
                     "price": Price(), "provider_request_id": measurement["provider_request_id"]}
+        if actual_developer:
+            for item in kwargs["request"]["input"]:
+                if item.get("type") == "function_call_output":
+                    output = item["output"]
+                    content = output[-1]["text"] if isinstance(output, list) else output
+                    artifact_id = json.loads(content).get("artifact", {}).get("artifact_id")
+                    if artifact_id:
+                        report["findings"] = [{"statement": "The host returned an execution artifact.", "evidence_refs": [artifact_id]}]
+                        report["evidence_refs"] = [{"ref": artifact_id, "source": "artifact", "artifact_id": artifact_id}]
         text = (
             "invalid first report"
             if (scenario == "repair" and len(model_requests) == 1)
@@ -900,6 +923,14 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         acknowledge=lambda: events.append("ack"),
     )
     task = store.read_task(assignment.task_id)
+    if actual_live:
+        destination = os.environ.get("ADP_CODEX_LIVE_EVIDENCE")
+        if destination:
+            Path(destination).write_text(json.dumps({"model": binding["model_id"], "effort": "medium",
+                "status": task["state"], "error": task.get("error"), "final_messages": live_messages,
+                "runtime_source": runtime_source, "validation_image": image, "model_calls": live_metrics, "tool_effects": events.count("tool-effect"),
+                "publication": workflow.get("publication", {}).get("result"), "manifest": workflow.get("manifest"), "tool_results": workflow.get("tool_results"),
+                "limitations": ["Task admission identity and ledger use Moto fixtures", "provider source and PR publication use fixtures", "gateway inference is live and charged to the authenticated user"]}, indent=2))
     expected_state = {"cancel": "cancelled", "unknown": "failed", "tools_developer_moved": "failed"}.get(scenario, "completed")
     if actual_live and task["state"] != expected_state:
         print(json.dumps({"events": events, "model_requests": len(model_requests), "responses": len(live_metrics)}))
@@ -992,12 +1023,5 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         assert result == 1 and task["result"] is None
     if scenario == "steer":
         assert "Also inspect the retry configuration." in json.dumps(model_requests[1])
-    if actual_live:
-        destination = os.environ.get("ADP_CODEX_LIVE_EVIDENCE")
-        if destination:
-            Path(destination).write_text(json.dumps({"model": binding["model_id"], "effort": "medium",
-                "status": task["state"], "model_calls": live_metrics, "tool_effects": events.count("tool-effect"),
-                "publication": workflow.get("publication", {}).get("result"), "manifest": workflow.get("manifest"), "tool_results": workflow.get("tool_results"),
-                "limitations": ["Task admission identity and ledger use Moto fixtures", "provider source and PR publication use fixtures", "gateway inference is live and charged to the authenticated user"]}, indent=2))
     assert "ack" in events
     assert not list((tmp_path / "work").iterdir())

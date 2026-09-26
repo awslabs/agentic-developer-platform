@@ -341,6 +341,7 @@ def test_unconfirmed_tool_receipt_prevents_completion(store, status):
     with pytest.raises(errors.TaskApiError, match="Tool operations"):
         service.finalize(identity, final_body(identity))
 
+
 @pytest.mark.parametrize("persona", ["agent-task-claude-developer", "agent-task-codex-developer"])
 def test_coding_runtime_refuses_input_without_creating_command_but_allows_cancel(store, persona):
     from src.tasks.records import task_authority_partition, task_policy_sort_key

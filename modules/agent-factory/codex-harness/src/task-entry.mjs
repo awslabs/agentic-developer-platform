@@ -3,7 +3,7 @@
 import { ArtifactTransfers } from './task-contracts/artifact-transfer.js';
 import { parseHostFrame, assertInvestigatorReport } from './task-contracts/protocol.js';
 import { HostBridge, decode, encode, MAX_FRAME_BYTES } from './task-sdk/protocol.mjs';
-import { taskHarness, parseTaskReport } from './task-adapter.js';
+import { taskHarness, parseTaskReport, TaskReportError } from './task-adapter.js';
 import { runAdmittedSession } from './session.js';
 import { TaskTools } from './task-tools.js';
 import { startTelemetry, activeTraceparent, observeOperation } from './telemetry.js';
@@ -18,7 +18,7 @@ function finish(error, report) {
   terminal = true;
   if (bridge) {
     if (bridge.cancelCommand) bridge.send('cancelled', { command_id: bridge.cancelCommand, partial_findings: null });
-    else if (error) bridge.send('error', { code: bridge.failure?.message === 'model_outcome_unknown' ? 'model_outcome_unknown' : 'process_failed', message: 'Codex Task did not complete with validated output and current authority.' });
+    else if (error) bridge.send('error', { code: bridge.failure?.message === 'model_outcome_unknown' ? 'model_outcome_unknown' : 'process_failed', message: error instanceof TaskReportError ? `Codex Task report failed validation: ${error.code}.` : 'Codex Task did not complete with validated output and current authority.' });
     else bridge.send('result', { report });
   }
   bridge?.fail(error ?? new Error('task lifecycle ended'));
@@ -36,8 +36,13 @@ async function run() {
   const taskTools = tools.length ? new TaskTools(tools, bridge, maxOperations, repository?.capabilities ?? []) : undefined;
   let repair = false;
   let previous;
+  let reportFailure;
   const input = { instructions: start.instructions, inputs: start.inputs ?? {}, acceptance_criteria: start.acceptance_criteria ?? [], artifacts: start.artifacts ?? [] };
-  const outputContract = 'Return only a JSON Task report with summary (string), findings (array of {statement,evidence_refs,confidence?}), uncertainties (string array), recommendations (string array), and evidence_refs (exact objects from the supplied evidence list). Every finding must cite existing evidence. Do not invent actions, tests, approvals, artifacts or citations. Address every acceptance criterion; state unmet requirements and missing evidence as uncertainties.';
+  const outputContract = {
+    instruction: 'Return only one JSON object, without Markdown fences or extra fields. Report only observed results; address unmet requirements in uncertainties. Each finding.evidence_refs is an array of ref STRINGS. Top-level evidence_refs is an array of exact objects from the supplied evidence list. Do not invent provenance or use URLs as ref IDs. Confidence, if included, must be low, medium or high, never numeric.',
+    shape: { summary: 'nonempty string, at most 4000 characters', findings: [{ statement: 'nonempty string, at most 2000 characters', evidence_refs: ['existing ref string'], confidence: 'high' }], uncertainties: ['nonempty string, at most 1000 characters'], recommendations: ['nonempty string, at most 1000 characters'], evidence_refs: [{ ref: 'instructions', source: 'instructions' }] },
+    note: 'Empty arrays are permitted. For artifact citations copy the host-provided ref, source and artifact_id exactly. Findings must each have at least one declared evidence ref. For developer findings, cite at least one artifact from an actual tool result. Every confirmed tool result artifact.artifact_id is an additional permitted citation: use that exact ID for both ref and artifact_id, with source artifact. Inputs describe requirements, not proof that implementation succeeded.',
+  };
   for (;;) {
     if (operations >= maxOperations) throw new Error('task model budget exhausted');
     amendments.push(...bridge.takeSteering());
@@ -46,7 +51,7 @@ async function run() {
       ...(repository ? { repository: repository.binding } : {}),
       runId: start.invocation_id, snapshot, policy, source: { kind: 'task-api', taskId: start.task_id, generation: start.generation },
       prompt: JSON.stringify({ task: input, amendments, evidence_refs: [...bridge.evidence.values()], output_contract: outputContract,
-        ...(repair ? { correction: 'Previous output failed the report schema or cited unsupported evidence. Produce a corrected grounded report.', previous_output: previous } : {}) }),
+        ...(repair ? { correction: 'Previous output failed the report schema or cited unsupported evidence. Produce a corrected grounded report. Use the current evidence list and exact report shape.', failure_code: reportFailure, previous_output: previous } : {}) }),
       maxOutputTokens: start.limits.max_output_tokens_per_turn, maxResponseBytes: 48000, signal: bridge.controller.signal,
     }, {
       ...(toolSession ? { toolBroker: toolSession.toolBroker } : {}),
@@ -67,10 +72,11 @@ async function run() {
       continue;
     }
     let report;
-    try { report = parseTaskReport(evidence.response, bridge.evidence, assertInvestigatorReport); }
+    try { report = parseTaskReport(evidence.response, bridge.evidence, assertInvestigatorReport, JSON.parse(snapshot.definition).completionPolicy === "validated-change"); }
     catch (error) {
       if (repair || operations >= maxOperations) throw error;
       repair = true; previous = evidence.response;
+      reportFailure = error instanceof TaskReportError ? error.code : "invalid_schema";
       bridge.progress('Checking and correcting the report structure and citations.', 'synthesis');
       continue;
     }

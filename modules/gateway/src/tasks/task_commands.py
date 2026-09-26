@@ -335,11 +335,13 @@ class TaskCommands:
         if outcome == "completed":
             from src.agentauth.task_completion_service import require_completion_receipt
             from src.tasks.store import TaskStoreError
+
             try:
                 require_completion_receipt(self.repo, identity, snapshot)
             except TaskStoreError:
                 raise errors.state_conflict("Persona completion evidence is unavailable.") from None
             from src.agentauth.task_turns import task_turn_limit
+
             maximum_turns = task_turn_limit(self.repo, identity.task_id)
             operations = self.repo._client.query(
                 TableName=self.repo.table_name,

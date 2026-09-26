@@ -107,14 +107,27 @@ def test_function_arguments_must_be_bounded_json_objects(call, arguments):
 
 def test_live_provider_empty_metadata_is_normalized_without_losing_usage():
     from src.agentauth.task_responses_contract import normalize_provider_result
+
     raw = {
-        "id": "response", "status": "completed", "output": [
+        "id": "response",
+        "status": "completed",
+        "output": [
             {"id": "reason", "type": "reasoning", "summary": [], "encrypted_content": "opaque", "content": []},
-            {"id": "message", "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
-             "content": [{"type": "output_text", "text": "Done", "annotations": [], "logprobs": []}]},
+            {
+                "id": "message",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "Done", "annotations": [], "logprobs": []}],
+            },
         ],
-        "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
-                  "input_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 30}},
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "total_tokens": 120,
+            "input_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 30},
+        },
     }
     normalized = normalize_provider_result(raw)
     result = TaskToolsResponsesResult.model_validate(normalized)

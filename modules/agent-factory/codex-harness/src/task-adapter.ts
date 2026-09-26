@@ -55,22 +55,32 @@ export function taskHarness(start: {
 interface Citation { ref: string; source: string; artifact_id?: string }
 interface Report { findings: { evidence_refs: string[] }[]; evidence_refs: Citation[] }
 
+export class TaskReportError extends Error {
+  constructor(readonly code: "invalid_json" | "invalid_schema" | "unsupported_evidence" | "undeclared_evidence" | "execution_evidence_required") {
+    super(`Task report ${code.replaceAll("_", " ")}`);
+  }
+}
+
 /** Reuse the Task report schema, then require host-known citation identities.
  * Structural grounding does not certify the semantic truth of model findings.
  */
-export function parseTaskReport(raw: string, evidence: ReadonlyMap<string, Citation>, assertReport: (value: unknown) => void) {
-  const report: unknown = JSON.parse(raw);
-  assertReport(report);
+export function parseTaskReport(raw: string, evidence: ReadonlyMap<string, Citation>, assertReport: (value: unknown) => void, requireArtifactEvidence = false) {
+  let report: unknown;
+  try { report = JSON.parse(raw); } catch { throw new TaskReportError("invalid_json"); }
+  try { assertReport(report); } catch { throw new TaskReportError("invalid_schema"); }
   const parsed = report as Report;
   const declared = new Set<string>();
   for (const citation of parsed.evidence_refs) {
     const actual = evidence.get(citation.ref);
     if (declared.has(citation.ref) || !actual || actual.source !== citation.source || actual.artifact_id !== citation.artifact_id) {
-      throw new Error("Task report cites unsupported evidence");
+      throw new TaskReportError("unsupported_evidence");
     }
     declared.add(citation.ref);
   }
-  if (parsed.findings.some(finding => finding.evidence_refs.some(ref => !declared.has(ref)))) throw new Error("Task finding has an undeclared citation");
+  if (parsed.findings.some(finding => finding.evidence_refs.some(ref => !declared.has(ref)))) throw new TaskReportError("undeclared_evidence");
+  if (requireArtifactEvidence && parsed.findings.some(finding => !finding.evidence_refs.some(ref => evidence.get(ref)?.source === "artifact"))) {
+    throw new TaskReportError("execution_evidence_required");
+  }
   return report;
 }
 

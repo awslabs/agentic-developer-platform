@@ -269,7 +269,7 @@ def test_durable_history_refuses_forged_tool_output(journal, transcript, change)
     "field,value",
     [
         ("operation_status", "unknown"),
-        ("runtime_attempt_id", str(uuid.uuid4())),
+        ("runtime_attempt_id", "11111111-1111-4111-8111-111111111111"),
         ("request_digest", "b" * 64),
         ("arguments_json", "{}"),
         ("automatic_replay_permitted", True),

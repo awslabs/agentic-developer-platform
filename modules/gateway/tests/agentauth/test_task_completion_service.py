@@ -1,4 +1,5 @@
 """Detached requirement mapping and provider-state completion boundaries."""
+
 # ruff: noqa: F811 -- imported pytest fixture
 import hashlib
 
@@ -37,8 +38,15 @@ async def test_completion_observes_exact_open_pr_with_read_only_credentials(scop
     receipt = await publish(scope)
     count = len(scope.requests)
     async with httpx.AsyncClient(base_url="https://api.github.com", transport=httpx.MockTransport(scope.handle)) as client:
-        result = await observe_task_change(db=None, tenant="tenant", task_id=TASK,
-            frozen={"alias": "application", "binding": BINDING}, receipt=receipt, reauthorize=scope.authorize, provider_client=client)
+        result = await observe_task_change(
+            db=None,
+            tenant="tenant",
+            task_id=TASK,
+            frozen={"alias": "application", "binding": BINDING},
+            receipt=receipt,
+            reauthorize=scope.authorize,
+            provider_client=client,
+        )
     assert result == receipt
     assert all(method == "GET" for method, path in scope.requests[count:])
     assert scope.token.await_args.kwargs["permissions"] == {"contents": "read", "pull_requests": "read", "metadata": "read"}
@@ -64,5 +72,12 @@ async def test_provider_drift_cannot_be_certified(scope, fault):
         scope.pull["html_url"] = "https://example.invalid"
     async with httpx.AsyncClient(base_url="https://api.github.com", transport=httpx.MockTransport(scope.handle)) as client:
         with pytest.raises(OperationRefusedError):
-            await observe_task_change(db=None, tenant="tenant", task_id=TASK, frozen={"alias": "application", "binding": BINDING},
-                receipt=receipt, reauthorize=scope.authorize, provider_client=client)
+            await observe_task_change(
+                db=None,
+                tenant="tenant",
+                task_id=TASK,
+                frozen={"alias": "application", "binding": BINDING},
+                receipt=receipt,
+                reauthorize=scope.authorize,
+                provider_client=client,
+            )

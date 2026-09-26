@@ -333,8 +333,16 @@ async def repository_publication(body: RepositoryPublicationBody, request: Reque
         if await authenticate_task_attempt(request) != identity:
             raise HTTPException(403, "Task publication identity changed")
         return result
-    except (TaskStoreError, ArtifactStoreError, WorkBindingError, TaskToolPolicyError, TaskServicePolicyError,
-            OperationRefusedError, BotoCoreError, ClientError):
+    except (
+        TaskStoreError,
+        ArtifactStoreError,
+        WorkBindingError,
+        TaskToolPolicyError,
+        TaskServicePolicyError,
+        OperationRefusedError,
+        BotoCoreError,
+        ClientError,
+    ):
         raise HTTPException(409, "Task publication could not be confirmed; do not replay") from None
 
 
@@ -351,22 +359,32 @@ async def verify_developer_completion(request, identity, db):
     from src.agentauth.task_source_staging import TaskSourceStaging
     from src.agentauth.task_validation_evidence import TaskValidationEvidence
     from src.tasks.routes import get_store
+
     artifacts = get_store()
     repo = artifacts.repository
     policies = TaskServicePolicyStore(table_name=repo.authority_table_name, client=repo._client)
+
     def authorize(current, tool):
         return authorize_tool(repo, policies, current, tool)
+
     async def observe(**kwargs):
         check = kwargs["reauthorize"]
+
         async def reauthorize():
             if await authenticate_task_attempt(request) != identity:
                 raise HTTPException(403, "Completion identity changed")
             await check()
+
         return await observe_task_change(db=db, **{**kwargs, "reauthorize": reauthorize})
-    publication = TaskPublicationService(repo, artifacts=artifacts,
+
+    publication = TaskPublicationService(
+        repo,
+        artifacts=artifacts,
         staging=TaskSourceStaging(repo, s3=artifacts.s3, bucket=artifacts.bucket, authorize=authorize),
         validations=TaskValidationEvidence(repo, artifacts=artifacts, authorize=authorize),
-        authorize=authorize, publisher=None)
+        authorize=authorize,
+        publisher=None,
+    )
     result = await TaskCompletionService(publication, observe=observe).execute(identity)
     if await authenticate_task_attempt(request) != identity:
         raise HTTPException(403, "Completion identity changed")
@@ -376,6 +394,7 @@ async def verify_developer_completion(request, identity, db):
 @router.post("/repository-completion")
 async def repository_completion(body: RepositoryCompletionBody, request: Request, db=Depends(get_db)):
     from src.agentauth.github_operations import OperationRefusedError
+
     identity = await authenticate_task_attempt(request)
     require_body_attempt(identity, body.attempt)
     try:

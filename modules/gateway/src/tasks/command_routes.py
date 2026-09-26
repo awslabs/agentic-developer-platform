@@ -290,6 +290,7 @@ async def finalize(request: Request, db: AsyncSession = Depends(get_db)):
         from src.agentauth.task_completion_service import completion_policy
         from src.agentauth.task_tool_routes import verify_developer_completion
         from src.tasks.store import TaskStoreError
+
         snapshot = await run_in_threadpool(repository.read_task, identity.task_id)
         if snapshot["state"] not in {"completed", "failed", "cancelled"} and completion_policy(repository, snapshot) == "validated-change":
             try:

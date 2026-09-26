@@ -1,4 +1,5 @@
 """Publication fences and retry behavior against actual DynamoDB and S3."""
+
 # ruff: noqa: F811
 import hashlib
 import json
@@ -28,15 +29,22 @@ def publication(store, monkeypatch):
     request = _request(tool_grants=PERMISSIONS, repository_binding={"alias": "application", "binding": binding})
     store.accept(request)
     attempt = _bind_attempt(store, request.task_id, request.invocation_id)
-    identity = SimpleNamespace(task_id=request.task_id, invocation_id=request.invocation_id, generation=1,
-                               runtime_attempt_id=attempt, tenant=request.tenant, canonical_principal=request.canonical_principal)
-    policy = {"status": "active", "allowed_personas": [request.persona], "allowed_tools": list(PERMISSIONS),
-              "repositories": {"application": binding}}
+    identity = SimpleNamespace(
+        task_id=request.task_id,
+        invocation_id=request.invocation_id,
+        generation=1,
+        runtime_attempt_id=attempt,
+        tenant=request.tenant,
+        canonical_principal=request.canonical_principal,
+    )
+    policy = {"status": "active", "allowed_personas": [request.persona], "allowed_tools": list(PERMISSIONS), "repositories": {"application": binding}}
     policies = SimpleNamespace(get=lambda **kw: policy)
     env = {"ADP_TASK_PERSONA_TOOLS": json.dumps({request.persona: list(PERMISSIONS)})}
     monkeypatch.setattr("src.agentauth.task_tool_routes.time.time", lambda: NOW.timestamp())
+
     def authorize(identity, tool):
         return authorize_tool(store, policies, identity, tool, env=env)
+
     s3 = boto3.client("s3", region_name="us-east-1")
     s3.create_bucket(Bucket="publication-tests")
     artifacts = DynamoTaskReadStore(store, s3_client=s3, artifact_bucket="publication-tests")
@@ -44,28 +52,59 @@ def publication(store, monkeypatch):
     digest = hashlib.sha256(raw).hexdigest()
     artifact = artifacts.put_run_artifact(attempt=identity, content=raw, content_type="application/json", digest=digest)
     evidence = [{"check": "unit", "status": "passed", "specificationDigest": hashlib.sha256(rfc8785.dumps(check)).hexdigest()}]
+
     def validations(**kw):
         assert kw == {"identity": identity, "commit": LOCAL, "tree": TREE}
         return evidence
-    result = {"schema_version": "1.0", "task_id": identity.task_id, "provider": "github", "repository_id": "456",
-              "source_revision": SOURCE, "local_head": LOCAL, "tree": TREE, "provider_head": REMOTE,
-              "branch": "adp/task-" + identity.task_id.removeprefix("tsk_"), "number": 7,
-              "url": "https://github.com/org/repo/pull/7", "state": "open", "draft": False}
+
+    result = {
+        "schema_version": "1.0",
+        "task_id": identity.task_id,
+        "provider": "github",
+        "repository_id": "456",
+        "source_revision": SOURCE,
+        "local_head": LOCAL,
+        "tree": TREE,
+        "provider_head": REMOTE,
+        "branch": "adp/task-" + identity.task_id.removeprefix("tsk_"),
+        "number": 7,
+        "url": "https://github.com/org/repo/pull/7",
+        "state": "open",
+        "draft": False,
+    }
     publisher = AsyncMock(return_value=result)
-    service = TaskPublicationService(store, artifacts=artifacts, staging=SimpleNamespace(read=lambda _: {"commit": SOURCE}),
-                                     validations=SimpleNamespace(read=validations), authorize=authorize, publisher=publisher)
+    service = TaskPublicationService(
+        store,
+        artifacts=artifacts,
+        staging=SimpleNamespace(read=lambda _: {"commit": SOURCE}),
+        validations=SimpleNamespace(read=validations),
+        authorize=authorize,
+        publisher=publisher,
+    )
     arguments = dict(artifact_id=artifact.artifact_id, digest=digest, commit=LOCAL, title="Repair", body="Validated")
-    return SimpleNamespace(service=service, identity=identity, arguments=arguments, publisher=publisher, evidence=evidence,
-                           policy=policy, artifacts=artifacts, artifact=artifact, s3=s3, result=result)
+    return SimpleNamespace(
+        service=service,
+        identity=identity,
+        arguments=arguments,
+        publisher=publisher,
+        evidence=evidence,
+        policy=policy,
+        artifacts=artifacts,
+        artifact=artifact,
+        s3=s3,
+        result=result,
+    )
 
 
 @pytest.mark.asyncio
 async def test_claim_precedes_effect_and_confirmed_retry_does_not_publish(publication):
     s = publication
+
     async def publish(**kw):
         assert s.service.read(s.identity)["operation_status"] == "pending"
         await kw["reauthorize"]()
         return s.result
+
     s.publisher.side_effect = publish
     first = await s.service.execute(s.identity, **s.arguments)
     assert first == await s.service.execute(s.identity, **s.arguments)
@@ -87,8 +126,10 @@ async def test_invalid_validation_never_claims_or_publishes(publication, fault):
     elif fault == "specification":
         s.evidence[0]["specificationDigest"] = "0" * 64
     else:
+
         def mismatch(**kw):
             raise TaskStoreError("Validation tree differs from publication")
+
         s.service.validations.read = mismatch
     with pytest.raises(TaskStoreError):
         await s.service.execute(s.identity, **s.arguments)
@@ -133,6 +174,7 @@ async def test_invalid_authority_or_artifact_never_publishes(publication, fault)
     else:
         s.s3.put_object(Bucket=s.artifacts.bucket, Key=s.artifact.storage_key, Body=b"tampered")
     from src.tasks.read_store import TaskStoreError as ArtifactError
+
     with pytest.raises((TaskStoreError, ArtifactError, HTTPException)):
         await s.service.execute(s.identity, **s.arguments)
     s.publisher.assert_not_awaited()
@@ -142,9 +184,11 @@ async def test_invalid_authority_or_artifact_never_publishes(publication, fault)
 @pytest.mark.asyncio
 async def test_revocation_after_provider_effect_prevents_confirmation(publication):
     s = publication
+
     async def publish(**kw):
         s.policy["allowed_tools"] = []
         return s.result
+
     s.publisher.side_effect = publish
     with pytest.raises(HTTPException):
         await s.service.execute(s.identity, **s.arguments)
@@ -183,9 +227,14 @@ def test_http_route_authenticates_attempt_and_publishes_with_durable_receipt(pub
     app.dependency_overrides[require_agent_transport] = lambda: None
     app.dependency_overrides[get_db] = lambda: None
     app.include_router(task_tool_routes.router)
-    body = {"schema_version": "1.0", "attempt": {
-        "run": {k: getattr(s.identity, k) for k in ("task_id", "invocation_id", "generation")},
-        "runtime_attempt_id": s.identity.runtime_attempt_id}, **s.arguments}
+    body = {
+        "schema_version": "1.0",
+        "attempt": {
+            "run": {k: getattr(s.identity, k) for k in ("task_id", "invocation_id", "generation")},
+            "runtime_attempt_id": s.identity.runtime_attempt_id,
+        },
+        **s.arguments,
+    }
     with TestClient(app) as http:
         response = http.post("/internal/v1/agent/task/repository-publication", json=body)
         assert response.status_code == 200, response.text

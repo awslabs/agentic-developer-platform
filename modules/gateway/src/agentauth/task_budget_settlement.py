@@ -30,6 +30,7 @@ async def settle_task_admission(repository, identity, *, budget=None):
     ):
         return False
     from src.agentauth.task_turns import task_turn_limit
+
     maximum = await run_in_threadpool(task_turn_limit, repository, identity.task_id)
     page = await run_in_threadpool(
         repository._client.query,

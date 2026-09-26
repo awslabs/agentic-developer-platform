@@ -74,3 +74,25 @@ test("repository capabilities require the provisioned host binding and admitted 
   assert.throws(() => taskHarness({ ...value, repository: { ...value.repository, capabilities: ["repository.write"] } }));
   assert.throws(() => taskHarness({ ...value, repository: { ...value.repository, binding: { ...value.repository.binding, sourceRevision: "main" } } }));
 });
+
+test("report failure diagnostics identify the boundary without echoing model content", () => {
+  const evidence = new Map();
+  assert.throws(() => parseTaskReport("private invalid content", evidence, () => {}), error => {
+    assert.equal((error as {code: string}).code, "invalid_json");
+    assert.doesNotMatch(String(error), /private/); return true;
+  });
+  assert.throws(() => parseTaskReport("{}", evidence, () => { throw new Error("private invalid schema field"); }), error => {
+    assert.equal((error as {code: string}).code, "invalid_schema");
+    assert.doesNotMatch(String(error), /private/); return true;
+  });
+});
+
+test("developer findings require execution artifacts instead of requirements as proof", () => {
+  const instruction = {ref: "instructions", source: "instructions"};
+  const artifact = {ref: "art-test", source: "artifact", artifact_id: "art-test"};
+  const evidence = new Map([[instruction.ref, instruction], [artifact.ref, artifact]]);
+  const report = {findings: [{evidence_refs: [instruction.ref]}], evidence_refs: [instruction, artifact]};
+  assert.throws(() => parseTaskReport(JSON.stringify(report), evidence, () => {}, true), /execution evidence required/);
+  report.findings[0]!.evidence_refs.push(artifact.ref);
+  assert.deepEqual(parseTaskReport(JSON.stringify(report), evidence, () => {}, true), report);
+});

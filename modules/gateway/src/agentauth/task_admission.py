@@ -153,6 +153,7 @@ class TaskAdmission:
             if harness is not None:
                 if json.loads(harness["snapshot"]["definition"])["completionPolicy"] == "validated-change":
                     from src.agentauth.task_completion_service import required_acceptance
+
                     try:
                         required_acceptance((repository_binding or {}).get("binding", {}), submit.get("acceptance_criteria", []))
                         required = {"repository.read", "repository.write", "repository.commit", "validation.run", "change.create"}
