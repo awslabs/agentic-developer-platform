@@ -2472,7 +2472,9 @@ class Installer:
                 if self.env.get("api_producer_role"):
                     from .producer_role import verify_applied
 
-                    self.phase("api-producer-role-verified", lambda: verify_applied(self))
+                    self.phase(
+                        "api-producer-role-verified", lambda: verify_applied(self)
+                    )
                 self.phase("foundations", self.foundations)
                 self.phase("migration", self.migrate)
                 self.phase("bootstrap", lambda: self.bootstrap(token))
