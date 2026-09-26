@@ -57,3 +57,20 @@ async def require_current_owner(db, *, tenant, principal):
         except BootstrapRefusedError:
             raise errors.disallowed_scope("Human Task membership is unavailable.") from None
     return kind, user_id
+
+
+async def require_admission_headroom(context, max_usd, *, enforcement=None):
+    """Reject exhausted human hierarchy before dispatch; paid calls reserve again.
+
+    This is a preflight, not a new budget ledger or a spend reservation. Concurrent
+    launch races remain bounded by the existing paid-call reservations and Task
+    per-run limits. The Task pilot admission hold remains separate.
+    """
+    from decimal import Decimal
+
+    from src.budget.enforcement_service import BudgetEnforcementService
+
+    context._budget_enforcement_enabled = True
+    verdict = await (enforcement or BudgetEnforcementService()).check_budget_hierarchy(context, Decimal(str(max_usd)), request_id=None)
+    if not verdict.allowed:
+        raise errors.TaskApiError(402, "budget_exceeded", "Human Task budget headroom is unavailable; no task was dispatched.")

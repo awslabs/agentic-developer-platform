@@ -52,6 +52,9 @@ def safe_endpoint(url):
 
 
 def token_expiry(token):
+    if token.startswith("adpctx1~"):
+        parts = token.split("~")
+        return min(token_expiry(parts[1]), token_expiry(parts[2])) if len(parts) == 3 else 0
     try:
         encoded = token.split(".")[1]
         return float(json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))["exp"])
@@ -211,6 +214,8 @@ class TaskClient(protocol.Client):
                     self.pause(2**attempt)
                     attempt += 1
                     continue
+                if status == 402:
+                    raise CliError("Task budget headroom is exhausted; no new task was admitted.", "budget_exceeded", 5, status_code=402) from None
                 if status in (401, 403):
                     raise CliError(
                         "Task access denied. Ask your administrator to enroll this identity and grant the required Task scopes/persona policy.",

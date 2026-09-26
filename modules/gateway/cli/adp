@@ -2000,8 +2000,22 @@ main() {
             fi
             ;;
     esac
+    if [ "${command}" = "task" ]; then
+        local task_human=false
+        local task_arg
+        for task_arg in "$@"; do
+            if [ "${task_arg}" = "--human-login" ]; then task_human=true; fi
+        done
+        if [ "${task_human}" = false ]; then
+            local_tool_setup=true
+            if [ -n "${requested_tenant}" ]; then
+                print_error "Task --tenant requires --human-login."
+                exit 1
+            fi
+        fi
+    fi
     case "${command}" in
-        deployment|help|--help|-h|version|--version|-v|login|logout|import|refresh|update|status|tenant|task|daemon|"")
+        deployment|help|--help|-h|version|--version|-v|login|logout|import|refresh|update|status|tenant|daemon|"")
             if [ -n "${requested_tenant}" ] && [ "${command}" != "tenant" ]; then
                 print_error "This command does not accept --tenant."
                 exit 1

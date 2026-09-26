@@ -77,3 +77,20 @@ def test_task_help_and_all_command_help_work_without_credentials(installed):
         result = run("task", verb, "--help")
         assert result.returncode == 0, result.stderr
         assert verb in result.stdout.lower()
+
+
+def test_human_task_resolves_selected_tenant_service_task_does_not(installed):
+    prefix, run = installed
+    assert run("deployment", "add", "isolated", "--url", "https://isolated.example.test").returncode == 0
+    (prefix / "adp-tenant.py").write_text(
+        "import sys\nassert sys.argv[1:] == ['--resolve-env', 'tenant-b']\nprint('export ADP_TENANT_ID=tenant-b')\n"
+    )
+    (prefix / "adp-task.py").write_text("import os,json\nprint(json.dumps({'tenant':os.environ.get('ADP_TENANT_ID')}))\n")
+    human = run("--deployment", "isolated", "--tenant", "tenant-b", "task", "status", "tsk_fixture", "--human-login")
+    assert human.returncode == 0, human.stderr
+    assert json.loads(human.stdout)["tenant"] == "tenant-b"
+    service = run("--deployment", "isolated", "task", "status", "tsk_fixture")
+    assert service.returncode == 0, service.stderr
+    assert json.loads(service.stdout)["tenant"] is None
+    refused = run("--deployment", "isolated", "--tenant", "tenant-b", "task", "status", "tsk_fixture")
+    assert refused.returncode != 0 and "--human-login" in refused.stderr

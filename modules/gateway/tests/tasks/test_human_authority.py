@@ -69,3 +69,90 @@ async def test_model_owner_retains_human_identity_and_current_membership(monkeyp
     member.side_effect = BootstrapRefusedError("removed")
     with pytest.raises(errors.TaskApiError):
         await human.require_current_owner(db, tenant=TENANT, principal=human.human_locator(USER))
+
+
+@pytest.mark.asyncio
+async def test_signed_selected_tenant_wins_over_login_org_and_revocation_denies(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from src.auth import tenant_context
+    from src.shared.schemas.auth import TokenContext
+
+    selected = str(uuid.uuid4())
+    user = SimpleNamespace(id=USER)
+    members = {TENANT: (user, SimpleNamespace(id="member-a")), selected: (user, SimpleNamespace(id="member-b"))}
+    monkeypatch.setattr(
+        tenant_context,
+        "get_settings",
+        lambda: SimpleNamespace(token_secret_key="tenant-test-secret-key-with-enough-length", cognito_user_pool_id="pool"),
+    )
+    monkeypatch.setattr(tenant_context, "memberships_for_login", AsyncMock(side_effect=lambda *a, **k: (None, members)))
+    monkeypatch.setattr(tenant_context, "primary_team_for_workspace", AsyncMock(return_value=None))
+    context = TokenContext(
+        user_id=USER,
+        org_id=TENANT,
+        team_id="",
+        department_id="",
+        account_type="human",
+        auth_source="jwt",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    lease = await tenant_context.issue_context(object(), context, selected)
+    context._task_tenant_lease = lease["context_token"]
+    monkeypatch.setenv("ADP_TASK_API_HUMAN_ENABLED", "true")
+    session = AsyncMock(side_effect=lambda ctx, db: SimpleNamespace(user_id=USER, tenant_id=ctx.org_id))
+    monkeypatch.setattr(human, "authorize_human_session", session)
+    policy = Mock(return_value={"status": "active", "task_scopes": ["read"]})
+    monkeypatch.setattr(human, "TaskServicePolicyStore", lambda: SimpleNamespace(get=policy))
+    caller = await authz.resolve_caller(context, frozenset(), object())
+    assert caller.tenant_id == selected
+    assert policy.call_args.kwargs["tenant_id"] == selected
+    assert context.org_id == TENANT
+    del members[selected]
+    with pytest.raises(errors.TaskApiError):
+        await authz.resolve_caller(context, frozenset(), object())
+
+
+@pytest.mark.asyncio
+async def test_human_budget_preflight_uses_actual_owner_and_no_new_ledger():
+    from decimal import Decimal
+
+    enforcement = SimpleNamespace(check_budget_hierarchy=AsyncMock(return_value=SimpleNamespace(allowed=False)))
+    context = SimpleNamespace(user_id=USER, org_id=TENANT)
+    with pytest.raises(errors.TaskApiError) as refused:
+        await human.require_admission_headroom(context, "0.25", enforcement=enforcement)
+    assert refused.value.status == 402 and refused.value.code == "budget_exceeded"
+    enforcement.check_budget_hierarchy.assert_awaited_once_with(context, Decimal("0.25"), request_id=None)
+    assert context._budget_enforcement_enabled
+
+
+@pytest.mark.asyncio
+async def test_human_budget_refusal_precedes_task_acceptance(monkeypatch):
+    from src.agentauth.task_admission import TaskAdmission
+
+    repository = SimpleNamespace(_read_idempotency=Mock(return_value=None), accept=Mock())
+    policy = {
+        "status": "active",
+        "task_scopes": ["submit"],
+        "allowed_personas": ["agent-task-investigator"],
+        "allowed_tools": [],
+        "model_policy_version": "1",
+        "limits": {"max_duration_minutes": 10, "max_usd_per_task": 0.1},
+    }
+    policies = SimpleNamespace(get=Mock(return_value=policy))
+    budget = SimpleNamespace(reserve_admission=AsyncMock())
+    model = AsyncMock(return_value=({}, SimpleNamespace(context=object()), object()))
+    monkeypatch.setattr(human, "require_admission_headroom", AsyncMock(side_effect=errors.TaskApiError(402, "budget_exceeded", "exhausted")))
+    admission = TaskAdmission(repository, policies=policies, budget=budget, model_resolver=model)
+    caller = authz.Caller("human:" + USER, TENANT, frozenset({"adp-tasks/submit"}))
+    with pytest.raises(errors.TaskApiError) as refused:
+        await admission.admit(
+            caller=caller,
+            submit={"schema_version": "1.0", "persona": "agent-task-investigator", "instructions": "inspect"},
+            idempotency_key="one",
+            db=object(),
+        )
+    assert refused.value.status == 402
+    repository.accept.assert_not_called()
+    budget.reserve_admission.assert_not_called()
+    assert model.call_args.kwargs["include_context"] is True
