@@ -110,6 +110,7 @@ class TaskRunClient:
         self._local_tools = {}
         self._workspace_tools = None
         self._validation_tool = None
+        self._publication_tool = None
         self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
         self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
         self._base = base
@@ -291,6 +292,9 @@ class TaskRunClient:
     def repository_source(self, body: dict) -> dict:
         return self._post("repository-source", body, run_bound=True)
 
+    def repository_publication(self, body: dict) -> dict:
+        return self._post("repository-publication", body, run_bound=True)
+
     def tool_authorize(self, body: dict) -> dict:
         return self._post("tool-authorize", body, run_bound=True)
 
@@ -323,10 +327,19 @@ class TaskRunClient:
                 "repository_path": str(workspace.root), "repository_binding": binding,
                 "checks": source.get("validation_checks", []),
             })
+        publication_tool = None
+        if "change.create" in tools:
+            from lib.codex_publication_tool import PREREQUISITES, TaskPublicationTool
+            if not PREREQUISITES.issubset(tools) or validation_tool is None:
+                raise TaskRunClientError("Publication requires workspace edit, commit and validation tools")
+            publication_tool = TaskPublicationTool(self, attempt=attempt, workspace=workspace, binding=binding)
         # Bind atomically: a refused validation policy must not leave usable tools.
         self._workspace_tools, self._validation_tool = workspace_tools, validation_tool
+        self._publication_tool = publication_tool
 
     def tool(self, name: str, body: dict) -> dict:
+        if self._publication_tool is not None and name == "change.create":
+            return self._publication_tool.invoke(body)
         if self._validation_tool is not None and name == "validation.run":
             return self._validation_tool.invoke(body)
         if self._workspace_tools is not None and name in self._workspace_tools.tools:
@@ -410,4 +423,5 @@ class TaskRunClient:
             self._stopping = True
             self._workspace_tools = None
             self._validation_tool = None
+            self._publication_tool = None
             self._local_tools.clear()

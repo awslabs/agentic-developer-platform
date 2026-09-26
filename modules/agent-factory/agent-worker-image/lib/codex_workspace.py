@@ -7,6 +7,7 @@ binding. This layer does not authorize a URL, fetch credentials or publish code.
 from __future__ import annotations
 
 import hashlib
+import base64
 import fcntl
 import io
 import os
@@ -42,6 +43,7 @@ class CodexWorkspace:
         ):
             raise WorkspaceError("Invalid provider repository identity")
         self.repository_id = repository_id
+        self._base_head = None
         self.root = root.resolve()
         self.provider, self.repository, self.source_revision = provider, repository, source_revision
 
@@ -64,6 +66,9 @@ class CodexWorkspace:
         return parts
 
     def _git(self, *args):
+        return self._git_bytes(*args).decode().rstrip("\n")
+
+    def _git_bytes(self, *args):
         env = {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "HOME": str(self.root.parent),
@@ -95,7 +100,7 @@ class CodexWorkspace:
         )
         if result.returncode:
             raise WorkspaceError("Workspace Git operation failed")
-        return result.stdout.decode().rstrip("\n")
+        return result.stdout
 
     def materialize(self, archive: bytes, *, archive_sha256: str):
         if (
@@ -158,6 +163,7 @@ class CodexWorkspace:
         self._git("init", "--initial-branch=adp-work")
         self._git("add", "--all", "--force")
         self._git("commit", "--allow-empty", "-m", "Materialized authorized source")
+        self._base_head = self._git("rev-parse", "HEAD")
         return self.state()
 
     def _parent(self, path, *, create=False):
@@ -273,6 +279,84 @@ class CodexWorkspace:
         self._git("add", "--all")
         self._git("commit", "-m", message)
         return self.state()
+
+    def export_changes(self, *, expected_head):
+        """Host-only publication manifest from committed objects, never dirty files.
+
+        Local and provider commit identities differ. The gateway must check base
+        and resulting tree identities, validation receipts and current authority
+        before changing the provider ref. This manifest is not that authority.
+        """
+        current = self.state()
+        if (
+            not self._base_head
+            or not self.repository_id
+            or not current["clean"]
+            or current["localHead"] != expected_head
+        ):
+            raise WorkspaceError("Publication requires the expected clean bound commit")
+        diff = self._git_bytes(
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-commit-id",
+            "--no-renames",
+            "--raw",
+            self._base_head,
+            expected_head,
+        )
+        parts = diff.split(b"\x00")
+        if parts[-1] != b"" or len(parts) % 2 != 1:
+            raise WorkspaceError("Publication diff is invalid")
+        changes, total = [], 0
+        for index in range(0, len(parts) - 1, 2):
+            header = parts[index].decode("ascii").split()
+            path = parts[index + 1].decode("utf-8")
+            self._parts(path)
+            if (
+                len(header) != 5
+                or header[4] not in {"A", "M", "D"}
+                or not re.fullmatch(r"[a-f0-9]{40}", header[3])
+            ):
+                raise WorkspaceError("Publication change kind is unsupported")
+            deleted = header[4] == "D"
+            mode = header[0].removeprefix(":") if deleted else header[1]
+            if mode not in {"100644", "100755"}:
+                raise WorkspaceError("Publication file mode is unsupported")
+            content = None if deleted else self._git_bytes("cat-file", "blob", header[3])
+            total += len(content) if content is not None else 0
+            if total > 192 * 1024 or len(changes) >= 100:
+                raise WorkspaceError("Publication changes exceed transfer bound")
+            changes.append(
+                {
+                    "path": path,
+                    "mode": mode,
+                    "deleted": deleted,
+                    "content_base64": None
+                    if content is None
+                    else base64.b64encode(content).decode(),
+                }
+            )
+        if not changes:
+            raise WorkspaceError("Publication has no committed changes")
+        if self.state() != current:
+            raise WorkspaceError("Workspace changed while preparing publication")
+        result = {
+            "schema_version": "1.0",
+            "provider": self.provider,
+            "repository_id": self.repository_id,
+            "repository": self.repository,
+            "source_revision": self.source_revision,
+            "local_head": expected_head,
+            "base_tree": self._git("rev-parse", self._base_head + "^{tree}"),
+            "tree": current["tree"],
+            "changes": changes,
+        }
+        import rfc8785
+
+        if len(rfc8785.dumps(result)) > 262144:
+            raise WorkspaceError("Publication manifest exceeds transfer bound")
+        return result
 
     def state(self):
         return {

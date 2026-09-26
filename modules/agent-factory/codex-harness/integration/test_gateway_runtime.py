@@ -66,6 +66,7 @@ spec.loader.exec_module(worker)
         "tools_docker",
         "tools_workspace",
         "tools_edit_validate",
+        "tools_edit_validate_publish",
     ],
 )
 def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch, scenario):
@@ -81,8 +82,10 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
     )
     tool_mode = scenario.startswith("tools")
     actual_validation = scenario == "tools_docker"
-    actual_workflow = scenario == "tools_edit_validate"
-    actual_workspace = scenario in {"tools_workspace", "tools_edit_validate"}
+    actual_publication = scenario == "tools_edit_validate_publish"
+    actual_workflow = scenario in {"tools_edit_validate", "tools_edit_validate_publish"}
+    actual_workspace = scenario == "tools_workspace" or actual_workflow
+    workflow_calls = 5 if actual_publication else 4
     workflow = {}
     image = os.environ.get("ADP_CODEX_VALIDATION_IMAGE")
     if (actual_validation or actual_workflow) and not image:
@@ -191,6 +194,11 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                     },
                 }
             )
+    if actual_publication:
+        tools.append({"permission": "change.create", "capability": "change.create", "definition": {
+            "type": "function", "name": codex_tool_name("change.create"), "description": "Publish validated change.",
+            "parameters": {"type": "object", "properties": {key: {"type": "string"} for key in ("commit", "title", "body")},
+                           "required": ["commit", "title", "body"], "additionalProperties": False}, "strict": False}})
     if tool_mode:
         definition = json.loads(golden["harness"]["snapshot"]["definition"])
         definition["optionalCapabilities"] = sorted({entry["capability"] for entry in tools})
@@ -384,7 +392,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             "provider_request_id": "provider-fixture",
         }
         selected_tool, selected_args = tool, tool_arguments
-        if actual_workflow and len(model_requests) <= 4:
+        if actual_workflow and len(model_requests) <= workflow_calls:
             selected_tool = tools[len(model_requests) - 1]
             selected_args = [
                 {"path": "source.txt"},
@@ -397,9 +405,10 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 },
                 {"message": "Repair fixture value"},
                 {"check": "acceptance", "commit": workflow.get("commit", "")},
+                {"commit": workflow.get("commit", ""), "title": "Repair source", "body": "Validation passed."},
             ][len(model_requests) - 1]
         if tool_mode and (
-            len(model_requests) == 1 or (actual_workflow and len(model_requests) <= 4)
+            len(model_requests) == 1 or (actual_workflow and len(model_requests) <= workflow_calls)
         ):
             response["responses_response"]["output"] = [
                 {
@@ -604,6 +613,31 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
                 events.append("source-staged")
             return staging.chunk(identity, index=body["index"])
 
+        def gateway_repository_publication(self, body):
+            from src.agentauth.task_publication_service import TaskPublicationService
+            from src.agentauth.task_source_staging import TaskSourceStaging
+            from src.agentauth.task_validation_evidence import TaskValidationEvidence
+            from src.agentauth.task_tool_routes import authorize_tool
+            def authorize(current, permission):
+                return authorize_tool(store, SimpleNamespace(get=lambda **kwargs: policy), current, permission)
+            async def publish(**kwargs):
+                await kwargs["reauthorize"]()
+                proposal = kwargs["manifest"]
+                events.append("publication-effect")
+                return {"schema_version": "1.0", "task_id": assignment.task_id, "provider": "github",
+                        "repository_id": proposal["repository_id"], "source_revision": proposal["source_revision"],
+                        "local_head": proposal["local_head"], "tree": proposal["tree"], "provider_head": "e" * 40,
+                        "branch": "adp/task-" + assignment.task_id.removeprefix("tsk_"), "number": 7,
+                        "url": "https://github.com/" + proposal["repository"] + "/pull/7", "state": "open", "draft": False}
+            service = TaskPublicationService(store, artifacts=reads,
+                staging=TaskSourceStaging(store, s3=reads.s3, bucket=reads.bucket, authorize=authorize),
+                validations=TaskValidationEvidence(store, artifacts=reads, authorize=authorize), authorize=authorize, publisher=publish)
+            arguments = {key: body[key] for key in ("artifact_id", "digest", "commit", "title", "body")}
+            result = asyncio.run(service.execute(self.identity(), **arguments))
+            assert result == asyncio.run(service.execute(self.identity(), **arguments))
+            workflow["publication"] = service.read(self.identity())
+            return result
+
         def gateway_tool_authorize(self, body):
             from src.agentauth.task_tool_routes import ToolAuthorizationBody, authorize_tool
             from src.agentauth.task_runtime_routes import require_body_attempt
@@ -737,7 +771,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         events,
     )
     assert len(model_requests) == (
-        5
+        workflow_calls + 1
         if actual_workflow
         else 3
         if scenario == "tools_repair"
@@ -785,8 +819,13 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             and validated_receipts[0]["commit"] == workflow["commit"]
         )
         assert gateway._validation_tool is None
+    if actual_publication:
+        assert events.count("publication-effect") == 1
+        assert workflow["publication"]["operation_status"] == "confirmed"
+        assert workflow["publication"]["result"]["local_head"] == workflow["commit"]
+        assert gateway._publication_tool is None
     if tool_mode:
-        assert events.count("tool-effect") == (4 if actual_workflow else 1)
+        assert events.count("tool-effect") == (workflow_calls if actual_workflow else 1)
         for index, invocation in enumerate(model_requests[1:], 1):
             assert len(
                 [item for item in invocation["input"] if item.get("type") == "function_call_output"]

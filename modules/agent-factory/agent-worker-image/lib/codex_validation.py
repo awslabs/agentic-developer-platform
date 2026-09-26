@@ -131,10 +131,32 @@ class DockerValidationExecutor:
             ):
                 raise ValidationUnavailable("Validation tree is oversized or contains submodules")
             archive = root / "source.tar"
+            # Repository export-ignore/export-subst attributes must not hide or
+            # rewrite committed files during validation. Use a fresh empty Git
+            # metadata/worktree view, sharing only the trusted object database.
+            archive_git = root / "archive.git"
+            archive_worktree = root / "archive-worktree"
+            archive_worktree.mkdir()
+            objects = git("rev-parse", "--path-format=absolute", "--git-path", "objects").decode()
+            git("init", "--bare", str(archive_git))
+            # Git may still fall back to attributes in the archived tree. The
+            # host-only info file has higher precedence at every path depth.
+            (archive_git / "info" / "attributes").write_text("* -export-ignore -export-subst\n")
             result = subprocess.run(
-                [*command, "archive", "--format=tar", "--output=" + str(archive), expected_head],
+                [
+                    *command,
+                    "--git-dir=" + str(archive_git),
+                    "--work-tree=" + str(archive_worktree),
+                    "-c",
+                    "core.attributesFile=/dev/null",
+                    "archive",
+                    "--worktree-attributes",
+                    "--format=tar",
+                    "--output=" + str(archive),
+                    expected_head,
+                ],
                 cwd=repository,
-                env=env,
+                env={**env, "GIT_OBJECT_DIRECTORY": objects, "GIT_ATTR_NOSYSTEM": "1"},
                 capture_output=True,
                 timeout=30,
                 check=False,
@@ -147,6 +169,7 @@ class DockerValidationExecutor:
             result = self.run(
                 check=check, archive=archive, archive_sha256=digest, commit=expected_head
             )
+            result["tree"] = git("rev-parse", expected_head + "^{tree}").decode()
             if git("rev-parse", "HEAD") != expected_head.encode() or git(
                 "status", "--porcelain=v1", "--untracked-files=all"
             ):
@@ -308,7 +331,7 @@ class DockerValidationExecutor:
                 text = output.decode("utf-8", errors="replace")
                 if len(text.encode()) > check.max_output_bytes:
                     stop = stop or "output_limit"
-                    text = text.encode()[:check.max_output_bytes].decode("utf-8", errors="ignore")
+                    text = text.encode()[: check.max_output_bytes].decode("utf-8", errors="ignore")
                 passed = (
                     stop is None
                     and process.returncode == 0

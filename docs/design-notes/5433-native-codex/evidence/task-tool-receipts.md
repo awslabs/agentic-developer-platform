@@ -515,3 +515,44 @@ failed check → repair → commit → passed check and policy revocation.
 This remains report-persona integration evidence. It does not qualify developer
 publication, provider commit mapping, Kubernetes validation execution, live model
 quality, or end-to-end story acceptance.
+
+## Validated-tree publication — 2026-09-26
+
+The trusted worker now exports a bounded change manifest from a clean exact local
+commit. Binary content, executable bits and deletions preserve the Git tree;
+provider source revision, local commit and provider commit remain distinct.
+Validation archives override export-ignore/export-subst attributes so checks see
+all committed files without archive substitution.
+
+The gateway publication service reads the run-owned manifest artifact and the
+configured checks' durable TOOL receipts and artifacts. Every required check must
+pass with the configured specification digest, exact local commit and tree. It
+claims an attempt/authority-fenced publication intent in DynamoDB before provider
+effects. Confirmed duplicates return the original receipt. Pending/unknown effects
+refuse automatic replay; read-only reconciliation remains to be implemented.
+
+The GitHub adapter uses gateway-only scoped installation credentials, rechecks
+authority before each provider operation, verifies source and resulting trees,
+uses a Task-specific branch without force pushes, and verifies the final open PR
+head. Workflow-file writes are not admitted. Publication returns the explicit
+local-commit/tree/provider-commit mapping. A host-only route and automatically
+bound `change.create` tool connect the worker to this service; read/write/commit
+and validation prerequisites are mandatory. Model-visible results omit manifest
+content and credentials.
+
+Evidence from isolated tests: 31 gateway publication tests (including the HTTP
+route, real Moto DynamoDB/S3, duplicate requests, lost acknowledgements, malformed
+provider receipts and revoked authority); 105 worker regression tests including
+real Docker fail/edit/commit/pass; 30 TypeScript adapter/tool/completion checks;
+TypeScript compilation and SDK bundle build. All 11 gateway/worker/official-SDK
+integration scenarios pass. The added `tools_edit_validate_publish` scenario uses
+real Git, Docker, model/tool journals, artifact storage and publication-service
+transactions, with fixture inference, source acquisition and provider publication.
+The GitHub adapter itself is independently exercised against an HTTP provider
+fixture. No live GitHub PR or production runtime was created by these tests.
+
+This does not qualify the developer story: the current SDK scenario still uses
+the report persona. Independent requirement evidence, current provider-head
+completion checks, concrete developer completion wiring, live-model acceptance,
+and deployed runtime qualification remain necessary. No story is closed on this
+evidence alone.

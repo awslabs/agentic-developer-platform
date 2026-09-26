@@ -142,3 +142,61 @@ def test_revocation_after_edit_prevents_success_receipt(tool):
     # Local effect may already have happened; the caller's journal must retain
     # unknown, not replay it or claim successful completion.
     assert tool.workspace.read_file("new.txt")["content"] == "new"
+
+
+def test_publication_manifest_uses_committed_tree_and_provider_source_identity(tool):
+    tool.workspace.repository_id = "456"
+    before = tool.workspace.state()
+    tool.workspace.write_file(
+        path="main.txt", content="new", expected_sha256=hashlib.sha256(b"old").hexdigest()
+    )
+    committed = tool.workspace.commit("Repair application")
+    manifest = tool.workspace.export_changes(expected_head=committed["localHead"])
+    assert manifest["source_revision"] == "a" * 40
+    assert manifest["base_tree"] == before["tree"]
+    assert (
+        manifest["tree"] == committed["tree"] and manifest["local_head"] == committed["localHead"]
+    )
+    assert manifest["changes"] == [
+        {
+            "path": "main.txt",
+            "mode": "100644",
+            "deleted": False,
+            "content_base64": base64.b64encode(b"new").decode(),
+        }
+    ]
+
+
+def test_publication_refuses_dirty_or_wrong_head_and_empty_change(tool):
+    from lib.codex_workspace import WorkspaceError
+
+    tool.workspace.repository_id = "456"
+    head = tool.workspace.state()["localHead"]
+    with pytest.raises(WorkspaceError, match="no committed changes"):
+        tool.workspace.export_changes(expected_head=head)
+    tool.workspace.write_file(
+        path="main.txt", content="new", expected_sha256=hashlib.sha256(b"old").hexdigest()
+    )
+    with pytest.raises(WorkspaceError, match="clean"):
+        tool.workspace.export_changes(expected_head=head)
+    tool.workspace.commit("Repair application")
+    with pytest.raises(WorkspaceError, match="clean"):
+        tool.workspace.export_changes(expected_head=head)
+
+
+def test_publication_manifest_handles_binary_executable_and_deletion(tool):
+    tool.workspace.repository_id = "456"
+    (tool.workspace.root / "main.txt").unlink()
+    (tool.workspace.root / "new.bin").write_bytes(b"\x00\xff\x80")
+    (tool.workspace.root / "new.bin").chmod(0o755)
+    head = tool.workspace.commit("Replace source")["localHead"]
+    changes = tool.workspace.export_changes(expected_head=head)["changes"]
+    assert changes == [
+        {"path": "main.txt", "mode": "100644", "deleted": True, "content_base64": None},
+        {
+            "path": "new.bin",
+            "mode": "100755",
+            "deleted": False,
+            "content_base64": base64.b64encode(b"\x00\xff\x80").decode(),
+        },
+    ]

@@ -12,8 +12,12 @@ from lib.task_run_client import TaskRunClientError
 
 
 def publish_tool_result(client, *, attempt, result):
+    return publish_host_json(client, attempt=attempt, result=result, max_bytes=24576)
+
+
+def publish_host_json(client, *, attempt, result, max_bytes=262144):
     content = rfc8785.dumps(result)
-    if len(content) > 24576:
+    if not 1 <= max_bytes <= 262144 or len(content) > max_bytes:
         raise TaskRunClientError("Tool result exceeds Task receipt bound")
     digest = hashlib.sha256(content).hexdigest()
     task_id = attempt["run"]["task_id"]

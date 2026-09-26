@@ -170,3 +170,63 @@ def test_provisioned_workspace_edit_commit_validate_with_real_docker(bound):
     passed = bound.invoke("validation.run", {"check": "unit", "commit": commit})["result"]
     assert passed["status"] == "passed" and passed["commit"] == commit
     assert len(bound.artifacts) == 5
+
+
+def test_validation_archive_includes_export_ignored_files_without_substitution(bound):
+    from lib.codex_validation import DockerValidationExecutor, ValidationCheck
+
+    (bound.workspace.root / ".gitattributes").write_text(
+        "value.txt export-ignore\nstamp.txt export-subst\n"
+    )
+    (bound.workspace.root / "stamp.txt").write_text("$Format:%H$\n")
+    commit = bound.workspace.commit("Add export attributes")["localHead"]
+    executor = DockerValidationExecutor()
+
+    def inspect_archive(**kwargs):
+        with tarfile.open(kwargs["archive"]) as archive:
+            assert archive.extractfile("value.txt").read() == b"wrong\n"
+            assert archive.extractfile("stamp.txt").read() == b"$Format:%H$\n"
+        return {"status": "passed"}
+
+    executor.run = Mock(side_effect=inspect_archive)
+    result = executor.run_repository(
+        check=ValidationCheck(name="unit", image="sha256:" + "a" * 64, argv=("true",)),
+        repository=bound.workspace.root,
+        expected_head=commit,
+    )
+    assert result["tree"] == bound.workspace.state()["tree"]
+
+
+def test_publication_exports_host_manifest_and_returns_small_receipt(bound):
+    bound.tools.append("change.create")
+    bound.client.bind_workspace(attempt=bound.attempt, workspace=bound.workspace, tools=bound.tools)
+    bound.workspace.write_file(path="value.txt", content="expected\n", expected_sha256=hashlib.sha256(b"wrong\n").hexdigest())
+    state = bound.workspace.commit("Repair")
+
+    def publish(body):
+        manifest = bound.artifacts[-1]
+        assert manifest["tree"] == state["tree"]
+        assert manifest["local_head"] == body["commit"]
+        assert manifest["changes"][0]["path"] == "value.txt"
+        assert base64.b64decode(manifest["changes"][0]["content_base64"]) == b"expected\n"
+        return {"task_id": bound.attempt["run"]["task_id"], "local_head": state["localHead"],
+                "tree": state["tree"], "repository_id": "456", "provider_head": "e" * 40}
+
+    bound.client.repository_publication = Mock(side_effect=publish)
+    result = bound.invoke("change.create", {"commit": state["localHead"], "title": "Repair", "body": "Validated"})
+    assert result["operation_status"] == "confirmed"
+    assert "changes" not in result["result"]
+    assert len(bound.artifacts) == 2
+    bound.client.clear_credential()
+    assert bound.client._publication_tool is None
+
+
+@pytest.mark.parametrize("permission", ["repository.read", "repository.write", "repository.commit", "validation.run"])
+def test_publication_missing_prerequisite_leaves_no_bound_tools(bound, permission):
+    bound.tools.append("change.create")
+    bound.tools.remove(permission)
+    with pytest.raises(TaskRunClientError):
+        bound.client.bind_workspace(attempt=bound.attempt, workspace=bound.workspace, tools=bound.tools)
+    assert bound.client._workspace_tools is None
+    assert bound.client._validation_tool is None
+    assert bound.client._publication_tool is None

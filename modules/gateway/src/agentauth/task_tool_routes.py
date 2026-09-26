@@ -271,3 +271,64 @@ async def repository_source(body: RepositorySourceBody, request: Request, db=Dep
         return result
     except (TaskStoreError, WorkBindingError, TaskToolPolicyError, TaskServicePolicyError, OperationRefusedError, BotoCoreError, ClientError):
         raise HTTPException(409, "Task source transfer could not be confirmed") from None
+
+
+class RepositoryPublicationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    schema_version: Literal["1.0"]
+    attempt: TaskAttemptBody
+    artifact_id: str = Field(pattern=r"^art_[0-9a-f-]{36}$")
+    digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    commit: str = Field(pattern=r"^[a-f0-9]{40}$")
+    title: str = Field(min_length=1, max_length=255)
+    body: str = Field(max_length=16384)
+
+
+@router.post("/repository-publication")
+async def repository_publication(body: RepositoryPublicationBody, request: Request, db=Depends(get_db)):
+    """Publish only a trusted host manifest backed by configured check receipts."""
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    from src.agentauth.github_operations import OperationRefusedError
+    from src.agentauth.task_publication_service import TaskPublicationService
+    from src.agentauth.task_repository_publication import publish_task_change
+    from src.agentauth.task_source_staging import TaskSourceStaging
+    from src.agentauth.task_validation_evidence import TaskValidationEvidence
+    from src.tasks.read_store import TaskStoreError as ArtifactStoreError
+    from src.tasks.routes import get_store
+
+    identity = await authenticate_task_attempt(request)
+    require_body_attempt(identity, body.attempt)
+    artifacts = get_store()
+    repo = artifacts.repository
+    policies = TaskServicePolicyStore(table_name=repo.authority_table_name, client=repo._client)
+
+    def authorize(current, tool):
+        return authorize_tool(repo, policies, current, tool)
+
+    async def publisher(**kwargs):
+        check = kwargs["reauthorize"]
+
+        async def reauthorize():
+            if await authenticate_task_attempt(request) != identity:
+                raise HTTPException(403, "Task publication identity changed")
+            await check()
+
+        return await publish_task_change(db=db, **{**kwargs, "reauthorize": reauthorize})
+
+    service = TaskPublicationService(
+        repo,
+        artifacts=artifacts,
+        staging=TaskSourceStaging(repo, s3=artifacts.s3, bucket=artifacts.bucket, authorize=authorize),
+        validations=TaskValidationEvidence(repo, artifacts=artifacts, authorize=authorize),
+        authorize=authorize,
+        publisher=publisher,
+    )
+    try:
+        result = await service.execute(identity, **body.model_dump(exclude={"schema_version", "attempt"}))
+        if await authenticate_task_attempt(request) != identity:
+            raise HTTPException(403, "Task publication identity changed")
+        return result
+    except (TaskStoreError, ArtifactStoreError, WorkBindingError, TaskToolPolicyError, TaskServicePolicyError,
+            OperationRefusedError, BotoCoreError, ClientError):
+        raise HTTPException(409, "Task publication could not be confirmed; do not replay") from None

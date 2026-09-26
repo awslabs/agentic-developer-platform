@@ -807,6 +807,8 @@ class TaskHost:
                         capabilities.append("repository.read")
                     if admitted & {"repository.write", "repository.commit"}:
                         capabilities.append("repository.write")
+                    if "change.create" in admitted:
+                        capabilities.append("change.create")
                     repository_context = {"binding": {"provider": repository.provider,
                         "repositoryId": repository.repository_id, "sourceRevision": repository.source_revision},
                         "capabilities": capabilities}

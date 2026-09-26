@@ -22,7 +22,7 @@ class TaskValidationEvidence:
         self.artifacts = artifacts
         self.authorize = authorize
 
-    def read(self, *, identity, commit):
+    def read(self, *, identity, commit, tree=None):
         if not isinstance(commit, str) or not re.fullmatch(r"[a-f0-9]{40}(?:[a-f0-9]{24})?", commit):
             raise TaskStoreError("Invalid completion commit")
         self.authorize(identity, "validation.run")
@@ -89,6 +89,8 @@ class TaskValidationEvidence:
             ):
                 raise TaskStoreError("Validation execution artifact is unavailable or differs")
             if result["commit"] == commit:
+                if tree is not None and result.get("tree") != tree:
+                    raise TaskStoreError("Validation tree differs from publication")
                 evidence.append(
                     {
                         "check": result["check"],

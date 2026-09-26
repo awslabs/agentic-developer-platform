@@ -44,7 +44,7 @@ export function taskHarness(start: {
   const repository = start.repository === undefined ? undefined : z.strictObject({
     binding: z.strictObject({ provider: z.enum(["github", "gitlab"]), repositoryId: z.string().regex(/^[1-9][0-9]*$/),
       sourceRevision: z.string().regex(/^[a-f0-9]{40}$/) }),
-    capabilities: z.array(z.enum(["repository.read", "repository.write"])).min(1).max(2),
+    capabilities: z.array(z.enum(["repository.read", "repository.write", "change.create"])).min(1).max(3),
   }).parse(start.repository);
   if (repository && (new Set(repository.capabilities).size !== repository.capabilities.length
     || repository.capabilities.some(capability => !tools.some(tool => tool.capability === capability)))) throw new Error("Task repository capability mismatch");
