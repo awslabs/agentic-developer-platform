@@ -81,3 +81,137 @@ body {
   left: 0;
   opacity: 1;
 }
+
+/* Blueprint facelift for the current UI. The /next experience has its own shell. */
+.blueprint-ui {
+  --color-primary-50: #eef3ff;
+  --color-primary-100: #e7efff;
+  --color-primary-200: #cbdcff;
+  --color-primary-300: #a7c2fb;
+  --color-primary-400: #6d9bea;
+  --color-primary-500: #3974d7;
+  --color-primary-600: #245ac4;
+  --color-primary-700: #1e4ba6;
+  --color-primary-800: #193d84;
+  --color-primary-900: #183467;
+  --color-gray-50: #f4f7fb;
+  --color-gray-100: #ebf1f8;
+  --color-gray-200: #d8e1ed;
+  --color-gray-300: #b8c7d9;
+  --color-gray-400: #899db1;
+  --color-gray-500: #65788c;
+  --color-gray-600: #52667a;
+  --color-gray-700: #394d63;
+  --color-gray-800: #263d54;
+  --color-gray-900: #172d45;
+  color: #172d45;
+  background: #f4f7fb;
+  color-scheme: light;
+}
+
+.blueprint-header {
+  background: #fff;
+  border-bottom: 1px solid #d8e1ed;
+  box-shadow: 0 1px 0 rgb(23 45 69 / 3%);
+}
+
+.blueprint-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #172d45;
+  letter-spacing: -.025em;
+}
+
+.blueprint-brand-mark {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  place-items: center;
+  border-radius: 5px;
+  background: #245ac4;
+  color: #fff;
+  font-size: 10px;
+  letter-spacing: -.06em;
+}
+
+.blueprint-content { background: #f4f7fb; }
+.blueprint-sidebar { width: 232px; background: #17293d; }
+.blueprint-main { padding: 28px 32px 48px; }
+.blueprint-main-inner { max-width: 1400px; margin-inline: auto; }
+
+.blueprint-nav { gap: 2px; }
+.blueprint-nav-link {
+  min-height: 38px;
+  color: #c0d0e0;
+  font-size: 13px;
+  font-weight: 550;
+  text-decoration: none;
+}
+.blueprint-nav-link:hover { background: #263d55; color: #fff; }
+.blueprint-nav-link.blueprint-nav-active,
+.blueprint-nav-link.blueprint-nav-active:hover {
+  background: #245ac4;
+  color: #fff;
+  font-weight: 700;
+}
+.blueprint-nav-link:focus-visible,
+.blueprint-mobile-toggle:focus-visible,
+.blueprint-mobile-control:focus-visible {
+  outline: 2px solid #a7c2fb;
+  outline-offset: 2px;
+}
+.blueprint-nav-icon { width: 17px; height: 17px; flex: none; }
+.blueprint-mobile-toggle { color: #394d63; }
+.blueprint-mobile-toggle:hover { background: #e7efff; color: #245ac4; }
+.blueprint-mobile-panel { background: #17293d; color: #c0d0e0; }
+.blueprint-mobile-heading { border-bottom: 1px solid #344a61; color: #fff; }
+.blueprint-mobile-control { color: #c0d0e0; }
+.blueprint-mobile-control:hover { background: #263d55; color: #fff; }
+
+.blueprint-ui .blueprint-card,
+.blueprint-ui .blueprint-flow-card {
+  background: #fff;
+  border: 1px solid #d8e1ed;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgb(23 45 69 / 5%);
+}
+.blueprint-ui .blueprint-flow-card:hover { border-color: #a7c2fb; }
+.blueprint-main .rounded-lg { border-radius: 6px; }
+.blueprint-main .shadow,
+.blueprint-main .shadow-sm { box-shadow: 0 1px 2px rgb(23 45 69 / 5%); }
+
+/* Keep Blueprint light even when the system prefers dark mode. */
+.blueprint-main :is(.bg-white, .dark\:bg-gray-800, .dark\:bg-gray-900),
+.blueprint-header :is(.bg-white, .dark\:bg-gray-800) { background-color: #fff; }
+.blueprint-main :is(.dark\:bg-gray-700, .dark\:bg-gray-900\/50) { background-color: #ebf1f8; }
+.blueprint-main :is(.dark\:text-white, .dark\:text-gray-100) { color: #172d45; }
+.blueprint-main .dark\:text-gray-200 { color: #394d63; }
+.blueprint-main :is(.dark\:text-gray-300, .dark\:text-gray-400) { color: #65788c; }
+.blueprint-main :is(.dark\:border-gray-600, .dark\:border-gray-700) { border-color: #d8e1ed; }
+.blueprint-header .dark\:bg-primary-900 { background-color: #e7efff; }
+.blueprint-header .dark\:text-primary-100 { color: #193d84; }
+.blueprint-header :is(.dark\:text-gray-300, .dark\:text-gray-400) { color: #52667a; }
+.blueprint-header .dark\:hover\:bg-gray-700:hover { background-color: #ebf1f8; }
+
+@media (prefers-color-scheme: dark) {
+  .blueprint-main .dark\:bg-green-900 { background-color: #e6f5ee; }
+  .blueprint-main .dark\:text-green-100 { color: #17664c; }
+  .blueprint-main .dark\:bg-amber-900 { background-color: #fff2d9; }
+  .blueprint-main .dark\:text-amber-100 { color: #8a5b17; }
+  .blueprint-main .dark\:bg-orange-900 { background-color: #fff0e3; }
+  .blueprint-main .dark\:text-orange-100 { color: #96521e; }
+  .blueprint-main .dark\:bg-red-900 { background-color: #fbe9e9; }
+  .blueprint-main .dark\:text-red-100 { color: #a5383e; }
+  .blueprint-main .dark\:bg-blue-900 { background-color: #e7efff; }
+  .blueprint-main .dark\:text-blue-100 { color: #193d84; }
+}
+
+@media (max-width: 1023px) {
+  .blueprint-main { padding: 20px 22px 40px; }
+}
+@media (max-width: 639px) {
+  .blueprint-main { padding: 18px 14px 32px; }
+  .blueprint-brand { font-size: 15px; }
+}
