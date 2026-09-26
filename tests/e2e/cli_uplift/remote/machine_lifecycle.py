@@ -257,6 +257,10 @@ def execute(config, evidence):
             state["phase"] = "registration_attempted"
             save()
             first = admin.json([*register, "--yes"], expected=None)
+            if first.get("status") == "ok":
+                principal = detail(first).get("canonical_service_principal_id")
+                state["principal_id"] = principal
+                save()
             recovered = admin.json([*register, "--yes"], expected=None)
             candidate = detail(recovered).get("canonical_service_principal_id")
             common.require(

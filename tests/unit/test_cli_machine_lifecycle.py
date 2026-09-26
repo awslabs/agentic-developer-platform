@@ -50,6 +50,7 @@ def config(tmp_path):
         None,
         "unknown_registration",
         "alias_failure",
+        "replay_failure",
         "foreign_alias",
         "wrong_ordinary",
         "wrong_admin",
@@ -137,6 +138,9 @@ def test_owned_lifecycle_has_exact_cleanup_and_never_revokes_reusable_session(
                         "status": "pending",
                         "detail": {"operation_id": plan["registration_id"]},
                     }
+                if fault == "replay_failure" and state["row"] is not None:
+                    assert evidence["detail"]["principal_id"] == principal
+                    raise scenario.common.RemoteError("Replay unavailable")
                 if state["row"] is None:
                     state["row"] = {
                         "canonical_service_principal_id": principal,
@@ -204,7 +208,7 @@ def test_owned_lifecycle_has_exact_cleanup_and_never_revokes_reusable_session(
     else:
         scenario.execute(cfg, evidence)
         assert len(evidence["detail"]["checks"]) == 6
-    if fault in {None, "alias_failure"}:
+    if fault in {None, "alias_failure", "replay_failure"}:
         assert state["row"]["status"] == "retired"
         assert all(not row["is_active"] for row in state["row"]["aliases"])
         assert (
