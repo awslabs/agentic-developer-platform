@@ -543,3 +543,47 @@ def test_autonomous_turn_does_not_resume_waiting_for_input(runtime):
     result = turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=2, allow_autonomous=True)
     assert result["operation_status"] == "waiting"
     assert len(turns.list_turns(identity.task_id)) == 1
+
+
+@pytest.mark.parametrize("runtime", ["agent-task-cyber"], indirect=True)
+@pytest.mark.parametrize("race", ["once", "always", "cancel"])
+def test_turn_metadata_contention_rechecks_fences_and_never_duplicates(runtime, monkeypatch, race):
+    from src.agentauth.task_turns import TaskTurnStore
+    from src.tasks.records import task_partition
+    from src.tasks.store import TaskStoreError, _serialize
+
+    identity = _attempt_identity(runtime)
+    repository = runtime[0].repository
+    turns = TaskTurnStore(repository, clock=lambda: NOW)
+    original = repository._client.transact_write_items
+    count = 0
+
+    def transact(**kwargs):
+        nonlocal count
+        count += 1
+        if count == 1 or race == "always":
+            extra = ", #state = :cancel" if race == "cancel" else ""
+            repository._client.update_item(
+                TableName=repository.table_name,
+                Key=_serialize({"event_id": task_partition(identity.task_id), "arrived_at": "META"}),
+                UpdateExpression="SET #version = #version + :one" + extra,
+                ExpressionAttributeNames={"#version": "version", **({"#state": "state"} if extra else {})},
+                ExpressionAttributeValues=_serialize({":one": 1, **({":cancel": "cancel_requested"} if extra else {})}),
+            )
+        return original(**kwargs)
+
+    monkeypatch.setattr(repository._client, "transact_write_items", transact)
+    request_id = str(uuid.uuid4())
+    if race == "once":
+        result = turns.commit(identity=identity, request_id=request_id, expected_transcript_version=1, allow_autonomous=True)
+        assert result["operation_status"] == "committed"
+        assert count == 2
+        assert len(turns.list_turns(identity.task_id)) == 1
+        replay = turns.commit(identity=identity, request_id=request_id, expected_transcript_version=1, allow_autonomous=True)
+        assert replay["operation_status"] == "existing"
+        assert count == 2
+    else:
+        with pytest.raises(TaskStoreError):
+            turns.commit(identity=identity, request_id=request_id, expected_transcript_version=1, allow_autonomous=True)
+        assert len(turns.list_turns(identity.task_id)) == 0
+        assert count == (3 if race == "always" else 1)

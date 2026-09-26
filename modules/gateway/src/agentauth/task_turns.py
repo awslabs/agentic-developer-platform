@@ -10,6 +10,10 @@ from src.tasks.records import base_item, command_sort_key, task_commands_partiti
 from src.tasks.store import TaskStoreError, _deserialize, _serialize
 
 
+class _TurnVersionConflictError(TaskStoreError):
+    pass
+
+
 class TaskTurnStore:
     def __init__(self, repository, *, clock=None):
         self.repository = repository
@@ -43,6 +47,19 @@ class TaskTurnStore:
         }
 
     def commit(self, *, identity, request_id, expected_transcript_version, allow_autonomous=False):
+        for attempt in range(3):
+            try:
+                return self._commit_once(
+                    identity=identity,
+                    request_id=request_id,
+                    expected_transcript_version=expected_transcript_version,
+                    allow_autonomous=allow_autonomous,
+                )
+            except _TurnVersionConflictError:
+                if attempt == 2:
+                    raise TaskStoreError("task turn contention did not settle") from None
+
+    def _commit_once(self, *, identity, request_id, expected_transcript_version, allow_autonomous):
         task = self.repository.read_task(identity.task_id)
         if task is None or (task["invocation_id"], int(task["generation"]), task.get("runtime_attempt_id")) != (
             identity.invocation_id,
@@ -192,5 +209,14 @@ class TaskTurnStore:
             existing = next((turn for turn in self.list_turns(identity.task_id) if turn["turn_id"] == request_id), None)
             if existing:
                 return self.response(existing, existing=True)
+            reasons = exc.response.get("CancellationReasons", [])
+            # Only the task metadata compare-and-swap raced. A fresh attempt
+            # re-reads all authority, state, deadline and turn-count fences.
+            if (
+                len(reasons) == len(transaction)
+                and reasons[1].get("Code") == "ConditionalCheckFailed"
+                and all(reason.get("Code", "None") == "None" for index, reason in enumerate(reasons) if index != 1)
+            ):
+                raise _TurnVersionConflictError("task metadata changed") from None
             raise TaskStoreError("task turn fence changed") from None
         return self.response(turn, pending=pending - len(commands))
