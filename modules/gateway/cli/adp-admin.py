@@ -54,6 +54,9 @@ def parser():
         commands.add_parser(area, help="Scoped hierarchy and membership administration")
 
     commands.add_parser("models", help="Platform model defaults and runtime posture")
+
+    for area in ("service-account", "agent", "service-principal"):
+        commands.add_parser(area, help="Explicit machine identity lifecycle")
     commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
@@ -180,6 +183,12 @@ def main(argv=None):
             if module is None:
                 raise common.CliError("Model policy helper missing; run adp update.", "unavailable")
             return module.main(argv[1:])
+
+        if argv and argv[0] in {"service-account", "agent", "service-principal"}:
+            module = common.load_provider("adp-machine.py")
+            if not module:
+                raise common.CliError("Machine identity helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(argv)
         if argv and argv[0] == "budget":
             module = common.load_provider("adp-budget.py")
             if not module:

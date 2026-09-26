@@ -30,6 +30,9 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5622 ([tenant CLI](tenant.md), source; live held) | Tenant selection and isolation | Existing deployment/session selection and server-authorized membership |
 | #5623 | [Hierarchy CLI](hierarchy.md): organizations, departments, teams, memberships and tenant-org links; E29 reads, live lifecycle acceptance pending | Protected administration APIs, revision adapters and durable membership removal |
 | #5624 | Service accounts, agent registrations and canonical principals | Existing identity/registration APIs |
+
+| #5623 | Organizations, departments, teams and memberships | Existing administration APIs |
+| #5624 | [Machine identity CLI](machine-identities.md): 15 lifecycle leaves; source implemented, live acceptance held | Existing SQL IAM, IAM registry, Cognito and canonical persona principal services; guarded revisions and durable registration/retirement receipts |
 | #5625 | Access requests and session revocation | Existing authorized access administration |
 | #5626 | Person-wide caps and inherited defaults | Existing person budget policy |
 | #5627 — source implementation | Rate-limit administration and client enforcement | Existing rate-limit services |

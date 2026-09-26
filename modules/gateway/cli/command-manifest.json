@@ -6981,6 +6981,664 @@
       "required_capabilities": [
         "models.costs.read"
       ]
+    },
+    {
+      "command": "adp admin agent deregister",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--identity-type",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.agent.registry.manage",
+        "machine.agent.cognito.manage"
+      ],
+      "capability_variants": [
+        {
+          "identity_type": "iam-registry",
+          "required_capabilities": [
+            "machine.agent.registry.manage"
+          ]
+        },
+        {
+          "identity_type": "cognito-client",
+          "required_capabilities": [
+            "machine.agent.cognito.manage"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "adp admin agent list",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--cursor",
+        "--identity-type",
+        "--json",
+        "--org",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin agent register",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--credential-file",
+        "--dry-run",
+        "--identity-type",
+        "--json",
+        "--operation-id",
+        "--org",
+        "--spec-file",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.agent.registry.manage",
+        "machine.agent.cognito.manage"
+      ],
+      "capability_variants": [
+        {
+          "identity_type": "iam-registry",
+          "required_capabilities": [
+            "machine.agent.registry.manage"
+          ]
+        },
+        {
+          "identity_type": "cognito-client",
+          "required_capabilities": [
+            "machine.agent.cognito.manage"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "adp admin agent show",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--identity-type",
+        "--json",
+        "--org"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin agent update",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--identity-type",
+        "--json",
+        "--org",
+        "--spec-file",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/machine-agents"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.agent.registry.manage",
+        "machine.agent.cognito.manage"
+      ],
+      "capability_variants": [
+        {
+          "identity_type": "iam-registry",
+          "required_capabilities": [
+            "machine.agent.registry.manage"
+          ]
+        },
+        {
+          "identity_type": "cognito-client",
+          "required_capabilities": [
+            "machine.agent.cognito.manage"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "adp admin service-account create",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.account.manage",
+      "flags": [
+        "--department",
+        "--dry-run",
+        "--identity-type",
+        "--json",
+        "--name",
+        "--operation-id",
+        "--org",
+        "--role-arn",
+        "--team",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.account.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-account delete",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.account.manage",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--identity-type",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.account.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-account list",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--identity-type",
+        "--json",
+        "--org",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin service-account show",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--identity-type",
+        "--json",
+        "--org"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin service-account update",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.account.manage",
+      "flags": [
+        "--department",
+        "--dry-run",
+        "--expected-revision",
+        "--identity-type",
+        "--json",
+        "--name",
+        "--org",
+        "--role-arn",
+        "--team",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org}/service-accounts"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.account.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-principal alias-add",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.principal.manage",
+      "flags": [
+        "--alias-id",
+        "--alias-source",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.principal.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-principal alias-remove",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.principal.manage",
+      "flags": [
+        "--alias-row-id",
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.principal.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-principal register",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.principal.manage",
+      "flags": [
+        "--alias-id",
+        "--alias-source",
+        "--dry-run",
+        "--json",
+        "--name",
+        "--operation-id",
+        "--org",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.principal.manage"
+      ]
+    },
+    {
+      "command": "adp admin service-principal show",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "",
+      "flags": [
+        "--json",
+        "--org"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": []
+    },
+    {
+      "command": "adp admin service-principal status",
+      "helper": "adp-machine.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "machine.principal.manage",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--status",
+        "--yes"
+      ],
+      "arguments": [
+        "id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/service-principals"
+        ],
+        "schema": "CLI-11 guarded identity metadata, explicit identity type and revision/operation UUID"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "ADP envelope with metadata only; Cognito registration credentials only to required0600 file"
+      },
+      "tests": [
+        "tests/cli/test_adp_machine.py",
+        "tests/admin/test_machine_identities.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [
+        "machine.principal.manage"
+      ]
     }
   ]
 }

@@ -8448,6 +8448,8 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E24",
         "E33",
         "E29",
+
+        "E31",
         "E26",
         "E36",
 
@@ -10246,6 +10248,8 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E23",
         "E24",
         "E33",
+
+        "E31",
         "E26",
         "E28",
 
@@ -10423,6 +10427,24 @@ def test_hierarchy_read_refuses_foreign_row(tmp_path):
     ]
     with pytest.raises(common.RemoteError, match="Foreign hierarchy"):
         module.hierarchy(cli, {})
+
+def test_machine_story_reads_are_wired_to_existing_nightly(tmp_path):
+    assert cases.BY_ID["E31"].owner == "#5624"
+    assert "E31" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E31"] in bundle.purposes()
+    module, _common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"tenant_id": "org"}},
+        *[
+            {"status": "ok", "detail": {"identity_type": kind, "items": []}}
+            for kind in ("sql-iam", "iam-registry", "cognito-client")
+        ],
+    ]
+    evidence = {}
+    module.machine(cli, evidence)
+    assert evidence["org_id"] == "org"
+    assert cli.json.call_count == 4
 
 
 def test_story_budget_reads_all_periods_without_writes(tmp_path):

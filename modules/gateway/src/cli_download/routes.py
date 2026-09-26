@@ -103,6 +103,8 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "command-manifest.json": (_CLI_DIR / "command-manifest.json").resolve(),
     "adp-vault.py": (_CLI_DIR / "adp-vault.py").resolve(),
     "adp-access.py": (_CLI_DIR / "adp-access.py").resolve(),
+
+    "adp-machine.py": (_CLI_DIR / "adp-machine.py").resolve(),
     "adp-usage.py": (_CLI_DIR / "adp-usage.py").resolve(),
     "adp-agent.py": (_CLI_DIR / "adp-agent.py").resolve(),
     "adp-ratelimit.py": (_CLI_DIR / "adp-ratelimit.py").resolve(),
@@ -139,6 +141,8 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "command-manifest.json": "application/json",
     "adp-vault.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-access.py": PYTHON_SCRIPT_MEDIA_TYPE,
+
+    "adp-machine.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-usage.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-agent.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-tenant.py": PYTHON_SCRIPT_MEDIA_TYPE,

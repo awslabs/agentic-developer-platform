@@ -808,6 +808,8 @@ JOURNEY_DRIVERS = {
     "E28": "story_github_maintenance",
 
     "E33": "story_access",
+
+    "E31": "story_machine",
     "E26": "story_budget",
     "E36": "story_ratelimit",
 

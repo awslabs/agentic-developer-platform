@@ -154,6 +154,7 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
         ("adp-tenant.py", ["adp", "tenant"]),
         ("adp-hierarchy.py", ["adp", "admin"]),
         ("adp-vault.py", ["adp"]),
+        ("adp-machine.py", ["adp", "admin"]),
         ("adp-usage.py", ["adp"]),
         ("adp-agent.py", ["adp", "agent"]),
         ("adp-budget.py", ["adp"]),
@@ -184,6 +185,8 @@ def test_python_manifest_is_one_row_per_real_parser_leaf(shipped) -> None:
     )
 
     for area in ("org", "department", "team", "member", "tenant"):
+
+    for area in ("service-account", "agent", "service-principal"):
         admin.pop("adp admin " + area)
     admin.pop("adp admin budget")
     admin.pop("adp admin ratelimit")

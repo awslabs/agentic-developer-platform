@@ -421,7 +421,52 @@ def model_policy(cli, evidence):
     )
 
 
+def machine(cli, evidence):
+    current = detail(cli.json(["tenant", "current"]))
+    org = current.get("tenant_id")
+    common.require(isinstance(org, str) and org, "Tenant context is absent")
+    for area, kind in (
+        ("service-account", "sql-iam"),
+        ("agent", "iam-registry"),
+        ("agent", "cognito-client"),
+    ):
+        result = detail(
+            cli.json(
+                [
+                    "admin",
+                    area,
+                    "list",
+                    "--org",
+                    org,
+                    "--identity-type",
+                    kind,
+                    "--page-size",
+                    "1",
+                ]
+            )
+        )
+        common.require(
+            result.get("identity_type") == kind
+            and isinstance(result.get("items"), list),
+            "Machine identity type is missing",
+        )
+        common.require(
+            all(row.get("org_id") == org for row in result["items"]),
+            "Machine metadata lost tenant scope",
+        )
+        common.require(
+            all("client_secret" not in row for row in result["items"]),
+            "Credential appeared in metadata",
+        )
+    evidence.update(
+        org_id=org,
+        identity_types=["sql-iam", "iam-registry", "cognito-client"],
+        qualification="bounded metadata reads only; credential delivery and retirement lifecycle need owned mutation fixtures",
+    )
+
+
 SCENARIOS = {
+    'machine': machine,
     'model_policy': model_policy,
     'person_budget': person_budget,
     'ratelimit': ratelimit,

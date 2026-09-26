@@ -42,7 +42,7 @@ DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py"
 
 # The auth store this install writes its gateway URL into.
 #

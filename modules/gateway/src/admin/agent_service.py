@@ -15,7 +15,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from src.shared.config import get_settings
-from src.shared.exceptions import NotFoundError, ValidationError
+from src.shared.exceptions import ConflictError, NotFoundError, ValidationError
 
 from .agent_schemas import (
     AgentCreateRequest,
@@ -346,6 +346,8 @@ class AgentService:
         client_id: str,
         org_id: str,
         request: AgentUpdateRequest,
+        *,
+        expected_updated_at: str | None = None,
     ) -> AgentResponse:
         """
         Update agent metadata.
@@ -405,7 +407,11 @@ class AgentService:
             "UpdateExpression": update_expression,
             "ExpressionAttributeValues": expression_values,
             "ReturnValues": "ALL_NEW",
+            "ConditionExpression": "attribute_not_exists(retirement_operation_id)",
         }
+        if expected_updated_at is not None:
+            kwargs["ConditionExpression"] += " AND attribute_exists(client_id) AND updated_at = :expected_updated_at"
+            expression_values[":expected_updated_at"] = expected_updated_at
         if expression_names:
             kwargs["ExpressionAttributeNames"] = expression_names
 
@@ -426,6 +432,55 @@ class AgentService:
             updated_at=datetime.fromisoformat(item["updated_at"]) if item.get("updated_at") else None,
             status=item.get("status", "active"),
         )
+
+    async def retire_agent(self, client_id: str, org_id: str, *, expected_updated_at: str, operation_id: str) -> AgentResponse:
+        """Claim a terminal tombstone, then idempotently delete exactly one client.
+
+        A failed provider call leaves retiring metadata. Only the same UUID may
+        resume it; ordinary updates cannot revive the tombstone. Cognito access
+        tokens already issued still expire normally, and runs are not stopped.
+        """
+        table = self.dynamodb.Table(self.table_name)
+        item = table.get_item(Key={"client_id": client_id}, ConsistentRead=True).get("Item")
+        if not item or item.get("org_id") != org_id:
+            raise NotFoundError("Agent not found")
+        receipt = item.get("retirement_operation_id")
+        if receipt and receipt != operation_id:
+            raise ConflictError("Another retirement operation already owns this client")
+        if not receipt:
+            try:
+                table.update_item(
+                    Key={"client_id": client_id},
+                    ConditionExpression=(
+                        "attribute_exists(client_id) AND org_id = :org AND updated_at = :expected AND attribute_not_exists(retirement_operation_id)"
+                    ),
+                    UpdateExpression="SET #status = :status, retirement_operation_id = :operation, updated_at = :now",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":org": org_id,
+                        ":expected": expected_updated_at,
+                        ":status": "retiring",
+                        ":operation": operation_id,
+                        ":now": datetime.now(UTC).isoformat(),
+                    },
+                )
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    raise ConflictError("Retirement revision changed") from None
+                raise
+        try:
+            self.cognito.delete_user_pool_client(UserPoolId=self.user_pool_id, ClientId=client_id)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+        table.update_item(
+            Key={"client_id": client_id},
+            ConditionExpression="org_id = :org AND retirement_operation_id = :operation",
+            UpdateExpression="SET #status = :status, updated_at = :now",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":org": org_id, ":operation": operation_id, ":status": "retired", ":now": datetime.now(UTC).isoformat()},
+        )
+        return await self.get_agent(client_id, org_id)
 
     async def delete_agent(self, client_id: str, org_id: str) -> None:
         """

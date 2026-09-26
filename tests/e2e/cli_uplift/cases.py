@@ -316,6 +316,14 @@ CASES = (
         (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
     ),
     Case(
+        "E31",
+        "#5624",
+        "story-reads",
+        "Explicit SQL IAM, IAM registry and Cognito client metadata reads retain tenant scope; no secret or mutation lifecycle claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    ),
+    Case(
         "E38",
         "#5636",
         "story-reads",

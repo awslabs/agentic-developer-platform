@@ -166,6 +166,8 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 
 GitHub maintenance (#5634) adds six leaf commands: `github disconnect`, `admin github rotate-key`, `admin github disconnect`, and `admin github org-binding list|add|remove`. `admin github status --maintenance` reads the revision needed for reviewed App writes. See [GitHub maintenance](github-maintenance.md) for exact flags, staged key recovery and live acceptance holds. The checked manifest is the source inventory; deployed availability and functioning OAuth/webhook consumers require separate evidence.
 
+CLI-11 #5624 adds [machine identity lifecycle commands](machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
+
 Access/session story #5625 adds seven forms: `access status|request`,
 `admin access-request list|show|approve|deny`, and `admin session revoke-user`.
 See [access and sessions](access-and-sessions.md) for exact review flags and the

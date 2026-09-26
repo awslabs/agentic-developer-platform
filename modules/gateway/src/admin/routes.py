@@ -2583,3 +2583,12 @@ router.include_router(_ratelimit_cli_router)
 
 # Guarded CLI adapters reuse the services and permissions above.
 router.include_router(hierarchy_router)
+
+
+from .machine_accounts import router as _machine_account_router  # noqa: E402
+
+router.include_router(_machine_account_router)
+
+from .machine_agents import router as _machine_agent_router  # noqa: E402
+
+router.include_router(_machine_agent_router)

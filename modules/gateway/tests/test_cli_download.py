@@ -132,6 +132,8 @@ class TestCliScriptDownload:
             "adp-hierarchy.py",
             "adp-vault.py",
             "adp-access.py",
+
+            "adp-machine.py",
             "adp-usage.py",
             "adp-agent.py",
             "adp-budget.py",

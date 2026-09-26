@@ -154,6 +154,9 @@ E36 (#5627) runs the served `adp ratelimit me --json` through the existing
 unknown worker convergence and the named actual-token TPM dependency. It makes
 no inference calls or configuration changes. Passing E36 is metadata regression
 only; real RPM, TPM/concurrency, client retry and cleanup acceptance remain held.
+
+CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
+
 E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.
 
 E33 (#5625) uses the served CLI to read current-tenant access status and a bounded

@@ -215,6 +215,8 @@ _READINESS = {
     "ingestion_queue": _queue_ready,
     "agent_worker": _agent_worker_ready,
     "model_route": _model_route_ready,
+    # Provider tables/pools require actual service observation; discovery does not probe or mint identities.
+    "machine_provider": lambda: None,
 }
 
 
@@ -239,6 +241,23 @@ OPERATIONS = (
     ),
     Operation("hierarchy.platform.write", summary="Create organizations and place existing members", permission=Permission.ORG_CREATE, mutates=True),
     Operation("hierarchy.member.write", summary="Update scoped membership roles", permission=Permission.USER_MANAGE, mutates=True),
+
+    Operation(
+        "machine.agent.registry.manage",
+        summary="Guarded IAM registry lifecycle",
+        permission=Permission.AGENT_REGISTER,
+        readiness="machine_provider",
+        mutates=True,
+    ),
+    Operation(
+        "machine.agent.cognito.manage",
+        summary="Guarded Cognito client lifecycle",
+        permission=Permission.ORG_UPDATE,
+        readiness="machine_provider",
+        mutates=True,
+    ),
+    Operation("machine.account.manage", summary="Guarded SQL IAM service-account lifecycle", permission=Permission.ORG_UPDATE, mutates=True),
+    Operation("machine.principal.manage", summary="Guarded canonical principal lifecycle", permission=Permission.ORG_UPDATE, mutates=True),
     Operation("vault.credentials.register", summary="Register an own credential; shared scopes require additional server authority", mutates=True),
     Operation("vault.credentials.metadata", summary="Update visible credential metadata with revision and ownership checks", mutates=True),
     Operation("vault.credentials.delete", summary="Delete an authorized credential; running work is not stopped", mutates=True),
@@ -468,6 +487,8 @@ async def _permitted(operation: Operation, caller: TokenContext, access: AccessC
     client refusing a mutation on that basis would be refusing on evidence the
     server never gave.
     """
+    if operation.id.startswith("machine.") and (caller.account_type != "human" or caller.auth_source != "jwt"):
+        return False
     if operation.permission is None:
         if operation.platform_admin:
             return caller.is_admin

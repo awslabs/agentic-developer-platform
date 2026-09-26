@@ -346,6 +346,8 @@ and blocked cases still prevent full acceptance.
 
 E28 (#5634): GitHub maintenance read/preview regression through the installed CLI, requiring `github_app`. Missing fixture blocks the case. The scenario does not claim real rotation, uninstall, consumer continuation or cleanup acceptance.
 
+CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.
+
 Tenant story #5622 adds E23 to the default nightly story reads: visible memberships, explicit current selection and unknown selector refusal. E27 (`tenant-isolation`) requires `tenant_isolation.tenant_ids` with two distinct existing memberships for the installed human fixture; it checks concurrent reads through local default changes and Cognito refresh. No membership is granted and no global workspace selection or model inference occurs. E27 is blocked when that fixture is absent; inference, revoked-membership and uncertain-mutation live acceptance remains open.
 Budget story #5589 adds E26 to `story-reads` and `nightly`: served `adp budget me` reads daily, weekly and monthly periods without inference or cap mutation. This checks response and uncapped semantics; it does not establish live hard/soft enforcement.
 
