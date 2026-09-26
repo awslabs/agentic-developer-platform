@@ -56,6 +56,10 @@ def ordinary_tokens(config, env):
 def execute(config, evidence):
     fixture = config.get("machine_lifecycle") or {}
     common.require(
+        type(fixture.get("cognito_lifecycle", False)) is bool,
+        "Cognito lifecycle selection must be boolean",
+    )
+    common.require(
         fixture.get("owned_mutations_authorized") is True,
         "Explicit machine lifecycle authorization required",
     )
@@ -405,4 +409,22 @@ def execute(config, evidence):
         )
         state["checks"].append("terminal_retirement_and_ordinary_access_preserved")
         save()
+        if fixture.get("cognito_lifecycle") is True:
+            from machine_cognito import execute as cognito_execute
+
+            cognito_execute(
+                admin,
+                ordinary,
+                foreign,
+                tenant,
+                native,
+                plan["cognito"],
+                root,
+                state,
+                save,
+            )
+            state["qualification"] += (
+                " Owned Cognito credential delivery, same-operation recovery and retirement verified; no token minting or IAM identity qualification."
+            )
+            save()
         evidence.update(success=True, stage_reached="complete")

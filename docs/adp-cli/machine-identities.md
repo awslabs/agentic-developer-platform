@@ -114,3 +114,36 @@ concurrent/lost-response provider admission, private credential delivery, and
 retirement guards. Full CLI-11 live acceptance still requires disposable owned
 identities, credential delivery, wrong-tenant/role cases and verified cleanup on
 the reference EC2 client; source merge and E31 reads alone do not close those ACs.
+
+D05's default owned canonical lifecycle covers same-operation registration,
+canonical mapping identity, alias collision/foreign refusal, suspension and
+terminal retirement. It does not create an authentication provider identity.
+The opt-in `machine_lifecycle.cognito_lifecycle: true` extension creates one
+uniquely named disposable platform Cognito client through the installed CLI.
+It uses the existing `bedrockgw/invoke` scope but never mints a token or invokes
+a model. The caller retains its exact name, registration operation and retirement
+operation in the external recovery manifest before SSM dispatch.
+
+The extension verifies dry-run, protected `0600` credential delivery within a
+private temporary directory, same-operation replay into a second private file,
+unchanged identity/secret, existing-file refusal, ordinary/foreign read refusal,
+and authoritative retired metadata. Replaying the original registration after
+retirement must not deliver credentials or change the retained identity.
+Credentials and their hashes are excluded from public evidence and journals;
+all credential files are removed with the temporary session directory. This
+checks the retirement contract; it does not claim live OAuth refusal or revocation
+of already-issued tokens.
+
+Cleanup records the reviewed client revision before deregistering the exact
+owned client with the original retirement operation, and verifies `retired`
+metadata even if the acknowledgement is lost. An uncertain provider creation
+without a completed receipt remains pending with its original name/operation for
+operator reconciliation; no replacement identity is created. Name, scope, tenant,
+or team drift stops cleanup for review. This scenario must pass on a fresh
+disposable EC2 before it supplies live acceptance evidence.
+
+SQL IAM and IAM registry lifecycle qualification still require an explicitly
+owned disposable IAM role fixture; shared worker/dev-box roles cannot substitute.
+Cognito-to-canonical alias/mapping/attribution integration and actual concurrent
+provider delivery remain separate acceptance work. The extension does not close
+all CLI-11 criteria.

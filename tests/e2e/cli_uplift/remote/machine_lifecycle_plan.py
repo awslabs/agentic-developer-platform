@@ -16,7 +16,7 @@ def recovery_plan(config):
         sort_keys=True,
     )
     suffix = hashlib.sha256(identity.encode()).hexdigest()[:32]
-    return {
+    plan = {
         "version": 1,
         "purpose": "machine_lifecycle",
         "evaluation_id": config["evaluation_id"],
@@ -37,3 +37,17 @@ def recovery_plan(config):
         ],
         "cleanup": "Revoke only recorded aliases and retire exact owned principal; retain history. No provider identity or credential is created.",
     }
+
+    if config["machine_lifecycle"].get("cognito_lifecycle") is True:
+        plan["cognito"] = {
+            "name": "owned-cognito-" + suffix,
+            "registration_id": str(
+                uuid.uuid5(uuid.NAMESPACE_URL, identity + ":cognito-register")
+            ),
+            "retirement_id": str(
+                uuid.uuid5(uuid.NAMESPACE_URL, identity + ":cognito-retire")
+            ),
+            "scopes": ["bedrockgw/invoke"],
+            "cleanup": "Retire only original registration client; never replay with a new operation. If provider completion is unknown, retain original name/operation for operator reconciliation. Never mint a token.",
+        }
+    return plan
