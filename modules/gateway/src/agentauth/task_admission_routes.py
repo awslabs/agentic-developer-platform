@@ -80,7 +80,7 @@ async def admit(request: Request, db: AsyncSession = Depends(get_db)):
             raise errors.payload_too_large("Task admission request exceeds its fixed byte bound.")
     token = request.headers.get("X-Adp-Task-Caller-Token", "")
     proof = request.headers.get("X-Adp-Producer-Proof", "")
-    if not token or len(token) > 4096:
+    if not token or len(token) > 32768:
         raise errors.invalid_request("Forwarded caller credential exceeds its contract bound.")
     try:
         payload, public_bytes = verify_admission_binding(bytes(raw), caller_token_header=token, producer_proof_header=proof)

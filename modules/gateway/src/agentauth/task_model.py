@@ -71,7 +71,10 @@ def _valid_response_block(block, request):
 async def invoke_task_messages(db, *, identity, binding, target, request, operation_id):
     credentials = None
     if not target.is_platform:
-        credentials = await bedrock_destination_signer.get_credentials(db, target, user_id=identity.canonical_principal)
+        from src.tasks.human_authority import principal_owner
+
+        _, owner_id = principal_owner(identity.canonical_principal)
+        credentials = await bedrock_destination_signer.get_credentials(db, target, user_id=owner_id)
     kwargs = {
         "region_name": target.region or get_settings().aws_region,
         "config": Config(connect_timeout=5, read_timeout=120, retries={"total_max_attempts": 1}),

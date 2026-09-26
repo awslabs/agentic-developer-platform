@@ -135,6 +135,7 @@ SUBMIT_RESPONSE_STATUSES = frozenset({"accepted", "queued"})
 # --- error codes and their only permitted HTTP statuses -----------------
 
 ERROR_STATUS = {
+    "budget_exceeded": 402,
     "invalid_request": 400,
     "invalid_credential": 401,
     "disallowed_scope": 403,

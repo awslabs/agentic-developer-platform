@@ -52,6 +52,9 @@ def safe_endpoint(url):
 
 
 def token_expiry(token):
+    if token.startswith("adpctx1~"):
+        parts = token.split("~")
+        return min(token_expiry(parts[1]), token_expiry(parts[2])) if len(parts) == 3 else 0
     try:
         encoded = token.split(".")[1]
         return float(json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))["exp"])
@@ -105,7 +108,8 @@ def bounded_read(response, client, limit):
 class TaskClient(protocol.Client):
     """Reuse Task protocol helpers with deployment-bound auth and finite retries."""
 
-    def __init__(self, credentials, gateway, *, token_file=None, scopes=None, opener=None, deadline=None):
+    def __init__(self, credentials, gateway, *, token_file=None, scopes=None, opener=None, deadline=None, human_login=False):
+        self.human_login = human_login
         self.credentials = credentials
         self.token_file = token_file
         self.gateway = gateway.rstrip("/")
@@ -145,7 +149,14 @@ class TaskClient(protocol.Client):
     def authenticate(self, force=False):
         if not force and self.token and time.time() < self.expires - 10:
             return
-        if self.token_file:
+        if self.human_login:
+            if force or self.token:
+                raise CliError(
+                    "The pinned human Task session expired or was refused. Log in and retry the same request key.", "authentication_failed", 2
+                )
+            token = common.access_token()
+            expires = token_expiry(token)
+        elif self.token_file:
             credentials = private_credentials(self.token_file)
             self._validate_binding(credentials)
             token = credentials.get("access_token")
@@ -203,10 +214,11 @@ class TaskClient(protocol.Client):
                     self.pause(2**attempt)
                     attempt += 1
                     continue
+                if status == 402:
+                    raise CliError("Task budget headroom is exhausted; no new task was admitted.", "budget_exceeded", 5, status_code=402) from None
                 if status in (401, 403):
                     raise CliError(
-                        "Task access denied. Ask your administrator to register this service principal "
-                        "and grant the required Task scopes/persona policy.",
+                        "Task access denied. Ask your administrator to enroll this identity and grant the required Task scopes/persona policy.",
                         "task_access_denied",
                         2,
                         status_code=status,
@@ -356,6 +368,7 @@ def parser():
     for verb in ("submit", "status", "monitor", "abort"):
         cmd = commands.add_parser(verb)
         cmd.add_argument("request_file" if verb == "submit" else "task_id")
+        cmd.add_argument("--human-login", action="store_true", help="Use the pinned ADP human login; administrator Task enrollment is required")
         cmd.add_argument("--credentials", default=os.environ.get("ADP_TASK_CREDENTIALS_FILE"))
         cmd.add_argument("--token-file", default=os.environ.get("ADP_TASK_TOKEN_FILE"))
         cmd.add_argument("--json", action="store_true", help="Emit one JSON object per line")
@@ -391,14 +404,16 @@ def main(argv=None):
                     "Abort requests remote cancellation. Rerun with --yes to confirm; Ctrl-C only stops this CLI.", "confirmation_required", 1
                 )
         gateway = common.gateway_url()
-        if args.credentials and args.token_file:
-            raise CliError("Choose --credentials or --token-file, not both.", "usage_error", 1)
+        if sum(bool(value) for value in (args.credentials, args.token_file, args.human_login)) > 1:
+            raise CliError("Choose one of --human-login, --credentials or --token-file.", "usage_error", 1)
         path = args.token_file or args.credentials or common.config_path().parent / "task-credentials.json"
-        credentials = private_credentials(path)
+        credentials = {"gateway_url": gateway} if args.human_login else private_credentials(path)
         scopes = ["adp-tasks/" + ({"status": "read", "monitor": "read", "abort": "cancel", "submit": "submit"}[args.command])]
         if getattr(args, "wait", False) and "adp-tasks/read" not in scopes:
             scopes.append("adp-tasks/read")
-        client = TaskClient(credentials, gateway, token_file=args.token_file, scopes=scopes, deadline=time.monotonic() + args.timeout)
+        client = TaskClient(
+            credentials, gateway, token_file=args.token_file, scopes=scopes, deadline=time.monotonic() + args.timeout, human_login=args.human_login
+        )
         if args.command == "submit":
             with Path(args.request_file).open("rb") as source:
                 raw = source.read(1048577)
