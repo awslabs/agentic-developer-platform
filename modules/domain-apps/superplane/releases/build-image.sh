@@ -19,12 +19,14 @@
 set -euo pipefail
 component="${1:?component required}"
 case "$component" in
-  superplane-api|superplane-controller|superplane-platform-monitor|superplane-executor) ;;
+  superplane-api|superplane-controller|superplane-platform-monitor|superplane-executor|superplane-paid-worker) ;;
   *) echo "Unknown Superplane component" >&2; exit 1 ;;
 esac
 [[ "${ORIGIN_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid origin revision" >&2; exit 1; }
 expected_source="src/$component"
-[[ "$component" != "superplane-executor" ]] || expected_source="executor"
+case "$component" in
+  superplane-executor|superplane-paid-worker) expected_source="executor" ;;
+esac
 [[ "${SOURCE_PATH:-}" == "$expected_source" ]] || { echo "Invalid source scope" >&2; exit 1; }
 [[ "${ECR_REPO:-}" == "adp-$component" ]] || { echo "Invalid ECR scope" >&2; exit 1; }
 [[ "${ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]] || { echo "Invalid target account" >&2; exit 1; }
@@ -46,14 +48,14 @@ context="$maintained_root/$SOURCE_PATH"
 
 build_context="$context"
 build_options=()
-if [[ "$component" == "superplane-executor" ]]; then
+if [[ "$component" == "superplane-executor" || "$component" == "superplane-paid-worker" ]]; then
   [[ "${PYTHON_IMAGE:-}" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { echo "Executor requires an explicitly reviewed digest-pinned Python 3.12 image" >&2; exit 1; }
   # The trusted service consumes two maintained shared packages. Its Dockerfile
   # copies only these three directories from the repository-root context.
   build_context="."
-  # This release component runs the installer's long-lived execution service.
-  # The Dockerfile also has a paid-worker stage with a different entrypoint.
-  build_options=(--file "$context/Dockerfile" --target controller-service --build-arg "PYTHON_IMAGE=$PYTHON_IMAGE")
+  target="controller-service"
+  [[ "$component" != "superplane-paid-worker" ]] || target="paid-worker"
+  build_options=(--file "$context/Dockerfile" --target "$target" --build-arg "PYTHON_IMAGE=$PYTHON_IMAGE")
 fi
 
 # Sibling packages are generated build inputs and absent from a clean checkout.

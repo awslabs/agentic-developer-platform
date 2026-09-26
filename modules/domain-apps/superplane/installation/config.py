@@ -175,6 +175,7 @@ def validate(
         "controller_profiles",
         "credential_controller",
         "api_adapters",
+        "paid_worker",
         "api_producer_role",
     }
     require(
@@ -185,6 +186,9 @@ def validate(
     from .api_adapters import validate as validate_api_adapters
 
     validate_api_adapters(env)
+    from .paid_worker import validate as validate_paid_worker
+
+    validate_paid_worker(env, lock)
     from .producer_role import validate as validate_producer_role
 
     validate_producer_role(env)

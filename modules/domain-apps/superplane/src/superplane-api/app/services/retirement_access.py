@@ -104,7 +104,7 @@ async def admit_access(
 ):
     from app.operation_activation import require_admission_enabled
 
-    require_admission_enabled()
+    require_admission_enabled(lifecycle=True)
     workspace, _ = await _workspace(db, org_id, workspace_id)
     # Serialize against other lifecycle requests, including API replicas whose
     # shared admission committed but whose domain transaction was interrupted.

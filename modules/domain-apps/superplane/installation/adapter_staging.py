@@ -359,6 +359,9 @@ def verify(installer, token):
 
 
 def activate(installer):
+    from .paid_worker import require_activation_available
+
+    require_activation_available(installer.env)
     stage = installer.receipt.get("adapter_stage", {})
     require(
         stage.get("state") == "verified-disabled"

@@ -78,7 +78,9 @@ class HarnessOperationFacade:
         parameters: dict[str, str],
     ) -> OperationProgress:
         """Authorize and start one operation, returning the facade's first report."""
-        require_admission_enabled(enabled=self._enabled)
+        require_admission_enabled(
+            enabled=self._enabled, lifecycle="runtime_config_sha256" in parameters
+        )
         progress = await self._call(
             self._service.open_operation(
                 action=action,

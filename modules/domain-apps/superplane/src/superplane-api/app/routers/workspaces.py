@@ -293,7 +293,7 @@ async def create_workspace(
     from app.operation_activation import require_admission_enabled
 
     try:
-        require_admission_enabled()
+        require_admission_enabled(lifecycle=True)
     except ProvisioningError as error:
         raise HTTPException(503, str(error)) from None
     from app.adapters.operation_authority_source import (
@@ -557,7 +557,7 @@ async def delete_workspace(
     from app.operation_activation import require_admission_enabled
 
     try:
-        require_admission_enabled()
+        require_admission_enabled(lifecycle=True)
     except ProvisioningError as error:
         raise HTTPException(503, str(error)) from None
     result = await db.execute(

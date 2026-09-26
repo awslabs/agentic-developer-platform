@@ -361,3 +361,7 @@ annotations can nevertheless contain legacy embedded values (for example a
 never logged or persisted. Only the Secret UID and resourceVersion enter the
 receipt. Kubernetes still authorizes this operation through Secret `get` RBAC;
 metadata negotiation is response minimization, not a separate RBAC capability.
+
+### Optional native paid-worker source preparation
+
+The default offline plan can include a closed `paid_worker` projection with a separate paid-worker image. It remains paused at zero replicas; activation preflight refuses before external tools because authenticated shared binding attestation is unavailable. See [native paid-worker preparation](PAID-WORKER-PREPARATION.md) for the exact input and remaining image/identity/schema/network gates. This is preparation only and does not change [DESIGN.md](../DESIGN.md)'s story acceptance or live evidence.

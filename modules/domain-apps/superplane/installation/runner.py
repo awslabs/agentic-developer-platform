@@ -208,6 +208,10 @@ class Installer:
         )
 
     def plan(self):
+        if self.env.get("paid_worker"):
+            from .paid_worker import preparation_report
+
+            self.receipt["paid_worker"] = preparation_report(self.env, self.lock)
         self.write_manifests()
         if self.control_plane_only:
             self.receipt["actions"] = [
@@ -1283,6 +1287,9 @@ class Installer:
         self.save()
 
     def preflight(self):
+        from .paid_worker import require_activation_available
+
+        require_activation_available(self.env)
         # workspace() checks workspace CRDs, namespace existence and controller
         # credential scope.  These are deferred in control-plane-only mode because
         # the workspace cluster does not yet exist at this stage.

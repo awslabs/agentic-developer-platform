@@ -150,3 +150,83 @@ async def test_domain_admission_entrypoints_refuse_before_any_domain_write(monke
         with pytest.raises(HTTPException) as error:
             await call
         assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize("value", ["workspace-lifecycle", "native", "", None, True])
+def test_paid_worker_mode_is_closed(value):
+    with pytest.raises(ValidationError):
+        Settings(superplane_paid_worker_mode=value)
+
+
+@pytest.mark.asyncio
+async def test_native_mode_refuses_lifecycle_before_domain_reads_or_writes(monkeypatch):
+    from app.routers.workspaces import create_workspace, delete_workspace
+    from app.services import lifecycle_proposals, retirement_access, provisioning
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-controller")
+    for call in (
+        lifecycle_proposals.continue_lifecycle(
+            None, None, None, None, None, None, None
+        ),
+        retirement_access.admit_access(None, None, None, None, None, None, None),
+        provisioning._start(
+            operation_id="op",
+            action="provision",
+            workspace_id="workspace",
+            org_id="org",
+            parameters={"runtime_config_sha256": "a" * 64},
+        ),
+    ):
+        with pytest.raises(
+            ProvisioningUnavailable, match="workspace lifecycle admission"
+        ):
+            await call
+    for call in (
+        create_workspace(None, None, None),
+        delete_workspace(None, None, None),
+    ):
+        with pytest.raises(HTTPException) as error:
+            await call
+        assert error.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_native_mode_refuses_lifecycle_in_shared_facade_before_reservation(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-controller")
+    service = SimpleNamespace(open_operation=AsyncMock())
+    with pytest.raises(ProvisioningUnavailable, match="workspace lifecycle admission"):
+        await HarnessOperationFacade(service).open_operation(
+            action="provision",
+            workspace_id="workspace",
+            org_id="org",
+            permission="workspace:provision",
+            parameters={"runtime_config_sha256": "a" * 64},
+        )
+    service.open_operation.assert_not_called()
+
+
+@pytest.mark.parametrize("action", ["provision", "cleanup"])
+@pytest.mark.asyncio
+async def test_native_mode_reaches_existing_admission_for_native_actions(
+    monkeypatch, action
+):
+    monkeypatch.setattr(settings, "superplane_operation_dispatch_enabled", True)
+    monkeypatch.setattr(settings, "superplane_paid_worker_mode", "native-controller")
+    # Stop exactly at the real shared-admission boundary, without a substitute success.
+    service = SimpleNamespace(
+        open_operation=AsyncMock(side_effect=RuntimeError("reached shared admission"))
+    )
+    with pytest.raises(ProvisioningUnavailable, match="could not establish an outcome"):
+        await HarnessOperationFacade(service).open_operation(
+            action=action,
+            workspace_id="workspace",
+            org_id="org",
+            permission="workspace:provision",
+            parameters={"deployment_id": "native"},
+        )
+    service.open_operation.assert_awaited_once()

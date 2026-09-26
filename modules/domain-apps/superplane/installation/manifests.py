@@ -677,6 +677,9 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
     from .api_adapters import project as project_api_adapters
 
     project_api_adapters(env, docs)
+    from .paid_worker import project as project_paid_worker
+
+    project_paid_worker(env, lock, docs)
     return docs
 
 
