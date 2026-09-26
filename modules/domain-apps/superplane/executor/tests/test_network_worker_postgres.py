@@ -39,6 +39,7 @@ async def test_registered_worker_networks_selected_region_before_launch_success(
     system, deny_network, deny_node_role, shared_membership, probe_mode
 ):
     pool, admit, server, cloud, _kube, _registry, _ = system
+    cloud.instance["Placement"]["AvailabilityZone"] = REMOTE + "a"
     await schema(pool)
     async with pool.acquire() as c:
         await c.execute("ALTER TABLE clusters ADD COLUMN workspace_id uuid")

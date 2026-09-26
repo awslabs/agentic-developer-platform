@@ -397,25 +397,25 @@ async def admit_controller_deployment(
             ) != request or intent["controller_approval_id"] != str(approval_id):
                 raise ProvisioningRefused("original reviewed deployment intent changed")
         else:
-            source = await raw.fetchrow(
-                "SELECT o.request_payload FROM controller_deployment_operations r "
-                "JOIN harness_operations o ON o.operation_id=r.operation_id AND o.plan_digest=r.plan_digest "
-                "AND o.org_id=r.org_id AND o.workspace_id=r.workspace_id "
-                "JOIN harness_operation_leases l ON l.operation_id=o.operation_id AND l.closed_at IS NOT NULL "
-                "WHERE r.operation_id=$1 AND r.org_id=$2 AND r.workspace_id=$3 AND r.deployment_id=$4 "
-                "AND r.action='provision' AND o.state IN ('succeeded','failed','cancelled')",
-                request.parameters["controller_source_operation_id"],
-                str(org_id),
-                str(workspace_id),
-                preview.deployment_id,
-            )
-            if (
-                source is None
-                or source["request_payload"] != intent["controller_request_payload"]
-            ):
-                raise ProvisioningRefused(
-                    "teardown requires the original settled deployment source"
+            from superplane_executor.cleanup_binding import source_for, validate
+
+            try:
+                source = await source_for(
+                    raw,
+                    org_id=str(org_id),
+                    workspace_id=str(workspace_id),
+                    deployment_id=preview.deployment_id,
+                    source_id=request.parameters["controller_source_operation_id"],
                 )
+            except OperationRefused:
+                raise ProvisioningRefused(
+                    "teardown requires the original settled deployment source or fenced cancelled source"
+                ) from None
+            if source["request_payload"] != intent["controller_request_payload"]:
+                raise ProvisioningRefused(
+                    "teardown changed its original deployment source"
+                )
+            await validate(raw, source, request, approval_id=approval_id)
             expected = teardown_request(
                 decode_payload(source["request_payload"]),
                 org_id=str(org_id),
@@ -466,6 +466,26 @@ async def admit_controller_deployment(
             raise ProvisioningUnavailable(
                 "governed controller deployment transport is not ready"
             )
+        if request.action == "teardown":
+            # Persist ownership independently of the caller's domain transaction.
+            # Lost ledger replies/registration commits recover this same request.
+            from superplane_executor.cleanup_binding import bind, source_for
+
+            async with composition.operation_connect() as binding_connection:
+                async with binding_connection.transaction():
+                    fresh_source = await source_for(
+                        binding_connection,
+                        org_id=str(org_id),
+                        workspace_id=str(workspace_id),
+                        deployment_id=preview.deployment_id,
+                        source_id=request.parameters["controller_source_operation_id"],
+                    )
+                    await bind(
+                        binding_connection,
+                        fresh_source,
+                        request,
+                        approval_id=approval_id,
+                    )
         progress = await facade.open_operation(
             action=request.action,
             workspace_id=str(workspace_id),

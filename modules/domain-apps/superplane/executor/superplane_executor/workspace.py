@@ -304,12 +304,27 @@ class Workspace:
             },
         ]
 
-    async def apply(self, operation, target, plan, authorize, *, record_created=None):
+    async def apply(
+        self,
+        operation,
+        target,
+        plan,
+        authorize,
+        *,
+        record_created=None,
+        record_submission=None,
+    ):
         governed = "controller_deployment_id" in operation.request.parameters
         if governed and record_created is None:
             raise OperationRefused("governed workload requires durable UID capture")
+        if governed and not callable(record_submission):
+            raise OperationRefused(
+                "governed workload requires original submission evidence"
+            )
         references = []
         for obj in self.objects(operation, target, plan):
+            if record_submission is not None:
+                await record_submission(obj)
             await authorize()
             response = await self.request(
                 operation, target, "POST", self.path(target, obj["kind"]), body=obj
@@ -362,6 +377,8 @@ class Workspace:
         return bool(await self.verified_nodes(operation, target, plan, instances))
 
     async def verified_nodes(self, operation, target, plan, instances):
+        from .node_inventory import enabled, node_identity
+
         self.require_dedicated_node_authority(target)
         # Preserve provider-observed location, not merely the instance-ID suffix.
         # A label selector is a query hint, not evidence of node ownership.
@@ -424,6 +441,8 @@ class Workspace:
         observed, names, uids = set(), {}, set()
         try:
             for node in nodes:
+                if enabled(operation):
+                    node_identity(node, target, plan, workspace_id, expected)
                 provider_id = node["spec"]["providerID"]
                 if provider_id not in expected or provider_id in observed:
                     return None
@@ -468,7 +487,7 @@ class Workspace:
                     provider_id.rsplit("/", 1)[1],
                 )
             return names if observed == set(expected) else None
-        except (KeyError, TypeError, AttributeError):
+        except (KeyError, TypeError, AttributeError, OperationRefused):
             return None
 
     @staticmethod

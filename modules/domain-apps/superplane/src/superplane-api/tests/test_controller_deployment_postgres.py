@@ -86,6 +86,9 @@ async def workload(lifecycle, monkeypatch, tmp_path, request):  # noqa: F811
     async with engine.begin() as connection:
         await connection.run_sync(Deployment.__table__.create)
         await connection.run_sync(ControllerDeploymentOperation.__table__.create)
+        from app.models.controller_cleanup import ControllerCleanupBinding
+
+        await connection.run_sync(ControllerCleanupBinding.__table__.create)
         from app.models.controller_execution import ControllerBatchResult
 
         await connection.run_sync(ControllerBatchResult.__table__.create)
@@ -714,6 +717,10 @@ async def worker_runtime(workload, tmp_path):
     from tests.controller_provider_support import Cloud, Kubernetes
 
     pool = SimpleNamespace(acquire=workload.connections.connect)
+    from app.models.controller_workload_submission import ControllerWorkloadSubmission
+
+    async with workload.sessions.kw["bind"].begin() as connection:
+        await connection.run_sync(ControllerWorkloadSubmission.__table__.create)
     async with pool.acquire() as connection:
         await connection.execute("""
             CREATE TABLE observation_leases(scope text PRIMARY KEY,holder text,expires_at timestamptz);
@@ -1249,15 +1256,28 @@ async def test_ambiguous_launch_across_regions_retains_without_repeating_creatio
     # request reply never arrived. Recovery cannot depend on process memory.
     async with worker_runtime.pool.acquire() as connection:
         members = await connection.fetch(
-            "SELECT provider_reference FROM harness_allocation_resource"
+            "SELECT kind,provider_reference FROM harness_allocation_resource"
         )
-        assert len(members) == 3
+        assert {row["kind"] for row in members} == {
+            "instance",
+            "volume",
+            "network_interface",
+            "kubernetes_node",
+        }
+        assert len(members) == 4
         assert all(
             row["provider_reference"].startswith(
                 f"arn:aws:ec2:{other_region}:{worker.plan.data['provider_account_id']}:"
             )
             for row in members
+            if row["kind"] != "kubernetes_node"
         )
+        from superplane_executor.node_inventory import decode
+
+        node = next(row for row in members if row["kind"] == "kubernetes_node")
+        identity = decode(node["provider_reference"])
+        assert identity["region"] == other_region
+        assert identity["uid"] == "allocated-node-uid"
     # No second allocation: exactly one launch occurred across the retry.
     assert worker_runtime.cloud.launches == 1
     async with worker_runtime.pool.acquire() as connection:
@@ -1265,7 +1285,7 @@ async def test_ambiguous_launch_across_regions_retains_without_repeating_creatio
             await connection.fetchval(
                 "SELECT count(*) FROM harness_allocation_resource"
             )
-            == 3
+            == 4
         )
         assert (
             await connection.fetchval("SELECT state FROM controller_capacity")

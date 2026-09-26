@@ -422,6 +422,17 @@ Workload UI/API reads expose [status and bounded logs](WORKLOAD-OBSERVATIONS.md)
 retains uncertain resources and accounting. These surfaces do not establish
 provider-billed cost or live workload acceptance. Bounded batch text retention is documented in [BATCH-RESULTS.md](BATCH-RESULTS.md).
 
+Allocation accounting includes separate `cost_evidence.categories` for compute,
+storage, network and transfer. Each retains its relevant durable resource handles
+and the shared engine's disposition, including after deletion. The accounting
+timestamp is not a billing interval. Usage quantities and billed amounts remain
+explicitly unknown until allocation-attributed provider evidence is available;
+resource absence and returned reservation do not establish zero charges. Native
+command and Kubernetes identities are cleanup obligations, not extra billable
+machines. [Recovery implementation design](RECOVERY-DESIGN.md) describes the
+cancellation, exact Node cleanup and lost-response boundaries under the main
+[architecture](../DESIGN.md).
+
 ## GPU requirements instead of a fixed machine
 
 An installed workload profile may replace `instance_type` with `accelerators`,

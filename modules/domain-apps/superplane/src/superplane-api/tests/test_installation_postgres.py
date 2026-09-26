@@ -141,7 +141,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "039_controller_node_commands"
+    assert observed["revision"] == "041_controller_workload_submissions"
     async with engine.connect() as conn:
         assert (
             await conn.execute(
@@ -211,7 +211,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
         async with engine.connect() as conn:
             assert (
                 await conn.execute(text("SELECT version_num FROM alembic_version"))
-            ).scalar_one() == "039_controller_node_commands"
+            ).scalar_one() == "041_controller_workload_submissions"
             assert (
                 await conn.execute(
                     text("SELECT workload_kind FROM deployments WHERE id=:id"),
@@ -246,7 +246,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
             ).scalar_one() == "kept"
             assert (
                 await conn.execute(text("SELECT version_num FROM alembic_version"))
-            ).scalar_one() == "039_controller_node_commands"
+            ).scalar_one() == "041_controller_workload_submissions"
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))
@@ -618,7 +618,7 @@ async def test_audit_migration_preserves_unattributed_evidence_on_downgrade(
         ).one() == ("unresolved", "denied")
         assert (
             await conn.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "039_controller_node_commands"
+        ).scalar_one() == "041_controller_workload_submissions"
 
 
 async def test_cluster_scopes_migrate_empty_and_enforce_tenant_foreign_keys(
@@ -726,7 +726,7 @@ async def test_cluster_scopes_migrate_empty_and_enforce_tenant_foreign_keys(
     async with engine.begin() as conn:
         assert (
             await conn.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == "039_controller_node_commands"
+        ).scalar_one() == "041_controller_workload_submissions"
         assert (
             await conn.execute(
                 text("SELECT count(*) FROM organization_grant_cluster_scopes")

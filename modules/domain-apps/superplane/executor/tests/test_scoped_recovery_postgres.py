@@ -193,6 +193,9 @@ class ObservationBackend(Ledger):
             self.provider,
             operation,
             Plan.read(operation, dict(target)),
+            target=dict(target),
+            call={"idempotency_key": key},
+            authorize=lambda: self.resolve_recovery(claim),
             **dict(journal),
         )
         await self.resolve_recovery(claim)
@@ -480,13 +483,25 @@ async def test_inventory_refuses_another_authenticated_recovery_subject(system):
 
 @pytest.mark.parametrize("leaked", [False, True])
 async def test_actual_inventory_decides_retirement_and_terminal_settlement(
-    system, leaked
+    system, leaked, monkeypatch
 ):
+    from superplane_executor.provider_inventory import ProviderInventory
+
+    snapshot = ProviderInventory.snapshot
+    completed_snapshots = []
+
+    async def measured_snapshot(self, *args, **kwargs):
+        result = await snapshot(self, *args, **kwargs)
+        completed_snapshots.append(result)
+        return result
+
+    monkeypatch.setattr(ProviderInventory, "snapshot", measured_snapshot)
     operation, backend, recovery = await retiring(system)
     system[3].leaked_volume = leaked
     launches = system[3].launches
     (result,) = await recovery.run()
-    assert backend.inventory_reads >= (1 if leaked else 3), backend.finalization_errors
+    assert completed_snapshots and completed_snapshots[0]["complete"]
+    assert backend.inventory_reads >= (0 if leaked else 3), backend.finalization_errors
     assert system[3].launches == launches
     if leaked:
         assert result.action == "deferred"

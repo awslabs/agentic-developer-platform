@@ -576,12 +576,20 @@ class Provider:
                             ),
                         )
 
+                async def record_submission(obj):
+                    from .workload_submissions import record
+
+                    await record(self, operation, call, obj, authorize)
+
                 references = await self.workspace.apply(
                     operation,
                     target,
                     plan,
                     authorize,
                     record_created=record_created
+                    if "controller_deployment_id" in operation.request.parameters
+                    else None,
+                    record_submission=record_submission
                     if "controller_deployment_id" in operation.request.parameters
                     else None,
                 )
@@ -697,13 +705,30 @@ class Provider:
                     known_references = frozenset(
                         row["provider_reference"] for row in rows
                     )
-                await self.workspace.delete(
-                    operation,
-                    target,
-                    plan,
-                    authorize,
-                    known_references=known_references,
-                )
+                from . import node_cleanup, node_inventory
+
+                cleanup_nodes = cleanup_resources = None
+                if node_inventory.enabled(operation):
+                    cleanup_nodes, cleanup_resources = await node_cleanup.prepare(
+                        self, operation, target, plan, authorize
+                    )
+                    await node_cleanup.drain(
+                        self,
+                        operation,
+                        target,
+                        plan,
+                        cleanup_nodes,
+                        known_references or frozenset(),
+                        authorize,
+                    )
+                else:
+                    await self.workspace.delete(
+                        operation,
+                        target,
+                        plan,
+                        authorize,
+                        known_references=known_references,
+                    )
                 await self.remember(call, plan)
                 await authorize()
                 request_id = await self.sky.submit(
@@ -722,6 +747,20 @@ class Provider:
                     request_id, authorize
                 ) or await self.instances(operation, plan):
                     return CallOutcome.UNKNOWN, None, reference
+                if cleanup_nodes is not None:
+                    terminated_instances = await node_cleanup.terminated(
+                        self, operation, plan, cleanup_resources, authorize
+                    )
+                    await node_cleanup.remove(
+                        self,
+                        operation,
+                        target,
+                        plan,
+                        cleanup_nodes,
+                        cleanup_resources,
+                        terminated_instances,
+                        authorize,
+                    )
                 if networking is not None:
                     await networking.cleanup()
                 # Success records the approved removal call, not allocation release.
