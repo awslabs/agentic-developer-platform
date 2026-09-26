@@ -372,3 +372,12 @@ def test_ordinary_cloud_operations_match_reviewed_inventory():
                 'codebuild batch-get-builds', 'codebuild batch-get-projects', 'codebuild start-build',
                 'codebuild stop-build',  # same exact gateway project; failed dispatch cleanup
             }, job
+
+
+def test_generated_workflow_job_uses_org_pool():
+    source = (ROOT / "modules/agent-factory/runner-infra/scripts/add-auto-fix-to-repo.sh").read_text()
+    generated = source.split("AUTO_FIX_JOB=$(cat << 'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+    workflow = yaml.safe_load("jobs:\n" + generated.split("    steps:", 1)[0])
+    assert workflow["jobs"]["auto-fix-on-failure"]["runs-on"] == "arc-runner-org"
+    onboarding = (ROOT / "modules/agent-factory/runner-infra/scripts/onboard-repo.sh").read_text()
+    assert 'echo "  runs-on: arc-runner-org"' in onboarding
