@@ -546,7 +546,7 @@ async def get_my_invocation_detail(
     if item is None:
         from src.activity import task_readthrough
 
-        task_record = await task_readthrough.resolve(request, db, invocation_id)
+        task_record = await task_readthrough.resolve(request, db, invocation_id, canonical_user_id=canonical_user_id, tenant_id=current_user.org_id)
         if task_record is None:
             raise HTTPException(status_code=404, detail="Invocation not found")
         item = task_readthrough.detail(task_record, request)
@@ -715,7 +715,7 @@ async def get_my_invocation_transcript(
     if item is None:
         from src.activity import task_readthrough
 
-        task_record = await task_readthrough.resolve(request, db, invocation_id)
+        task_record = await task_readthrough.resolve(request, db, invocation_id, canonical_user_id=canonical_user_id, tenant_id=current_user.org_id)
         if task_record is None:
             raise HTTPException(status_code=404, detail="Invocation not found")
         return PlainTextResponse(content=task_readthrough.report(task_record), media_type="text/markdown")

@@ -30,20 +30,23 @@ STATUS = {
 }
 
 
-async def resolve(request: Request, db: AsyncSession, invocation_id: str) -> TaskRecord | None:
-    if not INVOCATION.fullmatch(invocation_id):
+async def resolve(request: Request, db: AsyncSession, invocation_id: str, *, canonical_user_id: str, tenant_id: str) -> TaskRecord | None:
+    if not INVOCATION.fullmatch(invocation_id) or not canonical_user_id or not tenant_id:
         return None
     try:
-        caller = await caller_for(request, db)
-        # These are human Activity endpoints. Service Tasks keep their own API.
-        if not caller.principal_id.startswith("human:"):
-            raise errors.not_found()
+        # Activity already authenticated and resolved this identity. Locate only
+        # its own binding before requiring Task enrollment: a missing native run
+        # must remain an Activity 404 for unenrolled callers too.
+        principal = "human:" + canonical_user_id
         store = get_store()
-        binding = await run_in_threadpool(
-            store.resolve_invocation, tenant=caller.tenant_id, principal=caller.principal_id, invocation_id=invocation_id
-        )
+        binding = await run_in_threadpool(store.resolve_invocation, tenant=tenant_id, principal=principal, invocation_id=invocation_id)
         if binding is None:
             return None
+        caller = await caller_for(request, db)
+        # The independent canonical Task authentication must resolve exactly the
+        # same human and tenant. The locator itself grants no read permission.
+        if caller.principal_id != principal or caller.tenant_id != tenant_id:
+            raise errors.not_found()
         task_id, generation = binding
         record = await run_in_threadpool(authz.authorize_task, caller, store, task_id)
         if record.invocation_id != invocation_id or record.generation != generation:

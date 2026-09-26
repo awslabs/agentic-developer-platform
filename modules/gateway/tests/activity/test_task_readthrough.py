@@ -150,3 +150,35 @@ def test_store_initialization_failure_returns_503(bridge, monkeypatch):
     client, *_ = bridge
     monkeypatch.setattr(task_readthrough, "get_store", MagicMock(side_effect=NoCredentialsError()))
     assert client.get(URL).status_code == 503
+
+
+@pytest.mark.parametrize("suffix", ["", "/transcript"])
+@pytest.mark.parametrize("task_disabled", [False, True])
+@pytest.mark.parametrize("record_kind", ["absent", "foreign"])
+def test_valid_activity_miss_does_not_require_task_enrollment(bridge, monkeypatch, suffix, task_disabled, record_kind):
+    client, store, _, authenticate, _ = bridge
+    if record_kind == "absent":
+        store.tasks.clear()
+    else:
+        store.tasks[TASK] = replace(store.tasks[TASK], owner_principal_id="human:foreign")
+    authenticate.side_effect = errors.disallowed_scope("not enrolled")
+    if task_disabled:
+        monkeypatch.setenv("ADP_TASK_API_READ_ENABLED", "false")
+    response = client.get(URL + suffix)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Invocation not found"
+    authenticate.assert_not_called()
+
+
+def test_owned_task_still_requires_current_enrollment(bridge):
+    client, _, _, authenticate, _ = bridge
+    authenticate.side_effect = errors.disallowed_scope("not enrolled")
+    assert client.get(URL).status_code == 403
+
+
+def test_independent_task_identity_must_match_activity_identity(bridge):
+    client, _, caller, *_ = bridge
+    caller.return_value = authz.Caller("human:other", "org-tenant-001", frozenset({authz.SCOPE_READ}))
+    assert client.get(URL).status_code == 404
+    caller.return_value = authz.Caller(PRINCIPAL, "other-tenant", frozenset({authz.SCOPE_READ}))
+    assert client.get(URL).status_code == 404
