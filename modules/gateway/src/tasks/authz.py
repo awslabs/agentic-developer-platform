@@ -152,7 +152,12 @@ async def resolve_caller(context: TokenContext, scopes: frozenset[str], db: Asyn
         from src.auth.tenant_context import apply_context
 
         try:
-            context = await apply_context(context, context._task_tenant_lease, db)
+            selected = await apply_context(context, context._task_tenant_lease, db)
+            # Route callers retain this authenticated object for tenant/team and
+            # stream expiry. Preserve its identity while applying verified fields.
+            for field in ("org_id", "attributed_org_id", "team_id", "department_id", "expires_at"):
+                setattr(context, field, getattr(selected, field))
+            context._task_tenant_lease = None
         except HTTPException:
             raise errors.disallowed_scope("The signed tenant selection is no longer authorized.") from None
     if context.account_type == "human":

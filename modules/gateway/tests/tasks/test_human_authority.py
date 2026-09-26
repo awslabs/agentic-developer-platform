@@ -107,7 +107,11 @@ async def test_signed_selected_tenant_wins_over_login_org_and_revocation_denies(
     caller = await authz.resolve_caller(context, frozenset(), object())
     assert caller.tenant_id == selected
     assert policy.call_args.kwargs["tenant_id"] == selected
-    assert context.org_id == TENANT
+    assert context.org_id == selected
+    assert context.attributed_org_id == selected
+    assert context.expires_at <= lease["expires_at"]
+    assert context._task_tenant_lease is None
+    context._task_tenant_lease = lease["context_token"]
     del members[selected]
     with pytest.raises(errors.TaskApiError):
         await authz.resolve_caller(context, frozenset(), object())
