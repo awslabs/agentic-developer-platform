@@ -8446,6 +8446,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E22",
         "E23",
         "E24",
+        "E33",
         "E29",
         "E26",
     }
@@ -10239,6 +10240,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E22",
         "E23",
         "E24",
+        "E33",
         "E26",
         "E28",
 

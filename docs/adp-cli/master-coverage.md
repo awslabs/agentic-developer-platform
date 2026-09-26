@@ -55,3 +55,7 @@ Completion requires parser/help/manifest/install/update/download parity, stable 
 The [command inventory](command-inventory.md) lists parser-backed command forms and options, including the delegated Superplane onboarding helper. Task and capability publication are tracked in the [qualification record](../design-notes/5644-cli-control-qualification/README.md).
 
 #5634 GitHub maintenance source: [commands and acceptance hold](github-maintenance.md). Six new leaves cover disconnect, key activation and org binding; E28 is read/preview regression only, with live isolated maintenance and consumer continuation still held.
+
+Access/session #5625 supplies seven additional source forms and nightly E33;
+see [scope and examples](access-and-sessions.md). Live membership/spend and
+revocation timing are not inferred from those source forms.

@@ -323,6 +323,13 @@ CASES = (
         (EC2, PLATFORM, COGNITO),
     ),
     Case(
+        "E33",
+        "#5625",
+        "story-reads",
+        "Tenant access status and bounded authorized request review; decision and revocation fixtures remain separate",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
         "E28",
         "#5634",
         "story-reads",

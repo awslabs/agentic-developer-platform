@@ -356,7 +356,7 @@ class AuthService(IAuthService):
             logger.error(f"Failed to revoke token: {e}")
             raise TokenValidationError(f"Token revocation failed: {str(e)}")
 
-    async def revoke_all_user_tokens(self, entity_id: str, org_id: str, db: AsyncSession) -> int:
+    async def revoke_all_user_tokens(self, entity_id: str, org_id: str, db: AsyncSession, *, token_ids: list[str] | None = None) -> int:
         """
         Revoke all tokens for a specific user or service account.
 
@@ -379,7 +379,9 @@ class AuthService(IAuthService):
         try:
             logger.debug(f"Revoking all tokens for entity: {entity_id}")
 
-            count = await self.token_manager.revoke_all_user_tokens(entity_id, org_id, db)
+            count = await self.token_manager.revoke_all_user_tokens(
+                entity_id, org_id, db, **({"token_ids": token_ids} if token_ids is not None else {})
+            )
 
             logger.info(f"Revoked {count} tokens for entity: {entity_id}")
             return count

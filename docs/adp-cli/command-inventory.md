@@ -166,6 +166,12 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 
 GitHub maintenance (#5634) adds six leaf commands: `github disconnect`, `admin github rotate-key`, `admin github disconnect`, and `admin github org-binding list|add|remove`. `admin github status --maintenance` reads the revision needed for reviewed App writes. See [GitHub maintenance](github-maintenance.md) for exact flags, staged key recovery and live acceptance holds. The checked manifest is the source inventory; deployed availability and functioning OAuth/webhook consumers require separate evidence.
 
+Access/session story #5625 adds seven forms: `access status|request`,
+`admin access-request list|show|approve|deny`, and `admin session revoke-user`.
+See [access and sessions](access-and-sessions.md) for exact review flags and the
+limited gateway-token revocation effect. Nightly E33 covers safe reads.
+
+
 Hierarchy administration: `adp admin org`, `department`, `team`, `member`, `team members`, and `tenant org-links`; see [exact flags, examples and revocation semantics](hierarchy.md). The checked manifest records all 25 leaf forms. Live lifecycle qualification remains pending.
 Budget additions ([contract and examples](budgets.md)); source implemented, live enforcement acceptance pending:
 

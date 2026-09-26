@@ -17,6 +17,9 @@ RESERVED_TENANT_IDS = frozenset({"admin", "system", "api", "root", "internal", "
 class AccessStatusResponse(BaseModel):
     status: str  # "registered" | "new" | "pending"
     request_id: str | None = None
+    tenant_id: str | None = None
+    membership_role: str | None = None
+    spend_eligibility: str = "not_evaluated"
 
 
 class AccessRequestPayload(BaseModel):
@@ -29,6 +32,7 @@ class AccessRequestPayload(BaseModel):
     """
 
     motivation: str | None = None
+    target_tenant: str | None = None
 
 
 class AccessRequestResponse(BaseModel):
@@ -58,6 +62,8 @@ class AdminAccessRequestList(BaseModel):
 
 class AdminDecisionPayload(BaseModel):
     decision_note: str | None = None
+    expected_role: str | None = None
+    expected_scope: str | None = None
 
 
 class AdminApprovalResponse(BaseModel):

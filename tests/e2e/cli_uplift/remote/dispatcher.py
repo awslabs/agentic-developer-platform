@@ -38,6 +38,8 @@ PURPOSES = {
     "story_hierarchy": ("story_reads", {"mode": "hierarchy"}),
     "story_vault": ("story_reads", {"mode": "vault"}),
     "story_github_maintenance": ("story_reads", {"mode": "github_maintenance"}),
+
+    "story_access": ("story_reads", {"mode": "access"}),
     # E01/E02/E03 — install the served release, then a real Cognito login.
     "install_auth": ("install_auth", {}),
     # E04/E05 — `adp aws connect`, provisioned and handoff variants.

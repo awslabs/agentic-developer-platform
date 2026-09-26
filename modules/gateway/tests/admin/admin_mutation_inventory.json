@@ -15,9 +15,23 @@
   },
   {
     "method": "POST",
+    "path": "/admin/access-requests/{request_id}/approve/revision",
+    "module": "src.admin.onboarding.cli_contract",
+    "endpoint": "approve_reviewed",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
     "path": "/admin/access-requests/{request_id}/deny",
     "module": "src.admin.onboarding.handler",
     "endpoint": "deny_access_request",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/access-requests/{request_id}/deny/revision",
+    "module": "src.admin.onboarding.cli_contract",
+    "endpoint": "deny_reviewed",
     "classification": "durable-operation"
   },
   {
@@ -515,6 +529,13 @@
     "path": "/api/admin/identity/users/{user_id}/identities/{identity_id}",
     "module": "src.admin.identity.router",
     "endpoint": "delete_identity",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/auth/admin/revoke-user-tokens/{user_id}/revision",
+    "module": "src.auth.session_admin",
+    "endpoint": "revoke_reviewed_sessions",
     "classification": "durable-operation"
   },
   {

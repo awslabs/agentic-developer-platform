@@ -150,4 +150,9 @@ E28 (#5634) runs in `story-reads`/default nightly with an existing GitHub App fi
 
 E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.
 
+E33 (#5625) uses the served CLI to read current-tenant access status and a bounded
+administrator request page. It never decides requests or revokes a shared user.
+Disposable lifecycle/concurrency and client revocation timing remain separate
+acceptance fixtures.
+
 E29 (#5623) adds bounded administrator organization/department/team/member reads with the served CLI. It performs no mutation or inference; a missing authorized organization cannot pass. Membership lifecycle and cleanup acceptance need separate owned fixtures.

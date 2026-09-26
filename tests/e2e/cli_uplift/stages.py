@@ -806,6 +806,8 @@ JOURNEY_DRIVERS = {
     "E29": "story_hierarchy",
     "E24": "story_vault",
     "E28": "story_github_maintenance",
+
+    "E33": "story_access",
     "E26": "story_budget",
 }
 
