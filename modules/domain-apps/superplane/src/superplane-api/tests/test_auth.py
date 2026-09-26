@@ -129,6 +129,7 @@ from app import auth as domain_auth  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.endpoint_inventory import (  # noqa: E402
     DOMAIN_ROUTES,
+    PRIVATE_DOMAIN_ROUTES,
     WORKSPACE_PATH_PARAM,
     all_inventoried,
     classify,
@@ -1536,7 +1537,8 @@ class TestRouteInventoryCoverage:
         """Two classifications for one route means one of them is not enforced."""
         from app.endpoint_inventory import INTERNAL_ROUTES, PUBLIC_ROUTES
 
-        domain = set(DOMAIN_ROUTES)
+        domain = set(DOMAIN_ROUTES) | set(PRIVATE_DOMAIN_ROUTES)
+        assert not set(DOMAIN_ROUTES) & set(PRIVATE_DOMAIN_ROUTES)
         assert not domain & PUBLIC_ROUTES
         assert not domain & INTERNAL_ROUTES
         assert not PUBLIC_ROUTES & INTERNAL_ROUTES
@@ -2529,6 +2531,7 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         path = template
         for placeholder in (
             "{workspace_id}",
+            "{connection_id}",
             "{dep_id}",
             "{event_id}",
             "{user_id}",
@@ -2544,7 +2547,7 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
     @pytest.mark.asyncio
     async def test_no_credential_is_always_401_or_403(self, client, enforcing):
         offenders = []
-        for method, template in sorted(DOMAIN_ROUTES):
+        for method, template in sorted(set(DOMAIN_ROUTES) | set(PRIVATE_DOMAIN_ROUTES)):
             body = {} if method in {"POST", "PATCH", "PUT"} else None
             response = await client.request(method, self._concrete(template), json=body)
             if response.status_code not in (401, 403):
@@ -2559,7 +2562,7 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         """A 422 here would report an auth failure as a validation error."""
         offenders = []
         headers = {"Authorization": "Bearer forged.token.here"}
-        for method, template in sorted(DOMAIN_ROUTES):
+        for method, template in sorted(set(DOMAIN_ROUTES) | set(PRIVATE_DOMAIN_ROUTES)):
             body = {} if method in {"POST", "PATCH", "PUT"} else None
             response = await client.request(
                 method, self._concrete(template), headers=headers, json=body
@@ -2594,3 +2597,20 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         assert not offenders, (
             f"internal routes admitted a domain user token: {offenders}"
         )
+
+
+def test_private_credential_evidence_retains_domain_workspace_authority():
+    from app.endpoint_inventory import INTERNAL_ROUTES, PUBLIC_ROUTES, RouteClass, Scope
+
+    key = (
+        "GET",
+        "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
+    )
+    assert key in PRIVATE_DOMAIN_ROUTES
+    assert key not in DOMAIN_ROUTES
+    assert key not in INTERNAL_ROUTES | PUBLIC_ROUTES
+    assert classify(*key) == (
+        RouteClass.DOMAIN,
+        (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+    )
+    assert key in all_inventoried()
