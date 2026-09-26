@@ -168,3 +168,14 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+Rate-limit additions ([contract and examples](rate-limits.md)); live enforcement acceptance held:
+
+| Command | Purpose |
+|---|---|
+| `adp ratelimit me` | Token-derived applicable limits, per-dimension source and backend availability |
+| `adp admin ratelimit list` | Bounded organization-scoped configuration pages |
+| `adp admin ratelimit show` | Saved configuration and revision for one verified target |
+| `adp admin ratelimit status` | Defaults, storage scope and unknown worker convergence; TPM gap explicit |
+| `adp admin ratelimit set` | Patch named dimensions or clear to default using a reviewed revision |
+| `adp admin ratelimit delete` | Remove only the reviewed override, preserving usage and counters |

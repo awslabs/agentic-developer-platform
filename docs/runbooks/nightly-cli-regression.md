@@ -145,3 +145,9 @@ usage in the live test DB before making authenticated requests. This avoids
 assuming a fixed request price. Synthetic balances are removed between cases;
 case 7 independently verifies real model usage accrual. Spending through a cap
 with a newly triggered agent remains outside this key-scenario regression.
+
+E36 (#5627) runs the served `adp ratelimit me --json` through the existing
+`story-reads` suite. It verifies a bounded own hierarchy, per-dimension sources,
+unknown worker convergence and the named actual-token TPM dependency. It makes
+no inference calls or configuration changes. Passing E36 is metadata regression
+only; real RPM, TPM/concurrency, client retry and cleanup acceptance remain held.

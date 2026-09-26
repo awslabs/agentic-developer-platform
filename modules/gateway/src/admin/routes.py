@@ -2575,3 +2575,7 @@ async def list_agent_types(
 from src.admin.audit_routes import router as _audit_sub_router  # noqa: E402
 
 router.include_router(_audit_sub_router)
+
+from src.admin.ratelimit_cli import router as _ratelimit_cli_router  # noqa: E402
+
+router.include_router(_ratelimit_cli_router)

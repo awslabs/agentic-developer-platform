@@ -8442,6 +8442,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E22",
         "E24",
         "E26",
+        "E36",
     }
 
 
@@ -10233,6 +10234,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E22",
         "E24",
         "E26",
+        "E36",
     }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
@@ -10448,3 +10450,32 @@ def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
     else:
         assert len(launches) == 1
         assert launches[0]["SecurityGroupIds"] == [group_id]
+
+
+def test_ratelimit_story_wired_and_read_only(tmp_path):
+    assert cases.BY_ID["E36"].owner == "#5627"
+    assert "E36" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E36"] in bundle.purposes()
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "runtime": {
+                "tpm": "unavailable_actual_usage_not_reconciled",
+                "worker_convergence": "unknown",
+                "state": "configured_not_probed",
+            },
+            "lines": [
+                {"effective": {"rpm": 60}, "sources": {"rpm": "account_type_default"}}
+            ],
+        },
+    }
+    evidence = {}
+    module.ratelimit(cli, evidence)
+    assert cli.json.call_args.args[0] == ["ratelimit", "me"]
+    assert evidence["enforcement_qualification"] == "not_run"
+    cli.run.assert_not_called()
+    cli.json.return_value["detail"]["runtime"]["tpm"] = "enforced"
+    with pytest.raises(common.RemoteError, match="TPM gap"):
+        module.ratelimit(cli, {})

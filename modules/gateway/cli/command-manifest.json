@@ -4605,6 +4605,221 @@
         "tests/cli/test_adp_budget.py",
         "tests/admin/test_budget_periods.py"
       ]
+    },
+    {
+      "command": "adp admin ratelimit delete",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "ratelimit.managed.write",
+      "flags": [
+        "--dry-run",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--scope",
+        "--target",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "DELETE"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "ratelimit.managed.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit list",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "ratelimit.managed.read",
+      "flags": [
+        "--json",
+        "--max-pages",
+        "--org",
+        "--page",
+        "--page-size",
+        "--scope"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit set",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "ratelimit.managed.write",
+      "flags": [
+        "--concurrent-requests",
+        "--dry-run",
+        "--expect-absent",
+        "--expected-revision",
+        "--json",
+        "--org",
+        "--rpm",
+        "--scope",
+        "--target",
+        "--tpm",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "PUT"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}",
+          "/me/cli-capabilities"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "ratelimit.managed.write"
+      ],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit show",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "ratelimit.managed.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp admin ratelimit status",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "ratelimit.managed.read",
+      "flags": [
+        "--json",
+        "--org",
+        "--scope",
+        "--target"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/admin/organizations/{org_id}/ratelimit-cli/{scope}/{key}"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
+    },
+    {
+      "command": "adp ratelimit me",
+      "helper": "adp-ratelimit.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "ratelimit.self.read",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/ratelimits/me"
+        ],
+        "schema": "Scoped rate-limit configuration and runtime metadata"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [],
+      "tests": [
+        "tests/cli/test_adp_ratelimit.py",
+        "tests/admin/test_ratelimit_cli.py"
+      ]
     }
   ]
 }

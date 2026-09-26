@@ -52,7 +52,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-vault.py adp-usage.py adp-agent.py adp-budget.py adp-task.py adp_task_client.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-vault.py adp-usage.py adp-agent.py adp-budget.py adp-ratelimit.py adp-task.py adp_task_client.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -1792,6 +1792,8 @@ Check what works here, and why something failed:
                           Explain one of your past requests
 
   Budgets:
+    ratelimit me         Read own applicable rate limits and enforcement availability
+    admin ratelimit list|show|set|delete|status  Scoped rate-limit overrides
     budget me            Read your direct/cloud budget envelope for --period
     admin budget list|show|set|delete|status  Exact tenant/target/period caps
 
@@ -1980,6 +1982,7 @@ main() {
         # above, so it inherits the one credential path: the session `adp login`
         # already established. This dispatcher is also the foundation the later
         # amendment subcommands (#5329) attach to.
+        ratelimit) exec_python_helper "adp-ratelimit.py" ratelimit "$@" ;;
         budget)  exec_python_helper "adp-budget.py" budget "$@" ;;
         credential) exec_python_helper "adp-vault.py" credential "$@" ;;
         identity) exec_python_helper "adp-vault.py" identity "$@" ;;

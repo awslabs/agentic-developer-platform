@@ -299,6 +299,13 @@ CASES = (
         "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E36",
+        "#5627",
+        "story-reads",
+        "Own rate-limit hierarchy and unavailable TPM are explicit; no inference or saved-limit mutation",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

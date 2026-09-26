@@ -238,6 +238,9 @@ OPERATIONS = (
         "capabilities.read",
         summary="Read this capability document",
     ),
+    Operation("ratelimit.self.read", summary="Read your own applicable rate-limit configuration"),
+    Operation("ratelimit.managed.read", summary="Read scoped rate-limit overrides", permission=Permission.RATELIMIT_READ),
+    Operation("ratelimit.managed.write", summary="Change scoped rate-limit overrides", permission=Permission.RATELIMIT_UPDATE, mutates=True),
     Operation(
         "budget.self.read",
         summary="Read your own cap and settled spend",
