@@ -43,7 +43,11 @@ async def workload(lifecycle, monkeypatch, tmp_path, request):  # noqa: F811
     workspace_id, cluster_id, request_id = [uuid.uuid4() for _ in range(3)]
     profile = profile_fixture(cluster_id)
     param = getattr(request, "param", False)
-    if param == "regions":
+    if param == "network":
+        from tests.controller_network_support import configure
+
+        configure(profile)
+    elif param == "regions":
         # #5925: a bounded regional profile. The second region reuses the same
         # account/namespace/cluster target -- only the compute location and
         # its network/image/identity binding vary.
@@ -718,9 +722,11 @@ async def worker_runtime(workload, tmp_path):
 
     pool = SimpleNamespace(acquire=workload.connections.connect)
     from app.models.controller_workload_submission import ControllerWorkloadSubmission
+    from app.models.controller_cleanup_snapshot import ControllerCleanupSnapshot
 
     async with workload.sessions.kw["bind"].begin() as connection:
         await connection.run_sync(ControllerWorkloadSubmission.__table__.create)
+        await connection.run_sync(ControllerCleanupSnapshot.__table__.create)
     async with pool.acquire() as connection:
         await connection.execute("""
             CREATE TABLE observation_leases(scope text PRIMARY KEY,holder text,expires_at timestamptz);
@@ -751,6 +757,10 @@ async def worker_runtime(workload, tmp_path):
     guard = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(guard)
     cloud, verified = Cloud(data), {}
+    if "controller_network_cluster" in workload.preview.request.parameters:
+        from tests.controller_network_support import attach
+
+        await attach(pool, cloud, workload)
     guard.selected_account = lambda _: cloud.sky_account
     cloud.selected_region_override = None
     cloud.selected_subnet_override = None
@@ -809,7 +819,7 @@ async def worker_runtime(workload, tmp_path):
                     b for b in data["regions"] if b["region"] == chosen["region"]
                 )
                 region = cloud.selected_region_override or chosen["region"]
-                cloud.client("ec2", region_name=region)
+                selected_client = cloud.client("ec2", region_name=region)
                 args = {
                     "ImageId": chosen["image_id"],
                     "InstanceType": "g6.xlarge",
@@ -835,14 +845,23 @@ async def worker_runtime(workload, tmp_path):
                         }
                     ],
                 }
-                guard.verify_region_binding(cloud, args)
-                guard.verify_selected_binding(cloud, args)
+                try:
+                    guard.verify_region_binding(selected_client, args)
+                    guard.verify_selected_binding(selected_client, args)
+                except Exception:
+                    # Preserve only simulated transport diagnostics; production
+                    # deliberately returns UNKNOWN without provider details.
+                    import traceback
+
+                    traceback.print_exc()
+                    raise
                 cloud.launched_region = region
             cloud.launches += 1
             cloud.exists = cloud.ever_created = True
             if cloud.lose_launch_response:
                 raise httpx.ReadError("simulated response loss")
         elif path == "/down":
+            cloud.downs = getattr(cloud, "downs", 0) + 1
             assert json.loads(request.content)["purge"] is False
             cloud.exists = False
         elif path == "/api/status":
@@ -873,9 +892,13 @@ async def worker_runtime(workload, tmp_path):
     gateway.alter = {"adp_org_id": "adp-test"}
     dispatcher = OperationDispatcher(workload.connections.connect, gateway)
 
-    async def publish(result):
-        # The request here is the actual API admission, delivered by its real outbox.
-        assert (await dispatcher.drain_once()).delivered == 1
+    async def publish(result, *, continuation=False):
+        # Both paths use the real paid dispatcher and original admission.
+        if continuation:
+            assert result.operation_id in await dispatcher.recover_once()
+            assert gateway.calls[-1][1]["mode"] == "execution"
+        else:
+            assert (await dispatcher.drain_once()).delivered == 1
         assert gateway.calls[-1][1]["operation_id"] == result.operation_id
         async with pool.acquire() as connection:
             original = await connection.fetchrow(
@@ -885,8 +908,8 @@ async def worker_runtime(workload, tmp_path):
             lease = await acquire(
                 connection,
                 operation_id=result.operation_id,
-                holder="real-invocation#1",
-                attempt_id=original["attempt_id"],
+                holder="real-invocation:" + uuid.uuid4().hex,
+                attempt_id=uuid.uuid4().hex if continuation else original["attempt_id"],
             )
         principal = ResolvedPrincipal(
             lease.org_id,
@@ -905,7 +928,7 @@ async def worker_runtime(workload, tmp_path):
             original["max_cost_micros"],
         )
         verified[result.operation_id] = operation
-        directory = tmp_path / result.operation_id
+        directory = tmp_path / (result.operation_id + "-" + str(lease.fence_token))
         directory.mkdir()
         provider = Provider(
             sky=sky,

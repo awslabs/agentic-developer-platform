@@ -137,7 +137,7 @@ async def registration_values(
             ):
                 raise ValueError("create request changed")
         elif request.action == "teardown":
-            from .cleanup_binding import source_for, validate
+            from .cleanup_binding import source_for, validate, validated_graph
 
             source = await source_for(
                 connection,
@@ -163,6 +163,7 @@ async def registration_values(
                     workspace_id=workspace_id,
                     request_id=request.idempotency_key,
                     source_operation_id=source_id,
+                    cleanup_graph=await validated_graph(connection, source, request),
                 )
                 != request
             ):

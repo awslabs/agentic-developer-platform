@@ -225,7 +225,7 @@ class NetworkJournal:
                     )
             return result
 
-    async def release(self, key, *, observe, delete):
+    async def release(self, key, *, observe, delete, expected=None):
         async with self.locked(key) as c:
             row = await c.fetchrow(
                 "SELECT * FROM controller_network_resources WHERE resource_key=$1", key
@@ -236,6 +236,10 @@ class NetworkJournal:
                 self.allocation,
             )
             if row is None or member is None:
+                if expected is not None:
+                    raise OperationRefused(
+                        "original staged network membership unavailable"
+                    )
                 return
             if row["org_id"] != self.lease.org_id or (
                 member["org_id"],
@@ -256,6 +260,16 @@ class NetworkJournal:
                 raise OperationRefused(
                     "network cleanup is not bound to the original operation"
                 )
+            if expected is not None and member["released_at"] is None:
+                if (
+                    row["generation"] != expected["generation"]
+                    or member["membership_generation"]
+                    != expected["membership_generation"]
+                    or row["descriptor"] != canonical(expected["descriptor"])
+                    or row["provider_reference"] != canonical(expected["reference"])
+                    or row["owned"] != expected["owned"]
+                ):
+                    raise OperationRefused("original staged network identity changed")
             if row["state"] == "absent" or member["released_at"] is not None:
                 return
             others = await c.fetchval(
@@ -298,15 +312,20 @@ class NetworkJournal:
                     absent,
                 )
             await self.authorize()
-            await c.execute(
-                "UPDATE controller_network_resources SET state='absent' WHERE resource_key=$1",
-                key,
-            )
-            await c.execute(
-                "UPDATE controller_network_members SET released_at=clock_timestamp() WHERE resource_key=$1 AND allocation_id=$2",
-                key,
-                self.allocation,
-            )
+            # Native absence may predate this operation, in which case no delete
+            # effect is invented. Publish the two dependent bookkeeping facts
+            # together: no crash may expose absent + unreleased without a journal.
+            # Provider reads/mutations and current authorization already completed.
+            async with c.transaction():
+                await c.execute(
+                    "UPDATE controller_network_resources SET state='absent' WHERE resource_key=$1",
+                    key,
+                )
+                await c.execute(
+                    "UPDATE controller_network_members SET released_at=clock_timestamp() WHERE resource_key=$1 AND allocation_id=$2",
+                    key,
+                    self.allocation,
+                )
 
     async def change(self, key, action, descriptor, mutate, observe):
         async with self.locked(key) as c:

@@ -294,6 +294,7 @@ async def preview_delete(
         )
     original = stored_preview(intent)
     require_target(intent, workspace, cluster)
+    graph = snapshot = None
     async with owner.operation_connect() as connection:
         from superplane_executor.cleanup_binding import source_for, validate
 
@@ -305,12 +306,17 @@ async def preview_delete(
         )
         if decode_payload(source["request_payload"]) != original.request:
             raise ProvisioningRefused("original deployment source request changed")
+        if body.cleanup_mode == "staged-v1":
+            from superplane_executor.cleanup_snapshot import select as select_snapshot
+
+            graph, snapshot = await select_snapshot(connection, source)
         planned = teardown_request(
             original.request,
             org_id=str(org_id),
             workspace_id=str(workspace_id),
             request_id=str(body.operation_id),
             source_operation_id=source["operation_id"],
+            cleanup_graph=graph,
         )
         await validate(connection, source, planned)
         await registration_values(
@@ -320,18 +326,12 @@ async def preview_delete(
             workspace_id=str(workspace_id),
             deployment_id=str(deployment_id),
         )
-    planned = teardown_request(
-        original.request,
-        org_id=str(org_id),
-        workspace_id=str(workspace_id),
-        request_id=str(body.operation_id),
-        source_operation_id=source["operation_id"],
-    )
     return DeploymentPreview(
         str(deployment_id),
         planned,
         original.deployment_request,
         original.deployment_target,
+        snapshot,
     )
 
 
