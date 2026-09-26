@@ -451,7 +451,11 @@ def stage_problems(stages):
     process died mid-stage) must all veto too, and enumerating the bad states
     means a state added later defaults to being treated as success.
     """
-    return sorted(f"{name}: {state}" for name, state in (stages or {}).items() if state != "complete")
+    return sorted(
+        f"{name}: {state}"
+        for name, state in (stages or {}).items()
+        if state != "complete"
+    )
 
 
 def accept(matrix, names, *, cleanup_ok=True, stages=None):
@@ -487,7 +491,9 @@ def accept(matrix, names, *, cleanup_ok=True, stages=None):
         (BLOCKED, "blocked"),
         (NOT_RUN, "did not run"),
     ):
-        offenders = sorted(case_id for case_id, entry in matrix.items() if entry["status"] == status)
+        offenders = sorted(
+            case_id for case_id, entry in matrix.items() if entry["status"] == status
+        )
         if offenders:
             reasons.append(f"{label}: " + ", ".join(offenders))
 
