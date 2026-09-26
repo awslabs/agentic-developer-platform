@@ -492,3 +492,21 @@ def test_task_handles_use_canonical_task_helper(monkeypatch, action):
         assert task.command.call_args.args[1] == ("cancel" if action == "abort" else "messages")
     else:
         assert result["status"] == "ok"
+
+
+def test_task_listing_uses_owner_projection_and_follows_empty_authorized_page():
+    client = Mock()
+    client.get.side_effect = [dict(items=[], last_key="next"), dict(items=[dict(task_id="tsk-owned")], last_key=None)]
+    result = agent.execute(agent.parser().parse_args(["list", "--tasks", "--max-pages", "2"]), client)
+    assert result["detail"]["items"] == [dict(task_id="tsk-owned")]
+    assert client.get.call_args_list[0].args[0] == "/me/agent-invocations/tasks?page_size=20"
+    assert client.get.call_args_list[1].args[0].endswith("last_key=next")
+    client.post.assert_not_called()
+
+
+@pytest.mark.parametrize("extra", [["--admin"], ["--page-size", "21"]])
+def test_task_listing_rejects_admin_and_unbounded_page_before_io(extra):
+    client = Mock()
+    with pytest.raises(agent.common.CliError):
+        agent.execute(agent.parser().parse_args(["list", "--tasks", *extra]), client)
+    client.get.assert_not_called()

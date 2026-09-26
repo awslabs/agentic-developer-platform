@@ -22,6 +22,7 @@ def fixture_valid(fixture):
         and type(fixture.get("max_task_usd")) in (int, float)
         and 0 < fixture["max_task_usd"] <= 1
         and fixture.get("scenario") in {"complete", "cancel"}
+        and type(fixture.get("require_activity_list", False)) is bool
         and fixture.get("control_when", "observed") in {"observed", "running"}
         and type(fixture.get("running_wait_seconds", 30)) is int
         and 1 <= fixture.get("running_wait_seconds", 30) <= 60
@@ -127,6 +128,121 @@ def persist_recovery(path, value):
         json.dump(value, stream)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def durable_events(stdout, task_id):
+    frames = [
+        json.loads(line) for line in stdout.splitlines() if line.strip().startswith("{")
+    ]
+    events = []
+    for frame in frames:
+        wrapper = frame.get("data") or {}
+        if frame.get("type") != "event" or wrapper.get("event") != "event":
+            continue
+        event = wrapper.get("data") or {}
+        cursor = wrapper.get("id")
+        common.require(
+            isinstance(cursor, str)
+            and re.fullmatch(re.escape(task_id) + r":[1-9][0-9]*", cursor)
+            and event.get("task_id") == task_id
+            and event.get("event_id") == cursor
+            and type(event.get("sequence")) is int
+            and event["sequence"] == int(cursor.rsplit(":", 1)[1]),
+            "Task stream event identity/cursor mismatch",
+        )
+        events.append(wrapper)
+    return frames, events
+
+
+def verify_replay(config, env, detail, events):
+    task_id = detail["task_id"]
+    first = events[0]["id"]
+    high = detail.get("latest_event_cursor")
+    common.require(
+        isinstance(high, str)
+        and re.fullmatch(re.escape(task_id) + r":[1-9][0-9]*", high),
+        "Terminal Task omitted its event high-water cursor",
+    )
+    start, end = int(first.rsplit(":", 1)[1]), int(high.rsplit(":", 1)[1])
+    original_cursors = [event["id"] for event in events]
+    last = int(original_cursors[-1].rsplit(":", 1)[1])
+    common.require(
+        first == detail.get("oldest_event_cursor"),
+        "Fresh Task stream starts after retained history; retention gap requires inspection",
+    )
+    common.require(
+        original_cursors == [f"{task_id}:{n}" for n in range(start, last + 1)],
+        "Original Task stream cursors were not strictly contiguous and unique",
+    )
+    common.require(
+        start < end <= 10000, "No bounded nonempty terminal suffix available for replay"
+    )
+    code, stdout, _ = common.bounded(
+        [
+            str(config["cli_path"]),
+            "agent",
+            "logs",
+            "--run",
+            task_id,
+            "--follow",
+            "--last-event-id",
+            first,
+            "--timeout",
+            "60",
+            "--json",
+        ],
+        env=env,
+        timeout=70,
+    )
+    _, replayed = durable_events(stdout, task_id)
+    cursors = [event["id"] for event in replayed]
+    common.require(
+        code in {0, 4, 5, 7}
+        and cursors == [f"{task_id}:{n}" for n in range(start + 1, end + 1)],
+        "Task stream replay was not the exact contiguous terminal suffix",
+    )
+    common.require(
+        replayed[-1]["data"].get("type") == "task." + detail["status"],
+        "Task stream replay omitted the matching terminal event",
+    )
+    original = {event["id"]: event for event in events}
+    common.require(
+        all(
+            event == original[event["id"]]
+            for event in replayed
+            if event["id"] in original
+        ),
+        "Task stream replay changed retained event data",
+    )
+    return {
+        "after": first,
+        "through": high,
+        "event_count": len(cursors),
+        "cursor_sha256": hashlib.sha256(json.dumps(cursors).encode()).hexdigest(),
+    }
+
+
+def activity_list_readback(cli, detail):
+    response = cli.json(
+        ["agent", "list", "--tasks", "--page-size", "20", "--max-pages", "5"]
+    )
+    matches = [
+        item
+        for item in (response.get("detail") or {}).get("items", [])
+        if item.get("task_id") == detail["task_id"]
+    ]
+    common.require(
+        len(matches) == 1
+        and matches[0].get("source_type") == "task"
+        and matches[0].get("invocation_id") == detail["invocation_id"]
+        and (matches[0].get("task_snapshot") or {}).get("status") == detail["status"],
+        "Newly admitted Task missing or mismatched in owner Activity list",
+    )
+    return {
+        "task_id": detail["task_id"],
+        "invocation_id": detail["invocation_id"],
+        "status": detail["status"],
+    }
 
 
 def activity_readback(cli, task_detail):
@@ -360,17 +476,10 @@ def _execute(config, evidence):
                 env=env,
                 timeout=70,
             )
-            frames = [
-                json.loads(line)
-                for line in stdout.splitlines()
-                if line.strip().startswith("{")
-            ]
+            frames, events = durable_events(stdout, task_id)
             evidence["stream_frame_count"] = len(frames)
-            events = [frame for frame in frames if frame.get("type") == "event"]
             evidence["stream_event_count"] = len(events)
-            evidence["event_cursors"] = [
-                (frame.get("data") or {}).get("id") for frame in events
-            ]
+            evidence["event_cursors"] = [frame["id"] for frame in events]
             evidence["monitor_exit"] = code
             common.require(
                 code in {0, 4, 5, 7} and events, "No Task event stream evidence"
@@ -403,6 +512,14 @@ def _execute(config, evidence):
             )
             evidence["result"] = detail.get("result")
             evidence["activity_readback"] = activity_readback(cli, detail)
+            evidence["stream_replay"] = verify_replay(config, env, detail, events)
+            if fixture.get("require_activity_list", False):
+                evidence["activity_list_readback"] = activity_list_readback(cli, detail)
+            else:
+                evidence["activity_list_readback"] = {
+                    "status": "not_requested",
+                    "reason": "owner-list rollout not selected",
+                }
         finally:
             if submitted and not task_id:
                 task_id = reconcile_acceptance(cli, trigger, home)

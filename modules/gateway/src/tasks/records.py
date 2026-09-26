@@ -541,3 +541,8 @@ def base_item(
             "scope": dict(scope),
         }
     )
+
+
+def task_owner_prefix(tenant: str, principal: str) -> str:
+    """Admission-only owner discovery prefix; never a read authorization grant."""
+    return "TASK_OWNER#" + component_digest("task-owner-list-v1", tenant, principal) + "#"

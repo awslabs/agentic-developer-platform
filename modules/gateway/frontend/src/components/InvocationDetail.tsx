@@ -26,6 +26,7 @@ import { LivenessBadge } from '@/components/activity/LivenessBadge';
 // AND the polled control state says this run is genuinely controllable, so this
 // import does not change the modal for any existing deployment.
 import { ControlPanel } from '@/components/ControlPanel';
+import { TaskEventStream } from '@/components/TaskEventStream';
 import { LiveExplanations } from '@/components/LiveExplanations';
 import type { InvocationItem } from '@/types/activity';
 
@@ -335,14 +336,14 @@ export function InvocationDetail({
     </DetailRow>
   ) : null;
 
-  const transcriptRow = item.transcript_key ? (
-    <DetailRow label="Transcript">
+  const transcriptRow = item.transcript_key || item.transcript_status === 'available' ? (
+    <DetailRow label={item.source_type === 'task' ? "Retained Task report" : "Transcript"}>
       <button
         type="button"
         onClick={() => setShowTranscript(true)}
         className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline text-sm"
       >
-        View full transcript
+        {item.source_type === 'task' ? 'View retained Task report' : 'View full transcript'}
       </button>
     </DetailRow>
   ) : null;
@@ -426,7 +427,7 @@ export function InvocationDetail({
   // ---------------------------------------------------------------------------
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={showTranscript ? 'Run Transcript' : 'Invocation Detail'} size="lg">
+    <Modal isOpen={isOpen} onClose={onClose} title={showTranscript ? (item.source_type === 'task' ? 'Retained Task report' : 'Run Transcript') : 'Invocation Detail'} size="lg">
       {showTranscript ? (
         /* Issue #3767: Inline transcript content swap (replaces nested modal) */
         <div>
@@ -501,6 +502,7 @@ export function InvocationDetail({
             offer from the polled control state, because a non-terminal status
             does not imply the run is reachable or controllable.
           */}
+          {item.source_type === 'task' ? (item.task_id ? <TaskEventStream key={item.task_id} taskId={item.task_id} isOpen={isOpen} onTerminal={onRefreshItem} /> : <p>Task stream unavailable.</p>) : <>
           <LiveExplanations key={item.invocation_id} invocationId={item.invocation_id} isOpen={isOpen} terminal={isTerminal} onTerminal={onRefreshItem} />
           <ControlPanel
             invocationId={item.invocation_id}
@@ -508,10 +510,11 @@ export function InvocationDetail({
             isTerminalRun={isTerminal}
             onCommandApplied={onRefreshItem}
           />
+          </>}
 
           {/* Status timeline note */}
           <p className="mt-4 text-xs text-gray-400 dark:text-gray-500 italic">
-            Status shows current state and last transition time. Full transition history is not retained.
+            {item.source_type === 'task' ? 'Task status is canonical; process liveness remains unverified. Retained events may be incomplete.' : 'Status shows current state and last transition time. Full transition history is not retained.'}
           </p>
         </>
       )}

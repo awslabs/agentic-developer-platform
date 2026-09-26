@@ -328,3 +328,64 @@ def test_activity_locator_does_not_project_into_legacy_index(adapter, store, cli
     store.accept(request)
     adapter.resolve_invocation(tenant=request.tenant, principal=request.canonical_principal, invocation_id=request.invocation_id)
     assert client.scan(TableName=store.table_name, IndexName="tenant-index")["Items"] == []
+
+
+def test_owner_listing_atomic_and_isolated_without_legacy_projection(adapter, store, client):
+    request = _request()
+    store.accept(request)
+    bindings, cursor = adapter.list_owned(tenant=request.tenant, principal=request.canonical_principal, limit=20, after=None)
+    assert bindings == [request.task_id] and cursor is None
+    assert adapter.list_owned(tenant=request.tenant, principal="foreign", limit=20, after=None) == ([], None)
+    assert adapter.list_owned(tenant="foreign", principal=request.canonical_principal, limit=20, after=None) == ([], None)
+    assert client.scan(TableName=store.table_name, IndexName="tenant-index")["Items"] == []
+    # Exact acceptance replay does not add a second discovery row.
+    store.accept(request)
+    assert adapter.list_owned(tenant=request.tenant, principal=request.canonical_principal, limit=20, after=None)[0] == bindings
+
+
+def test_owner_listing_pages_only_own_records_and_excludes_preindex_history(adapter, store, client):
+    from src.tasks.records import task_owner_prefix
+
+    requests = [
+        _request(
+            task_id="tsk_" + str(uuid.uuid4()), invocation_id=str(uuid.uuid4()), dispatch_id=str(uuid.uuid4()), idempotency_key=str(uuid.uuid4())
+        )
+        for _ in range(3)
+    ]
+    for request in requests:
+        store.accept(request)
+    first = requests[0]
+    page, cursor = adapter.list_owned(tenant=first.tenant, principal=first.canonical_principal, limit=1, after=None)
+    assert len(page) == 1 and cursor and cursor.endswith(page[0])
+    page2, _ = adapter.list_owned(tenant=first.tenant, principal=first.canonical_principal, limit=1, after=cursor)
+    assert page2[0] != page[0]
+    prefix = task_owner_prefix(first.tenant, first.canonical_principal)
+    rows = client.query(
+        TableName=store.authority_table_name,
+        KeyConditionExpression="pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={":pk": {"S": "TENANT#" + first.tenant}, ":prefix": {"S": prefix}},
+    )["Items"]
+    for row in rows:
+        client.delete_item(TableName=store.authority_table_name, Key={"pk": row["pk"], "sk": row["sk"]})
+    assert adapter.list_owned(tenant=first.tenant, principal=first.canonical_principal, limit=20, after=None) == ([], None)
+    assert adapter.load_task(task_id=first.task_id) is not None  # Historical direct reads remain available.
+
+
+def test_owner_discovery_write_is_atomic_with_admission(adapter, store, client):
+    from src.tasks.records import task_owner_prefix
+    from src.tasks.store import TaskStoreError as DurableStoreError
+
+    request = _request()
+    stamp = store._clock().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Force only the appended owner locator's condition to fail.
+    client.put_item(
+        TableName=store.authority_table_name,
+        Item={
+            "pk": {"S": "TENANT#" + request.tenant},
+            "sk": {"S": task_owner_prefix(request.tenant, request.canonical_principal) + stamp + "#" + request.task_id},
+        },
+    )
+    with pytest.raises(DurableStoreError):
+        store.accept(request)
+    assert adapter.load_task(task_id=request.task_id) is None
+    assert client.scan(TableName=store.table_name)["Items"] == []

@@ -12792,3 +12792,140 @@ def test_coding_activity_readback_requires_exact_task_identity(tmp_path, fault):
         cli.json.assert_called_once_with(
             ["agent", "status", "--run", "invocation-owned"]
         )
+
+
+def coding_stream_frame(task, sequence, kind="progress.updated"):
+    cursor = f"{task}:{sequence}"
+    return {
+        "type": "event",
+        "data": {
+            "event": "event",
+            "id": cursor,
+            "data": {
+                "task_id": task,
+                "sequence": sequence,
+                "event_id": cursor,
+                "type": kind,
+            },
+        },
+    }
+
+
+def test_coding_stream_ignores_wrapped_snapshot_and_rejects_foreign_cursor(tmp_path):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    snapshot = {
+        "type": "event",
+        "data": {"event": "snapshot", "data": {"task_id": "tsk-owned"}},
+    }
+    frames, events = module.durable_events(json.dumps(snapshot), "tsk-owned")
+    assert len(frames) == 1 and events == []
+    foreign = coding_stream_frame("tsk-foreign", 1)
+    with pytest.raises(common.RemoteError):
+        module.durable_events(json.dumps(foreign), "tsk-owned")
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "gap", "duplicate", "changed", "missing_terminal"]
+)
+def test_coding_terminal_replay_requires_exact_suffix(tmp_path, monkeypatch, fault):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    task = "tsk-owned"
+    initial = [
+        coding_stream_frame(task, 1),
+        coding_stream_frame(task, 2),
+        coding_stream_frame(task, 3, "task.cancelled"),
+    ]
+    _, events = module.durable_events(
+        "\n".join(json.dumps(frame) for frame in initial), task
+    )
+    replayed = copy.deepcopy(initial[1:])
+    if fault == "gap":
+        replayed = replayed[1:]
+    if fault == "duplicate":
+        replayed.insert(0, copy.deepcopy(replayed[0]))
+    if fault == "changed":
+        replayed[0]["data"]["data"]["type"] = "changed"
+    if fault == "missing_terminal":
+        replayed[-1]["data"]["data"]["type"] = "progress.updated"
+    calls = []
+
+    def bounded(argv, **kwargs):
+        calls.append(argv)
+        return 0, "\n".join(json.dumps(frame) for frame in replayed), ""
+
+    monkeypatch.setattr(common, "bounded", bounded)
+    detail = {
+        "task_id": task,
+        "status": "cancelled",
+        "latest_event_cursor": task + ":3",
+        "oldest_event_cursor": task + ":1",
+    }
+    if fault:
+        with pytest.raises(common.RemoteError):
+            module.verify_replay({"cli_path": "/served/adp"}, {}, detail, events)
+    else:
+        result = module.verify_replay({"cli_path": "/served/adp"}, {}, detail, events)
+        assert result["event_count"] == 2 and result["through"] == task + ":3"
+    assert calls[0][calls[0].index("--last-event-id") + 1] == task + ":1"
+    assert not any(command in calls[0] for command in ("trigger", "abort", "steer"))
+
+
+@pytest.mark.parametrize("fault", [None, "absent", "duplicate", "foreign_invocation"])
+def test_coding_owner_list_verifies_one_exact_new_task(tmp_path, fault):
+    from unittest.mock import MagicMock
+
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    detail = {"task_id": "tsk-owned", "invocation_id": "owned", "status": "cancelled"}
+    item = {**detail, "source_type": "task", "task_snapshot": dict(detail)}
+    items = [item]
+    if fault == "absent":
+        items = []
+    elif fault == "duplicate":
+        items.append(dict(item))
+    elif fault == "foreign_invocation":
+        item["invocation_id"] = "foreign"
+    cli = MagicMock()
+    cli.json.return_value = {"detail": {"items": items}}
+    if fault:
+        with pytest.raises(common.RemoteError):
+            module.activity_list_readback(cli, detail)
+    else:
+        assert module.activity_list_readback(cli, detail) == detail
+    cli.json.assert_called_once_with(
+        ["agent", "list", "--tasks", "--page-size", "20", "--max-pages", "5"]
+    )
+
+
+@pytest.mark.parametrize("fault", ["duplicate", "gap", "truncated"])
+def test_coding_replay_refuses_incomplete_or_duplicate_initial_history(
+    tmp_path, monkeypatch, fault
+):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    task = "tsk-owned"
+    frames = [
+        coding_stream_frame(task, 1),
+        coding_stream_frame(task, 2),
+        coding_stream_frame(task, 3, "task.cancelled"),
+    ]
+    if fault == "duplicate":
+        frames.insert(0, frames[0])
+    elif fault == "gap":
+        frames.pop(1)
+    else:
+        frames.pop(0)
+    _, events = module.durable_events(
+        "\n".join(json.dumps(frame) for frame in frames), task
+    )
+    monkeypatch.setattr(
+        common,
+        "bounded",
+        lambda *args, **kwargs: pytest.fail("Do not reconnect a known invalid history"),
+    )
+    detail = {
+        "task_id": task,
+        "status": "cancelled",
+        "latest_event_cursor": task + ":3",
+        "oldest_event_cursor": task + ":1",
+    }
+    with pytest.raises(common.RemoteError):
+        module.verify_replay({"cli_path": "/served/adp"}, {}, detail, events)

@@ -160,6 +160,9 @@ class TaskStore(Protocol):
     def require_policy(self, *, tenant: str, principal: str, persona: str) -> None:
         """Require the current canonical task policy to allow this persona."""
 
+    def list_owned(self, *, tenant: str, principal: str, limit: int, after: str | None) -> tuple[list[str], str | None]:
+        """Bounded owner discovery, returning bindings to reauthorize individually."""
+
     def resolve_invocation(self, *, tenant: str, principal: str, invocation_id: str) -> tuple[str, int] | None:
         """Resolve a scoped retained run binding, without granting Task access."""
 
@@ -254,6 +257,19 @@ class InMemoryTaskStore:
         """Seed a task. Test-only: production tasks are created by T2/T3."""
         self.tasks[record.task_id] = record
         self.events.setdefault(record.task_id, [])
+
+    def list_owned(self, *, tenant: str, principal: str, limit: int, after: str | None) -> tuple[list[str], str | None]:
+        if self.fail:
+            raise TaskStoreError("task store unavailable")
+        records = sorted(
+            (r for r in self.tasks.values() if r.tenant_id == tenant and r.owner_principal_id == principal),
+            key=lambda r: r.created_at + "#" + r.task_id,
+            reverse=True,
+        )
+        records = [r for r in records if after is None or r.created_at + "#" + r.task_id < after]
+        page = records[:limit]
+        cursor = page[-1].created_at + "#" + page[-1].task_id if len(records) > limit else None
+        return [r.task_id for r in page], cursor
 
     def resolve_invocation(self, *, tenant: str, principal: str, invocation_id: str) -> tuple[str, int] | None:
         if self.fail:
