@@ -718,9 +718,11 @@ async def worker_runtime(workload, tmp_path):
 
     pool = SimpleNamespace(acquire=workload.connections.connect)
     from app.models.controller_workload_submission import ControllerWorkloadSubmission
+    from app.models.controller_cleanup_snapshot import ControllerCleanupSnapshot
 
     async with workload.sessions.kw["bind"].begin() as connection:
         await connection.run_sync(ControllerWorkloadSubmission.__table__.create)
+        await connection.run_sync(ControllerCleanupSnapshot.__table__.create)
     async with pool.acquire() as connection:
         await connection.execute("""
             CREATE TABLE observation_leases(scope text PRIMARY KEY,holder text,expires_at timestamptz);

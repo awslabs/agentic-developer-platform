@@ -571,7 +571,7 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     # Advanced to 036 by #6048 for explicit shared cluster membership.
     assert (
         installer.receipt["migration"]["schema"]
-        == "041_controller_workload_submissions"
+        == "042_controller_cleanup_snapshots"
     )
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
