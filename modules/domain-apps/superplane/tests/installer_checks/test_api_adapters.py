@@ -1,7 +1,7 @@
 """Existing adapter references and verified activation are distinct installer states."""
 
 import copy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -164,6 +164,11 @@ def test_secret_or_role_drift_refuses_before_activation_intent(monkeypatch):
             "adapter_stage": {
                 "state": "verified-disabled",
                 "verified_at": datetime.now(UTC).isoformat(),
+                "credential_metadata": {
+                    "evidence_expires_at": (
+                        datetime.now(UTC) + timedelta(minutes=5)
+                    ).isoformat()
+                },
                 "binding": {"secret": "old"},
             }
         },
@@ -224,6 +229,11 @@ def test_activation_records_intent_before_mutation(monkeypatch):
         "deployment_uid": "selected-api",
         "state": "verified-disabled",
         "verified_at": datetime.now(UTC).isoformat(),
+        "credential_metadata": {
+            "evidence_expires_at": (
+                datetime.now(UTC) + timedelta(minutes=5)
+            ).isoformat()
+        },
         "binding": binding,
     }
     events = []
@@ -250,3 +260,92 @@ def test_activation_records_intent_before_mutation(monkeypatch):
         ("apply", "activation-pending"),
         ("save", "activated-awaiting-full-verification"),
     ]
+
+
+def test_credential_expiring_before_activation_never_enables_dispatch(monkeypatch):
+    stage = {
+        "state": "verified-disabled",
+        "verified_at": datetime.now(UTC).isoformat(),
+        "credential_metadata": {
+            "evidence_expires_at": (
+                datetime.now(UTC) - timedelta(seconds=1)
+            ).isoformat()
+        },
+        "binding": {},
+    }
+    installer = SimpleNamespace(
+        receipt={"adapter_stage": stage}, save=Mock(), apply=Mock()
+    )
+    monkeypatch.setattr(adapter_staging, "snapshot", lambda _: {})
+    with pytest.raises(Refusal):
+        adapter_staging.activate(installer)
+    installer.save.assert_not_called()
+    installer.apply.assert_not_called()
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_secret_transport_negotiates_metadata_and_never_uses_kubectl(
+    environment, monkeypatch, fallback
+):
+    import base64
+    import httpx
+    import ssl
+
+    certificate = ssl.create_default_context().get_ca_certs(binary_form=True)[0]
+    cluster = {
+        "arn": f"arn:aws:eks:{environment['region']}:{environment['account_id']}:cluster/{environment['cluster']}",
+        "endpoint": "https://eks.example.test",
+        "certificateAuthority": {
+            "data": base64.b64encode(
+                ssl.DER_cert_to_PEM_cert(certificate).encode()
+            ).decode()
+        },
+    }
+    received = []
+
+    def respond(request):
+        received.append(request)
+        assert request.headers["accept"] == adapter_staging.PARTIAL_METADATA
+        assert request.headers["authorization"] == "Bearer test-operator-transport"
+        if fallback:
+            return httpx.Response(
+                200, json={"apiVersion": "v1", "kind": "Secret", "data": {}}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "apiVersion": "meta.k8s.io/v1",
+                "kind": "PartialObjectMetadata",
+                "metadata": {
+                    "name": "existing-secret",
+                    "namespace": environment["namespace"],
+                    "uid": "secret-uid",
+                    "resourceVersion": "42",
+                    "annotations": {"legacy": "private-metadata-not-retained"},
+                },
+            },
+        )
+
+    original = httpx.Client
+
+    def client(**kwargs):
+        assert isinstance(kwargs["verify"], ssl.SSLContext)
+        assert kwargs["trust_env"] is False and kwargs["follow_redirects"] is False
+        return original(transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(adapter_staging.httpx, "Client", client)
+    installer = SimpleNamespace(
+        env=environment,
+        aws=Mock(return_value={"status": {"token": "test-operator-transport"}}),
+        json=lambda value: value,
+        kube=Mock(),
+    )
+    if fallback:
+        with pytest.raises(Refusal, match="PartialObjectMetadata"):
+            adapter_staging.secret_metadata(installer, cluster, "existing-secret")
+    else:
+        assert adapter_staging.secret_metadata(
+            installer, cluster, "existing-secret"
+        ) == {"uid": "secret-uid", "resourceVersion": "42"}
+    assert len(received) == 1
+    installer.kube.assert_not_called()

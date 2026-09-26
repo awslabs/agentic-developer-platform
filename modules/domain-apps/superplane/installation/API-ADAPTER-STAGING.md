@@ -161,3 +161,14 @@ recorded object/schema boundary permits it. Report management availability only
 after independently observing it; a disabled public route is not availability.
 This clarification supersedes earlier language requiring preservation of a live
 management route or a separate transition engine.
+
+## Metadata transport precision after review
+
+The installer uses authenticated EKS API `PartialObjectMetadata` negotiation with
+no full-object Accept fallback, rather than kubectl output filtering. This avoids
+requesting Secret `.data`/`.stringData`; it does not claim that metadata is incapable
+of containing legacy embedded secrets in annotations. Metadata responses stay
+private, annotations are discarded without logging/persistence, and receipts keep
+only UID/resourceVersion. Existing Kubernetes Secret-get RBAC remains necessary.
+This precise boundary supersedes any earlier absolute claim that no sensitive
+metadata bytes can be received. It introduces no proxy or credential broker.
