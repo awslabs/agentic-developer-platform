@@ -3,7 +3,7 @@
 Story #5199 · PR #5221 · workflow `.github/workflows/eval-cli-uplift.yml`.
 
 The [combined nightly regression](nightly-cli-regression.md) invokes this suite
-with `login` after onboarding and budget enforcement; its manual `ec2_scope=full`
+with `nightly` after onboarding and budget enforcement; its manual `ec2_scope=full`
 option selects the full acceptance matrix. The instructions below are
 for standalone diagnosis; the `login` default is not used by the nightly.
 
