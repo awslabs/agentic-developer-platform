@@ -23,6 +23,26 @@ Both revisions appear in the combined summary; a deployment change between suite
 is reported, not presented as single-revision acceptance. Neither pin assumes
 that current `main` has already been deployed.
 
+The parent forwards optional non-secret `fixtures_json` unchanged to the existing
+CLI Uplift child, which applies its strict fixture validator. Manual dispatch
+accepts the same JSON object as standalone evaluation and defaults to `{}`.
+Scheduled runs use repository variable `CLI_UPLIFT_NIGHTLY_FIXTURES_JSON` when set,
+otherwise `{}`. A supplied dispatch value takes precedence; explicit `{}` selects
+no optional fixtures. Empty input falls back to the repository variable.
+
+For example, `usage_tenant` can identify the existing login, canonical owner and
+tenant for populated E21 exports. Its optional `usage_run_id` targets one existing
+invocation; no invocation ID is hardcoded or inferred. Run-scoped usage remains
+bounded to the current one-hour window, so a stale invocation may produce empty
+records and cannot establish populated accounting. Store only fixture identifiers
+and bounded selectors in this variable, never credentials or configuration
+overrides. The validator rejects unknown fields and secret material.
+
+Fixture forwarding does not change the scheduled `nightly` suite or add paid
+scenarios. It does not create fixtures, grant membership or authorize additional
+workloads. This plumbing does not configure the repository variable or dispatch
+a workflow; operators select existing authorized fixtures separately.
+
 ## Execution order and scenario index
 
 All suites belong to **one GitHub Actions run**. The ARC runner orchestrates

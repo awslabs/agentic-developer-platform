@@ -14,6 +14,11 @@ on:
         type: choice
         options: [nightly, login, full]
         default: nightly
+      fixtures_json:
+        description: 'Optional non-secret existing fixture JSON for the EC2 child; validated by CLI Uplift'
+        required: false
+        type: string
+        default: '{}'
   pull_request:
     branches: [main]
     paths:
@@ -108,6 +113,7 @@ jobs:
       expected_revision: ${{ needs.prepare.outputs.revision }}
       resolve_revision: true
       suites: ${{ inputs.ec2_scope || 'nightly' }}
+      fixtures_json: ${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}
 
   summary:
     name: Nightly regression result
