@@ -209,7 +209,7 @@ async def nodes(pool):
         return Cloud(), None
 
     async def authorize():
-        async with pool.acquire() as c:
+        async with pool.acquire() as c, c.transaction():
             if not await lock_lease(c, cleanup.grant.lease):
                 raise OperationRefused("cleanup fence expired")
 
