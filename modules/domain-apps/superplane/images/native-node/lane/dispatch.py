@@ -229,6 +229,8 @@ def dispatch(args):
                 "AWS_REGION": args.region,
                 "SOURCE_SHA": plan["source_revision"],
                 "ADP_RELEASE_BUILD": "true",
+                "AWS_MAX_ATTEMPTS": "1",
+                "AWS_RETRY_MODE": "standard",
             },
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

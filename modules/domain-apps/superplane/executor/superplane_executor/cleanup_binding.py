@@ -127,7 +127,7 @@ async def eligibility(connection, source, *, binding=None):
     return claim
 
 
-def require_original_request(source, request):
+def require_original_request(source, request, graph=None):
     if (
         teardown_request(
             decode_payload(source["request_payload"]),
@@ -135,6 +135,7 @@ def require_original_request(source, request):
             workspace_id=source["workspace_id"],
             request_id=request.idempotency_key,
             source_operation_id=source["operation_id"],
+            cleanup_graph=graph,
         )
         != request
     ):
@@ -160,7 +161,8 @@ def matches(binding, source, request, *, approval_id=None):
 async def validate(
     connection, source, request, *, approval_id=None, require_binding=False
 ):
-    require_original_request(source, request)
+    graph = await validated_graph(connection, source, request)
+    require_original_request(source, request, graph)
     binding = await existing(connection, source)
     claim = await eligibility(connection, source, binding=binding)
     if binding is not None:
@@ -174,7 +176,8 @@ async def validate(
 
 async def bind(connection, source, request, *, approval_id):
     """Commit this intent before external ledger admission; never lock source I/O."""
-    require_original_request(source, request)
+    graph = await validated_graph(connection, source, request)
+    require_original_request(source, request, graph)
     binding = await existing(connection, source)
     claim = await eligibility(connection, source, binding=binding)
     if binding is not None:
@@ -209,3 +212,14 @@ async def bind(connection, source, request, *, approval_id):
     if binding is None:
         raise OperationRefused("allocation already has another cleanup owner")
     matches(binding, source, request, approval_id=approval_id)
+
+
+async def validated_graph(connection, source, request):
+    from .cleanup_graph import PARAMETER, read
+    from .cleanup_snapshot import select
+
+    if PARAMETER not in request.parameters:
+        return None
+    graph = read(request.parameters[PARAMETER])
+    await select(connection, source, graph)
+    return graph

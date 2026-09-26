@@ -15,18 +15,20 @@ it is not the new buildspec entry point.
 
 ## Reviewed inputs
 
-The closed version-1 plan schema is enforced by `producer.validate_plan`:
+Closed producer plan versions 1 and 2 are enforced by `producer.validate_plan`.
+New multi-image CNI inputs use version 2; archived version-1 plans keep their
+original one-image schema and canonical bytes:
 
 | Field | Required value/evidence |
 | --- | --- |
-| `version` | Integer 1. |
+| `version` | Integer 2 for explicit CNI source collections; archived version 1 remains supported. |
 | `source_revision`, `source_attestation_sha256`, `source_files` | Full Git revision, external source attestation SHA256, and maintained launcher/runner SHA256 map. |
 | `account_id`, `region` | Explicit approved build scope; live STS must agree. |
 | `helper` | Pinned ordinary helper `ami_id` and `owner_id`. |
 | `target` | Published `ami_id`, `owner_id`, `snapshot_id`, `root_device_name`, explicit `boot_mode` and `ena_support`. |
 | `builder` | Existing private subnet, security group, helper instance profile, SSH username, instance type, regional/account KMS ARN and target volume size. |
 | `tools` | Packer and Amazon plugin versions and executable SHA256; plugin is fixed to 1.8.2. |
-| `upstream` | Digest-verified Python, nodeadm source and crictl archives with explicit prefixes; digest-pinned Go and CNI images; explicit CNI source/destination file mapping. |
+| `upstream` | Digest-verified Python, nodeadm source and crictl archives with explicit prefixes; digest-pinned Go image; version 2 `cni_sources` is a list of one or two `{image, files}` maps, each image digest-pinned and each map containing 1–64 explicit source/destination paths. Version 1 retains `cni_image` and `cni_files`. Destination basenames must be unique across all sources. |
 | `runtime` | Actual maintained runtime manifest fields except generated artifact hash. |
 | `extra_runtime_files` | Explicit runtime/dlopen/config closure paths beyond mechanically discovered ELF dependencies. |
 | `build_timeout_minutes`, `budget_approval_reference` | Approved bounded runtime (10–120 minutes) and actual budget authorization reference. |
@@ -84,3 +86,22 @@ verify native SSM, private EKS API networking, original node join, GPU device pl
 a governed workload and recovery under the tenant/workspace/cluster scope. Promote
 only the exact resulting AMI and descriptor after review. `result.json` deliberately
 keeps live GPU acceptance pending.
+
+## Complete CNI installer inputs
+
+The published EKS VPC CNI `v1.22.4-eksbuild.3` daemon and init images contain
+different files. Source inspection of upstream v1.22.4 identifies two daemon
+plugin files (`/app/aws-cni`, `/app/egress-cni`) and the init image's regular `/init`
+files except its own `aws-vpc-cni-init` executable. The measured public build3
+images contain a combined 21-file candidate overlay. Actual installed-cluster
+image digests and EKS-build installer behavior still require evidence; matching a
+public tag to an addon version does not establish that equivalence.
+
+Version 2 can pin both images and copy their independently reviewed file maps into
+one staging directory. It rejects duplicate global destinations before commands,
+never starts the source containers, removes each created container on copy failure
+and records image/path/file-hash provenance for each source. No approved plan is
+rewritten during normalization. Final offline installation and the maintained
+full-tree runtime verifier are unchanged; an addon installing different bytes after
+join still causes a drift refusal. Original base extras are retained by the overlay
+and must also be reviewed; the source does not pretend every target starts empty.

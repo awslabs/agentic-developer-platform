@@ -901,7 +901,7 @@ export default function AgentActivity() {
       {viewMode === 'mine' && <TaskActivity onOpen={setDetailItem} />}
 
       {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+      <div className="blueprint-card bg-white dark:bg-gray-800 rounded-lg shadow p-4">
         <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -1075,7 +1075,7 @@ export default function AgentActivity() {
 
       {/* Table / Chain list */}
       {!error && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+        <div className="blueprint-card bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
           {isLoading ? (
             <TableSkeleton rows={10} />
           ) : isChainView && chainData && chainData.chains.length > 0 ? (

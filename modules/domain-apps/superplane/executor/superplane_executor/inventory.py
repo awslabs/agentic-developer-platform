@@ -613,6 +613,9 @@ class Finalizer:
             await self.persist(operation, target, calls, assessment)
             if not assessment.inventory or not assessment.inventory.complete:
                 raise OperationRefused("complete allocation accounting unavailable")
+            from .cleanup_snapshot import capture
+
+            await capture(self, operation, target, plan, assessment)
             return assessment
         except Exception:
             if not listing_returned:

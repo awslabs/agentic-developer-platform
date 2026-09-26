@@ -38,7 +38,7 @@ def validate_plan(plan):
             "budget_approval_reference",
         },
     )
-    if type(plan["version"]) is not int or plan["version"] != 1:
+    if type(plan["version"]) is not int or plan["version"] not in {1, 2}:
         raise image.ImageRefused("unsupported producer input")
     image.pattern(plan["source_revision"], r"[a-f0-9]{40}")
     image.digest(plan["source_attestation_sha256"])
@@ -113,7 +113,8 @@ def validate_plan(plan):
         )
     image.exact(
         plan["upstream"],
-        {"python", "nodeadm", "crictl", "go_image", "cni_image", "cni_files"},
+        {"python", "nodeadm", "crictl", "go_image"}
+        | ({"cni_image", "cni_files"} if plan["version"] == 1 else {"cni_sources"}),
     )
     for key in ("python", "nodeadm", "crictl"):
         value = plan["upstream"][key]
@@ -133,22 +134,11 @@ def validate_plan(plan):
         raise image.ImageRefused(
             "nodeadm source must be the exact upstream commit archive"
         )
-    for key in ("go_image", "cni_image"):
-        image.pattern(
-            plan["upstream"][key], r"[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}"
-        )
-    files = plan["upstream"]["cni_files"]
-    if (
-        not isinstance(files, dict)
-        or not 1 <= len(files) <= 64
-        or len(set(files.values())) != len(files)
-    ):
-        raise image.ImageRefused("explicit unique CNI image paths required")
-    for original, target in files.items():
-        image.pattern(original, r"/[A-Za-z0-9._/-]+")
-        image.pattern(target, r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
-        if ".." in PurePosixPath(original).parts:
-            raise image.ImageRefused("CNI image path escapes")
+    image.pattern(
+        plan["upstream"]["go_image"],
+        r"[A-Za-z0-9][A-Za-z0-9./:_-]*@sha256:[a-f0-9]{64}",
+    )
+    upstream.cni_sources(plan)
     image.exact(plan["runtime"], image.runner.MANIFEST_FIELDS - {"artifact_sha256"})
     image.runner.validate_runtime_manifest(
         {

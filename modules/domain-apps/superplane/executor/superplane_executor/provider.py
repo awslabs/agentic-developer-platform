@@ -408,6 +408,12 @@ class Provider:
 
             from .network_probe_contract import for_operation, service as probe_service
 
+            if plan.cleanup_graph is not None:
+                from .staged_cleanup import execute as cleanup_stage
+
+                return await cleanup_stage(
+                    self, operation, target, plan, call, selected.step_id, authorize
+                )
             probe = for_operation(operation, plan)
             if probe is not None and call.operation_kind in {"launch", "deploy"}:
                 await authorize()

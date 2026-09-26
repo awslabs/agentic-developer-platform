@@ -11,6 +11,18 @@ RUN git apply /build-tools/dependencies.patch && \
     GOTOOLCHAIN=local GOWORK=off go list -mod=readonly -deps ./cmd/kubectl > /dev/null
 RUN --network=none mkdir /out && GOTOOLCHAIN=local sh /build-tools/build.sh
 
+FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS terraform-builder
+ENV GOTOOLCHAIN=local CGO_ENABLED=0
+WORKDIR /src
+RUN git init . && git remote add origin https://github.com/hashicorp/terraform.git && \
+    git fetch --depth=1 origin e044e569c5bc81f82e9a4d7891f37c6fbb0a8a10 && \
+    git checkout --detach FETCH_HEAD && \
+    test "$(git rev-parse HEAD)" = e044e569c5bc81f82e9a4d7891f37c6fbb0a8a10
+COPY modules/domain-apps/superplane/executor/terraform-build /build-tools
+RUN git apply --check /build-tools/security.patch && git apply /build-tools/security.patch && \
+    go mod download && go mod verify
+RUN --network=none mkdir /out && sh /build-tools/build.sh
+
 FROM ${PYTHON_IMAGE} AS tools
 # Tool installation happens only in this remote image build. Linux/amd64 is
 # explicit; another architecture must add its reviewed artifacts first.
@@ -19,10 +31,6 @@ RUN test "$TARGETARCH" = amd64 && apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg unzip && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /tools
-RUN curl --fail --silent --show-error --location \
-      https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip -o terraform.zip && \
-    echo '186e0145f5e5f2eb97cbd785bc78f21bae4ef15119349f6ad4fa535b83b10df8  terraform.zip' | sha256sum -c - && \
-    unzip terraform.zip terraform && chmod 0755 terraform
 # Pin both the AWS CLI version and the official AWS signing key fingerprint.
 # A keyserver response cannot replace that identity or approve unsigned bytes.
 RUN curl --fail --silent --show-error --location \
@@ -56,7 +64,9 @@ RUN /opt/executor/bin/python -c \
 
 FROM ${PYTHON_IMAGE} AS runtime
 COPY --from=build /opt/executor /opt/executor
-COPY --from=tools /tools/terraform /usr/local/bin/terraform
+COPY --from=terraform-builder /out/terraform /usr/local/bin/terraform
+COPY --from=terraform-builder /src/LICENSE /usr/share/licenses/superplane-terraform/LICENSE
+COPY --from=terraform-builder /build-tools /usr/share/licenses/superplane-terraform/build
 COPY --from=kubectl-builder /out/kubectl /usr/local/bin/kubectl
 COPY --from=kubectl-builder /src/LICENSES /usr/share/licenses/superplane-kubectl/upstream
 COPY --from=kubectl-builder /build-tools /usr/share/licenses/superplane-kubectl/build
