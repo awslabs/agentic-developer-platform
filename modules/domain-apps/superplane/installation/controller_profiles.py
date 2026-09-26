@@ -95,7 +95,7 @@ def policy(env):
                 isinstance(profile_id, str)
                 and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", profile_id)
                 and isinstance(profile, dict)
-                and (set(profile) - {"network_probe"})
+                and (set(profile) - {"network_probe", "node_bootstrap"})
                 in (
                     PROFILE_FIELDS,
                     GPU_PROFILE_FIELDS,
@@ -104,6 +104,35 @@ def policy(env):
                 ),
                 "controller_profiles has an invalid profile identity",
             )
+            if "node_bootstrap" in profile:
+                native = profile["node_bootstrap"]
+                # Keep the local installer dependency-light. The pinned image's
+                # build_deployment_preview below applies the canonical native
+                # validator, including the closed runtime manifest and digests.
+                require(
+                    "regions" in profile
+                    and "network" in profile
+                    and isinstance(native, dict)
+                    and set(native)
+                    == {
+                        "version",
+                        "runtime_manifest",
+                        "bootstrap_wrapper_sha256",
+                        "probe_wrapper_sha256",
+                    }
+                    and type(native["version"]) is int
+                    and native["version"] == 1
+                    and isinstance(native["runtime_manifest"], dict)
+                    and all(
+                        isinstance(native[key], str)
+                        and re.fullmatch(r"[a-f0-9]{64}", native[key])
+                        for key in (
+                            "bootstrap_wrapper_sha256",
+                            "probe_wrapper_sha256",
+                        )
+                    ),
+                    "node_bootstrap requires a closed native descriptor and regional network profile",
+                )
             if "regions" in profile:
                 require(
                     isinstance(profile["regions"], list)
