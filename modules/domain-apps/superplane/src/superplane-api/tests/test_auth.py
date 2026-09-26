@@ -2601,6 +2601,23 @@ class TestEveryDomainRouteRefusesUnauthorizedCallers:
         )
 
 
+def test_private_credential_evidence_retains_domain_workspace_authority():
+    from app.endpoint_inventory import INTERNAL_ROUTES, PUBLIC_ROUTES, RouteClass, Scope
+
+    key = (
+        "GET",
+        "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
+    )
+    assert key in PRIVATE_DOMAIN_ROUTES
+    assert key not in DOMAIN_ROUTES
+    assert key not in INTERNAL_ROUTES | PUBLIC_ROUTES
+    assert classify(*key) == (
+        RouteClass.DOMAIN,
+        (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+    )
+    assert key in all_inventoried()
+
+
 @pytest.fixture
 def jwks_http_fixture(rsa_keys, monkeypatch):
     """Serve real signing keys only from ephemeral loopback HTTP endpoints."""
@@ -2776,20 +2793,3 @@ class TestJWKSEndpointConfiguration:
             cache.get(TEST_KID)
         assert not calls
         assert not cache.loaded
-
-
-def test_private_credential_evidence_retains_domain_workspace_authority():
-    from app.endpoint_inventory import INTERNAL_ROUTES, PUBLIC_ROUTES, RouteClass, Scope
-
-    key = (
-        "GET",
-        "/internal/installation/workspaces/{workspace_id}/credential-evidence/{connection_id}",
-    )
-    assert key in PRIVATE_DOMAIN_ROUTES
-    assert key not in DOMAIN_ROUTES
-    assert key not in INTERNAL_ROUTES | PUBLIC_ROUTES
-    assert classify(*key) == (
-        RouteClass.DOMAIN,
-        (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
-    )
-    assert key in all_inventoried()

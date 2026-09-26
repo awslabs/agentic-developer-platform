@@ -51,7 +51,9 @@ if [[ "$component" == "superplane-executor" ]]; then
   # The trusted service consumes two maintained shared packages. Its Dockerfile
   # copies only these three directories from the repository-root context.
   build_context="."
-  build_options=(--file "$context/Dockerfile" --build-arg "PYTHON_IMAGE=$PYTHON_IMAGE")
+  # This release component runs the installer's long-lived execution service.
+  # The Dockerfile also has a paid-worker stage with a different entrypoint.
+  build_options=(--file "$context/Dockerfile" --target controller-service --build-arg "PYTHON_IMAGE=$PYTHON_IMAGE")
 fi
 
 # Sibling packages are generated build inputs and absent from a clean checkout.
