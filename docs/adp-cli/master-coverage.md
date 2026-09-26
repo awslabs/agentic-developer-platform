@@ -22,7 +22,9 @@ The hosted coding and chat implementations are integrated in the final source ba
 
 ## Latest retained live checkpoint
 
-Disposable-EC2 run [36208849774](https://github.com/aws-e/adp/actions/runs/36208849774) passed installation and login, and its retained report records cleanup **complete**. The overall run **failed** and `full_acceptance` is false. Scenario verdict/evidence propagation and expected nonzero-refusal handling were corrected in source after that run; the corrected source still requires a deployed rerun. This checkpoint does not close any story acceptance criterion or establish live parity for the final 274 forms.
+The gateway serves the final coding batch (source `b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0`), with all 35 downloaded files verified against the release. Disposable-EC2 run [36212510138](https://github.com/aws-e/adp/actions/runs/36212510138) passed installation, login and all 19 executable nightly story-read scenarios: **21 passed, 1 failed, 3 blocked**. The hierarchy lifecycle passed seven authorization/membership checks but failed cleanup because the harness omitted the organization's automatically created default children. Exact CLI recovery subsequently removed those children and the organization with absence readback; the original case remains failed. EC2 cleanup completed and the instance was independently confirmed terminated.
+
+The earlier run [36211848174](https://github.com/aws-e/adp/actions/runs/36211848174) passed all eight vault lifecycle checks. AWS metadata corroborated scheduled deletion of its exact owned secret; physical purge and recovery-window expiry were not claimed. Its original overall failure remains recorded. Research and Superplane reads still require domain fixtures; hosted coding requires explicit enrollment and its bounded scenario. Passing reads does not establish mutation, inference, remote-control or full story acceptance.
 
 ## Available in baseline source
 
