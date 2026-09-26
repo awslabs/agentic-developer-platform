@@ -133,7 +133,7 @@ pending_images:
     ecr_repository: adp-superplane-paid-worker
     build_entrypoint: modules/domain-apps/superplane/releases/build_paid_worker.py
     buildspec: modules/domain-apps/superplane/releases/buildspecs/paid-worker.yml
-    project_manifest: modules/domain-apps/superplane/codebuild/projects.json
+    project_manifest: modules/domain-apps/superplane/infra/paid-worker-project.json
     origin:
       repository: https://github.com/aws-e/adp
       revision: 4db8393379573b9f4f977d444ade4adbfde86bcb

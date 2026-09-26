@@ -33,7 +33,6 @@ class Transport:
         self.fixed = {
             "ACCOUNT_ID": config["account"],
             "REGISTRY": self.registry,
-            "SECURITY_SCANS_BUCKET": "scans",
         }
         self.project_doc = {
             "name": self.project,
@@ -259,46 +258,31 @@ def test_completed_build_must_match_base_source_and_repository(config, tmp_path,
     assert not any(call[1:3] == ["ecr", "describe-images"] for call in transport.calls)
 
 
-def test_pending_paid_lock_enrolls_exact_existing_platform_extension():
-    manifest = json.loads((MODULE / "codebuild/projects.json").read_text())
-    assert set(manifest) == {"superplane-paid-worker"}
-    enrolled = [
+def test_pending_paid_lock_is_owned_by_explicit_app_infrastructure():
+    manifest = json.loads((MODULE / "infra/paid-worker-project.json").read_text())
+    assert set(manifest) == {release.COMPONENT}
+    # Exercise the actual platform discovery glob: merely storing a manifest
+    # inside the app must not add resources to ordinary platform installations.
+    enrolled = {
         key
         for path in (release.ROOT / "modules/domain-apps").glob(
             "*/codebuild/projects.json"
         )
         for key in json.loads(path.read_text())
-    ]
-    assert len(enrolled) == len(set(enrolled))
-    entry = manifest["superplane-paid-worker"]
-    assert set(entry) == {
-        "buildspec",
-        "ecr_repos",
-        "privileged",
-        "privileged_why",
-        "build_timeout",
     }
-    assert entry["build_timeout"] == 60
+    assert release.COMPONENT not in enrolled
+    entry = manifest[release.COMPONENT]
     assert entry["buildspec"] == release.BUILDSPEC
     assert entry["ecr_repos"] == [release.REPOSITORY]
-    assert entry["privileged"] is True and entry["privileged_why"]
+    assert entry["build_timeout"] == release.BUILD_TIMEOUT_MINUTES
     platform = (release.ROOT / "platform/infra/modules/codebuild/main.tf").read_text()
-    assert '"*/codebuild/projects.json"' in platform
-    assert "projects = merge(local.core_projects" in platform
-    assert "buildspec = each.value.buildspec" in platform
-    assert "for_each = local.projects" in platform
-    assert "permissions_boundary = aws_iam_policy.codebuild_boundary.arn" in platform
-    assert (
-        'Resource = [for repo in each.value.ecr_repos : "${local.ecr_repo_arn_prefix}/${repo}"]'
-        in platform
-    )
     assert '"superplane-paid-worker" = {' not in platform
     lock = yaml.safe_load((MODULE / "releases/superplane.lock.yaml").read_text())
     pending = lock["pending_images"][release.COMPONENT]
     assert pending["ecr_repository"] == release.REPOSITORY
     assert (
         pending["project_manifest"]
-        == "modules/domain-apps/superplane/codebuild/projects.json"
+        == "modules/domain-apps/superplane/infra/paid-worker-project.json"
     )
     assert release.COMPONENT not in lock["images"]
 

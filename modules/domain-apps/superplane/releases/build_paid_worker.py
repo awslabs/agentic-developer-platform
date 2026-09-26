@@ -207,9 +207,8 @@ def build(config, receipt, *, run=command):
     )
     variables = environment.get("environmentVariables", [])
     require(
-        len(variables) == 3
-        and {entry.get("name") for entry in variables}
-        == {"ACCOUNT_ID", "REGISTRY", "SECURITY_SCANS_BUCKET"}
+        len(variables) == 2
+        and {entry.get("name") for entry in variables} == {"ACCOUNT_ID", "REGISTRY"}
         and all(entry.get("type", "PLAINTEXT") == "PLAINTEXT" for entry in variables),
         "paid project contains unreviewed environment overrides",
     )
