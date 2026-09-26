@@ -247,7 +247,7 @@ model substitution. Reserve spend at the gateway before each billed operation;
 record unknown usage after lost provider responses instead of treating it as zero.
 
 Keep stable persona/skill instructions separate from bounded changing task context.
-Select relevant memory chronologically; cap retrieved history and tool output,
+Select memory by task relevance, evidence and freshness; cap retrieved history and tool output,
 retain full artifacts separately, and resume only a source/policy/workspace-bound
 thread. Poll provider state outside model turns. Retry only classified interrupted
 transport within the original deadline; do not retry policy denial, quota failure,
@@ -267,6 +267,61 @@ model/effort, tokens, cost, wall time and confidence; never promise 100% one-sho
 acceptance or optimize speed by dropping checks. Live access and pricing evidence
 are required before any cost/performance claim. Deterministic fixtures and live
 results are reported separately.
+
+### Swappable memory foundation
+
+Owner clarification (2026-09-26): ADP does not yet have a supported platform memory
+system. Existing logs/transcripts are historical evidence, not proof of a memory
+capability. Existing experimental memory code does not dictate the backend for this
+harness. Define a shared host-side memory port with configurable providers and an
+explicit disabled provider; no persona or invocation adapter imports a backend SDK.
+
+Logs record what happened. Memory selects useful evidence or lessons to supply to
+a later run; it does not retrain model weights. A transcript-search adapter may
+retrieve directly from the existing store. Another provider may maintain curated
+records or a semantic index. Keep original transcripts/artifacts as evidence and
+reference their stable IDs rather than copying entire histories into every prompt.
+
+Separate retrieval, learning extraction, verification and persistence. At run end,
+retain a compact candidate learning record covering the outcome, successful and
+failed approaches, relevant conventions, tests and reviewer feedback, with source
+run/evidence IDs. Cover failures and cancellations without delaying termination.
+Use a durable bounded post-run job where extraction needs inference; include its
+spend in total run cost. Replayed completion must not create duplicate lessons.
+An agent's self-assessment cannot promote a proposed lesson to verified knowledge.
+Use test/review evidence; conflicting or stale lessons can be corrected or retired.
+
+The gateway selects provider, revision and authorized namespace from trusted
+configuration and binds them to the run. Default to private tenant/user/repository
+scope; repository/team sharing requires explicit authorization. Task-only runs use
+an authorized namespace without inventing a repository. Backend selection and
+sharing authority cannot come from prompts. Revalidate access on reads and writes;
+repository-derived knowledge must not survive loss of repository access as a leak.
+Memory is untrusted evidence and cannot override instructions or grant tool access.
+Exclude credentials, raw reasoning and sensitive payloads from extracted lessons.
+
+Provider contracts cover bounded retrieval, idempotent write receipts, stable IDs,
+provenance, expiry, correction/deletion, capability discovery and export/import.
+Version the common record format so changing providers need not change personas.
+Provider changes affect new runs; active/resumed runs retain their binding unless
+an explicit migration reconciles it. Interrupted writes stay unknown until receipt
+reconciliation; do not replay blindly. Retention and deletion must cover indexes,
+exports and derived records as well as the original store.
+
+Budget retrieval by records, bytes, model tokens and deadline. Failures degrade
+visibly to no memory when policy permits, without blocking the primary task or
+switching to an unapproved provider. Record memory retrieval/use/write spans,
+provider/revision, evidence IDs, latency and cost without content in default OTEL.
+Measure p50/p95 execution time and cost per independently accepted change, including
+retrieval, extraction, retries and review repairs. Compare disabled memory and each
+provider on the same versioned tasks and model/effort settings; prevent evaluation
+answer leakage. Do not equate a cache hit or retrieved record with improved quality.
+
+Initial implementation: `src/memory.ts` defines the provider port, disabled backend
+and a scoped boundary validating provenance fields, expiry, duplicate IDs, context
+byte bounds and write receipts. Its tests use an injected provider. Gateway
+authorization/configuration, live providers, lifecycle integration, learning jobs,
+token budgets and telemetry still require implementation and qualification.
 
 ## 8. OpenTelemetry and operational evidence
 
