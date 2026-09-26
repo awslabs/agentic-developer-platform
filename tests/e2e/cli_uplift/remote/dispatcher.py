@@ -33,6 +33,8 @@ PURPOSES = {
     "story_usage": ("story_reads", {"mode": "usage"}),
     "story_budget": ("story_reads", {"mode": "budget"}),
     "story_activity": ("story_reads", {"mode": "activity"}),
+    "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),
+    "tenant_isolation": ("tenant_isolation", {"mode": "isolation"}),
     "story_vault": ("story_reads", {"mode": "vault"}),
     "story_knowledge": ("story_reads", {"mode": "knowledge"}),
     # E01/E02/E03 — install the served release, then a real Cognito login.
