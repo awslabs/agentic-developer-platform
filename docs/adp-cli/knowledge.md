@@ -73,6 +73,8 @@ Commit uses the saved items, never a reread of SOURCES.json.
 
 ## Retry and recovery
 
+`--dry-run` is available on add, delete, reindex and bulk commit and takes precedence over `--yes`; it cannot send a mutation. Interrupted mutations report an unknown outcome, while interrupted watches only detach.
+
 Keep the same UUID for an add or reindex intent. Add receipts bind the exact
 request and refuse a second send after an uncertain response. The server's
 existing source/scope uniqueness protects registration across clients. A bulk

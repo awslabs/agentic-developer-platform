@@ -9,6 +9,7 @@ import sys
 import time
 import urllib.parse
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -38,6 +39,7 @@ def parser():
             p.add_argument("--page-size", type=int, choices=range(1, 101), default=20)
         if name in {"add", "delete", "reindex"}:
             p.add_argument("--yes", action="store_true")
+            p.add_argument("--dry-run", action="store_true")
         if name == "reindex":
             p.add_argument("--key", required=True, help="Stable UUID; reuse it after a lost response")
         if name == "watch":
@@ -51,6 +53,7 @@ def parser():
     p.add_argument("--preview-id", required=True)
     p.add_argument("--expect-hash", required=True)
     p.add_argument("--yes", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true")
     admin = areas.add_parser("admin").add_subparsers(dest="admin_area", required=True)
     indexing = admin.add_parser("indexing").add_subparsers(dest="action", required=True)
@@ -156,6 +159,88 @@ def safe(value):
     return output
 
 
+def invalid_response(message="Malformed knowledge response.", *, mutation=False):
+    raise common.CliError(message, "unknown_mutation_outcome" if mutation else "invalid_response", 4 if mutation else 5)
+
+
+def response_id(value, expected=None, *, mutation=False):
+    try:
+        canonical = str(uuid.UUID(value))
+    except (ValueError, TypeError, AttributeError):
+        invalid_response("Response lacks a valid resource identifier.", mutation=mutation)
+    if expected is not None and canonical != expected:
+        invalid_response("Response names another resource; inspect the requested resource.", mutation=mutation)
+    return canonical
+
+
+def timestamp(value, *, mutation=False):
+    try:
+        if not isinstance(value, str):
+            raise ValueError
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        invalid_response("Response timestamp is malformed.", mutation=mutation)
+
+
+def asset_response(value, expected=None, *, source=None, mutation=False):
+    if not isinstance(value, dict):
+        invalid_response(mutation=mutation)
+    response_id(value.get("id"), expected, mutation=mutation)
+    if (
+        value.get("asset_type") not in {"repo", "url", "doc"}
+        or value.get("status") not in {"registered", "queued", "indexing", "indexed", "failed", "removed"}
+        or not isinstance(value.get("source_ref"), str)
+        or not value["source_ref"]
+        or not isinstance(value.get("created_at"), str)
+    ):
+        invalid_response(mutation=mutation)
+    timestamp(value["created_at"], mutation=mutation)
+    if source is not None and any(value.get(key) != source.get(key) for key in ("asset_type", "source_ref")):
+        invalid_response("Registration acknowledgement names another source.", mutation=mutation)
+    return value
+
+
+def run_response(value, expected=None):
+    if not isinstance(value, dict):
+        invalid_response("Malformed indexing run response.")
+    run = response_id(value.get("run_id" if expected else "id"), expected)
+    if not isinstance(value.get("status"), str) or not value["status"] or not isinstance(value.get("started_at"), str):
+        invalid_response("Indexing run lacks status or start time.")
+    timestamp(value["started_at"])
+    if expected is not None:
+        if not isinstance(value.get("stages"), list):
+            invalid_response("Indexing run lacks stages.")
+        for stage in value["stages"]:
+            if not isinstance(stage, dict) or not isinstance(stage.get("stage"), str) or not isinstance(stage.get("status"), str):
+                invalid_response("Indexing stage is malformed.")
+            response_id(stage.get("run_id"), run)
+    return value
+
+
+def page_response(value, page, page_size, validate_item):
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("items"), list)
+        or type(value.get("total")) is not int
+        or value["total"] < 0
+        or type(value.get("has_more")) is not bool
+        or type(value.get("page")) is not int
+        or type(value.get("page_size")) is not int
+        or value.get("page") != page
+        or value.get("page_size") != page_size
+    ):
+        invalid_response("Malformed knowledge pagination response.")
+    if (
+        len(value["items"]) > page_size
+        or len(value["items"]) > value["total"]
+        or value["has_more"] != ((page - 1) * page_size + page_size < value["total"])
+    ):
+        invalid_response("Knowledge pagination is inconsistent.")
+    for item in value["items"]:
+        validate_item(item)
+    return value
+
+
 def context(client):
     return {"gateway": client.base, **common.authenticated_scope()}
 
@@ -182,18 +267,22 @@ def mutation(client, key, body, method, path):
         record = {"hash": digest(binding), "state": "pending"}
         common.write_json(target, record)
         result = client.request(method, path, body)
-        if not isinstance(result, dict):
-            raise common.CliError("Invalid mutation acknowledgement; inspect asset state.", "unknown_mutation_outcome", 4)
+        asset_response(result, source=body, mutation=True)
         record.update(state="acknowledged", result=safe(result))
         common.write_json(target, record)
         return record["result"]
 
 
-def status_result(value):
+def status_result(value, expected=None):
     if not isinstance(value, dict) or not isinstance(value.get("stages"), list) or not value.get("asset_id"):
         raise common.CliError("Indexing status is unavailable or malformed.", "dependency_pending", 4)
     if not all(isinstance(stage, dict) and isinstance(stage.get("status"), str) for stage in value["stages"]):
         raise common.CliError("Indexing stages are malformed.", "dependency_pending", 4)
+    response_id(value.get("asset_id"), expected)
+    if value.get("status") not in {"registered", "queued", "indexing", "indexed", "failed", "removed"}:
+        invalid_response("Asset status is missing or unknown.")
+    if value.get("run_id") is not None:
+        response_id(value["run_id"])
     # The registry can be indexed while the latest run still failed. Do not infer
     # usability from registration, queueing, missing stages or a missing backend.
     failed = (
@@ -223,7 +312,12 @@ def execute(args, client):
             if args.page < 1:
                 raise common.CliError("Page must be positive.", "usage_error", 1)
             path += "?" + urllib.parse.urlencode({"page": args.page, "page_size": args.page_size})
-        return common.envelope("ok", "admin indexing " + args.action, safe(client.request("GET", path)))
+        value = client.request("GET", path)
+        if args.action == "show":
+            run_response(value, identifier(args.run))
+        else:
+            page_response(value, args.page, args.page_size, run_response)
+        return common.envelope("ok", "admin indexing " + args.action, safe(value))
     action = args.action
     if action == "bulk":
         return bulk(args, client)
@@ -232,11 +326,12 @@ def execute(args, client):
             raise common.CliError("Page must be positive.", "usage_error", 1)
         params = {"page": args.page, "page_size": args.page_size, "scope": args.scope, "asset_type": args.type, "status": args.status}
         value = client.request("GET", ASSETS + "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}))
+        page_response(value, args.page, args.page_size, asset_response)
         return common.envelope("ok", "knowledge list", safe(value))
     if action == "add":
         body = source_item(load_file(args.file))
         identifier(args.key)
-        if not args.yes:
+        if args.dry_run or not args.yes:
             return common.envelope(
                 "preview", "knowledge add", {"source_sha256": digest(body), "dispatch": "registration may enqueue indexing; pass --yes"}
             )
@@ -246,18 +341,18 @@ def execute(args, client):
     asset = identifier(args.asset_id)
     path = ASSETS + "/" + asset
     if action == "show":
-        return common.envelope("ok", "knowledge show", safe(client.request("GET", path)))
+        return common.envelope("ok", "knowledge show", safe(asset_response(client.request("GET", path), asset)))
     if action in {"status", "watch"}:
         deadline = time.monotonic() + (args.timeout if action == "watch" else 0)
         while True:
             remaining = max(1, deadline - time.monotonic()) if action == "watch" else 120
             value = client.request("GET", path + "/status", timeout=min(120, remaining))
-            result = status_result(value)
+            result = status_result(value, asset)
             if action == "status" or result["status"] != "pending" or time.monotonic() >= deadline:
                 return result
             common.emit(result, args.json)
             time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
-    if not args.yes:
+    if args.dry_run or not args.yes:
         return common.envelope(
             "preview",
             "knowledge " + action,
@@ -269,10 +364,12 @@ def execute(args, client):
         )
     common.ensure_can_mutate("knowledge.asset.write")
     if action == "delete":
-        client.request("DELETE", path)
+        if client.request("DELETE", path) != {}:
+            invalid_response("Malformed removal acknowledgement; inspect asset state.", mutation=True)
         return common.envelope("ok", "knowledge delete", {"asset_id": asset, "soft_deleted": True, "index_artifacts_retained": True})
     key = identifier(args.key)
     value = client.request("POST", path + "/reindex?" + urllib.parse.urlencode({"request_id": key}))
+    asset_response(value, asset, mutation=True)
     return common.envelope("pending", "knowledge reindex", safe(value), "Reuse the same --key after an uncertain response; inspect knowledge status.")
 
 
@@ -294,6 +391,8 @@ def bulk(args, client):
             or not isinstance(preview.get("valid"), list)
             or not isinstance(preview.get("rejected"), list)
             or type(preview.get("quota_ok")) is not bool
+            or not isinstance(preview.get("duplicates"), list)
+            or not all(isinstance(item, dict) for item in preview["valid"])
         ):
             raise common.CliError("Malformed preview response.", "invalid_response", 5)
         items = [{k: v for k, v in item.items() if k in {"asset_type", "source_ref", "display_name", "tags"}} for item in preview["valid"]]
@@ -332,7 +431,7 @@ def bulk(args, client):
             raise common.CliError("Commit outcome is unknown; inspect assets. This preview will not dispatch twice.", "unknown_mutation_outcome", 4)
         if not record.get("committable") or time.time() - record["created"] > 3600:
             raise common.CliError("Preview expired or contains rejected/over-quota items.", "stale_revision", 4)
-        if not args.yes:
+        if args.dry_run or not args.yes:
             return common.envelope("preview", "knowledge bulk commit", {"hash": args.expect_hash, "confirm": "--yes"})
         common.ensure_can_mutate("knowledge.asset.write")
         record["attempted"] = True
@@ -340,6 +439,21 @@ def bulk(args, client):
         result = client.request("POST", ASSETS + "/bulk/commit", record["body"])
         if not isinstance(result, dict) or not isinstance(result.get("assets"), list):
             raise common.CliError("Malformed commit acknowledgement; inspect assets.", "unknown_mutation_outcome", 4)
+        if (
+            type(result.get("created")) is not int
+            or type(result.get("skipped_duplicates")) is not int
+            or result["created"] != len(result["assets"])
+            or result["skipped_duplicates"] < 0
+            or result["created"] + result["skipped_duplicates"] != len(record["body"]["items"])
+        ):
+            invalid_response("Bulk acknowledgement counts do not match the reviewed batch.", mutation=True)
+        sources = {(item["asset_type"], item["source_ref"]) for item in record["body"]["items"]}
+        ids = set()
+        for asset in result["assets"]:
+            asset_response(asset, mutation=True)
+            if (asset["asset_type"], asset["source_ref"]) not in sources or asset["id"] in ids:
+                invalid_response("Bulk acknowledgement contains another source or duplicate asset.", mutation=True)
+            ids.add(asset["id"])
         record["result"] = safe(result)
         common.write_json(target, record)
         return common.envelope(
@@ -350,11 +464,31 @@ def bulk(args, client):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     as_json = "--json" in argv
+    args = None
     try:
         args = parser().parse_args(argv)
         return common.emit(execute(args, common.Api()), as_json)
     except KeyboardInterrupt:
-        common.emit(common.envelope("pending", "knowledge watch", {"detached": True, "indexing_continues": True}), as_json)
+        mutation = (
+            args is not None
+            and args.area == "knowledge"
+            and (args.action in {"add", "delete", "reindex"} or (args.action == "bulk" and args.bulk_action == "commit"))
+            and args.yes
+            and not args.dry_run
+        )
+        if mutation:
+            result = common.envelope(
+                "pending",
+                "knowledge " + args.action,
+                {"outcome": "unknown", "mutation_may_have_completed": True},
+                "Inspect asset state and retain the same operation key or preview receipt before retrying.",
+            )
+            result["error"] = {"code": "unknown_mutation_outcome", "message": "Interrupted before the mutation outcome was confirmed."}
+        elif args is not None and args.area == "knowledge" and args.action == "watch":
+            result = common.envelope("pending", "knowledge watch", {"detached": True, "indexing_continues": True})
+        else:
+            result = common.envelope("pending", "knowledge", {"interrupted": True})
+        common.emit(result, as_json)
         return 130
     except (common.CliError, OSError, ValueError, KeyError, TypeError) as exc:
         return common.report_error(exc, "knowledge", as_json)

@@ -8441,6 +8441,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E21",
         "E22",
         "E24",
+        "E26",
         "E32",
     }
 
@@ -10225,7 +10226,16 @@ def test_observer_artifacts_grant_only_two_named_reads():
 
 def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
     selected = cases.resolve_suites(("nightly",))
-    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22", "E24", "E32"}
+    assert {case.id for case in selected} == {
+        "E01",
+        "C01",
+        "E20",
+        "E21",
+        "E22",
+        "E24",
+        "E26",
+        "E32",
+    }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
         "#5628",
@@ -10354,6 +10364,92 @@ def test_vault_nightly_is_selected_and_shipped():
     assert cases.BY_ID["E24"].owner == "#5631"
     assert "E24" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E24"] in bundle.purposes()
+
+
+def test_story_budget_reads_all_periods_without_writes(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "period": {"period_type": p},
+                "lines": [
+                    {"cap_status": "uncapped", "cap_usd": None, "remaining_usd": None}
+                ],
+            },
+        }
+        for p in ("daily", "weekly", "monthly")
+    ]
+    evidence = {}
+    module.budget(cli, evidence)
+    assert [c.args[0] for c in cli.json.call_args_list] == [
+        ["budget", "me", "--period", p] for p in ("daily", "weekly", "monthly")
+    ]
+    cli.run.assert_not_called()
+
+
+def test_story_budget_rejects_uncapped_zero(tmp_path):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.return_value = {
+        "status": "ok",
+        "detail": {
+            "period": {"period_type": "daily"},
+            "lines": [
+                {
+                    "cap_status": "uncapped",
+                    "cap_usd": "0.00",
+                    "remaining_usd": "0.000000",
+                }
+            ],
+        },
+    }
+    with pytest.raises(common.RemoteError, match="zero headroom"):
+        module.budget(cli, {})
+
+
+def test_budget_story_is_wired_into_nightly():
+    assert cases.BY_ID["E26"].owner == "#5589"
+    assert "E26" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E26"] in bundle.purposes()
+
+
+@pytest.mark.parametrize("bad_group", [False, True])
+def test_ec2_uses_explicit_no_ingress_group_and_rejects_foreign_vpc(
+    tmp_path, bad_group
+):
+    launches = []
+    group_id = "sg-0123456789abcdef0"
+
+    def doubles(cfg):
+        ports_double = live_doubles(cfg)
+        ports_double["aws"].replies["ec2.describe_security_groups"] = {
+            "SecurityGroups": [
+                {
+                    "GroupId": group_id,
+                    "VpcId": "vpc-foreign" if bad_group else cfg["vpc_id"],
+                    "IpPermissions": [],
+                    "IpPermissionsEgress": [
+                        {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443}
+                    ],
+                }
+            ]
+        }
+
+        def launch(**kwargs):
+            launches.append(kwargs)
+            return {"Instances": [{"InstanceId": "i-0abc"}]}
+
+        ports_double["aws"].replies["ec2.run_instances"] = launch
+        return ports_double
+
+    run_live_stages(tmp_path, doubles=doubles, instance_security_group_id=group_id)
+    if bad_group:
+        assert launches == []
+    else:
+        assert len(launches) == 1
+        assert launches[0]["SecurityGroupIds"] == [group_id]
 
 
 def test_knowledge_nightly_is_selected_and_has_no_dispatch(tmp_path):

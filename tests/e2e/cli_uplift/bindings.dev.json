@@ -12,6 +12,8 @@
 
   "_instance_profile": "Provisioned for this evaluation; the default name in config.example.json did not exist (GetInstanceProfile returned NoSuchEntity). The role carries AmazonSSMManagedInstanceCore plus exactly two scoped reads: GetObject on this bucket's bundles/* and GetSecretValue on the one Cognito fixture secret below. It deliberately has NO Bedrock permission — a pre-granted Bedrock policy would let a broken `adp connect` flow still show working inference, which is the false green E04-E06 exist to catch.",
   "instance_profile": "adp-cli-uplift-eval-instance",
+  "_instance_network": "Reuse the existing devbox no-ingress group, with outbound HTTP/HTTPS for packages, SSM and ADP. The hardened VPC default group has no egress and cannot register with SSM. No group rules or role permissions are changed.",
+  "instance_security_group_id": "sg-0f497fc6d4ec88610",
 
   "_fixture_reference": "The established dev Cognito admin test fixture, tagged Purpose=e2e-testing, Owner=gateway-team, ManagedBy=terraform. A NAME, not a value: the instance reads it at run time through its own single GetSecretValue grant. Reused rather than recreated; its user is CONFIRMED, i.e. the initial password challenge is already complete, which is what makes this checkpoint repeatable. Its keys are username/password, aliased to admin_username/admin_password by remote/common.FIXTURE_KEY_ALIASES.",
   "credential_secret_name": "adp/dev/gateway/test-admin-credentials",

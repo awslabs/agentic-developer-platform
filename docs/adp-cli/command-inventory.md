@@ -163,14 +163,25 @@ Source implementation; dedicated live indexing/retrieval acceptance remains held
 
 | Command | Positional arguments | Options |
 |---|---|---|
-| `adp knowledge add` |  | `--file`, `--json`, `--key`, `--yes` |
+| `adp knowledge add` |  | `--dry-run`, `--file`, `--json`, `--key`, `--yes` |
 | `adp knowledge list` |  | `--json`, `--page`, `--page-size`, `--scope`, `--status`, `--type` |
 | `adp knowledge show` | `asset_id` | `--json` |
-| `adp knowledge delete` | `asset_id` | `--json`, `--yes` |
+| `adp knowledge delete` | `asset_id` | `--dry-run`, `--json`, `--yes` |
 | `adp knowledge status` | `asset_id` | `--json` |
 | `adp knowledge watch` | `asset_id` | `--interval`, `--json`, `--timeout` |
-| `adp knowledge reindex` | `asset_id` | `--json`, `--key`, `--yes` |
+| `adp knowledge reindex` | `asset_id` | `--dry-run`, `--json`, `--key`, `--yes` |
 | `adp knowledge bulk preview` |  | `--file`, `--json` |
-| `adp knowledge bulk commit` |  | `--expect-hash`, `--json`, `--preview-id`, `--yes` |
+| `adp knowledge bulk commit` |  | `--dry-run`, `--expect-hash`, `--json`, `--preview-id`, `--yes` |
 | `adp admin indexing list` |  | `--json`, `--page`, `--page-size` |
 | `adp admin indexing show` |  | `--json`, `--run` |
+
+Budget additions ([contract and examples](budgets.md)); source implemented, live enforcement acceptance pending:
+
+| Command | Purpose |
+|---|---|
+| `adp budget me` | Existing own-budget envelope for one explicit period |
+| `adp admin budget list` | Bounded managed cap pages |
+| `adp admin budget show` | Exact tenant/target/ledger/period configuration and revision |
+| `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
+| `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
+| `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |

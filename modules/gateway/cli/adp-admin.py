@@ -46,6 +46,7 @@ def parser():
     if Path(__file__).with_name("adp-github-admin.py").is_file():
         commands.add_parser("github", help="Configure this deployment's GitHub App; check sign-in and repository access")
     commands.add_parser("indexing", help="Inspect canonical indexing runs")
+    commands.add_parser("budget", help="Inspect or manage exact-period inference budgets")
     commands.add_parser("usage", help="Inspect managed usage with --org and explicit UTC bounds")
     return root
 
@@ -153,6 +154,11 @@ def main(argv=None):
             if not module:
                 raise common.CliError("Knowledge helper is missing. Run adp update.", "provider_unavailable", 4)
             return module.main(["admin", "indexing", *argv[1:]])
+        if argv and argv[0] == "budget":
+            module = common.load_provider("adp-budget.py")
+            if not module:
+                raise common.CliError("Budget helper is missing. Run adp update.", "provider_unavailable", 4)
+            return module.main(["admin", "budget", *argv[1:]])
         if argv and argv[0] == "usage":
             module = common.load_provider("adp-usage.py")
             if not module:
