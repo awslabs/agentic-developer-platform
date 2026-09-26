@@ -819,7 +819,7 @@ async def worker_runtime(workload, tmp_path):
                     b for b in data["regions"] if b["region"] == chosen["region"]
                 )
                 region = cloud.selected_region_override or chosen["region"]
-                cloud.client("ec2", region_name=region)
+                selected_client = cloud.client("ec2", region_name=region)
                 args = {
                     "ImageId": chosen["image_id"],
                     "InstanceType": "g6.xlarge",
@@ -845,8 +845,16 @@ async def worker_runtime(workload, tmp_path):
                         }
                     ],
                 }
-                guard.verify_region_binding(cloud, args)
-                guard.verify_selected_binding(cloud, args)
+                try:
+                    guard.verify_region_binding(selected_client, args)
+                    guard.verify_selected_binding(selected_client, args)
+                except Exception:
+                    # Preserve only simulated transport diagnostics; production
+                    # deliberately returns UNKNOWN without provider details.
+                    import traceback
+
+                    traceback.print_exc()
+                    raise
                 cloud.launched_region = region
             cloud.launches += 1
             cloud.exists = cloud.ever_created = True
