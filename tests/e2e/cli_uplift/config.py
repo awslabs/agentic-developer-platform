@@ -787,6 +787,7 @@ def fixture_classes(config):
         ("human_task_chat", cases.HUMAN_TASK_CHAT),
         ("vault_lifecycle", cases.VAULT_LIFECYCLE),
         ("hierarchy_lifecycle", cases.HIERARCHY_LIFECYCLE),
+        ("knowledge_lifecycle", cases.KNOWLEDGE_LIFECYCLE),
         ("machine_lifecycle", cases.MACHINE_LIFECYCLE),
         ("budget_lifecycle", cases.BUDGET_LIFECYCLE),
     ):

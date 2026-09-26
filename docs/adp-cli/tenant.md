@@ -24,3 +24,16 @@ Local repair commands—deployment management, help/version, login/logout, impor
 Exit 0 means selection/read/default save succeeded; exit 4 means selection or identity must be resolved, and normal authentication/HTTP errors preserve shared CLI classifications. Token/context secrets are not written into defaults or emitted by tenant list/current/use. Every CLI test must isolate `BG_CONFIG_DIR`, ADP stores, HOME, XDG and AWS credentials, not just change HOME.
 
 E23 runs fresh-login tenant selection/error smoke in the existing EC2 nightly pipeline. E27 requires two existing memberships for concurrent tenant-scoped reads, local default changes and a real Cognito refresh; it preserves refreshed fixture credentials for subsequent journeys. Missing fixtures block E27. These are read/isolation regressions, not evidence that long-lived marked model inference, live revocation or uncertain mutation/resume acceptance has passed. #5622 retains that live acceptance hold until the required installed-client evidence is recorded.
+
+To include E27 in an authorized disposable EC2 evaluation, select
+`login,tenant-isolation` and supply this non-secret `fixtures_json` input:
+
+```json
+{"tenant_isolation":{"tenant_ids":["EXISTING_TENANT_A","EXISTING_TENANT_B"]}}
+```
+
+The input accepts exactly two distinct existing tenant IDs and no extra fields.
+The installed fixture login must already see both memberships; the scenario
+checks visibility before changing its temporary saved default. This input does
+not authorize membership creation, inference or changes to the gateway address.
+Evaluation and recovery receive the same validated fixture configuration.

@@ -133,6 +133,7 @@ def test_provider_create_readback_and_safe_ack(isolated, mismatch):
     connection = str(uuid.uuid4())
     api = Mock()
     api.request.side_effect = [
+        {"features": ["provider-connection-operation-id-v1"]},
         {"connection_id": connection, "status": "pending", "untrusted_extra": "do-not-persist"},
         connection_snapshot(connection, "wrong" if mismatch else "credential-a"),
     ]
@@ -152,7 +153,7 @@ def test_provider_create_readback_and_safe_ack(isolated, mismatch):
             "aws",
             "--yes",
             "--operation-id",
-            str(uuid.uuid4()),
+            connection,
         ]
     )
     result = extension.provider_connection(args, api)
@@ -188,3 +189,71 @@ def test_provider_ack_target_mismatch_not_replayed(isolated):
     assert extension.provider_connection(args, api)["detail"]["outcome"] == "unknown"
     assert extension.provider_connection(args, api)["detail"]["replayed_without_write"]
     assert [call.args[0] for call in api.request.call_args_list] == ["GET", "DELETE", "GET"]
+
+
+def test_provider_create_lost_reply_recovers_by_exact_get_without_another_write(isolated):
+    operation = str(uuid.uuid4())
+    args = cli.parser().parse_args(
+        [
+            "provider-connection",
+            "create",
+            "--workspace",
+            WORKSPACE,
+            "--credential-id",
+            "credential-a",
+            "--service",
+            "aws",
+            "--label",
+            "test",
+            "--provider",
+            "aws",
+            "--operation-id",
+            operation,
+            "--yes",
+        ]
+    )
+    writes = []
+
+    def request(method, path, body=None):
+        if path.endswith("/capabilities"):
+            return {"features": ["provider-connection-operation-id-v1"]}
+        if method == "POST":
+            writes.append(body)
+            raise cli.common.CliError("lost accepted response", "unavailable", 5)
+        assert method == "GET" and path.endswith("/" + operation)
+        return connection_snapshot(operation)
+
+    api = Mock()
+    api.request.side_effect = request
+    assert extension.provider_connection(args, api)["detail"]["outcome"] == "unknown"
+    replay = extension.provider_connection(args, api)
+    assert replay["detail"]["replayed_without_write"]
+    assert replay["detail"]["observed"]["connection_id"] == operation
+    assert len(writes) == 1 and writes[0]["operation_id"] == operation
+
+
+def test_provider_create_refuses_domain_without_operation_contract(isolated):
+    api = Mock()
+    api.request.return_value = {"features": []}
+    args = cli.parser().parse_args(
+        [
+            "provider-connection",
+            "create",
+            "--workspace",
+            WORKSPACE,
+            "--credential-id",
+            "credential-a",
+            "--service",
+            "aws",
+            "--label",
+            "test",
+            "--provider",
+            "aws",
+            "--operation-id",
+            str(uuid.uuid4()),
+            "--yes",
+        ]
+    )
+    with pytest.raises(cli.common.CliError, match="nothing was written"):
+        extension.provider_connection(args, api)
+    assert all(call.args[0] == "GET" for call in api.request.call_args_list)

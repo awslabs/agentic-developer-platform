@@ -444,6 +444,17 @@ def task_execute(args, client):
         if args.expected_generation is not None:
             raise common.CliError("Task commands do not accept the Activity generation flag.", "usage_error", 1)
         uuid.UUID(args.command_id)
+        if args.action == "steer":
+            snapshot = task.snapshot(args.run)
+            if snapshot.get("task_id") != args.run:
+                invalid("Task snapshot identity mismatch.")
+            if snapshot.get("persona") in {"agent-task-claude-developer", "agent-task-codex-developer"}:
+                return common.envelope(
+                    "unavailable",
+                    command,
+                    {"task_id": args.run},
+                    "This coding runtime does not support follow-up input or steering. Cancellation remains available.",
+                )
         if args.dry_run or not args.yes:
             return common.envelope("dry_run", command, {"task_id": args.run, "command_id": args.command_id})
         result = task.command(

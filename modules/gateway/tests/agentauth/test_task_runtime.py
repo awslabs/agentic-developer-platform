@@ -15,7 +15,7 @@ from tests.tasks.test_store import NOW, _request, client, store  # noqa: F401
 @pytest.fixture
 def runtime(store, request):
     request = _request(persona=getattr(request, "param", "agent-task-investigator"))
-    if request.persona == "agent-task-cyber":
+    if request.persona != "agent-task-investigator":
         from src.tasks.records import task_authority_partition, task_policy_sort_key
         from src.tasks.store import _serialize
 
@@ -23,7 +23,7 @@ def runtime(store, request):
             TableName=store.authority_table_name,
             Key=_serialize({"pk": task_authority_partition(request.tenant), "sk": task_policy_sort_key(request.canonical_principal)}),
             UpdateExpression="SET personas = :personas",
-            ExpressionAttributeValues={":personas": {"SS": ["agent-task-investigator", "agent-task-cyber"]}},
+            ExpressionAttributeValues={":personas": {"SS": ["agent-task-investigator", request.persona]}},
         )
     store.accept(request)
     runtime = TaskRuntime(store, env={"AGENT_RUN_CREDENTIAL_KEY": "task-runtime-test-key-01234567890123456789"}, clock=lambda: NOW)
@@ -456,8 +456,8 @@ def test_six_hour_task_renews_short_credentials_without_extending_deadline(store
         service.authenticate(credential=renewed["run_credential"], pod=pod)
 
 
-@pytest.mark.parametrize("runtime", ["agent-task-cyber"], indirect=True)
-def test_cyber_autonomous_turns_are_explicit_bounded_and_replayed(runtime):
+@pytest.mark.parametrize("runtime", ["agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"], indirect=True)
+def test_sdk_autonomous_turns_are_explicit_bounded_and_replayed(runtime):
     from src.agentauth.task_turns import TaskTurnStore
     from src.tasks.store import TaskStoreError
 
@@ -484,12 +484,12 @@ def test_investigator_cannot_request_autonomous_turn(runtime):
 
     identity = _attempt_identity(runtime)
     turns = TaskTurnStore(runtime[0].repository, clock=lambda: NOW)
-    with pytest.raises(TaskStoreError, match="cyber persona"):
+    with pytest.raises(TaskStoreError, match="SDK Task persona"):
         turns.commit(identity=identity, request_id=str(uuid.uuid4()), expected_transcript_version=1, allow_autonomous=True)
     assert turns.list_turns(identity.task_id) == []
 
 
-@pytest.mark.parametrize("runtime", ["agent-task-cyber"], indirect=True)
+@pytest.mark.parametrize("runtime", ["agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"], indirect=True)
 def test_autonomous_turn_cannot_bypass_deadline(runtime):
     from datetime import timedelta
 
@@ -523,7 +523,7 @@ def test_autonomous_turn_flag_requires_a_boolean(value):
         TurnBody.model_validate({**payload, "allow_autonomous": value})
 
 
-@pytest.mark.parametrize("runtime", ["agent-task-cyber"], indirect=True)
+@pytest.mark.parametrize("runtime", ["agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"], indirect=True)
 def test_autonomous_turn_does_not_resume_waiting_for_input(runtime):
     from src.agentauth.task_turns import TaskTurnStore
     from src.tasks.records import task_partition

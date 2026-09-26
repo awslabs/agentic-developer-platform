@@ -12231,6 +12231,12 @@ def test_fixture_input_exposed_identically_to_evaluate_and_recover():
         "restore_failure",
         "cleanup_failure",
         "changed_default",
+        "wrong_parentage",
+        "ordinary_read_allowed",
+        "ordinary_write_allowed",
+        "name_selector_accepted",
+        "duplicate_create_accepted",
+        "delete_retry_accepted",
     ],
 )
 def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
@@ -12309,7 +12315,19 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
                 return 3, {"error": {"code": "permission_denied"}}
             if argv[:1] == ["--tenant"]:
                 return 3, {"error": {"code": "tenant_not_visible"}}
-            assert self.admin and argv[0] == "admin"
+            assert argv[0] == "admin"
+            if not self.admin:
+                if fault == "ordinary_read_allowed" and argv[2] == "show":
+                    return 0, {"detail": {}}
+                if fault == "ordinary_write_allowed" and argv[2] == "update":
+                    return 0, {"detail": {}}
+                return 5, {"error": {"http_status": 403}}
+            if argv[1:3] == ["team", "show"] and "--name" in argv:
+                return (
+                    (0, {})
+                    if fault == "name_selector_accepted"
+                    else (1, {"error": {"code": "usage_error"}})
+                )
             kind, action = argv[1:3]
             if kind == "member" and action == "remove" and "--dry-run" in argv:
                 return 0, {"status": "dry_run", "detail": {"before": snapshot()}}
@@ -12337,6 +12355,22 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
                 and any(k[0] == "team" and k[2] == org for k in resources)
             ):
                 return 4, {"error": {"code": "hierarchy_has_dependencies"}}
+            if action == "create" and (kind, key, org) in resources:
+                return (
+                    (0, {})
+                    if fault == "duplicate_create_accepted"
+                    else (5, {"error": {"http_status": 409}})
+                )
+            if (
+                action == "delete"
+                and (kind, key, org) not in resources
+                and kind != "member"
+            ):
+                return (
+                    (0, {})
+                    if fault == "delete_retry_accepted"
+                    else (5, {"error": {"http_status": 404}})
+                )
             mutations.append(argv)
             revision[0] += 1
             if kind == "member":
@@ -12372,7 +12406,13 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
                 resources[resource_key] = {
                     "id": key,
                     "revision": str(revision[0]),
-                    "resource": {"name": key},
+                    "resource": {
+                        "name": key,
+                        "org_id": org,
+                        "department_id": "foreign-department"
+                        if fault == "wrong_parentage"
+                        else plan["department_id"],
+                    },
                 }
                 if kind == "org":
                     for child_kind, child_id in (
@@ -12462,10 +12502,28 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
         script.execute(cfg, evidence)
         assert evidence["success"] is True
         assert "revoked-tenant-denied-native-preserved" in evidence["detail"]["checks"]
+        assert {
+            "explicit-department-team-parentage",
+            "ordinary-hierarchy-read-write-refused",
+            "canonical-id-required-name-selector-refused",
+            "same-id-create-conflict-original-unchanged",
+            "same-id-delete-retry-reports-absence",
+        } <= set(evidence["detail"]["checks"])
+        assert (
+            evidence["detail"]["parentage"][plan["team_ids"][0]]["department_id"]
+            == plan["department_id"]
+        )
+        assert not any(
+            "--role" in argv and argv[argv.index("--role") + 1] != "member"
+            for argv in mutations
+        )
     if fault in {"wrong_actor", "foreign_baseline"}:
         assert mutations == []
-    if fault not in {"cleanup_failure", "changed_default"}:
+    if fault not in {"cleanup_failure", "changed_default", "wrong_parentage"}:
         assert not resources
+    if fault == "wrong_parentage":
+        assert ("team", plan["team_ids"][0], fixture["tenant_id"]) in resources
+        assert evidence["detail"]["cleanup"][plan["team_ids"][0]] == "pending"
     if fault == "changed_default":
         assert ("team", plan["default_team_id"], plan["org_id"]) in resources
         assert evidence["detail"]["cleanup"][plan["default_team_id"]] == "pending"
@@ -12505,6 +12563,91 @@ def test_hierarchy_plan_precedes_instance_loss_and_rejects_changed_inputs(tmp_pa
     with pytest.raises(PortError):
         worker("i-owned", "hierarchy_lifecycle", payload, manifest=manifest)
     assert ssm.json_result.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "lost_create_reply",
+        "lost_client",
+        "sink_failure",
+        "changed_scope",
+        "changed_payload",
+    ],
+)
+def test_workspace_create_intent_is_external_and_immutable_before_transport(
+    tmp_path, fault
+):
+    from tests.e2e.cli_uplift.workspace_recovery import create_intent, dispatch_create
+
+    plan = create_intent(
+        evaluation_id="stable-workspace-run",
+        gateway_url="https://gateway",
+        tenant_id="tenant",
+        principal_id="ordinary",
+        session_secret_name="adp/eval/ordinary",
+        operation_id="d03af966-58ed-4d9b-8bf9-cc9ae17fbcad",
+        name="owned-workspace",
+    )
+    retained, calls = [], []
+
+    def push(document, *, critical):
+        assert critical
+        if fault == "sink_failure":
+            raise RuntimeError("No durable sink")
+        retained.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "workspace", on_change=push)
+
+    def dispatch(original):
+        calls.append(original)
+        assert (
+            retained[-1]["diagnostic_intents"][
+                "superplane_workspace:stable-workspace-run"
+            ]
+            == plan
+        )
+        raise RuntimeError("Accepted create but transport output lost")
+
+    with pytest.raises(RuntimeError):
+        dispatch_create(manifest, plan, dispatch)
+    if fault == "sink_failure":
+        assert calls == []
+        return
+    assert len(calls) == 1
+    recovered = retained[-1]["diagnostic_intents"][
+        "superplane_workspace:stable-workspace-run"
+    ]
+    import shutil
+
+    shutil.rmtree(tmp_path)
+    replacement = cleanup.Manifest(
+        tmp_path / "replacement.json", "workspace", on_change=push
+    )
+    replacement.record_diagnostic("superplane_workspace", recovered)
+    if fault == "changed_scope":
+        recovered = {**recovered, "principal_id": "foreign"}
+    if fault == "changed_payload":
+        recovered = {**recovered, "argv": ["replacement"]}
+    if fault in {"changed_scope", "changed_payload"}:
+        with pytest.raises(ValueError):
+            dispatch_create(
+                replacement,
+                recovered,
+                lambda _: pytest.fail("No foreign or changed dispatch"),
+            )
+    else:
+        result = dispatch_create(
+            replacement,
+            recovered,
+            lambda p: {
+                "operation_id": p["operation_id"],
+                "resource_id": "exact-created-id",
+            },
+        )
+        assert result["operation_id"] == plan["operation_id"]
+        assert recovered["request"] == plan["request"]
+    assert "access_token" not in json.dumps(retained)
 
 
 @pytest.mark.parametrize(
@@ -12929,3 +13072,43 @@ def test_coding_replay_refuses_incomplete_or_duplicate_initial_history(
     }
     with pytest.raises(common.RemoteError):
         module.verify_replay({"cli_path": "/served/adp"}, {}, detail, events)
+
+
+def test_tenant_isolation_dispatch_fixture_reaches_evaluate_and_recovery():
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    value = {"tenant_isolation": {"tenant_ids": ["adp-platform", "aws-e"]}}
+    env = {"CLI_UPLIFT_EVAL_FIXTURES": json.dumps(value)}
+    evaluated = config.from_environment(env, base=dict(VALID))
+    recovered = config.from_environment(env, base=dict(VALID))
+    assert evaluated == recovered
+    assert evaluated["tenant_isolation"] == value["tenant_isolation"]
+    assert parse(json.dumps(value)) == value
+    assert cases.TENANT_ISOLATION in preflight.evaluate_fixtures(evaluated)
+    assert {row.id for row in cases.resolve_suites(["tenant-isolation"])} == {"E27"}
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        {},
+        {"tenant_ids": []},
+        {"tenant_ids": ["one"]},
+        {"tenant_ids": ["one", "two", "three"]},
+        {"tenant_ids": ["same", "same"]},
+        {"tenant_ids": "one,two"},
+        {"tenant_ids": ["one", 2]},
+        {"tenant_ids": ["one", {}]},
+        {"tenant_ids": ["one", ""]},
+        {"tenant_ids": ["one", "a" * 129]},
+        {"tenant_ids": ["one", "https://other"]},
+        {"tenant_ids": ["one", "two"], "gateway_url": "https://other"},
+        {"tenant_ids": ["one", "two"], "password": "not-allowed"},
+        {"tenant_ids": ["one", "two"], "owned_mutations_authorized": True},
+    ],
+)
+def test_tenant_isolation_dispatch_refuses_invalid_or_extra_fields(fixture):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    with pytest.raises(config.ConfigError):
+        parse(json.dumps({"tenant_isolation": fixture}))

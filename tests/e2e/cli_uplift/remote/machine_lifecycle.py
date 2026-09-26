@@ -337,7 +337,7 @@ def execute(config, evidence):
                 original["revision"],
                 "--yes",
             ]
-            require_refusal(admin.run(stale, expected=None), code="revision_conflict")
+            require_refusal(admin.run(stale, expected=None), code="stale_revision")
             common.require(
                 snapshot() == after_alias, "Stale command modified canonical metadata"
             )
@@ -405,3 +405,4 @@ def execute(config, evidence):
         )
         state["checks"].append("terminal_retirement_and_ordinary_access_preserved")
         save()
+        evidence.update(success=True, stage_reached="complete")

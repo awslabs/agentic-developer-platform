@@ -50,7 +50,7 @@ on:
         options: [start, resume, status, cleanup]
         default: start
       fixtures_json:
-        description: 'Optional bounded non-secret coding/chat/vault/hierarchy/machine fixture JSON; existing policy authorization required'
+        description: 'Optional bounded non-secret coding/chat/vault/hierarchy/knowledge/machine/budget/capability fixture JSON; existing policy authorization required'
         required: false
         type: string
         default: '{}'
@@ -89,7 +89,7 @@ on:
         required: true
         type: string
       fixtures_json:
-        description: 'Optional bounded non-secret coding/chat/vault/hierarchy/machine fixture JSON; existing policy authorization required'
+        description: 'Optional bounded non-secret coding/chat/vault/hierarchy/knowledge/machine/budget/capability fixture JSON; existing policy authorization required'
         required: false
         type: string
         default: '{}'
@@ -158,8 +158,8 @@ jobs:
       - name: Lint and format check
         run: |
           set -euo pipefail
-          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
-          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
 
       - name: Offline guards
         # --disable-socket is the load-bearing flag: it proves these guards
@@ -173,7 +173,7 @@ jobs:
         # make full acceptance non-successful.
         env:
           AWS_EC2_METADATA_DISABLED: 'true'
-        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket
+        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket
 
       - name: Assert the published result schema still matches the report builder
         # report.schema.json is a deliverable other tooling validates against, so

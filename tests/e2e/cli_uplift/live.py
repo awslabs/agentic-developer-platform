@@ -245,6 +245,7 @@ def _run_worker(ssm, cfg, install):
             "hosted_chat",
             "vault_lifecycle",
             "hierarchy_lifecycle",
+            "knowledge_lifecycle",
             "machine_lifecycle",
             "budget_lifecycle",
         }:
@@ -285,6 +286,15 @@ def _run_worker(ssm, cfg, install):
 
                 if plan != recovery_plan(payload):
                     raise ports_module.PortError("Hierarchy recovery plan mismatch")
+            if purpose == "knowledge_lifecycle":
+                from .remote.knowledge_lifecycle_plan import (
+                    recovery_plan,
+                    validate_dispatch_fixture,
+                )
+
+                validate_dispatch_fixture(payload.get("knowledge_lifecycle") or {})
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError("Knowledge recovery plan mismatch")
             if purpose == "machine_lifecycle":
                 from .remote.machine_lifecycle_plan import recovery_plan
 
@@ -573,6 +583,7 @@ def _journey(ssm, cfg, install, journeys=None):
                 "hosted_chat",
                 "vault_lifecycle",
                 "hierarchy_lifecycle",
+                "knowledge_lifecycle",
                 "machine_lifecycle",
                 "budget_lifecycle",
             }:
@@ -582,6 +593,8 @@ def _journey(ssm, cfg, install, journeys=None):
                     from .remote.chat_plan import recovery_plan
                 elif purpose == "vault_lifecycle":
                     from .remote.vault_lifecycle_plan import recovery_plan
+                elif purpose == "knowledge_lifecycle":
+                    from .remote.knowledge_lifecycle_plan import recovery_plan
                 elif purpose == "budget_lifecycle":
                     from .remote.budget_lifecycle_plan import recovery_plan
                 elif purpose == "machine_lifecycle":
@@ -702,6 +715,7 @@ def _journey_payload(cfg, ctx):
         "human_task_chat": cfg.get("human_task_chat") or {},
         "vault_lifecycle": cfg.get("vault_lifecycle") or {},
         "hierarchy_lifecycle": cfg.get("hierarchy_lifecycle") or {},
+        "knowledge_lifecycle": cfg.get("knowledge_lifecycle") or {},
         "machine_lifecycle": cfg.get("machine_lifecycle") or {},
         "budget_lifecycle": cfg.get("budget_lifecycle") or {},
         # E18 receives references and bounded workload choices only. The admin
