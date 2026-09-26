@@ -240,7 +240,12 @@ def _run_worker(ssm, cfg, install):
 
     def run(instance_id, purpose, payload, *, manifest=None):
         bundle.require_purpose(purpose)
-        if purpose in {"hosted_coding", "hosted_chat", "vault_lifecycle"}:
+        if purpose in {
+            "hosted_coding",
+            "hosted_chat",
+            "vault_lifecycle",
+            "hierarchy_lifecycle",
+        }:
             if manifest is None:
                 raise ports_module.PortError(
                     "Owned diagnostics require a durable caller manifest before dispatch"
@@ -273,6 +278,11 @@ def _run_worker(ssm, cfg, install):
                     raise ports_module.PortError(
                         "Vault recovery inputs differ from the remote payload"
                     )
+            if purpose == "hierarchy_lifecycle":
+                from .remote.hierarchy_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError("Hierarchy recovery plan mismatch")
             manifest.record_diagnostic(purpose, plan)
         install(instance_id, payload.get("evaluation_id") or "")
         remote = f"{bundle.REMOTE_DIR}/{purpose}.json"
@@ -546,13 +556,20 @@ def _journey(ssm, cfg, install, journeys=None):
 
         def drive(instance_id, ctx):
             payload = _journey_payload(cfg, ctx)
-            if purpose in {"hosted_coding", "hosted_chat", "vault_lifecycle"}:
+            if purpose in {
+                "hosted_coding",
+                "hosted_chat",
+                "vault_lifecycle",
+                "hierarchy_lifecycle",
+            }:
                 if purpose == "hosted_coding":
                     from .remote.coding_plan import recovery_plan
                 elif purpose == "hosted_chat":
                     from .remote.chat_plan import recovery_plan
-                else:
+                elif purpose == "vault_lifecycle":
                     from .remote.vault_lifecycle_plan import recovery_plan
+                else:
+                    from .remote.hierarchy_plan import recovery_plan
                 payload["recovery_plan"] = recovery_plan(payload)
                 return worker(instance_id, purpose, payload, manifest=ctx["manifest"])
             return worker(instance_id, purpose, payload)
@@ -666,6 +683,7 @@ def _journey_payload(cfg, ctx):
         "human_task_coding": cfg.get("human_task_coding") or {},
         "human_task_chat": cfg.get("human_task_chat") or {},
         "vault_lifecycle": cfg.get("vault_lifecycle") or {},
+        "hierarchy_lifecycle": cfg.get("hierarchy_lifecycle") or {},
         # E18 receives references and bounded workload choices only. The admin
         # password remains in Secrets Manager and is read on the instance.
         "superplane": cfg.get("superplane") or {},

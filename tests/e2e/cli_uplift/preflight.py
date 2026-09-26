@@ -523,6 +523,7 @@ def missing_fixture_report(cfg, available):
         cases.GITHUB_REPO: "a dedicated evaluation repository (config github.repo)",
         cases.SECOND_DESTINATION: "a second destination AWS account (config second_destination_account)",
         cases.HUMAN_TASK_CHAT: "explicit bounded human chat fixture (human_task_chat)",
+        cases.HIERARCHY_LIFECYCLE: "explicit independent hierarchy fixture",
         cases.VAULT_LIFECYCLE: "explicit owned vault fixture (vault_lifecycle)",
         cases.HUMAN_TASK_CODING: "explicit human Task repository/model enrollment and shared-budget authorization (human_task_coding)",
         cases.HOSTED: "hosted dispatch configuration (config websocket_url + hosted_tasks_queue_url)",

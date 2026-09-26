@@ -128,7 +128,7 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
   -f mode=start -f suites=full
 ```
 
-Suites: `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
+Suites: `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
 `github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
 
 **E16/E17 model execution is currently disabled**, even with reachable gateways.
@@ -411,3 +411,10 @@ and conflict with the original Task fingerprint. Treat that outcome as pending
 reconciliation; the durable plan prevents a replacement paid request key but
 does not prove automatic recovery of accepted work after complete instance loss.
 A same-instance rerun with an existing recovery directory also refuses dispatch.
+
+
+D03 uses `suites=login,hierarchy-lifecycle` with an independent ordinary fixture
+and a predeclared empty-team membership baseline. See
+[hierarchy lifecycle](../evaluations/cli-uplift/hierarchy-lifecycle-diagnostic.md)
+for exact scope, retained recovery intent and restoration. It is excluded from
+`full` and `nightly` and performs no inference.
