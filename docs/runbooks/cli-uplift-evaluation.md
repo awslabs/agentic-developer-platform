@@ -128,7 +128,7 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
   -f mode=start -f suites=full
 ```
 
-Suites: `capability-contrast`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
+Suites: `capability-contrast`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `machine-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
 `github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
 
 **E16/E17 model execution is currently disabled**, even with reachable gateways.
@@ -422,3 +422,38 @@ for exact scope, retained recovery intent and restoration. It is excluded from
 Nightly story reads explicitly select the native tenant verified by the login checkpoint and retained in its private session. Multiple memberships do not change that selection. A missing or mismatched native tenant fails before the story commands run; the harness never chooses the first visible membership. Owned cross-tenant diagnostics retain their separately declared fixtures.
 
 `login,capability-contrast` selects the existing E19 supported/disabled/permission and doctor scenario without the unrelated parity journeys. Its `fixtures_json.capability_contrast` accepts only the existing seven non-secret selectors from the evaluator config. The ordinary fixture reference can point to the existing admin fixture secret with `non_admin_username`/`non_admin_password`; E19 authenticates it freshly in memory when no `ordinary_session` is provided. It pins the verified native tenant and private `BG_CONFIG_DIR`, changes neither deployment feature flags nor operator settings, and compares the same HOME's two identity caches.
+
+### D05: owned machine metadata and access/session boundaries
+
+Select `login,machine-lifecycle` explicitly in the existing EC2 evaluation
+workflow. D05 is excluded from `full` and `nightly`. Supply this object through
+the workflow's diagnostic fixture input (identifiers must match the deployment):
+
+```json
+{"machine_lifecycle":{"login_user_id":"ACTUAL_COGNITO_ADMIN_SUBJECT","canonical_user_id":"ADMIN_SELECTED_TENANT_CANONICAL_ID","tenant_id":"aws-e","ordinary_canonical_user_id":"ORDINARY_SELECTED_TENANT_CANONICAL_ID","ordinary_native_tenant":"adp-platform","owned_mutations_authorized":true}}
+```
+
+The administrator and ordinary user must be distinct existing fixtures. The
+credential secret supplies `non_admin_username` and `non_admin_password`; the
+installed administrator login uses its Cognito subject, not its native canonical
+user ID. Each session uses independent temporary configuration/token stores,
+including an explicit `BG_CONFIG_DIR`.
+
+The caller retains deterministic registration intent and both exact alias names
+in its durable manifest before SSM dispatch. D05 previews and registers one
+owned canonical service principal, replays its original operation ID, reads its
+mapping identity, checks ordinary denial, duplicate alias refusal and foreign
+tenant refusal, adds its second alias, rejects a stale revision, and suspends it.
+Cleanup revokes only the recorded aliases and retires the exact principal;
+metadata and audit history remain. Identity/name/alias drift prevents cleanup.
+An uncertain registration retains the original operation ID for reconciliation;
+creating a replacement identity is not recovery.
+
+The aliases are unused synthetic metadata under `eventbridge` and
+`github_actions`; no provider account, credential, permission, or model request
+is created. D05 also reads ordinary access in both tenants and previews an
+administrator review of its gateway token family, checking ordinary denial and
+unchanged membership/session review after cleanup. It never revokes a session.
+This qualifies metadata lifecycle and read/denial coverage for #5624/#5625,
+not access-request approval, token revocation, or provider delivery. Access
+requests still need an independently verified GitHub actor fixture.

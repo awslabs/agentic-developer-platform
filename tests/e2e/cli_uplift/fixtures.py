@@ -32,6 +32,12 @@ KEYS = {
         "running_wait_seconds",
     },
     "human_task_chat": IDENTITY | PAID | {"max_tasks"},
+    "machine_lifecycle": IDENTITY
+    | {
+        "owned_mutations_authorized",
+        "ordinary_canonical_user_id",
+        "ordinary_native_tenant",
+    },
     "vault_lifecycle": IDENTITY | {"owned_mutations_authorized"},
     "hierarchy_lifecycle": IDENTITY
     | {
@@ -67,6 +73,18 @@ def validate_fixture(name, value):
             and re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", value[key]),
             f"{name}.{key} requires an explicit fixture identity",
         )
+    if name == "machine_lifecycle":
+        for key in ("ordinary_canonical_user_id", "ordinary_native_tenant"):
+            require(
+                isinstance(value.get(key), str)
+                and re.fullmatch(r"[A-Za-z0-9_.:@-]{1,128}", value[key]),
+                "Explicit ordinary fixture required",
+            )
+        require(
+            value["ordinary_canonical_user_id"] != value["canonical_user_id"]
+            and value["ordinary_native_tenant"] != value["tenant_id"],
+            "Independent ordinary and native tenant required",
+        )
     if name == "hierarchy_lifecycle":
         for key in (
             "ordinary_login_user_id",
@@ -86,7 +104,7 @@ def validate_fixture(name, value):
             value["ordinary_native_tenant"] != value["tenant_id"],
             "Two fixture tenants required",
         )
-    if name in {"vault_lifecycle", "hierarchy_lifecycle"}:
+    if name in {"vault_lifecycle", "hierarchy_lifecycle", "machine_lifecycle"}:
         require(
             value.get("owned_mutations_authorized") is True,
             "Owned metadata mutations must be explicitly authorized",

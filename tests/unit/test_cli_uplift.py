@@ -1758,7 +1758,7 @@ def test_every_supported_suite_and_case_can_be_published(tmp_path, suite, status
     assert len(ET.parse(paths["junit"]).findall(".//testcase")) == len(matrix)
 
 
-@pytest.mark.parametrize("diagnostic", ("D01", "D02", "D03", "D04"))
+@pytest.mark.parametrize("diagnostic", ("D01", "D02", "D03", "D04", "D05"))
 def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
     # D04's guarded source is separately reviewed; schema support must land
     # before its harness so completed remote mutations remain reportable.
@@ -1768,7 +1768,7 @@ def test_schema_accepts_owned_diagnostic_namespace(diagnostic):
     assert report.validate(document) == []
 
 
-@pytest.mark.parametrize("invalid_id", ("D00", "D05", "E43", "C02", "diagnostic"))
+@pytest.mark.parametrize("invalid_id", ("D00", "D06", "E43", "C02", "diagnostic"))
 def test_schema_still_rejects_unknown_case_identifiers(invalid_id):
     document = published_report()
     document["cases"][0]["id"] = invalid_id
@@ -12206,6 +12206,7 @@ def test_fixture_input_exposed_identically_to_evaluate_and_recover():
         "revoked_still_allowed",
         "restore_failure",
         "cleanup_failure",
+        "changed_default",
     ],
 )
 def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
@@ -12309,7 +12310,7 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
             if (
                 kind == "department"
                 and action == "delete"
-                and any(k[0] == "team" for k in resources)
+                and any(k[0] == "team" and k[2] == org for k in resources)
             ):
                 return 4, {"error": {"code": "hierarchy_has_dependencies"}}
             mutations.append(argv)
@@ -12349,6 +12350,25 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
                     "revision": str(revision[0]),
                     "resource": {"name": key},
                 }
+                if kind == "org":
+                    for child_kind, child_id in (
+                        ("department", plan["default_department_id"]),
+                        ("team", plan["default_team_id"]),
+                    ):
+                        resources[(child_kind, child_id, org)] = {
+                            "id": child_id,
+                            "revision": str(revision[0]),
+                            "resource": {
+                                "org_id": org,
+                                "name": "Default",
+                                "description": "Default " + child_kind,
+                                "department_id": plan["default_department_id"],
+                            },
+                        }
+                if kind == "org" and fault == "changed_default":
+                    resources[("team", plan["default_team_id"], org)]["resource"][
+                        "name"
+                    ] = "Changed by another actor"
                 if fault == "lost_create_reply":
                     raise remote_common.RemoteError("Accepted create lost reply")
             elif action == "update":
@@ -12420,8 +12440,11 @@ def test_shipped_hierarchy_owned_cleanup_and_tenant_revocation(
         assert "revoked-tenant-denied-native-preserved" in evidence["detail"]["checks"]
     if fault in {"wrong_actor", "foreign_baseline"}:
         assert mutations == []
-    if fault != "cleanup_failure":
+    if fault not in {"cleanup_failure", "changed_default"}:
         assert not resources
+    if fault == "changed_default":
+        assert ("team", plan["default_team_id"], plan["org_id"]) in resources
+        assert evidence["detail"]["cleanup"][plan["default_team_id"]] == "pending"
     if fault not in {"foreign_baseline", "restore_failure"}:
         assert member == plan["restore"]
     if fault == "restore_failure":
