@@ -176,3 +176,11 @@ Budget additions ([contract and examples](budgets.md)); source implemented, live
 | `adp admin budget status` | Exact cap's spend/headroom; no ancestor or real-enforcement claim |
 | `adp admin budget set` | Create-if-absent or revision-guarded update; preserves usage |
 | `adp admin budget delete` | Revision-guarded removal of one period cap; preserves usage |
+
+Hosted coding (#5516) adds `adp agent trigger --repo --issue --persona
+--snapshot-file --instructions-file --request-id [--dry-run|--yes] [--timeout]
+[--json]`. Both Claude and Codex developer personas submit through the existing
+Task API using the selected human login and standing repository enrollment.
+`agent status|detail|state|ping|logs|wait|steer|abort` also accept canonical `tsk_`
+handles; Task pause/resume are explicitly unavailable. See [hosted coding](hosted-coding.md)
+for repository snapshots, deterministic patch results and E42 qualification limits.

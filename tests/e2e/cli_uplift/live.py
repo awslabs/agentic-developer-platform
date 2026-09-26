@@ -618,6 +618,7 @@ def _journey_payload(cfg, ctx):
         "ui_contracts": ctx.get("ui_contracts") or {},
         "capability_contrast": cfg.get("capability_contrast") or {},
         "tenant_isolation": cfg.get("tenant_isolation") or {},
+        "human_task_coding": cfg.get("human_task_coding") or {},
         # E18 receives references and bounded workload choices only. The admin
         # password remains in Secrets Manager and is read on the instance.
         "superplane": cfg.get("superplane") or {},

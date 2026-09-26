@@ -1318,6 +1318,52 @@
       "capability_source": "/activity/invocations/{invocation_id}/agent/state"
     },
     {
+      "command": "adp agent trigger",
+      "helper": "adp-agent.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": null,
+      "flags": [
+        "--dry-run",
+        "--instructions-file",
+        "--issue",
+        "--json",
+        "--persona",
+        "--repo",
+        "--request-id",
+        "--snapshot-file",
+        "--timeout",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "POST"
+        ],
+        "paths": [
+          "/v1/task-artifacts",
+          "/v1/tasks"
+        ],
+        "schema": "Canonical Task API artifact upload and idempotent submit; standing human repository scope"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common envelope; logs --follow emits event envelopes"
+      },
+      "tests": [
+        "tests/cli/test_adp_agent.py",
+        "tests/cli/test_command_manifest.py"
+      ],
+      "required_capabilities": [],
+      "capability_source": null,
+      "authentication": "task-human-standing-policy",
+      "required_oauth_scopes": [
+        "adp-tasks/submit",
+        "adp-tasks/artifacts"
+      ]
+    },
+    {
       "command": "adp agent wait",
       "helper": "adp-agent.py",
       "status": "shipped",

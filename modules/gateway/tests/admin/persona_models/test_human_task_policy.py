@@ -54,3 +54,25 @@ async def test_unsupported_persona_never_creates_authority(monkeypatch):
         await routes.put_policy(USER, body("developer"), object(), object(), store)
     assert refused.value.status_code == 422
     store.put.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persona", ["agent-task-claude-developer", "agent-task-codex-developer"])
+async def test_coding_requires_explicit_repository_enrollment(monkeypatch, persona):
+    monkeypatch.setattr(routes, "enrolled_target", AsyncMock(return_value=(SimpleNamespace(user_id=USER, tenant_id=TENANT), "human:" + USER)))
+    store = Mock()
+    with pytest.raises(HTTPException) as refused:
+        await routes.put_policy(USER, body(persona), object(), object(), store)
+    assert refused.value.status_code == 422
+    store.put.assert_not_called()
+
+
+def test_coding_repository_scope_retains_dynamo_decimal_identity():
+    from decimal import Decimal
+
+    scope = routes.RepositoryScope.model_validate({"repository_id": Decimal(42), "repository": "owner/repo", "path_prefixes": ["cli"]})
+    assert type(scope.repository_id) is int
+    assert scope.repository_id == 42
+    for path in ("../token", ".git/config", "cli/../token", "cli/bad name.py"):
+        with pytest.raises(ValueError):
+            routes.RepositoryScope.model_validate({"repository_id": 42, "repository": "owner/repo", "path_prefixes": [path]})

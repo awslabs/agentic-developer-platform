@@ -22,41 +22,24 @@ from src.budget.pricing_v2_reader import get_rate_state
 from src.proxy.bedrock_routing import bedrock_routing_resolver
 from src.shared.config import get_settings
 from src.shared.models.persona_models import PersonaModelPreference
+from src.tasks.personas import TASK_PERSONAS
 
 TASK_PERSONA = "agent-task-investigator"
 TASK_TRANSPORT = "anthropic_messages"
-TASK_CONTRACT_REVISION = "task-messages-v1"
-TASK_PROBE_BODY = {
-    "anthropic_version": "bedrock-2023-05-31",
-    "max_tokens": 16,
-    "system": "Reply briefly.",
-    "messages": [{"role": "user", "content": [{"type": "text", "text": "Reply OK."}]}],
-}
-TASK_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
+TASK_CONTRACT_REVISION = TASK_PERSONAS[TASK_PERSONA].harness_contract_revision
+TASK_PROBE_BODY = TASK_PERSONAS[TASK_PERSONA].probe_body
+TASK_REQUEST_SHAPE = TASK_PERSONAS[TASK_PERSONA].request_shape_sha256
 TASK_CYBER_PERSONA = "agent-task-cyber"
-TASK_CYBER_CONTRACT_REVISION = "task-cyber-sdk-messages-v1"
-TASK_CYBER_PROBE_BODY = {
-    "anthropic_version": "bedrock-2023-05-31",
-    "max_tokens": 64,
-    "messages": [{"role": "user", "content": [{"type": "text", "text": "Call task_probe with value OK."}]}],
-    "tools": [
-        {
-            "name": "task_probe",
-            "description": "Return probe evidence.",
-            "input_schema": {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"], "additionalProperties": False},
-        }
-    ],
-    "tool_choice": {"type": "tool", "name": "task_probe"},
-}
-TASK_CYBER_REQUEST_SHAPE = hashlib.sha256(json.dumps(TASK_CYBER_PROBE_BODY, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+TASK_CYBER_CONTRACT_REVISION = TASK_PERSONAS[TASK_CYBER_PERSONA].harness_contract_revision
+TASK_CYBER_PROBE_BODY = TASK_PERSONAS[TASK_CYBER_PERSONA].probe_body
+TASK_CYBER_REQUEST_SHAPE = TASK_PERSONAS[TASK_CYBER_PERSONA].request_shape_sha256
 
 
 async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy_version, include_context=False, persona=TASK_PERSONA):
-    if persona not in {TASK_PERSONA, TASK_CYBER_PERSONA}:
+    profile = TASK_PERSONAS.get(persona)
+    if profile is None:
         raise ModelPolicyError("task_model_transport_unsupported")
-    revision = TASK_CYBER_CONTRACT_REVISION if persona == TASK_CYBER_PERSONA else TASK_CONTRACT_REVISION
-    shape = TASK_CYBER_REQUEST_SHAPE if persona == TASK_CYBER_PERSONA else TASK_REQUEST_SHAPE
+    revision, shape = profile.harness_contract_revision, profile.request_shape_sha256
     from src.tasks.human_authority import require_current_owner
 
     principal_kind, owner_id = await require_current_owner(db, tenant=tenant, principal=principal)

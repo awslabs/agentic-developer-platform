@@ -58,6 +58,8 @@ class TaskAdmission:
             tool_grants = freeze_tools(submit["persona"], policy)
         except TaskToolPolicyError:
             raise TaskAdmissionError("prerequisite_unavailable", 503) from None
+        from src.tasks.repository_authority import CODING_PERSONAS, require_coding_snapshot
+
         digest = payload_digest(submit)
         idem_key = idempotency_partition(tenant=caller.tenant_id, canonical_principal=caller.principal_id, idempotency_key=idempotency_key)
         existing = await run_in_threadpool(self.repository._read_idempotency, idem_key)
@@ -68,6 +70,8 @@ class TaskAdmission:
             if task is None:
                 raise TaskStoreError("accepted task unavailable")
             return self.receipt(task, replayed=True)
+        if submit["persona"] in CODING_PERSONAS:
+            await require_coding_snapshot(caller=caller, submit=submit, policy=policy, db=db)
         now = self.clock()
         deadline = now + timedelta(minutes=int(policy["limits"]["max_duration_minutes"]))
         human_owner = caller.principal_id.startswith("human:")
@@ -78,7 +82,7 @@ class TaskAdmission:
             deadline=deadline,
             expected_policy_version=policy["model_policy_version"],
             **({"include_context": True} if human_owner else {}),
-            **({"persona": submit["persona"]} if submit["persona"] == "agent-task-cyber" else {}),
+            **({"persona": submit["persona"]} if submit["persona"] in {"agent-task-cyber", *CODING_PERSONAS} else {}),
         )
         if human_owner:
             binding, owner_policy, _ = binding

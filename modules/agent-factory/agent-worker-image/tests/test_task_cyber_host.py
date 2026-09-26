@@ -38,7 +38,7 @@ def test_sdk_preserves_structured_tools_and_canonical_turn(assignment_and_bootst
         validate_child_frame({**request, 'sdk_request': {**sdk, 'model': 'untrusted'}}, assignment.task_id)
 
 
-@pytest.mark.parametrize('persona, cancel', [('agent-task-cyber', False), ('agent-task-cyber', True), ('agent-task-cyber', 'unknown'), ('agent-task-cyber', 'completion_unknown'), ('agent-task-cyber', 'failure_unknown'), ('agent-task-investigator', False)])
+@pytest.mark.parametrize('persona, cancel', [('agent-task-cyber', False), ('agent-task-cyber', True), ('agent-task-cyber', 'unknown'), ('agent-task-cyber', 'completion_unknown'), ('agent-task-cyber', 'failure_unknown'), ('agent-task-investigator', False), ('agent-task-claude-developer', False), ('agent-task-codex-developer', False)])
 def test_broker_is_persona_gated_and_cancel_responsive(tmp_path, monkeypatch, assignment_and_bootstrap, persona, cancel):
     assignment, envelope, bootstrap = assignment_and_bootstrap
     assignment = dataclasses.replace(assignment, persona=persona)
@@ -63,7 +63,7 @@ def test_broker_is_persona_gated_and_cancel_responsive(tmp_path, monkeypatch, as
     source = script.read_text()
     start = source.index('try:\n    socket.socket()')
     end = source.index("task_id = start['task_id']", start)
-    if persona == 'agent-task-cyber':
+    if persona != 'agent-task-investigator':
         source = source[:start] + "assert os.environ['ADP_TASK_NETWORK'] == 'host-mediated-sdk'\nwith socket.socket() as sock: sock.bind(('127.0.0.1', 0))\n" + source[end:]
     idx = source.index("report = {'summary'")
     source = source[:idx] + """

@@ -46,6 +46,7 @@ STATUSES = (PASSED, FAILED, BLOCKED, NOT_RUN)
 SUITES = (
     "full",
     "nightly",
+    "hosted-coding",
     "story-reads",
     "tenant-isolation",
     "login",
@@ -97,6 +98,7 @@ COGNITO = "cognito"
 GITHUB_APP = "github_app"
 GITHUB_REPO = "github_repo"
 HOSTED = "hosted"
+HUMAN_TASK_CODING = "human_task_coding"
 # #5413: three separately-reachable ADP deployments and a sign-in fixture for
 # each. Deliberately its own class rather than a count on DESTINATION — those are
 # AWS accounts a rule routes TO, whereas these are three gateways the CLI signs in
@@ -322,6 +324,13 @@ CASES = (
         "GitHub maintenance status and reviewed previews never read supplied keys or change the shared App",
         (EC2, PLATFORM, COGNITO, GITHUB_APP),
     ),
+    Case(
+        "E42",
+        "#5516",
+        "hosted-coding",
+        "One enrolled human repository Task uses canonical submit, replay, monitor and control with terminal readback",
+        (EC2, PLATFORM, COGNITO, HUMAN_TASK_CODING),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance
@@ -346,7 +355,7 @@ def suite_cases(suite):
         return (
             BY_ID["E01"],
             LOGIN_CHECKPOINT,
-            *(case for case in CASES if case.suite == "story-reads"),
+            *(case for case in CASES if case.suite in {"story-reads", "hosted-coding"}),
         )
     if suite == "login":
         return (BY_ID["E01"], LOGIN_CHECKPOINT)

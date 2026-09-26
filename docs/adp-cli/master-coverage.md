@@ -24,7 +24,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 
 | Story | Coverage to add or complete | Reuse |
 |---|---|---|
-| #5516 | Hosted submission and authoritative follow/status/logs/wait | Existing Task API; reconcile human authority and repository-persona support, no new dispatcher |
+| #5516 | Hosted submission and authoritative follow/status/logs/wait | [Hosted coding](hosted-coding.md) via existing Task API, human repository enrollment, Claude/Codex engines, Task model catalogue/probes and E42; live acceptance and test/publication evidence remain held |
 | #5589 | [Budget CLI](budgets.md): own reads and exact-period administrator list/show/set/delete/status; E26 nightly reads, live enforcement acceptance pending | Existing budget APIs and usage accounting |
 | #5621 | Capabilities, diagnostics and command inventory | PR #5716 merged; live acceptance pending |
 | #5622 ([tenant CLI](tenant.md), source; live held) | Tenant selection and isolation | Existing deployment/session selection and server-authorized membership |
