@@ -231,6 +231,7 @@ def test_control_transient_failure_retries_identical_read_then_preserves_cancel(
     body = {'attempt': {'runtime_attempt_id': 'bound'}, 'last_receipt_cursor': 'cursor'}
     result = run.control(body)
     assert result['cancel_requested'] is cancel and run._stopping is cancel
+    assert run.validation_stop_event.is_set() is cancel
     assert len(requests) == 3 and all(request == requests[0] for request in requests)
     assert requests[0] == ('control', body, {'run_bound': True})
     assert delays == [0.1, 0.2] and sum(delays) < 1
@@ -311,3 +312,15 @@ def test_trace_headers_are_signed_and_context_does_not_leak(transport):
     with pytest.raises(client.TaskRunClientError):
         with run.trace_context("00-" + "0" * 32 + "-1234567890abcdef-01"):
             pytest.fail("invalid trace accepted")
+
+
+def test_local_cleanup_remains_available_after_stop(transport, monkeypatch):
+    monkeypatch.setenv("ADP_TASK_TOOL_ROUTES", '{"validation.cleanup":"local:fixture.cleanup.create"}')
+    run = client.TaskRunClient()
+    handler = Mock()
+    run._local_tools["fixture.cleanup.create"] = handler
+    run._stopping = True
+    run.validation_stop_event.set()
+    body = {"operation": "cancel_jobs"}
+    assert run.tool("validation.cleanup", body) == handler.invoke.return_value
+    handler.invoke.assert_called_once_with(body)

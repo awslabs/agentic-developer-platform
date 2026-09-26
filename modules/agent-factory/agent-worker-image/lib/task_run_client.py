@@ -393,8 +393,6 @@ class TaskRunClient:
             if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.]*", target):
                 raise TaskRunClientError("Invalid local tool handler")
             with self._credential_lock:
-                if self._stopping:
-                    raise TaskRunClientError("Task tools have been stopped")
                 if target not in self._local_tools:
                     module, factory = target.rsplit(".", 1)
                     self._local_tools[target] = getattr(importlib.import_module(module), factory)(self)
