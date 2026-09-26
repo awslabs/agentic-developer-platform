@@ -10880,3 +10880,54 @@ def test_pending_launch_cleanup_discovers_only_exact_attempt(outcome):
         kw for service, operation, kw in aws.calls if operation == "terminate_instances"
     ]
     assert mutations == ([{"InstanceIds": ["i-0abc"]}] if outcome == "owned" else [])
+
+
+@pytest.mark.parametrize("foreign_last_page", [False, True])
+def test_pending_launch_cleanup_finishes_discovery_before_any_termination(
+    foreign_last_page,
+):
+    attempt = "adp-e2e-20260926-012131-df70e8-a1"
+    owner = attempt.rsplit("-a", 1)[0]
+    discovered = []
+
+    def describe(**kwargs):
+        if "InstanceIds" in kwargs:
+            return {
+                "Reservations": [{"Instances": [{"State": {"Name": "terminated"}}]}]
+            }
+        page = 2 if kwargs.get("NextToken") == "page-two" else 1
+        discovered.append(page)
+        instance = {
+            "InstanceId": "i-0ab" + str(page),
+            "Tags": [
+                {
+                    "Key": cleanup.OWNER_TAG,
+                    "Value": "foreign" if page == 2 and foreign_last_page else owner,
+                },
+                {"Key": "Name", "Value": "cli-uplift-eval-" + attempt},
+            ],
+        }
+        return {
+            "Reservations": [{"Instances": [instance]}],
+            **({"NextToken": "page-two"} if page == 1 else {}),
+        }
+
+    def terminate(**kwargs):
+        assert discovered == [1, 2], "Never delete before complete discovery"
+        return {}
+
+    aws = FakeAws(
+        {"ec2.describe_instances": describe, "ec2.terminate_instances": terminate}
+    )
+    delete = live._deleters(aws, VALID)(VALID)["ec2_instance"]
+    if foreign_last_page:
+        with pytest.raises(ports.PortError, match="foreign identity"):
+            delete("pending:" + attempt)
+    else:
+        delete("pending:" + attempt)
+    terminated = [
+        kwargs["InstanceIds"]
+        for _, operation, kwargs in aws.calls
+        if operation == "terminate_instances"
+    ]
+    assert terminated == ([] if foreign_last_page else [["i-0ab1"], ["i-0ab2"]])
