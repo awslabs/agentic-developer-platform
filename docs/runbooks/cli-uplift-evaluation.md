@@ -401,3 +401,13 @@ with `--json` and a JSON object read from a private file. Never interpolate fixt
 content into a shell command. The workflow passes the input only through its
 environment and validates it before producing the run config. No schedule was
 added.
+
+
+E42's artifact upload receipt remains local to the fixture until returned in
+case evidence. If the entire instance disappears before that evidence returns,
+the caller retains the original Task request key but may not know the accepted
+artifact/Task ID. Re-uploading the snapshot can produce a different artifact ID
+and conflict with the original Task fingerprint. Treat that outcome as pending
+reconciliation; the durable plan prevents a replacement paid request key but
+does not prove automatic recovery of accepted work after complete instance loss.
+A same-instance rerun with an existing recovery directory also refuses dispatch.
