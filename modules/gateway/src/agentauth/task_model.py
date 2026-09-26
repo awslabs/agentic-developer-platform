@@ -390,7 +390,14 @@ class TaskModel:
             include_context=True,
             persona=task["persona"],
         )
-        if binding != grant["model_binding"]:
+        # Admission records the then-current pricing evidence. A validated
+        # pricing refresh may reach gateway processes between admission and a
+        # model turn; it must not change the authorized model or policy. Each
+        # operation below still quotes current rates and reserves that quote
+        # against the original Task cap before any provider handoff.
+        current_pricing = binding.get("pricing_evidence_version")
+        expected_binding = {**grant["model_binding"], "pricing_evidence_version": current_pricing}
+        if not isinstance(current_pricing, str) or not current_pricing or binding != expected_binding:
             raise TaskStoreError("task model binding changed")
         operation, owned = await run_in_threadpool(
             self._claim, identity=identity, turn_id=turn_id, digest=request_digest, model_id=binding["model_id"]

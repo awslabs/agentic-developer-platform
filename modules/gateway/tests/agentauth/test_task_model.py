@@ -115,6 +115,48 @@ async def test_budget_denial_prevents_send(model):
 
 
 @pytest.mark.asyncio
+async def test_refreshed_pricing_requotes_with_original_task_budget(model):
+    binding, policy, target = model.service.readiness.return_value
+    model.service.readiness.return_value = ({**binding, "pricing_evidence_version": "refreshed"}, policy, target)
+    receipt = await execute(model)
+    assert receipt["operation_status"] == "confirmed"
+    module.quote_request.assert_awaited_once()
+    model.enforcement.check_budget_hierarchy.assert_awaited_once()
+    assert model.enforcement.check_budget_hierarchy.call_args.args[1] == Decimal("0.01")
+    module.confirm_quote_spendable.assert_awaited_once()
+    model.provider.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refreshed_pricing_budget_denial_still_prevents_handoff(model):
+    binding, policy, target = model.service.readiness.return_value
+    model.service.readiness.return_value = ({**binding, "pricing_evidence_version": "refreshed"}, policy, target)
+    model.enforcement.check_budget_hierarchy.return_value.allowed = False
+    receipt = await execute(model)
+    assert receipt["operation_status"] == "rejected" and receipt["handoff"] == "not_started"
+    assert receipt["error_code"] == "budget_exceeded"
+    model.provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("model_id", "another-model"), ("transport", "another-transport"),
+    ("model_policy_version", "another-policy"), ("request_shape_version", "another-shape"),
+    ("invocability_verified", False), ("pricing_evidence_version", ""),
+    ("pricing_evidence_version", None),
+])
+async def test_pricing_refresh_does_not_relax_other_model_bindings(model, field, value):
+    binding, policy, target = model.service.readiness.return_value
+    changed = {**binding, "pricing_evidence_version": "refreshed", field: value}
+    model.service.readiness.return_value = (changed, policy, target)
+    with pytest.raises(TaskStoreError, match="binding changed"):
+        await execute(model)
+    module.quote_request.assert_not_awaited()
+    model.provider.assert_not_awaited()
+    assert model.service._read(model.identity.task_id, model.turn_id) is None
+
+
+@pytest.mark.asyncio
 async def test_changed_request_cannot_reuse_turn(model):
     await execute(model)
     model.request["max_tokens"] = 15
