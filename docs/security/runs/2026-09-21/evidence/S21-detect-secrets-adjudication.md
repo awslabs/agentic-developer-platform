@@ -18,8 +18,8 @@ with no raw candidate values or source-line content published.
 | Complete public PEM delimiter literal, without key payload | 6 |
 | Artifact SHA256 with immutable bytes and verified checksum context | 512 |
 | Derived checksums recomputed from immutable source inputs | 36 |
-| Resource references with explicit field/consumer binding | 33 |
-| Pending context review, retained by #6110 | 983 |
+| Resource references with explicit field/consumer binding | 52 |
+| Pending context review, retained by #6110 | 964 |
 | Total original scan records | 1859 |
 
 The initial agent's supplemental classifications remain available as review
@@ -196,3 +196,21 @@ Current verified nonsecret dispositions: **876/1859**, with **983** pending unde
 #6110. All 3,708 original identities and audit joins are retained. This is
 partial evidence adjudication; the story remains open. No credential was
 exercised or private candidate used in a request.
+
+A further **19** fixture reference literals are directly bound to the imported
+`UserCredential(secret_arn=...)` constructor in two vault model tests. The
+verifier requires exact original full scan/audit joins, complete source literals
+and their constructor/import lines, and rejects class rebinding, shadowing,
+concatenation and dynamic constructor arguments. The frozen ORM column and
+typed delivery path pass this attribute to `SecretsManagerHelper` and ultimately
+the AWS `SecretId` argument. Shape or test pathname alone supplies no acceptance.
+
+See `S21-detect-secrets-model-reference-review.json` and
+`scripts/security/s21/verify_model_reference_fixtures.py`. Nineteen new tests
+reject substituted imports, payload fields, helper types, consumer arguments,
+original hashes/indexes, and duplicate selectors. Only source ASTs are read;
+no fixture, application credential flow or resource lookup is executed.
+
+Current verified nonsecret dispositions: **895/1859**, with **964** pending under
+#6110. All 3,708 original identities and audit joins are preserved. The original
+story remains open.
