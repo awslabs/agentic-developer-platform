@@ -1,0 +1,62 @@
+{
+  "dev": {
+    "account": "879318057152",
+    "region": "us-east-1",
+    "image_repository": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime",
+    "images": {
+      "sha256:733d382711a5217fbaf5bcd4be1bd8067f76c29db29488600a3daeb95fb9ac22": {
+        "source_sha": "8822bebf43296fb51fbaf261e76b47efc3072c6d",
+        "build_id": "adp-dev-agent-runtime:d79d8121-6c48-4ff0-90bb-17f8836c885e",
+        "build_status": "SUCCEEDED",
+        "source_bucket": "adp-terraform-state-879318057152",
+        "source_key": "codebuild/src/adp-dev-agent-runtime/8822bebf43296fb51fbaf261e76b47efc3072c6d-1790397729-3687383.zip",
+        "source_archive_sha256": "0b8a2cb291f5da3bd3fadc7b39eada58f8d8c86a929e9738d5c39823072fb78c",
+        "image_tag": "8822bebf43296fb51fbaf261e76b47efc3072c6d",
+        "image_repository": "adp-agent-runtime",
+        "os": "linux",
+        "architecture": "amd64",
+        "build_log_group": "/aws/codebuild/adp-dev-agent-runtime",
+        "build_log_stream": "d79d8121-6c48-4ff0-90bb-17f8836c885e",
+        "packaged_runtime_checks": [
+          {
+            "path": "app/task-agents/cyber/dist/index.js",
+            "source": "modules/agent-factory/task-agents/cyber/src/index.js",
+            "sha256": "2aa020a546ee42282ac3ee1238891d0936ef55c9059d0593dcc99c3388f59929",
+            "layer_digest": "sha256:84fd4e142a9b4c6bfb52e5363602e6ad1b1c182bf0c1a8fb72f6cd1573ed9414"
+          },
+          {
+            "path": "app/task-agents/cyber/dist/task-runtime/protocol.mjs",
+            "source": "modules/tools/task-sdk/protocol.mjs",
+            "sha256": "2cb3e03d634e82c2dc36c5916c109d2e37e6545465d289a1b70002ebb14a4b63",
+            "layer_digest": "sha256:84fd4e142a9b4c6bfb52e5363602e6ad1b1c182bf0c1a8fb72f6cd1573ed9414"
+          },
+          {
+            "path": "app/task-agents/cyber/dist/task-runtime/execution-failure.mjs",
+            "source": "modules/tools/task-sdk/execution-failure.mjs",
+            "sha256": "72c34ce713f51719d4dec6d185dd7bde08a01c52160a2763a573afd7d4b7d343",
+            "layer_digest": "sha256:84fd4e142a9b4c6bfb52e5363602e6ad1b1c182bf0c1a8fb72f6cd1573ed9414"
+          },
+          {
+            "path": "app/lib/task_host.py",
+            "source": "modules/agent-factory/agent-worker-image/lib/task_host.py",
+            "sha256": "a391febb2363fb2fc3efd211dad1d1507ab9b3829c6657f992fe2d6908b5d8c6",
+            "layer_digest": "sha256:f39935cf8b178e5868ffcfe390f791f37dc479546650098475a64ee6180b9169"
+          }
+        ],
+        "independent_review": {
+          "reviewer": "root",
+          "fresh_aws_source_archive_and_image_layer_verification": true,
+          "receipt_equal": true,
+          "image_tag_mutability": "IMMUTABLE",
+          "image_digest": "sha256:733d382711a5217fbaf5bcd4be1bd8067f76c29db29488600a3daeb95fb9ac22",
+          "source_sha": "8822bebf43296fb51fbaf261e76b47efc3072c6d",
+          "four_packaged_files_match_source": true,
+          "result": "approved"
+        },
+        "contract_selfcheck": "Shared-contract selfcheck OK",
+        "source_pr": "https://github.com/aws-e/adp/pull/6318",
+        "rollout_status": "built_and_verified_not_deployed"
+      }
+    }
+  }
+}
