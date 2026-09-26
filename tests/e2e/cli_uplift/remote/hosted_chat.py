@@ -1,6 +1,5 @@
 """Opt-in two-turn hosted chat diagnostic; E40 remains read-only."""
 
-import hashlib
 import json
 import os
 import re
@@ -10,6 +9,7 @@ from pathlib import Path
 
 import common
 from capability_contrast import _write_session
+from chat_plan import recovery_plan
 
 PERSONA = "agent-task-investigator"
 TASK_ID = re.compile(
@@ -103,16 +103,13 @@ def execute(config, evidence):
         isinstance(config.get("evaluation_id"), str) and bool(config["evaluation_id"]),
         "Stable evaluation ID required for chat replay",
     )
-    identity = json.dumps(
-        [config["evaluation_id"], fixture["tenant_id"], fixture["canonical_user_id"]],
-        separators=(",", ":"),
+    plan = recovery_plan(config)
+    common.require(
+        config.get("recovery_plan") == plan,
+        "Caller must retain the exact chat recovery plan before remote dispatch",
     )
-    run_digest = hashlib.sha256(identity.encode()).hexdigest()
-    marker = "memory-" + run_digest[:12]
-    messages = [
-        f"Remember this label for our next turn: {marker}. Reply only NOTED.",
-        "What label did I ask you to remember in our previous turn? Reply only with that label.",
-    ]
+    marker = plan["memory_label"]
+    messages = [turn["message"] for turn in plan["turns"]]
     records = []
     evidence["detail"] = {
         "qualification": "Two hosted chat turns and owned cleanup; E40 read-only coverage is unchanged; spend reconciliation is separate",
@@ -157,7 +154,7 @@ def execute(config, evidence):
         session_id = None
         try:
             for index, message in enumerate(messages):
-                request_id = "chatdiag-" + run_digest[:48] + "-" + str(index)
+                request_id = plan["turns"][index]["request_id"]
                 message_file = home / f"message-{index}.txt"
                 message_file.write_text(message)
                 command = (

@@ -239,6 +239,31 @@ class Manifest:
         # durable push fails, the intent must not be treated as recorded.
         return self._mutate(change, critical=True)
 
+    def record_diagnostic(self, purpose, plan):
+        """Push immutable recovery inputs before any remote diagnostic dispatch.
+
+        Diagnostic intents are evidence, not deletable resources. They remain in
+        the manifest for explicit same-request recovery after a lost worker.
+        """
+        if self.on_change is None:
+            raise ValueError(
+                "Diagnostic dispatch requires an external durable manifest sink"
+            )
+        if not isinstance(plan, dict) or not plan.get("evaluation_id"):
+            raise ValueError("Diagnostic recovery plan needs its evaluation identity")
+        key = purpose + ":" + plan["evaluation_id"]
+
+        def change(document):
+            intents = document.setdefault("diagnostic_intents", {})
+            if key in intents and intents[key] != plan:
+                raise ValueError(
+                    "Diagnostic recovery identity already has different inputs"
+                )
+            intents[key] = plan
+            return plan
+
+        return self._mutate(change, critical=True)
+
     def mark(self, kind, identifier, status, *, error=None):
         def change(document):
             for entry in document["resources"]:
