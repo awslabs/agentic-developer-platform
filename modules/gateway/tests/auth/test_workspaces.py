@@ -498,3 +498,10 @@ def test_switch_writer_preserves_only_current_platform_authority(monkeypatch):
         with pytest.raises(RuntimeError, match="Platform role changed"):
             CognitoWorkspaceClaims()._set("login-sub", {"custom:org_id": "home", "custom:role": "platform_admin"})
     client.admin_update_user_attributes.assert_called_once()
+
+
+def test_actual_app_mounts_tenant_context_and_legacy_workspace_routes():
+    from src.app import create_app
+
+    paths = {route.path for route in create_app().routes if hasattr(route, "path")}
+    assert {"/workspaces", "/workspaces/context", "/auth/workspaces", "/auth/workspaces/select"} <= paths

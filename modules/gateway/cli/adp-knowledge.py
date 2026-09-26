@@ -182,13 +182,15 @@ def timestamp(value, *, mutation=False):
         invalid_response("Response timestamp is malformed.", mutation=mutation)
 
 
+# Older ingesters persist "complete" in the registry. Preserve that observed
+# value for discovery; it alone does not establish usable indexing evidence.
 def asset_response(value, expected=None, *, source=None, mutation=False):
     if not isinstance(value, dict):
         invalid_response(mutation=mutation)
     response_id(value.get("id"), expected, mutation=mutation)
     if (
         value.get("asset_type") not in {"repo", "url", "doc"}
-        or value.get("status") not in {"registered", "queued", "indexing", "indexed", "failed", "removed"}
+        or value.get("status") not in {"registered", "queued", "indexing", "indexed", "failed", "removed", "complete"}
         or not isinstance(value.get("source_ref"), str)
         or not value["source_ref"]
         or not isinstance(value.get("created_at"), str)
@@ -279,7 +281,7 @@ def status_result(value, expected=None):
     if not all(isinstance(stage, dict) and isinstance(stage.get("status"), str) for stage in value["stages"]):
         raise common.CliError("Indexing stages are malformed.", "dependency_pending", 4)
     response_id(value.get("asset_id"), expected)
-    if value.get("status") not in {"registered", "queued", "indexing", "indexed", "failed", "removed"}:
+    if value.get("status") not in {"registered", "queued", "indexing", "indexed", "failed", "removed", "complete"}:
         invalid_response("Asset status is missing or unknown.")
     if value.get("run_id") is not None:
         response_id(value["run_id"])
