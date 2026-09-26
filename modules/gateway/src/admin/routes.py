@@ -1638,7 +1638,8 @@ async def update_agent(
     agent = await service.get_agent(client_id, target_org_id)
     if {"department_id", "team_id"} & request.model_fields_set:
         await _validate_agent_assignment(
-            access.db, target_org_id,
+            access.db,
+            target_org_id,
             request.department_id if request.department_id is not None else agent.department_id,
             request.team_id if request.team_id is not None else agent.team_id,
         )
