@@ -326,6 +326,44 @@ emit evidence references for selected learning candidates. Reuse the same provid
 port and record contract; gateway and harness must not maintain independent memory
 stores or incompatible learning policies.
 
+The primary cross-surface use case is user memory continuity. A user working from
+their laptop through the gateway to Bedrock and an ADP agent triggered by that
+same user must be able to use the same relevant, authorized user memories. Memory
+ownership follows the authenticated canonical human root and tenant, not the
+laptop, model provider, SDK thread, bot account or worker service identity.
+
+Resolve the human root from trusted login/delegation and account mappings; never
+accept a user ID supplied in prompt text, an arbitrary request header, a commit
+author or an unverified GitHub username. GitHub/Task API/adp-trigger admissions
+carry a signed memory delegation grant with read/write scope, expiry and policy
+revision. A service-account-rooted task without verified human delegation receives
+only its own authorized memory; do not fabricate a human owner.
+
+Retrieve from explicitly authorized layers: user preferences/work habits,
+repository/project knowledge, explicitly shared team knowledge and persona-specific
+experience. User memory must be usable across personas rather than requiring an
+exact persona match for all records. Apply both ownership and current task scope:
+a memory about one private repository must not enter another repository's prompt
+or a public PR merely because the same human triggered both runs. Reading user
+memory does not authorize publishing it or writing new durable user preferences.
+Keep proposed agent lessons separate from explicit user instructions/preferences;
+run-specific directives do not silently become permanent user preferences.
+
+Laptop-originated learning needs an authorized extraction/proposal path as well
+as retrieval. Request traffic alone does not establish task success or permission
+to retain all content. Agent-generated verified lessons may be available to later
+laptop sessions or other authorized personas through the same store. Version,
+expire, correct and delete them centrally, preserving source evidence and access
+revocation across all derived indexes and caches.
+
+Required end-to-end evidence: an authorized laptop/gateway interaction records a
+useful preference or lesson; the same user's GitHub- or Task-triggered Codex agent
+retrieves and demonstrably applies it; a later laptop session can retrieve an
+authorized agent learning. Different users, tenants and unauthorized repositories
+must not receive it, and revocation must remove access. Compare latency, context
+cost and accepted-output quality against memory disabled. The initial persona-bound
+memory port needs layered-scope/delegation support before this scenario is qualified.
+
 Select context ownership explicitly in the admitted run policy: disabled,
 harness-attached, or gateway-attached. A coordinated mode may combine the two only
 with a shared context manifest identifying record IDs/versions and their insertion
