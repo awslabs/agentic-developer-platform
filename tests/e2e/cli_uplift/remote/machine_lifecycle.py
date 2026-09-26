@@ -86,6 +86,12 @@ def execute(config, evidence):
         "cleanup": "not_started",
         "qualification": "Canonical metadata only; no provider identity, credential, inference, session revocation or membership mutation. Access/session coverage is read/denial only.",
     }
+    if fixture.get("cognito_lifecycle") is True:
+        state["qualification"] = (
+            "Canonical metadata and owned Cognito client/credential lifecycle selected. "
+            "Access/session coverage is read/denial only; no token minting, inference, "
+            "session revocation, membership mutation or IAM identity qualification."
+        )
     evidence["detail"] = state
     recovery = Path(config["work_dir"]) / ("machine-" + plan["registration_id"])
     recovery.mkdir(mode=0o700, exist_ok=False)
@@ -423,8 +429,11 @@ def execute(config, evidence):
                 state,
                 save,
             )
-            state["qualification"] += (
-                " Owned Cognito credential delivery, same-operation recovery and retirement verified; no token minting or IAM identity qualification."
+            state["qualification"] = (
+                "Canonical metadata lifecycle plus owned Cognito credential delivery, "
+                "same-operation recovery and retirement verified. Access/session coverage "
+                "is read/denial only; no token minting, inference, session revocation, "
+                "membership mutation or IAM identity qualification."
             )
             save()
         evidence.update(success=True, stage_reached="complete")

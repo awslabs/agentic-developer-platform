@@ -39,6 +39,13 @@ def recovery_plan(config):
     }
 
     if config["machine_lifecycle"].get("cognito_lifecycle") is True:
+        plan["cleanup"] = (
+            "Revoke only recorded aliases and retire exact owned canonical principal; "
+            "retire only the original owned Cognito registration client and remove private "
+            "credential files, retaining metadata/history. Unknown provider completion "
+            "requires original name/operation reconciliation. No token minting, inference "
+            "or IAM identity qualification."
+        )
         plan["cognito"] = {
             "name": "owned-cognito-" + suffix,
             "registration_id": str(
