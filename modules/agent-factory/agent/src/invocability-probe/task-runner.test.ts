@@ -16,7 +16,7 @@ function fixture(persona: keyof typeof profiles = 'agent-task-investigator') {
 
 it.each(Object.keys(profiles) as (keyof typeof profiles)[])('qualifies exact bounded %s profile only with provider receipt', async persona => {
   const { gateway } = fixture(persona);
-  const body = persona === 'agent-task-investigator' ? { content: [{ type: 'text', text: 'OK' }] }
+  const body = persona === 'agent-task-investigator' ? { type: 'message', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'OK' }] }
     : { content: [{ type: 'tool_use', name: 'task_probe', input: { value: 'OK' } }] };
   const call = jest.fn().mockResolvedValue({ status: 200, requestId: 'provider-receipt', body: Buffer.from(JSON.stringify(body)) });
   await runTaskProbe(persona, gateway, call);
@@ -31,7 +31,7 @@ it.each(['missing_receipt', 'empty', 'transport'])('does not manufacture proof o
   const call = jest.fn();
   if (failure === 'transport') call.mockRejectedValue(new Error('timeout'));
   else call.mockResolvedValue({ status: 200, requestId: failure === 'missing_receipt' ? undefined : 'id',
-    body: Buffer.from(JSON.stringify({ content: failure === 'empty' ? [] : [{ type: 'text', text: 'OK' }] })) });
+    body: Buffer.from(JSON.stringify({ type: 'message', role: 'assistant', stop_reason: 'end_turn', content: failure === 'empty' ? [] : [{ type: 'text', text: 'OK' }] })) });
   await runTaskProbe('agent-task-investigator', gateway, call);
   expect(call).toHaveBeenCalledTimes(1);
   expect(gateway.complete.mock.calls[0][2].outcome).toBe('error');
@@ -60,4 +60,50 @@ it.each(['invalid', '2000-01-01T00:00:00Z'])('refuses invalid or expired destina
   const start = await gateway.start(); start.credentials_expires_at = expiry;
   await expect(runTaskProbe('agent-task-investigator', gateway, call)).rejects.toThrow('identity mismatch');
   expect(call).not.toHaveBeenCalled();
+});
+
+function completedText(text = 'OK.') {
+  return { type: 'message', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text }] };
+}
+
+it.each(['OK', 'OK.', '  OK.\n'])('accepts only bounded completed investigator sentinel %j', async text => {
+  const { gateway } = fixture();
+  const call = jest.fn().mockResolvedValue({ status: 200, requestId: 'original-receipt', body: Buffer.from(JSON.stringify(completedText(text))) });
+  await runTaskProbe('agent-task-investigator', gateway, call);
+  expect(call).toHaveBeenCalledTimes(1);
+  expect(gateway.complete.mock.calls[0][2]).toMatchObject({ outcome: 'proven', provider_request_id: 'original-receipt', error_code: null });
+});
+
+it.each([
+  ['prose', completedText('OK. Here is more text.')],
+  ['empty', completedText('')],
+  ['lowercase', completedText('ok')],
+  ['other punctuation', completedText('OK!')],
+  ['multiple periods', completedText('OK..')],
+  ['truncated', { ...completedText(), stop_reason: 'max_tokens' }],
+  ['unknown stop', { ...completedText(), stop_reason: 'unknown' }],
+  ['missing stop', { ...completedText(), stop_reason: undefined }],
+  ['wrong role', { ...completedText(), role: 'user' }],
+  ['wrong type', { ...completedText(), type: 'unknown' }],
+  ['null body', null],
+  ['empty content', { ...completedText(), content: [] }],
+  ['null block', { ...completedText(), content: [null] }],
+  ['nonstring text', { ...completedText(), content: [{ type: 'text', text: 1 }] }],
+  ['tool', { ...completedText(), content: [{ type: 'tool_use', name: 'task_probe', input: { value: 'OK' } }] }],
+  ['extra prose block', { ...completedText(), content: [...completedText().content, { type: 'text', text: 'more' }] }],
+  ['extra tool block', { ...completedText(), content: [...completedText().content, { type: 'tool_use', name: 'task_probe' }] }],
+])('rejects investigator %s without retry', async (_name, body) => {
+  const { gateway } = fixture();
+  const call = jest.fn().mockResolvedValue({ status: 200, requestId: 'original-receipt', body: Buffer.from(JSON.stringify(body)) });
+  await runTaskProbe('agent-task-investigator', gateway, call);
+  expect(call).toHaveBeenCalledTimes(1);
+  expect(gateway.complete.mock.calls[0][2].outcome).toBe('error');
+});
+
+it.each([undefined, 202, 500])('rejects unconfirmed HTTP status %s despite valid body', async status => {
+  const { gateway } = fixture();
+  const call = jest.fn().mockResolvedValue({ status, requestId: 'original-receipt', body: Buffer.from(JSON.stringify(completedText())) });
+  await runTaskProbe('agent-task-investigator', gateway, call);
+  expect(call).toHaveBeenCalledTimes(1);
+  expect(gateway.complete.mock.calls[0][2].outcome).toBe('error');
 });
