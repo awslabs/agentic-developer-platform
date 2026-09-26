@@ -2,6 +2,7 @@
 # ruff: noqa: F811
 
 import json
+from collections import Counter
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -250,6 +251,9 @@ async def test_paid_stage_recovery_only_continues_confirmed_original_effects(
         current_claim = routes.Claim(
             **{name: getattr(claim, name) for name in routes.Claim.model_fields}
         )
+        network = getattr(runtime.cloud, "network", None)
+        network_reads_from = len(network.calls) if network is not None else 0
+        downs = getattr(runtime.cloud, "downs", 0)
         result = await routes.observe(
             routes.StatusRequest(
                 claim=current_claim,
@@ -259,6 +263,12 @@ async def test_paid_stage_recovery_only_continues_confirmed_original_effects(
             output.c.api_request,
             observer,
         )
+        assert getattr(runtime.cloud, "downs", 0) == downs
+        if network is not None:
+            assert all(
+                name.startswith(("describe_", "get_", "search_"))
+                for _, name, _ in network.calls[network_reads_from:]
+            )
         return (
             CallOutcome(result["outcome"]),
             "original stage observed",
@@ -320,6 +330,12 @@ async def test_paid_stage_recovery_only_continues_confirmed_original_effects(
         assert await c.fetchval("SELECT count(*) FROM harness_operations") == 2
     assert not runtime.cloud.exists and runtime.cloud.launches == 1
     assert runtime.cloud.downs == 1
+    mutations = Counter(
+        (method, path)
+        for method, path in runtime.kube.requests
+        if method in {"PATCH", "DELETE"}
+    )
+    assert len(mutations) == 3 and set(mutations.values()) == {1}
 
 
 async def test_staged_cleanup_cannot_create_a_second_teardown_uuid(output):
