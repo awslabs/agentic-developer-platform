@@ -13112,3 +13112,66 @@ def test_tenant_isolation_dispatch_refuses_invalid_or_extra_fields(fixture):
 
     with pytest.raises(config.ConfigError):
         parse(json.dumps({"tenant_isolation": fixture}))
+
+
+@pytest.mark.parametrize("running_at,expected", [(88, "running"), (181, "queued")])
+def test_coding_running_control_allows_recovery_delay_but_stays_bounded(
+    tmp_path, monkeypatch, running_at, expected
+):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    elapsed = [0]
+    calls = []
+    monkeypatch.setattr(module.time, "monotonic", lambda: elapsed[0])
+
+    def sleep(seconds):
+        elapsed[0] += seconds
+
+    monkeypatch.setattr(module.time, "sleep", sleep)
+
+    class Cli:
+        def json(self, argv):
+            calls.append(argv)
+            return {
+                "detail": {
+                    "task_id": "tsk-owned",
+                    "status": "running" if elapsed[0] >= running_at else "queued",
+                }
+            }
+
+    evidence = {}
+    assert (
+        module.observe_before_control(
+            Cli(),
+            "tsk-owned",
+            {"control_when": "running", "running_wait_seconds": 180},
+            evidence,
+        )
+        == expected
+    )
+    assert elapsed[0] == min(running_at, 180)
+    assert evidence["observed_states"][60] == "queued"
+    assert evidence["pre_control_status"] == expected
+    assert all(argv == ["agent", "status", "--run", "tsk-owned"] for argv in calls)
+
+
+@pytest.mark.parametrize(
+    "seconds,valid",
+    [(1, True), (180, True), (181, False), (0, False), (True, False), (180.0, False)],
+)
+def test_coding_running_wait_validation_matches_worker(tmp_path, seconds, valid):
+    from tests.e2e.cli_uplift.fixtures import parse
+
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    fixture = {
+        **diagnostic_fixture("human_task_coding"),
+        "scenario": "cancel",
+        "control_when": "running",
+        "running_wait_seconds": seconds,
+    }
+    assert module.fixture_valid(fixture) is valid
+    payload = json.dumps({"human_task_coding": fixture})
+    if valid:
+        assert parse(payload)["human_task_coding"] == fixture
+    else:
+        with pytest.raises(config.ConfigError, match="Running wait"):
+            parse(payload)

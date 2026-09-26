@@ -25,7 +25,7 @@ def fixture_valid(fixture):
         and type(fixture.get("require_activity_list", False)) is bool
         and fixture.get("control_when", "observed") in {"observed", "running"}
         and type(fixture.get("running_wait_seconds", 30)) is int
-        and 1 <= fixture.get("running_wait_seconds", 30) <= 60
+        and 1 <= fixture.get("running_wait_seconds", 30) <= 180
         and (
             fixture.get("control_when") != "running"
             or fixture.get("scenario") == "cancel"

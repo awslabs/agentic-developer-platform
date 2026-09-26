@@ -231,8 +231,8 @@ def validate_fixture(name, value):
     )
     require(
         type(value.get("running_wait_seconds", 30)) is int
-        and 1 <= value.get("running_wait_seconds", 30) <= 60,
-        "Running wait must be 1..60 seconds",
+        and 1 <= value.get("running_wait_seconds", 30) <= 180,
+        "Running wait must be 1..180 seconds",
     )
     require(
         value.get("control_when") != "running" or value["scenario"] == "cancel",
