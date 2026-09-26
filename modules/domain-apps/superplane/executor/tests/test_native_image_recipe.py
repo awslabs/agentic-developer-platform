@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import io
+import json
 from pathlib import Path
 import sys
 import tarfile
@@ -367,3 +368,79 @@ def test_temporary_resources_cannot_be_reported_clean(build_module):
         )
         with pytest.raises(recipe.ImageRefused, match="resources remain"):
             build.require_cleanup(current)
+
+
+@pytest.mark.parametrize("inventory_available", [False, True])
+def test_interrupted_build_retains_original_identity_and_cleanup_state(
+    build_module, tmp_path, lock, monkeypatch, inventory_available
+):
+    state = {
+        "build_id": "original-build",
+        "phase": "preflight",
+        "cleanup": "not_started",
+    }
+    build_module.write(tmp_path / "state.json", state)
+
+    class InterruptedProcess:
+        pid = 123
+        calls = 0
+
+        def wait(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise build_module.subprocess.TimeoutExpired("packer", 30)
+            return 0
+
+    def start(*args, **kwargs):
+        before = json.loads((tmp_path / "state.json").read_text())
+        assert before["phase"] == "building"
+        assert before["cleanup"] == "unknown"
+        return InterruptedProcess()
+
+    monkeypatch.setattr(build_module.subprocess, "Popen", start)
+    monkeypatch.setattr(build_module.os, "killpg", lambda *args: None)
+
+    def observe(*args):
+        assert (
+            json.loads((tmp_path / "state.json").read_text())["phase"]
+            == "reconciling_cleanup"
+        )
+        if not inventory_available:
+            raise ConnectionError("inventory unavailable")
+        return {"instances": [{"original": "still-unknown"}]}
+
+    monkeypatch.setattr(build_module, "inventory", observe)
+    with pytest.raises((recipe.ImageRefused, ConnectionError)):
+        build_module.complete_build(
+            lock,
+            tmp_path,
+            tmp_path / "recipe",
+            {},
+            "original-build",
+            "packer",
+            {},
+            state,
+        )
+    final = json.loads((tmp_path / "state.json").read_text())
+    assert final["phase"] == "failed" and final["build_id"] == "original-build"
+    assert final["build_outcome"] == "failed"
+    assert final["cleanup"] == (
+        "inventory_recorded" if inventory_available else "unknown"
+    )
+    assert not (tmp_path / "result.json").exists()
+
+
+def test_interrupted_metadata_replace_preserves_previous_durable_state(
+    build_module, tmp_path, monkeypatch
+):
+    target = tmp_path / "state.json"
+    build_module.write(target, {"phase": "building", "cleanup": "unknown"})
+
+    def interrupted(*args):
+        raise OSError("simulated interrupted replacement")
+
+    monkeypatch.setattr(build_module.os, "replace", interrupted)
+    with pytest.raises(OSError):
+        build_module.write(target, {"phase": "complete"})
+    assert json.loads(target.read_text()) == {"phase": "building", "cleanup": "unknown"}
+    assert list(tmp_path.iterdir()) == [target]

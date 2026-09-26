@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import tempfile
 import uuid
 
 import native_image as image
@@ -35,7 +36,24 @@ def aws(lock, *arguments):
 
 
 def write(path, value):
-    path.write_text(image.runner.canonical(value))
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix="." + path.name + ".", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(image.runner.canonical(value).encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def verify_tool(path, expected):
@@ -273,17 +291,25 @@ def build(args):
         raise image.ImageRefused("build output must be outside the source checkout")
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     build_id = "superplane-native-" + uuid.uuid4().hex
-    write(
-        output / "state.json",
-        {
-            "build_id": build_id,
-            "account_id": lock["account_id"],
-            "region": lock["region"],
-            "source_revision": lock["source_revision"],
-            "input_lock_sha256": image.sha(image.runner.canonical(lock).encode()),
-            "phase": "preflight",
-        },
-    )
+    state = {
+        "build_id": build_id,
+        "account_id": lock["account_id"],
+        "region": lock["region"],
+        "source_revision": lock["source_revision"],
+        "input_lock_sha256": image.sha(image.runner.canonical(lock).encode()),
+        "phase": "preflight",
+        "cleanup": "not_started",
+    }
+    write(output / "state.json", state)
+    try:
+        prepare_build(args, lock, packer, plugin, output, build_id, state)
+    except BaseException as error:
+        state.update(phase="failed", error_kind=type(error).__name__)
+        write(output / "state.json", state)
+        raise
+
+
+def prepare_build(args, lock, packer, plugin, output, build_id, state):
     base = check_target(lock)
     write(output / "base-image.json", base)
     stage = output / "source"
@@ -312,38 +338,39 @@ def build(args):
     recipe = output / "native.pkr.json"
     write(recipe, template(lock, stage, output, build_id))
     run([packer, "validate", str(recipe)], env=env)
+    complete_build(lock, output, recipe, base, build_id, packer, env, state)
+
+
+def execute_packer(lock, output, recipe, packer, env):
     # Packer owns its temporary instance, volumes and ephemeral key. Keep cleanup
     # enabled on provisioner failure; interruption requests its normal cleanup.
-    try:
-        with (output / "build.log").open("w") as log:
-            process = subprocess.Popen(
-                [packer, "build", "-on-error=cleanup", str(recipe)],
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                env=env,
-                start_new_session=True,
-            )
+    with (output / "build.log").open("w") as log:
+        process = subprocess.Popen(
+            [packer, "build", "-on-error=cleanup", str(recipe)],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            status = process.wait(timeout=lock["build_timeout_minutes"] * 60)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            os.killpg(process.pid, signal.SIGINT)
             try:
-                status = process.wait(timeout=lock["build_timeout_minutes"] * 60)
-            except (subprocess.TimeoutExpired, KeyboardInterrupt):
-                os.killpg(process.pid, signal.SIGINT)
-                try:
-                    process.wait(timeout=120)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-                raise image.ImageRefused(
-                    "build interrupted; inspect durable cleanup inventory"
-                ) from None
-            if status:
-                raise image.ImageRefused(
-                    "Packer failed; inspect build and cleanup evidence"
-                )
-    finally:
-        # Read-only audit never deletes images/snapshots or guesses whether a
-        # surviving handle is safe to remove. Failed inventory is not cleanup.
-        evidence = inventory(lock, build_id)
-        write(output / "cleanup-inventory.json", evidence)
+                process.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            raise image.ImageRefused(
+                "build interrupted; inspect durable cleanup inventory"
+            ) from None
+        if status:
+            raise image.ImageRefused(
+                "Packer failed; inspect build and cleanup evidence"
+            )
+
+
+def record_result(lock, output, recipe, base, build_id, evidence):
     require_cleanup(evidence)
     if len(evidence["images"]) != 1:
         raise image.ImageRefused("exact built image missing")
@@ -390,7 +417,7 @@ def build(args):
             "base_image": base,
             "built_image": result,
             "retained_snapshots": evidence["snapshots"],
-            "input_lock_sha256": image.sha(Path(args.lock).read_bytes()),
+            "input_lock_sha256": image.sha(image.runner.canonical(lock).encode()),
             "dependency_review_sha256": lock["dependency_review_sha256"],
             "descriptor": descriptor,
             "recipe_sha256": image.sha(recipe.read_bytes()),
@@ -398,6 +425,33 @@ def build(args):
             "live_gpu_acceptance": "pending",
         },
     )
+
+
+def complete_build(lock, output, recipe, base, build_id, packer, env, state):
+    state.update(phase="building", cleanup="unknown", build_outcome="unknown")
+    write(output / "state.json", state)
+    try:
+        try:
+            execute_packer(lock, output, recipe, packer, env)
+            state["build_outcome"] = "succeeded"
+        except BaseException as error:
+            state.update(build_outcome="failed", build_error_kind=type(error).__name__)
+            raise
+        finally:
+            state["phase"] = "reconciling_cleanup"
+            write(output / "state.json", state)
+            # An unreadable inventory leaves the durable state explicitly unknown.
+            evidence = inventory(lock, build_id)
+            write(output / "cleanup-inventory.json", evidence)
+            state["cleanup"] = "inventory_recorded"
+            write(output / "state.json", state)
+        record_result(lock, output, recipe, base, build_id, evidence)
+        state.update(phase="complete", cleanup="audited")
+        write(output / "state.json", state)
+    except BaseException as error:
+        state.update(phase="failed", error_kind=type(error).__name__)
+        write(output / "state.json", state)
+        raise
 
 
 def main():
