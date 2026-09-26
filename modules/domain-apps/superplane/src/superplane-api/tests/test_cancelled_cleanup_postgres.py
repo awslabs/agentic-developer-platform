@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import uuid
 
 import pytest
-from fastapi import HTTPException
 from harness_jobs.execution import ProviderCallRefused
 from harness_jobs.identity import OperationRefused, ResolvedPrincipal
 from harness_jobs.leases import LeaseRefused, acquire, fence_expired_lease
@@ -23,6 +22,7 @@ from app.routers.proxy import (
 from app.schemas.proxy import CancelWorkloadRequest, DeleteDeploymentRequest
 from app.services import controller_deployments, workload_cancellation
 from app.services.provisioning import ProvisioningRefused
+from app.services.proxy import ProxyError
 from tests.test_batch_deployment_postgres import (
     batch_workload as batch_workload,
     batch_runtime as batch_runtime,
@@ -373,7 +373,7 @@ async def test_cleanup_missing_approval_and_foreign_workspace_never_buy_removal(
     body = await approve_cleanup(f.c, f.created)
     with f.c.actor(workspace_id=f.c.workload_id):
         async with f.c.sessions() as db:
-            with pytest.raises(HTTPException):
+            with pytest.raises(ProxyError, match="Workspace not found") as refused:
                 await preview_deployment_teardown(
                     uuid.uuid4(),
                     f.created.deployment_id,
@@ -382,6 +382,7 @@ async def test_cleanup_missing_approval_and_foreign_workspace_never_buy_removal(
                     f.c.org_id,
                     db,
                 )
+            assert refused.value.status_code == 404
     async with f.c.connections.connect() as connection:
         assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 1
         assert (
