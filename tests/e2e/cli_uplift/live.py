@@ -259,6 +259,13 @@ def _run_worker(ssm, cfg, install):
                     raise ports_module.PortError(
                         "Chat recovery inputs differ from the remote payload"
                     )
+            elif purpose == "vault_lifecycle":
+                from .remote.vault_lifecycle_plan import recovery_plan
+
+                if plan != recovery_plan(payload):
+                    raise ports_module.PortError(
+                        "Vault recovery inputs differ from the remote payload"
+                    )
             manifest.record_diagnostic(purpose, plan)
         install(instance_id, payload.get("evaluation_id") or "")
         remote = f"{bundle.REMOTE_DIR}/{purpose}.json"

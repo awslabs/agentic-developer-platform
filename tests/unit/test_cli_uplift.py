@@ -11724,3 +11724,42 @@ def test_vault_lifecycle_requires_exact_predeclared_plan_before_any_access(tmp_p
     with pytest.raises(remote_common.RemoteError, match="durably recorded"):
         script.execute(cfg, {"success": False, "transcript": []})
     assert not Path(cfg["work_dir"]).exists()
+
+
+@pytest.mark.parametrize("fault", ["instance_loss", "sink_failure", "changed_plan", "no_manifest"])
+def test_vault_plan_durable_before_dispatch(tmp_path, fault):
+    from tests.e2e.cli_uplift.remote.vault_lifecycle_plan import recovery_plan
+
+    payload = {"evaluation_id": "vault-run", "gateway_url": "https://gateway",
+               "vault_lifecycle": {"tenant_id": "tenant", "canonical_user_id": "owner", "login_user_id": "login"}}
+    payload["recovery_plan"] = recovery_plan(payload)
+    snapshots, calls = [], []
+
+    def push(document, *, critical):
+        assert critical
+        if fault == "sink_failure":
+            raise RuntimeError("External sink unavailable")
+        snapshots.append(json.loads(json.dumps(document)))
+
+    manifest = cleanup.Manifest(tmp_path / "manifest.json", "vault", on_change=push)
+
+    class Ssm:
+        def json_result(self, *args, **kwargs):
+            calls.append("ssm")
+            assert snapshots[-1]["diagnostic_intents"]["vault_lifecycle:vault-run"] == recovery_plan(payload)
+            raise RuntimeError("Lost instance before any output")
+
+    if fault == "changed_plan":
+        payload["recovery_plan"]["operation_id"] = "different-target"
+    worker = live._run_worker(Ssm(), {}, lambda *args: calls.append("install"))
+    with pytest.raises((RuntimeError, ValueError, PortError)):
+        worker("i-owned", "vault_lifecycle", payload, manifest=None if fault == "no_manifest" else manifest)
+    if fault == "instance_loss":
+        assert calls == ["install", "ssm"]
+        import shutil
+        shutil.rmtree(tmp_path)
+        retained = snapshots[-1]["diagnostic_intents"]["vault_lifecycle:vault-run"]
+        assert retained == recovery_plan(payload)
+        assert retained["operation_id"] and retained["provider_user_id"]
+    else:
+        assert calls == []
