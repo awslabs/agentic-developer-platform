@@ -950,3 +950,31 @@ def test_revision_reads_use_explicit_oidc_before_any_aws_lookup():
         assert options["unset-current-credentials"] is True
         assert options["role-chaining"] is False
         assert options["force-skip-oidc"] is False
+
+
+def test_parent_snapshot_uses_reviewed_gateway_binding(tmp_path, monkeypatch):
+    for key in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
+        monkeypatch.setenv(key, str(tmp_path / key))
+    # Parent always targets reviewed dev, regardless of unrelated runner config.
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_BINDINGS", "/untrusted/missing.json")
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_GATEWAY_URL", "https://foreign.invalid")
+    seen = {}
+
+    def transport(cfg):
+        seen.update(cfg)
+        return {"aws": object(), "http": object()}
+
+    def snapshot(cfg, aws, http):
+        assert cfg["gateway_deployment"] == "dev"
+        assert cfg["platform_account"] == "879318057152"
+        assert cfg["gateway_url"] == "https://d1g6cal2ts4iis.cloudfront.net/api"
+        return SHA, "gateway_deployment_receipt"
+
+    monkeypatch.setattr(ports, "default_ports", transport)
+    monkeypatch.setattr(prepare, "snapshot", snapshot)
+    assert prepare.main([]) == 0
+    assert seen["gateway_deployment"] == "dev"
+    assert (tmp_path / "GITHUB_OUTPUT").read_text() == f"revision={SHA}\n"
+    assert (
+        "gateway_deployment_receipt" in (tmp_path / "GITHUB_STEP_SUMMARY").read_text()
+    )

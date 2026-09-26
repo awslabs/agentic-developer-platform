@@ -27,7 +27,13 @@ def main(argv=None):
     cfg = (
         config.from_environment(os.environ)
         if args.ec2
-        else config.load(config.EXAMPLE_PATH)
+        else config.from_environment(
+            {
+                "CLI_UPLIFT_EVAL_BINDINGS": str(
+                    config.EXAMPLE_PATH.with_name("bindings.dev.json")
+                )
+            }
+        )
     )
     transport = ports.default_ports(cfg)
     revision, source = snapshot(cfg, transport["aws"], transport["http"])
