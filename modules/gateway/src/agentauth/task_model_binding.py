@@ -57,16 +57,17 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
         raise ModelPolicyError("task_model_transport_unsupported")
     revision = TASK_CYBER_CONTRACT_REVISION if persona == TASK_CYBER_PERSONA else TASK_CONTRACT_REVISION
     shape = TASK_CYBER_REQUEST_SHAPE if persona == TASK_CYBER_PERSONA else TASK_REQUEST_SHAPE
-    policy = await _resolve_active_allowlist_policy(
-        db, tenant_id=tenant, principal_kind="service_account", principal_id=principal, expires_at=deadline
-    )
-    if policy.principal_status != "active" or policy.service_policy_unavailable_reason:
+    from src.tasks.human_authority import require_current_owner
+
+    principal_kind, owner_id = await require_current_owner(db, tenant=tenant, principal=principal)
+    policy = await _resolve_active_allowlist_policy(db, tenant_id=tenant, principal_kind=principal_kind, principal_id=owner_id, expires_at=deadline)
+    if (principal_kind == "service_account" and policy.principal_status != "active") or policy.service_policy_unavailable_reason:
         raise ModelPolicyError("task_model_policy_unavailable")
     preference = await db.scalar(
         select(PersonaModelPreference).where(
             PersonaModelPreference.org_id == tenant,
-            PersonaModelPreference.principal_kind == "service_account",
-            PersonaModelPreference.principal_id == principal,
+            PersonaModelPreference.principal_kind == principal_kind,
+            PersonaModelPreference.principal_id == owner_id,
             PersonaModelPreference.persona_key == persona,
         )
     )
