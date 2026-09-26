@@ -59,8 +59,14 @@ async def test_lost_compare_and_swap_cannot_dispatch(make_client, fake_user, mon
 
 
 @pytest.mark.anyio
-async def test_reindex_persists_key_before_dispatch(make_client, fake_user, monkeypatch):
-    row = FakeRow(status="failed")
+@pytest.mark.parametrize("status", ["failed", "indexed", "complete"])
+async def test_reindex_persists_key_before_dispatch(make_client, fake_user, monkeypatch, status):
+    if status == "complete":
+        from src.internal.status_callback_routes import StatusCallbackRequest
+
+        # Use the same successful state carried by the real worker callback.
+        status = StatusCallbackRequest(asset_id=str(uuid.uuid4()), status="complete").status
+    row = FakeRow(status=status)
     row.installation_id = None
     key = str(uuid.uuid4())
     db = FakeAsyncSession()
@@ -80,6 +86,7 @@ async def test_reindex_persists_key_before_dispatch(make_client, fake_user, monk
     assert len(updates) == 1
     sql, params = updates[0]
     assert "updated_at = :updated_at AND status = :status" in sql
+    assert params["status"] == status
     receipt = hashlib.sha256(f"{fake_user.user_id}:{key}".encode()).hexdigest()
     assert receipt in json.loads(params["metadata"])["_cli_reindex_requests"]
 
