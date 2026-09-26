@@ -343,3 +343,5 @@ two fresh full runs against the same deployed revision, plus interruption/resume
 repeat cleanup, and failure-injection evidence. The shared nightly workflow now
 schedules the key install/login checkpoint; full runs remain manually selectable,
 and blocked cases still prevent full acceptance.
+
+CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.

@@ -128,6 +128,7 @@ class TestCliScriptDownload:
             # Task commands and reusable protocol code; no embedded credentials.
             "adp-task.py",
             "adp-vault.py",
+            "adp-machine.py",
             "adp-usage.py",
             "adp-agent.py",
             "adp_task_client.py",

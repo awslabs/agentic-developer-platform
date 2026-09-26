@@ -176,6 +176,20 @@
   },
   {
     "method": "POST",
+    "path": "/admin/machine-agents/{kind}/register",
+    "module": "src.admin.machine_agents",
+    "endpoint": "register_machine_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/machine-agents/{kind}/{key}/identity",
+    "module": "src.admin.machine_agents",
+    "endpoint": "update_machine_agent",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
     "path": "/admin/organizations",
     "module": "src.admin.routes",
     "endpoint": "create_organization_gone",
@@ -291,6 +305,27 @@
     "path": "/admin/organizations/{org_id}/service-accounts",
     "module": "src.admin.routes",
     "endpoint": "create_service_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "POST",
+    "path": "/admin/organizations/{org_id}/service-accounts/register",
+    "module": "src.admin.machine_accounts",
+    "endpoint": "register_machine_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/service-accounts/{account_id}/identity",
+    "module": "src.admin.machine_accounts",
+    "endpoint": "delete_machine_account",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/organizations/{org_id}/service-accounts/{account_id}/identity",
+    "module": "src.admin.machine_accounts",
+    "endpoint": "update_machine_account",
     "classification": "durable-operation"
   },
   {

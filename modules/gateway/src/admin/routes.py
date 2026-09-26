@@ -2480,3 +2480,12 @@ async def list_agent_types(
 from src.admin.audit_routes import router as _audit_sub_router  # noqa: E402
 
 router.include_router(_audit_sub_router)
+
+
+from .machine_accounts import router as _machine_account_router  # noqa: E402
+
+router.include_router(_machine_account_router)
+
+from .machine_agents import router as _machine_agent_router  # noqa: E402
+
+router.include_router(_machine_agent_router)

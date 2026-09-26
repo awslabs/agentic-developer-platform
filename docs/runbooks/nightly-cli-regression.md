@@ -145,3 +145,5 @@ usage in the live test DB before making authenticated requests. This avoids
 assuming a fixed request price. Synthetic balances are removed between cases;
 case 7 independently verifies real model usage accrual. Spending through a cap
 with a newly triggered agent remains outside this key-scenario regression.
+
+CLI-11 #5624 adds [machine identity lifecycle commands](../adp-cli/machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.

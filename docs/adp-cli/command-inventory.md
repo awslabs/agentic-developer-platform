@@ -156,3 +156,5 @@ Credential and identity additions ([usage](vault.md)); source implemented, live 
 | `adp identity list` |  | `--json`, `--provider` |
 | `adp identity link` |  | `--dry-run`, `--json`, `--provider`, `--provider-user-id`, `--resume`, `--yes` |
 | `adp identity unlink` | `id` | `--dry-run`, `--json`, `--provider`, `--yes` |
+
+CLI-11 #5624 adds [machine identity lifecycle commands](machine-identities.md) and E31 to the existing nightly story reads. E31 reads explicit SQL IAM, IAM registry and Cognito metadata under the selected tenant; it does not read secrets or establish live mutation/retirement acceptance.

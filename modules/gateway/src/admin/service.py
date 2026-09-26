@@ -2039,7 +2039,13 @@ class AdminService:
         total = total_result.scalar_one()
 
         # Get paginated results
-        query = select(ServiceAccount).where(ServiceAccount.org_id == org_id).offset(offset).limit(page_size).order_by(ServiceAccount.name)
+        query = (
+            select(ServiceAccount)
+            .where(ServiceAccount.org_id == org_id)
+            .offset(offset)
+            .limit(page_size)
+            .order_by(ServiceAccount.name, ServiceAccount.id)
+        )
         result = await self.db.execute(query)
         sas = result.scalars().all()
 

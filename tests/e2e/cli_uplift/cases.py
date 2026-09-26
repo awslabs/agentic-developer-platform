@@ -292,6 +292,13 @@ CASES = (
         "Credential/identity metadata and mutation previews use the served CLI without reading secrets or writing provider claims",
         (EC2, PLATFORM, COGNITO),
     ),
+    Case(
+        "E31",
+        "#5624",
+        "story-reads",
+        "Explicit SQL IAM, IAM registry and Cognito client metadata reads retain tenant scope; no secret or mutation lifecycle claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
 )
 
 # A small execution checkpoint, deliberately outside the E01–E15 acceptance

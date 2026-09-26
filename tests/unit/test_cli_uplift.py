@@ -8441,6 +8441,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E21",
         "E22",
         "E24",
+        "E31",
     }
 
 
@@ -10224,7 +10225,15 @@ def test_observer_artifacts_grant_only_two_named_reads():
 
 def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
     selected = cases.resolve_suites(("nightly",))
-    assert {case.id for case in selected} == {"E01", "C01", "E20", "E21", "E22", "E24"}
+    assert {case.id for case in selected} == {
+        "E01",
+        "C01",
+        "E20",
+        "E21",
+        "E22",
+        "E24",
+        "E31",
+    }
     assert {cases.BY_ID[key].owner for key in ("E20", "E21", "E22")} == {
         "#5621",
         "#5628",
@@ -10353,3 +10362,22 @@ def test_vault_nightly_is_selected_and_shipped():
     assert cases.BY_ID["E24"].owner == "#5631"
     assert "E24" in {case.id for case in cases.resolve_suites(("nightly",))}
     assert stages.JOURNEY_DRIVERS["E24"] in bundle.purposes()
+
+
+def test_machine_story_reads_are_wired_to_existing_nightly(tmp_path):
+    assert cases.BY_ID["E31"].owner == "#5624"
+    assert "E31" in {case.id for case in cases.resolve_suites(("nightly",))}
+    assert stages.JOURNEY_DRIVERS["E31"] in bundle.purposes()
+    module, _common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {"status": "ok", "detail": {"tenant_id": "org"}},
+        *[
+            {"status": "ok", "detail": {"identity_type": kind, "items": []}}
+            for kind in ("sql-iam", "iam-registry", "cognito-client")
+        ],
+    ]
+    evidence = {}
+    module.machine(cli, evidence)
+    assert evidence["org_id"] == "org"
+    assert cli.json.call_count == 4

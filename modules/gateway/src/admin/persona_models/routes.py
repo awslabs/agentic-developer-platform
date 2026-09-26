@@ -25,7 +25,7 @@ from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 from src.usage.persona_cost import get_persona_cost_report
 
-from . import catalogue_routes, catalogue_service, service
+from . import catalogue_routes, catalogue_service, identity, service
 from .catalogue import persona_compatibility_class
 from .catalogue_schemas import ModelCatalogueResponse
 from .schemas import (
@@ -530,6 +530,26 @@ async def reset_service_principal_preference(
 # ── Service-principal lifecycle ─────────────────────────────────────────────
 
 
+@router.get("/registration-contract")
+async def get_registration_contract(
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    await _require_human_org_admin(db, current_user)
+    return {"version": "1.0", "registration": "durable-operation", "mutations": "revision-guarded", "credentials": "none"}
+
+
+@router.get("/{canonical_id}/identity")
+async def get_service_principal_identity(
+    canonical_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """Bounded metadata snapshot, including retired principals and alias row IDs."""
+    await _require_human_org_admin(db, current_user)
+    return await identity.snapshot(db, current_user.org_id, canonical_id)
+
+
 @router.post("/register", response_model=RegisterServicePrincipalResponse)
 async def register_service_principal(
     request: RegisterServicePrincipalRequest,
@@ -544,6 +564,18 @@ async def register_service_principal(
     await _require_human_org_admin(db, current_user)
 
     admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
+
+    receipt = None
+    if request.operation_id is not None:
+        receipt, prior = await identity.registration_receipt(
+            db,
+            current_user.org_id,
+            admin_id,
+            request.operation_id,
+            request.model_dump(mode="json", exclude={"operation_id"}),
+        )
+        if prior is not None:
+            return RegisterServicePrincipalResponse(**prior)
 
     try:
         principal, alias = await service.register_service_principal(
@@ -570,15 +602,17 @@ async def register_service_principal(
             "actor_kind": "human_admin",
         },
     )
-    await db.commit()
-
-    return RegisterServicePrincipalResponse(
+    result = RegisterServicePrincipalResponse(
         canonical_service_principal_id=principal.canonical_service_principal_id,
         display_name=principal.display_name,
         alias_source=alias.alias_source,
         alias_id=alias.alias_id,
         status=principal.status,
     )
+    if receipt is not None:
+        receipt.details = {**receipt.details, "result": result.model_dump(mode="json")}
+    await db.commit()
+    return result
 
 
 @router.post("/{canonical_id}/aliases", response_model=AliasResponse)
@@ -590,6 +624,9 @@ async def link_alias(
 ) -> AliasResponse:
     """Link an additional alias to an existing service principal."""
     await _require_human_org_admin(db, current_user)
+
+    if request.expected_revision is not None:
+        await identity.guard(db, current_user.org_id, canonical_id, request.expected_revision)
 
     admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
 
@@ -643,6 +680,9 @@ async def transition_service_principal_status(
     - retired is terminal (no transitions out)
     """
     await _require_human_org_admin(db, current_user)
+
+    if request.expected_revision is not None:
+        await identity.guard(db, current_user.org_id, canonical_id, request.expected_revision)
 
     admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
 
@@ -704,9 +744,13 @@ async def revoke_alias(
     alias_row_id: str,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    expected_revision: Annotated[str | None, Query(pattern=r"^[a-f0-9]{64}$")] = None,
 ) -> AliasResponse:
     """Revoke an alias. Revoked aliases cannot be reactivated."""
     await _require_human_org_admin(db, current_user)
+
+    if expected_revision is not None:
+        await identity.guard(db, current_user.org_id, canonical_id, expected_revision)
 
     admin_id = await service.validate_human_principal(db, user_id=current_user.user_id, org_id=current_user.org_id)
 
