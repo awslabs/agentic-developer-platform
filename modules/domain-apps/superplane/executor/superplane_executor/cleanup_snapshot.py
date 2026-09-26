@@ -269,6 +269,17 @@ async def capture(finalizer, operation, target, plan, assessment):
             value = document(
                 operation, target, plan, rows, calls, network, inventory.revision
             )
+            stored = await db.fetchrow(
+                "SELECT * FROM controller_cleanup_snapshots WHERE source_operation_id=$1",
+                lease.operation_id,
+            )
+            if stored is not None:
+                original = await retained(c, source, stored)
+                if identity(original) != identity(value):
+                    raise OperationRefused("original cleanup snapshot identity changed")
+                if not await lock_lease(c, lease):
+                    raise OperationRefused("source snapshot lost its original fence")
+                return header(original)
             # Oversized graphs remain on the existing aggregate path. Do not make
             # completing a valid provision depend on fitting a new optional graph.
             try:
@@ -297,11 +308,20 @@ async def capture(finalizer, operation, target, plan, assessment):
                 "SELECT * FROM controller_cleanup_snapshots WHERE source_operation_id=$1",
                 lease.operation_id,
             )
-            if stored is None or stored["body"] != canonical(value):
+            if stored is None:
+                raise OperationRefused("original cleanup snapshot is unavailable")
+            original = await retained(c, source, stored)
+            if identity(original) != identity(value):
                 raise OperationRefused("original cleanup snapshot identity changed")
             if not await lock_lease(c, lease):
                 raise OperationRefused("source snapshot lost its original fence")
-    return graph
+    return header(original)
+
+
+def identity(document):
+    # The historical seal/report remains immutable. A fresh finalizer may attest
+    # unchanged original identities under a later observation or recovery claim.
+    return {key: value for key, value in document.items() if key != "sealed_revision"}
 
 
 async def retained(connection, source, snapshot):

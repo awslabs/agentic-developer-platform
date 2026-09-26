@@ -1,6 +1,7 @@
 """Snapshot capture through the real paid source finalizer and retained proof."""
 
 # ruff: noqa: F811
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,52 @@ from tests.test_batch_results_postgres import (
     pytestmark as pytestmark,
 )
 from tests.test_batch_deployment_postgres import stop
+
+
+async def test_source_snapshot_commit_before_ack_reuses_original_after_fresh_attestation(
+    output,
+):
+    worker = await output.runtime.publish(SimpleNamespace(**output.created))
+    finalizer = worker.server._after_step
+
+    async def die_after_snapshot(grant, result):
+        assessment = await finalizer(grant, result)
+        if assessment is not None:
+            raise asyncio.CancelledError("source died after durable snapshot")
+
+    worker.server._after_step = die_after_snapshot
+    with pytest.raises(asyncio.CancelledError):
+        await output.runtime.execute(worker)
+    source, snapshot = await records(output)
+    assert snapshot is not None and source["state"] == "running"
+    async with output.c.connections.connect() as c:
+        before = await c.fetchval(
+            "SELECT count(*) FROM harness_provider_report WHERE operation_id=$1",
+            source["operation_id"],
+        )
+    worker.server._after_step = finalizer
+    await worker.server.dispatch(
+        {
+            "token": worker.token,
+            "method": "execute_step",
+            "arguments": {"step_id": worker.plan.steps[-1]["step_id"]},
+        }
+    )
+    completed, reused = await records(output)
+    assert completed["state"] == "succeeded" and reused == snapshot
+    async with output.c.connections.connect() as c:
+        assert (
+            await c.fetchval(
+                "SELECT count(*) FROM harness_provider_report WHERE operation_id=$1",
+                source["operation_id"],
+            )
+            > before
+        )
+        assert await retained(c, completed, reused)
+        assert (
+            await c.fetchval("SELECT count(*) FROM controller_cleanup_snapshots") == 1
+        )
+    assert output.runtime.cloud.launches == 1
 
 
 async def records(output):
