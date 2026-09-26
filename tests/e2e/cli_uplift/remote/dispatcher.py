@@ -41,6 +41,7 @@ PURPOSES = {
     "story_superplane_lifecycle": ("story_reads", {"mode": "superplane_lifecycle"}),
     "story_activity": ("story_reads", {"mode": "activity"}),
     "story_research": ("story_research", {}),
+    "story_chat": ("story_reads", {"mode": "chat"}),
     "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),
     "tenant_isolation": ("tenant_isolation", {"mode": "isolation"}),
     "story_hierarchy": ("story_reads", {"mode": "hierarchy"}),

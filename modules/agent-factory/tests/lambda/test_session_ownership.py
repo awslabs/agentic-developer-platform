@@ -811,3 +811,10 @@ class TestUploadKeyIsServerDerived:
                 claims["custom:org_id"], claims["custom:team_id"], claims["sub"],
                 "sess-own", "task-1", "notes.txt",
             )
+
+
+def test_task_chat_sessions_cannot_reenter_legacy_ingest(aws):
+    handler = _import_handler()
+    item = {"owner_principal": _principal(VICTIM), "chat_task_persona": "agent-task-investigator"}
+    with pytest.raises(handler.SessionOwnershipError):
+        handler._assert_session_item_owner(item, _principal(VICTIM), "chat-owned")

@@ -409,6 +409,13 @@ CASES = (
         (EC2, PLATFORM, COGNITO, SUPERPLANE_DOMAIN),
     ),
     Case(
+        "E40",
+        "#5640",
+        "story-reads",
+        "Hosted chat readiness and bounded own history; live multi-turn acceptance remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
         "E41",
         "#5641",
         "story-reads",

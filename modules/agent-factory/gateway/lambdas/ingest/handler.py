@@ -583,7 +583,9 @@ def _session_owner_principal(tenant_id: str, org_id: str, team_id: str,
 def _assert_session_item_owner(item: dict | None, expected_principal: str,
                                session_id: str) -> dict:
     """Return a session row only when its complete recorded owner matches."""
-    if not item:
+    if not item or item.get("chat_task_persona"):
+        # Task-backed CLI conversations use canonical Task admission only.
+        # Browser/legacy ingest must not attach an untracked classifier turn.
         raise SessionOwnershipError(session_id)
     recorded_principal = str(item.get("owner_principal", "") or "")
     if not recorded_principal or recorded_principal != expected_principal:

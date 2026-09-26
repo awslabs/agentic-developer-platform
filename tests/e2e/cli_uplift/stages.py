@@ -802,6 +802,7 @@ JOURNEY_DRIVERS = {
     "E21": "story_usage",
     "E22": "story_activity",
     "E25": "story_research",
+    "E40": "story_chat",
     "E23": "tenant_smoke",
     "E27": "tenant_isolation",
     "E29": "story_hierarchy",

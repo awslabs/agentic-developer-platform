@@ -9873,6 +9873,269 @@
       "tests": [
         "tests/cli/test_superplane_lifecycle.py"
       ]
+    },
+    {
+      "command": "adp chat status",
+      "helper": "adp-chat.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "capabilities.read",
+      "flags": [
+        "--json"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/chat/capabilities",
+          "/chat/sessions",
+          "/chat/sessions/{session_id}"
+        ],
+        "schema": "Owned session journal and canonical human Task admission/commands"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "capabilities.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_chat.py",
+        "tests/orchestration/test_chat_history.py"
+      ]
+    },
+    {
+      "command": "adp chat start",
+      "helper": "adp-chat.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "capabilities.read",
+      "flags": [
+        "--dry-run",
+        "--json",
+        "--message-file",
+        "--persona",
+        "--request-id",
+        "--yes"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/chat/capabilities",
+          "/chat/sessions",
+          "/chat/sessions/{session_id}/turns"
+        ],
+        "schema": "Owned session journal and canonical human Task admission/commands"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "capabilities.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_chat.py",
+        "tests/orchestration/test_chat_history.py",
+        "tests/orchestration/test_chat_tasks.py"
+      ]
+    },
+    {
+      "command": "adp chat resume",
+      "helper": "adp-chat.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "capabilities.read",
+      "flags": [
+        "--answer-file",
+        "--dry-run",
+        "--json",
+        "--reply-to",
+        "--request-id",
+        "--yes"
+      ],
+      "arguments": [
+        "session_id"
+      ],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "paths": [
+          "/chat/capabilities",
+          "/chat/sessions",
+          "/chat/sessions/{session_id}/turns"
+        ],
+        "schema": "Owned session journal and canonical human Task admission/commands"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "capabilities.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_chat.py",
+        "tests/orchestration/test_chat_history.py",
+        "tests/orchestration/test_chat_tasks.py"
+      ]
+    },
+    {
+      "command": "adp chat list",
+      "helper": "adp-chat.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "capabilities.read",
+      "flags": [
+        "--json",
+        "--page",
+        "--page-size"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/chat/capabilities",
+          "/chat/sessions",
+          "/chat/sessions/{session_id}"
+        ],
+        "schema": "Owned session journal and canonical human Task admission/commands"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "capabilities.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_chat.py",
+        "tests/orchestration/test_chat_history.py"
+      ]
+    },
+    {
+      "command": "adp chat show",
+      "helper": "adp-chat.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "capabilities.read",
+      "flags": [
+        "--json",
+        "--session"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/chat/capabilities",
+          "/chat/sessions",
+          "/chat/sessions/{session_id}"
+        ],
+        "schema": "Owned session journal and canonical human Task admission/commands"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "capabilities.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_chat.py",
+        "tests/orchestration/test_chat_history.py"
+      ]
+    },
+    {
+      "command": "adp chat watch",
+      "helper": "adp-chat.py",
+      "status": "shipped",
+      "mutates": false,
+      "operation": "capabilities.read",
+      "flags": [
+        "--interval",
+        "--json",
+        "--session",
+        "--task-id",
+        "--timeout"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/chat/capabilities",
+          "/chat/sessions",
+          "/chat/sessions/{session_id}"
+        ],
+        "schema": "Owned session journal and canonical human Task admission/commands"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "capabilities.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_chat.py",
+        "tests/orchestration/test_chat_history.py"
+      ]
+    },
+    {
+      "command": "adp chat export",
+      "helper": "adp-chat.py",
+      "status": "shipped",
+      "mutates": true,
+      "operation": "capabilities.read",
+      "flags": [
+        "--json",
+        "--output",
+        "--session"
+      ],
+      "arguments": [],
+      "request": {
+        "kind": "http",
+        "methods": [
+          "GET"
+        ],
+        "paths": [
+          "/chat/capabilities",
+          "/chat/sessions",
+          "/chat/sessions/{session_id}"
+        ],
+        "schema": "Owned session journal and canonical human Task admission/commands"
+      },
+      "response": {
+        "stream": "single-json",
+        "schema": "adp_common JSON envelope"
+      },
+      "required_capabilities": [
+        "capabilities.read"
+      ],
+      "tests": [
+        "tests/cli/test_adp_chat.py",
+        "tests/orchestration/test_chat_history.py"
+      ]
     }
   ]
 }

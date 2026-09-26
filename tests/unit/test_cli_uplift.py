@@ -8454,6 +8454,7 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E29",
         "E31",
         "E26",
+        "E40",
         "E41",
         "E36",
         "E35",
@@ -10257,6 +10258,7 @@ def test_nightly_includes_each_merged_story_and_cannot_claim_full_acceptance():
         "E31",
         "E25",
         "E26",
+        "E40",
         "E41",
         "E28",
         "E39",
@@ -10819,3 +10821,29 @@ def test_superplane_lifecycle_story_is_bounded_preview(tmp_path):
     assert evidence["mutations"] == 0
     assert cli.json.call_args_list[1].args[0][-1] == "--dry-run"
     cli.run.assert_not_called()
+
+
+def test_chat_read_scenario_is_nightly_and_read_only(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.json.side_effect = [
+        {
+            "status": "ok",
+            "detail": {
+                "tenant_id": "tenant",
+                "user_id": "user",
+                "enabled": True,
+                "history_configured": True,
+                "history_ready": "unknown",
+                "general_turns_supported": False,
+                "authorized_personas": [],
+            },
+        },
+        {
+            "status": "ok",
+            "detail": {"tenant_id": "tenant", "user_id": "user", "items": []},
+        },
+    ]
+    module.chat(cli, {})
+    assert cli.json.call_args_list[1].args[0] == ["chat", "list", "--page-size", "1"]
+    assert stages.JOURNEY_DRIVERS["E40"] in bundle.purposes()
