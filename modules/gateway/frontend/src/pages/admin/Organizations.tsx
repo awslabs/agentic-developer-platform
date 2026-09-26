@@ -993,7 +993,7 @@ export default function Organizations() {
                   )}
                 </div>
               )}
-              <ServiceIdentityList key={selectedOrg.id} orgId={selectedOrg.id} />
+              <ServiceIdentityList key={selectedOrg.id} orgId={selectedOrg.id} canManage={canManage} />
             </TabPanel>
 
             <TabPanel value="members" className="space-y-3">

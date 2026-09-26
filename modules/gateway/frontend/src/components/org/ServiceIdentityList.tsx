@@ -5,11 +5,14 @@ import {
   type IdentitySource, type OrganizationIdentityHierarchy, type OrganizationServiceIdentity,
 } from '@/services/organizationServiceIdentities';
 
+import { ServiceAccountModal } from './ServiceAccountModal';
+
 type SourcePage = { source: IdentitySource; cursor: string | null; error?: string };
 const firstPages = (): SourcePage[] => identitySources.map(source => ({ source, cursor: '1' }));
 
 /** Mounted with key=orgId: switching organizations immediately discards the old roster. */
-export function ServiceIdentityList({ orgId }: { orgId: string }) {
+export function ServiceIdentityList({ orgId, canManage = false }: { orgId: string; canManage?: boolean }) {
+  const [editing, setEditing] = useState<OrganizationServiceIdentity | 'new' | null>(null);
   const [items, setItems] = useState<OrganizationServiceIdentity[]>([]);
   const [pages, setPages] = useState(firstPages);
   const [loading, setLoading] = useState(true);
@@ -65,7 +68,8 @@ export function ServiceIdentityList({ orgId }: { orgId: string }) {
   return (
     <Card padding="none">
       <div className="p-4 space-y-3 border-b border-gray-200 dark:border-gray-700">
-        <h3 className="font-semibold text-gray-900 dark:text-white">Service accounts</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-gray-900 dark:text-white">Service accounts</h3>
+          {canManage && <Button size="sm" onClick={() => setEditing('new')}>Add service account</Button>}</div>
         <p className="text-sm text-gray-500 dark:text-gray-400">Service identities and their department and team assignments.</p>
         <Input name="service-account-search" aria-label="Search service accounts" placeholder="Search name, department or team…"
           value={search} onChange={event => setSearch(event.target.value)} />
@@ -81,6 +85,7 @@ export function ServiceIdentityList({ orgId }: { orgId: string }) {
           </div> },
           { key: 'department', header: 'Department', render: department },
           { key: 'team', header: 'Team', render: team },
+          ...(canManage ? [{ key: 'actions', header: 'Actions', render: (row: OrganizationServiceIdentity) => row.source === 'cognito' ? <Button variant="secondary" size="sm" onClick={() => setEditing(row)}>Edit assignment</Button> : <span className="text-xs text-gray-500">Managed through its registration</span> }] : []),
           { key: 'status', header: 'Status', render: row => <Badge variant={row.status === 'active' ? 'success' : 'default'}>{row.status}</Badge> },
         ]} />
       <div className="p-4 flex items-center justify-between gap-3">
@@ -89,6 +94,9 @@ export function ServiceIdentityList({ orgId }: { orgId: string }) {
           {loading ? 'Loading…' : errors.length ? 'Retry / load more accounts' : 'Load more service accounts'}
         </Button>}
       </div>
+      {editing && canManage && <ServiceAccountModal orgId={orgId} identity={editing === 'new' ? undefined : editing}
+        onSaved={row => { generation.current++; setLoading(false); setSearch(''); setItems(previous => [row, ...previous.filter(item => !(item.source === row.source && item.id === row.id))]); }}
+        onClose={needsRefresh => { setEditing(null); if (needsRefresh) void load(firstPages()); }} />}
     </Card>
   );
 }
