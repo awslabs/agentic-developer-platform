@@ -427,7 +427,21 @@ def record_result(lock, output, recipe, base, build_id, evidence):
     )
 
 
-def complete_build(lock, output, recipe, base, build_id, packer, env, state):
+def complete_build(
+    lock,
+    output,
+    recipe,
+    base,
+    build_id,
+    packer,
+    env,
+    state,
+    *,
+    observe=None,
+    record=None,
+):
+    observe = observe or inventory
+    record = record or record_result
     state.update(phase="building", cleanup="unknown", build_outcome="unknown")
     write(output / "state.json", state)
     try:
@@ -441,11 +455,11 @@ def complete_build(lock, output, recipe, base, build_id, packer, env, state):
             state["phase"] = "reconciling_cleanup"
             write(output / "state.json", state)
             # An unreadable inventory leaves the durable state explicitly unknown.
-            evidence = inventory(lock, build_id)
+            evidence = observe(lock, build_id)
             write(output / "cleanup-inventory.json", evidence)
             state["cleanup"] = "inventory_recorded"
             write(output / "state.json", state)
-        record_result(lock, output, recipe, base, build_id, evidence)
+        record(lock, output, recipe, base, build_id, evidence)
         state.update(phase="complete", cleanup="audited")
         write(output / "state.json", state)
     except BaseException as error:

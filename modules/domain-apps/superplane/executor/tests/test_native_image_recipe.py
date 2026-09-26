@@ -444,3 +444,267 @@ def test_interrupted_metadata_replace_preserves_previous_durable_state(
         build_module.write(target, {"phase": "complete"})
     assert json.loads(target.read_text()) == {"phase": "building", "cleanup": "unknown"}
     assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.fixture
+def producer_modules(build_module, monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT))
+    monkeypatch.setitem(sys.modules, "build", build_module)
+    loaded = {}
+    for name in ("source_provenance", "upstream", "producer", "offline_root"):
+        module_spec = importlib.util.spec_from_file_location(
+            name, ROOT / (name + ".py")
+        )
+        module = importlib.util.module_from_spec(module_spec)
+        monkeypatch.setitem(sys.modules, name, module)
+        module_spec.loader.exec_module(module)
+        loaded[name] = module
+    return loaded
+
+
+@pytest.fixture
+def producer_plan(lock):
+    value = {
+        key: copy.deepcopy(lock[key])
+        for key in (
+            "version",
+            "source_revision",
+            "source_files",
+            "account_id",
+            "region",
+            "builder",
+            "tools",
+            "runtime",
+            "build_timeout_minutes",
+            "budget_approval_reference",
+        )
+    }
+    value["source_attestation_sha256"] = "a" * 64
+    value["helper"] = {key: lock["base"][key] for key in ("ami_id", "owner_id")}
+    value["target"] = {
+        **value["helper"],
+        "snapshot_id": "snap-0123456789abcdef0",
+        "root_device_name": "/dev/xvda",
+        "boot_mode": "uefi-preferred",
+        "ena_support": True,
+    }
+    value["builder"]["target_volume_size_gb"] = 40
+    value["tools"]["amazon_plugin"]["version"] = "1.8.2"
+    value["extra_runtime_files"] = ["/usr/bin/runc"]
+    value["upstream"] = {
+        key: {"file": key + ".tar.gz", "sha256": "a" * 64, "prefix": "."}
+        for key in ("python", "nodeadm", "crictl")
+    }
+    value["upstream"]["nodeadm"]["prefix"] = "amazon-eks-ami-" + runner.NODEADM_COMMIT
+    value["upstream"].update(
+        go_image="registry.example/go@sha256:" + "b" * 64,
+        cni_image="registry.example/cni@sha256:" + "c" * 64,
+        cni_files={"/app/aws-cni": "aws-cni"},
+    )
+    return value
+
+
+def test_surrogate_produces_target_root_without_helper_or_copy(
+    producer_modules, producer_plan, tmp_path
+):
+    producer = producer_modules["producer"]
+    producer.validate_plan(producer_plan)
+    document = producer.template(
+        producer_plan, tmp_path / "source", tmp_path, "unique-build"
+    )
+    source = document["source"]["amazon-ebssurrogate"]["native"]
+    assert source["source_ami"] == producer_plan["helper"]["ami_id"]
+    assert source["ami_root_device"] == {
+        "source_device_name": "/dev/sdf",
+        "device_name": "/dev/xvda",
+    }
+    assert len(source["launch_block_device_mappings"]) == 1
+    target = source["launch_block_device_mappings"][0]
+    assert target["snapshot_id"] == producer_plan["target"]["snapshot_id"]
+    assert target["delete_on_termination"] and target["encrypted"]
+    assert target["kms_key_id"] == producer_plan["builder"]["kms_key_id"]
+    assert "encrypt_boot" not in source and "kms_key_id" not in source
+    assert source["boot_mode"] == "uefi-preferred" and source["ena_support"]
+    assert source["ami_virtualization_type"] == "hvm"
+
+
+def test_alias_materialization_bounds_actual_copied_bytes(
+    producer_modules, tmp_path, monkeypatch
+):
+    upstream = producer_modules["upstream"]
+    archive = tmp_path / "python.tar"
+    with tarfile.open(archive, "w") as output:
+        regular = tarfile.TarInfo("python/runtime")
+        regular.size = 10
+        output.addfile(regular, io.BytesIO(b"0123456789"))
+        for number in range(3):
+            link = tarfile.TarInfo("python/alias" + str(number))
+            link.type, link.linkname = tarfile.LNKTYPE, "python/runtime"
+            output.addfile(link)
+    monkeypatch.setattr(upstream, "MAX_EMITTED_BYTES", 20)
+    with pytest.raises(recipe.ImageRefused, match="materialized upstream output"):
+        upstream.unpack_regular(archive, "python", tmp_path / "output")
+    assert sum(path.stat().st_size for path in (tmp_path / "output").iterdir()) <= 20
+
+
+def test_wrong_vendored_nodeadm_source_is_not_a_build_input(producer_modules, tmp_path):
+    source = tmp_path / "source"
+    (source / "vendor").mkdir(parents=True)
+    (source / "Makefile").write_text("release: fabricated\n")
+    (source / "vendor/modules.txt").write_text("unreviewed dependencies\n")
+    with pytest.raises(recipe.ImageRefused, match="pinned upstream"):
+        producer_modules["upstream"].verify_nodeadm_source(source)
+
+
+def test_absolute_guest_alias_never_resolves_against_helper(producer_modules, tmp_path):
+    root = tmp_path / "target"
+    (root / "etc").mkdir(parents=True)
+    (root / "etc/guest").symlink_to("/private/value")
+    offline = producer_modules["offline_root"]
+    assert offline.target_path(root, "/etc/guest") == root / "private/value"
+    (root / "etc/cycle").symlink_to("/etc/cycle")
+    with pytest.raises(recipe.ImageRefused, match="cycle"):
+        offline.target_path(root, "/etc/cycle")
+
+
+def test_overlay_cannot_follow_parent_alias_into_helper(producer_modules, tmp_path):
+    offline = producer_modules["offline_root"]
+    root, helper, source = (tmp_path / name for name in ("target", "helper", "input"))
+    for path in (root, helper, source):
+        path.mkdir()
+    (root / "opt").symlink_to(helper, target_is_directory=True)
+    (source / "data").write_bytes(b"artifact")
+    with pytest.raises(recipe.ImageRefused, match="parent.*alias"):
+        offline.install_tree(source, root, "/opt/superplane")
+    assert list(helper.iterdir()) == []
+
+
+def test_offline_original_enrollment_is_preserved(producer_modules, tmp_path):
+    original = tmp_path / "var/lib/kubelet/kubeconfig"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b"original identity")
+    with pytest.raises(recipe.ImageRefused, match="enrollment state"):
+        producer_modules["offline_root"].refuse_enrollment(tmp_path)
+    assert original.read_bytes() == b"original identity"
+
+
+@pytest.mark.parametrize(
+    "wrong", ["snapshot", "instance", "tag", "key", "retained", "serial", "mounted"]
+)
+def test_target_volume_identity_precedes_any_mount(
+    producer_modules, producer_plan, wrong
+):
+    offline = producer_modules["offline_root"]
+    instance = "i-0123456789abcdef0"
+    volume = {
+        "VolumeId": "vol-0123456789abcdef0",
+        "SnapshotId": producer_plan["target"]["snapshot_id"],
+        "Encrypted": True,
+        "KmsKeyId": producer_plan["builder"]["kms_key_id"],
+        "State": "in-use",
+        "Tags": [
+            {"Key": "superplane-native-build", "Value": "build"},
+            {"Key": "superplane-source", "Value": producer_plan["source_revision"]},
+        ],
+        "Attachments": [
+            {
+                "InstanceId": instance,
+                "Device": "/dev/sdf",
+                "State": "attached",
+                "DeleteOnTermination": True,
+            }
+        ],
+    }
+    device = {
+        "name": "/dev/nvme9n1",
+        "type": "disk",
+        "serial": volume["VolumeId"].replace("-", ""),
+        "mountpoints": [None],
+        "children": [
+            {
+                "name": "/dev/nvme9n1p1",
+                "type": "part",
+                "fstype": "xfs",
+                "mountpoints": [None],
+            }
+        ],
+    }
+    assert offline.bound_volume(producer_plan, "build", instance, [volume]) == volume
+    assert (
+        offline.device_for(volume["VolumeId"], [device])[0]["name"] == "/dev/nvme9n1p1"
+    )
+    if wrong == "snapshot":
+        volume["SnapshotId"] = "foreign"
+    elif wrong == "instance":
+        volume["Attachments"][0]["InstanceId"] = "foreign"
+    elif wrong == "tag":
+        volume["Tags"][0]["Value"] = "foreign"
+    elif wrong == "key":
+        volume["KmsKeyId"] = "foreign"
+    elif wrong == "retained":
+        volume["Attachments"][0]["DeleteOnTermination"] = False
+    elif wrong == "serial":
+        device["serial"] = "volforeign"
+    else:
+        device["children"][0]["mountpoints"] = ["/"]
+    with pytest.raises(recipe.ImageRefused):
+        offline.bound_volume(producer_plan, "build", instance, [volume])
+        offline.device_for(volume["VolumeId"], [device])
+
+
+def test_archive_source_attestation_binds_git_tree_without_git_metadata(
+    producer_modules, tmp_path
+):
+    import hashlib
+    import os
+    import shutil
+    import subprocess
+
+    provenance = producer_modules["source_provenance"]
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    nested = checkout / "nested"
+    nested.mkdir()
+    (nested / "tool").write_text("#!/bin/sh\nexit 0\n")
+    (nested / "tool").chmod(0o755)
+    (checkout / "nested.txt").write_text("tree ordering matters\n")
+    os.symlink("nested/tool", checkout / "alias")
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    revision = provenance.git(checkout, "rev-parse", "HEAD").decode().strip()
+    value = provenance.create(checkout, revision)
+    attestation = tmp_path / "attestation.json"
+    attestation.write_text(json.dumps(value, sort_keys=True))
+    digest = hashlib.sha256(attestation.read_bytes()).hexdigest()
+    shutil.rmtree(checkout / ".git")
+    receipt = provenance.verify(checkout, attestation, digest, revision)
+    assert receipt["tree"] == value["tree"]
+    assert receipt["files"] == 3
+    (nested / "tool").chmod(0o644)
+    with pytest.raises(recipe.ImageRefused, match="source differs"):
+        provenance.verify(checkout, attestation, digest, revision)
+    (nested / "tool").chmod(0o755)
+    (checkout / "untracked").write_text("unexpected executable")
+    with pytest.raises(recipe.ImageRefused, match="inventory/tree"):
+        provenance.verify(checkout, attestation, digest, revision)
+    (checkout / "untracked").unlink()
+    (checkout / "alias").unlink()
+    os.symlink("/etc/passwd", checkout / "alias")
+    with pytest.raises(recipe.ImageRefused, match="source differs"):
+        provenance.verify(checkout, attestation, digest, revision)

@@ -3,10 +3,10 @@ phases:
   build:
     commands:
       - >-
-        python3 modules/domain-apps/superplane/images/native-node/build.py
-        --lock "$NATIVE_IMAGE_LOCK"
-        --bundle "$NATIVE_RUNTIME_BUNDLE"
-        --dependency-review "$NATIVE_DEPENDENCY_REVIEW"
+        python3 -B modules/domain-apps/superplane/images/native-node/producer.py
+        --source-attestation "$NATIVE_SOURCE_ATTESTATION"
+        --plan "$NATIVE_IMAGE_PLAN"
+        --inputs "$NATIVE_UPSTREAM_INPUTS"
         --packer "$NATIVE_PACKER_BINARY"
         --amazon-plugin "$NATIVE_AMAZON_PLUGIN_BINARY"
         --output "$NATIVE_IMAGE_OUTPUT"
