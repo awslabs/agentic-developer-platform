@@ -55,6 +55,7 @@ KEYS = {
     },
     "machine_lifecycle": IDENTITY
     | {
+        "cognito_lifecycle",
         "owned_mutations_authorized",
         "ordinary_canonical_user_id",
         "ordinary_native_tenant",
@@ -138,6 +139,10 @@ def validate_fixture(name, value):
             "Independent ordinary fixture identity required",
         )
     if name == "machine_lifecycle":
+        require(
+            type(value.get("cognito_lifecycle", False)) is bool,
+            "Cognito lifecycle selection must be boolean",
+        )
         for key in ("ordinary_canonical_user_id", "ordinary_native_tenant"):
             require(
                 isinstance(value.get(key), str)

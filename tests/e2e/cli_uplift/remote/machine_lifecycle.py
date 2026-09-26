@@ -56,6 +56,10 @@ def ordinary_tokens(config, env):
 def execute(config, evidence):
     fixture = config.get("machine_lifecycle") or {}
     common.require(
+        type(fixture.get("cognito_lifecycle", False)) is bool,
+        "Cognito lifecycle selection must be boolean",
+    )
+    common.require(
         fixture.get("owned_mutations_authorized") is True,
         "Explicit machine lifecycle authorization required",
     )
@@ -82,6 +86,12 @@ def execute(config, evidence):
         "cleanup": "not_started",
         "qualification": "Canonical metadata only; no provider identity, credential, inference, session revocation or membership mutation. Access/session coverage is read/denial only.",
     }
+    if fixture.get("cognito_lifecycle") is True:
+        state["qualification"] = (
+            "Canonical metadata and owned Cognito client/credential lifecycle selected. "
+            "Access/session coverage is read/denial only; no token minting, inference, "
+            "session revocation, membership mutation or IAM identity qualification."
+        )
     evidence["detail"] = state
     recovery = Path(config["work_dir"]) / ("machine-" + plan["registration_id"])
     recovery.mkdir(mode=0o700, exist_ok=False)
@@ -405,4 +415,25 @@ def execute(config, evidence):
         )
         state["checks"].append("terminal_retirement_and_ordinary_access_preserved")
         save()
+        if fixture.get("cognito_lifecycle") is True:
+            from machine_cognito import execute as cognito_execute
+
+            cognito_execute(
+                admin,
+                ordinary,
+                foreign,
+                tenant,
+                native,
+                plan["cognito"],
+                root,
+                state,
+                save,
+            )
+            state["qualification"] = (
+                "Canonical metadata lifecycle plus owned Cognito credential delivery, "
+                "same-operation recovery and retirement verified. Access/session coverage "
+                "is read/denial only; no token minting, inference, session revocation, "
+                "membership mutation or IAM identity qualification."
+            )
+            save()
         evidence.update(success=True, stage_reached="complete")
