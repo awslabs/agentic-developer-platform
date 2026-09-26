@@ -199,8 +199,8 @@ class TestTheGrantIsReadOnlyAndNarrow:
     from a plan they cannot run, and because every item here is a boundary some other
     test depends on rather than a preference:
 
-    - the gateway is a READER; `intake_session.py` has no writer for state production
-      owns, and a write grant would make that a coincidence rather than a boundary;
+    - legacy intake remains read-only; the separately scoped chat-* Task journal
+      has standing PutItem permission, asserted independently below;
     - `dynamodb:Scan` would make a cross-tenant read a matter of forgetting a filter
       instead of a permission error, and `latest_for_user` filters tenant in code
       precisely because the GSI cannot;
@@ -208,7 +208,6 @@ class TestTheGrantIsReadOnlyAndNarrow:
     """
 
     _FORBIDDEN = [
-        "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:DeleteItem",
         "dynamodb:BatchWriteItem",
@@ -224,6 +223,17 @@ class TestTheGrantIsReadOnlyAndNarrow:
             f"gateway-intake-access.tf grants {action}, which this path must not have. "
             "See the class docstring: each of these turns a tested invariant back into an accident."
         )
+
+    def test_put_item_is_only_for_the_task_chat_journal(self, intake_tf):
+        effective = _without_comments(intake_tf)
+        statements = re.split(r'Sid\s*=\s*"', effective)
+        writes = [part for part in statements if "dynamodb:PutItem" in part]
+        assert len(writes) == 1
+        grant = writes[0]
+        assert grant.startswith('HostedTaskChatSessionsWrite"')
+        assert re.search(r'Action\s*=\s*\["dynamodb:PutItem"\]', grant)
+        assert re.search(r'Resource\s*=\s*\[module.gateway_sessions.table_arn\]', grant)
+        assert re.search(r'"ForAllValues:StringLike"\s*=\s*\{\s*"dynamodb:LeadingKeys"\s*=\s*\["chat-\*"\]\s*\}', grant)
 
     def test_no_wildcard_resource(self, intake_tf):
         effective = _without_comments(intake_tf)
