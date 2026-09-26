@@ -83,7 +83,8 @@ body {
 }
 
 /* Blueprint facelift for the current UI. The /next experience has its own shell. */
-.blueprint-ui {
+.blueprint-ui,
+.blueprint-auth {
   --color-primary-50: #eef3ff;
   --color-primary-100: #e7efff;
   --color-primary-200: #cbdcff;
@@ -214,4 +215,97 @@ body {
 @media (max-width: 639px) {
   .blueprint-main { padding: 18px 14px 32px; }
   .blueprint-brand { font-size: 15px; }
+}
+
+/* Public sign-in uses the same Blueprint palette and restrained surfaces. */
+.blueprint-auth {
+  background: #f4f7fb;
+  color-scheme: light;
+}
+.blueprint-auth-shell {
+  display: grid;
+  grid-template-columns: minmax(320px, 39%) minmax(0, 1fr);
+  min-height: 100vh;
+}
+.blueprint-auth-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 56px;
+  padding: clamp(32px, 4vw, 64px);
+  background: #17293d;
+  color: #fff;
+}
+.blueprint-auth-brand,
+.blueprint-auth-mobile-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  font-weight: 750;
+  letter-spacing: -.02em;
+}
+.blueprint-auth-brand { font-size: 17px; }
+.blueprint-auth-kicker {
+  margin-bottom: 20px;
+  color: #a7c2fb;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .14em;
+}
+.blueprint-auth-panel h1 {
+  max-width: 13ch;
+  font-size: clamp(34px, 3.5vw, 54px);
+  font-weight: 750;
+  line-height: 1.08;
+  letter-spacing: -.05em;
+}
+.blueprint-auth-description {
+  max-width: 30rem;
+  margin-top: 22px;
+  color: #c0d0e0;
+  font-size: 16px;
+  line-height: 1.6;
+}
+.blueprint-auth-panel-footer { color: #9eb5cb; font-size: 12px; }
+.blueprint-auth-main {
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+.blueprint-auth-content { width: min(100%, 460px); }
+.blueprint-auth-mobile-brand { display: none; }
+.blueprint-auth-card {
+  padding: 34px;
+  border: 1px solid #d8e1ed;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 2px 12px rgb(23 45 69 / 5%);
+}
+.blueprint-login h2 { color: #172d45; font-size: 24px; letter-spacing: -.035em; }
+.blueprint-login [data-testid="github-login-btn"],
+.blueprint-login [data-testid="email-login-btn"] { min-height: 44px; border-radius: 6px; }
+.blueprint-login [data-testid="email-login-btn"] { background: #ebf1f8; color: #172d45; }
+.blueprint-login [data-testid="email-login-btn"]:hover { background: #d8e1ed; }
+.blueprint-login details { padding-top: 20px; border-top: 1px solid #d8e1ed; }
+.blueprint-login details summary { color: #245ac4; }
+.blueprint-auth-footer { margin-top: 24px; color: #65788c; font-size: 12px; text-align: center; }
+.blueprint-auth :is(.dark\:text-white, .dark\:text-gray-300) { color: #172d45; }
+.blueprint-auth .dark\:text-gray-400 { color: #65788c; }
+.blueprint-auth .dark\:text-primary-400 { color: #245ac4; }
+.blueprint-auth :is(.dark\:bg-gray-800, .dark\:bg-gray-700) { background-color: #ebf1f8; }
+.blueprint-login span.dark\:bg-gray-800 { background-color: #fff; }
+.blueprint-auth .dark\:border-gray-600 { border-color: #b8c7d9; }
+.blueprint-auth .dark\:bg-red-900\/20 { background-color: #fbe9e9; }
+.blueprint-auth .dark\:border-red-800 { border-color: #efc8ca; }
+.blueprint-auth .dark\:text-red-400 { color: #a5383e; }
+
+@media (max-width: 800px) {
+  .blueprint-auth-shell { display: block; }
+  .blueprint-auth-panel { display: none; }
+  .blueprint-auth-main { min-height: 100vh; padding: 24px; }
+  .blueprint-auth-mobile-brand { display: flex; margin-bottom: 24px; color: #172d45; font-size: 17px; }
+}
+@media (max-width: 420px) {
+  .blueprint-auth-main { padding: 16px; }
+  .blueprint-auth-card { padding: 22px; }
 }

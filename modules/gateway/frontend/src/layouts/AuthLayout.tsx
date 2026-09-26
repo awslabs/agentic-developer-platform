@@ -15,27 +15,37 @@ export function AuthLayout() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100 dark:from-gray-900 dark:to-gray-800 p-4">
-      <div className="max-w-md w-full">
-        {/* Logo/header */}
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-            Agentic Developer Platform
-          </h1>
-          <p className="text-gray-600 dark:text-gray-400">
-            Admin Console
-          </p>
-        </div>
+    <div className="blueprint-auth min-h-screen">
+      <div className="blueprint-auth-shell">
+        <aside className="blueprint-auth-panel">
+          <div className="blueprint-auth-brand">
+            <span className="blueprint-brand-mark" aria-hidden="true">ADP</span>
+            <span>Agentic Developer Platform</span>
+          </div>
+          <div>
+            <p className="blueprint-auth-kicker">SOFTWARE DELIVERY WITH AGENTS</p>
+            <h1>From intent to delivered code.</h1>
+            <p className="blueprint-auth-description">
+              Plan, build, review, and verify software in one workspace.
+            </p>
+          </div>
+          <p className="blueprint-auth-panel-footer">ADP · Developer Platform</p>
+        </aside>
 
-        {/* Auth form content */}
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-8">
-          <Outlet />
-        </div>
-
-        {/* Footer */}
-        <p className="text-center text-sm text-gray-500 dark:text-gray-400 mt-8">
-          Secure access powered by AWS SSO
-        </p>
+        <main className="blueprint-auth-main">
+          <div className="blueprint-auth-content">
+            <h1 className="blueprint-auth-mobile-brand">
+              <span className="blueprint-brand-mark" aria-hidden="true">ADP</span>
+              <span>Agentic Developer Platform</span>
+            </h1>
+            <div className="blueprint-auth-card">
+              <Outlet />
+            </div>
+            <p className="blueprint-auth-footer">
+              Secure access powered by AWS SSO
+            </p>
+          </div>
+        </main>
       </div>
     </div>
   );
