@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 
-from lib.codex_validation import DockerValidationExecutor, ValidationCheck
+from lib.codex_validation import DockerValidationExecutor, ValidationCancelled, ValidationCheck
 from lib.task_run_client import TaskRunClientError
 from lib.task_tool_artifacts import publish_tool_result
 
@@ -29,6 +30,12 @@ class TaskValidationTool:
         self.binding = json.loads(json.dumps(binding))
         self.client = client
         self.executor = executor or DockerValidationExecutor()
+        shared_stop = getattr(client, "validation_stop_event", None)
+        self.cancelled = shared_stop if isinstance(shared_stop, threading.Event) else threading.Event()
+        self._execution_lock = threading.Lock()
+        self._finished = threading.Event()
+        self._finished.set()
+        self._termination_confirmed = True
         self.repository = Path(binding["repository_path"])
         if not self.repository.is_absolute() or not self.repository.is_dir():
             raise TaskRunClientError("Host validation workspace unavailable")
@@ -57,7 +64,24 @@ class TaskValidationTool:
         if "repository_binding" in self.binding and response.get("task", {}).get("repository_binding") != self.binding["repository_binding"]:
             raise TaskRunClientError("Validation repository or check policy changed")
 
+    def wait_stopped(self, timeout):
+        return self._finished.wait(timeout) and self._termination_confirmed
+
     def invoke(self, body):
+        if not self._execution_lock.acquire(blocking=False):
+            raise TaskRunClientError("Validation is already running")
+        self._finished.clear()
+        try:
+            if self.cancelled.is_set():
+                raise TaskRunClientError("Validation has been stopped")
+            if not self._termination_confirmed:
+                raise TaskRunClientError("Previous validation termination is unconfirmed")
+            return self._invoke(body)
+        finally:
+            self._finished.set()
+            self._execution_lock.release()
+
+    def _invoke(self, body):
         if (
             not isinstance(body, dict)
             or set(body) != {"schema_version", "attempt", "operation_id", "operation", "payload"}
@@ -75,11 +99,22 @@ class TaskValidationTool:
             raise TaskRunClientError("Validation tool requires an admitted named check")
         attempt = body["attempt"]
         self._authorize(attempt)
-        result = self.executor.run_repository(
-            check=self.checks[payload["check"]],
-            repository=self.repository,
-            expected_head=payload["commit"],
-        )
+        if self.cancelled.is_set():
+            raise TaskRunClientError("Validation has been stopped")
+        self._termination_confirmed = False
+        try:
+            result = self.executor.run_repository(
+                check=self.checks[payload["check"]],
+                repository=self.repository,
+                expected_head=payload["commit"],
+                cancelled=self.cancelled,
+            )
+        except ValidationCancelled as error:
+            self._termination_confirmed = True
+            raise TaskRunClientError("Validation cancelled before execution") from error
+        self._termination_confirmed = True
+        if self.cancelled.is_set():
+            raise TaskRunClientError("Validation stopped before publication")
         self._authorize(attempt)
         artifact = publish_tool_result(self.client, attempt=attempt, result=result)
         self._authorize(attempt)

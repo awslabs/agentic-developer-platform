@@ -130,6 +130,7 @@ class TaskRunClient:
         self._credential_expiry = 0.0
         self._deadline = 0.0
         self._stopping = False
+        self.validation_stop_event = threading.Event()
 
     def _cyber_url(self) -> str:
         endpoint = self._cyber_endpoint
@@ -391,10 +392,14 @@ class TaskRunClient:
             target = endpoint.removeprefix("local:")
             if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.]*", target):
                 raise TaskRunClientError("Invalid local tool handler")
-            if target not in self._local_tools:
-                module, factory = target.rsplit(".", 1)
-                self._local_tools[target] = getattr(importlib.import_module(module), factory)(self)
-            return self._local_tools[target].invoke(body)
+            with self._credential_lock:
+                if self._stopping:
+                    raise TaskRunClientError("Task tools have been stopped")
+                if target not in self._local_tools:
+                    module, factory = target.rsplit(".", 1)
+                    self._local_tools[target] = getattr(importlib.import_module(module), factory)(self)
+                handler = self._local_tools[target]
+            return handler.invoke(body)
         if not isinstance(endpoint, str) or any(c.isspace() for c in endpoint):
             raise TaskRunClientError("Tool is not configured")
         try:
@@ -438,15 +443,36 @@ class TaskRunClient:
         if response.get("cancel_requested") is True or response.get("attempt_valid") is False:
             with self._credential_lock:
                 self._stopping = True
+                self.validation_stop_event.set()
         return response
 
     def artifact(self, body: dict) -> dict:
         return self._post("artifact", body, run_bound=True)
 
+    def _validation_stopped(self, *, cancel: bool) -> bool:
+        from lib.codex_validation_tool import TaskValidationTool
+
+        with self._credential_lock:
+            if cancel:
+                self._stopping = True
+                self.validation_stop_event.set()
+            handlers = [self._validation_tool, *self._local_tools.values()]
+        deadline = time.monotonic() + (10 if cancel else 0)
+        return all(
+            handler.wait_stopped(max(0, deadline - time.monotonic()))
+            for handler in handlers if isinstance(handler, TaskValidationTool)
+        )
+
     def finalize(self, body: dict) -> dict:
+        if not self._validation_stopped(cancel=body.get("outcome") != "completed"):
+            raise TaskRunClientUnavailable("Validation termination is unconfirmed")
         return self._post("finalize", body, run_bound=True)
 
     def settlement(self, body: dict) -> dict:
+        if not self._validation_stopped(cancel=True):
+            body = copy.deepcopy(body)
+            body["stop_evidence"]["child_exit_confirmed"] = False
+            body["stop_evidence"]["workload_terminated"] = False
         token = read_workload_token()
         return self._post(
             "settlement",
@@ -461,6 +487,7 @@ class TaskRunClient:
             self._bootstrap_body = None
             self._binding = None
             self._stopping = True
+            self.validation_stop_event.set()
             self._workspace_tools = None
             self._validation_tool = None
             self._publication_tool = None

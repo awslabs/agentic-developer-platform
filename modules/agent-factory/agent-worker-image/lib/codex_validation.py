@@ -72,11 +72,15 @@ class ValidationUnavailable(RuntimeError):
     pass
 
 
+class ValidationCancelled(ValidationUnavailable):
+    """Cancellation observed before any container process started."""
+
+
 class DockerValidationExecutor:
     def __init__(self, docker="/usr/bin/docker"):
         self.docker = docker
 
-    def run_repository(self, *, check: ValidationCheck, repository: Path, expected_head: str):
+    def run_repository(self, *, check: ValidationCheck, repository: Path, expected_head: str, cancelled=None):
         """Validate an immutable commit from a trusted host-owned checkout.
 
         Local checkout paths never come from SDK tool arguments. No git config,
@@ -167,7 +171,7 @@ class DockerValidationExecutor:
                 raise ValidationUnavailable("Validation archive exceeds bound")
             digest = hashlib.sha256(archive.read_bytes()).hexdigest()
             result = self.run(
-                check=check, archive=archive, archive_sha256=digest, commit=expected_head
+                check=check, archive=archive, archive_sha256=digest, commit=expected_head, cancelled=cancelled
             )
             result["tree"] = git("rev-parse", expected_head + "^{tree}").decode()
             if git("rev-parse", "HEAD") != expected_head.encode() or git(
@@ -176,7 +180,9 @@ class DockerValidationExecutor:
                 result.update(status="failed", reason="source_changed")
             return result
 
-    def run(self, *, check: ValidationCheck, archive: Path, archive_sha256: str, commit: str):
+    def run(self, *, check: ValidationCheck, archive: Path, archive_sha256: str, commit: str, cancelled=None):
+        if cancelled is not None and cancelled.is_set():
+            raise ValidationCancelled("Validation cancelled before execution")
         specification = check.document()
         if not re.fullmatch(r"[a-f0-9]{40}(?:[a-f0-9]{24})?", commit) or not re.fullmatch(
             r"[a-f0-9]{64}", archive_sha256
@@ -261,6 +267,8 @@ class DockerValidationExecutor:
                 )
                 if created.returncode != 0 or not re.fullmatch(rb"[a-f0-9]{64}\n?", created.stdout):
                     raise ValidationUnavailable("Validation container could not be created")
+                if cancelled is not None and cancelled.is_set():
+                    raise ValidationCancelled("Validation cancelled before container start")
                 started = time.monotonic()
                 process = subprocess.Popen(
                     [self.docker, "start", "--attach", container],
@@ -274,6 +282,9 @@ class DockerValidationExecutor:
                     with selectors.DefaultSelector() as selector:
                         selector.register(process.stdout, selectors.EVENT_READ)
                         while selector.get_map():
+                            if cancelled is not None and cancelled.is_set():
+                                stop = "cancelled"
+                                break
                             if time.monotonic() - started >= check.timeout_seconds:
                                 stop = "timeout"
                                 break

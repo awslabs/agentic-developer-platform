@@ -188,3 +188,40 @@ def test_materialized_workspace_edit_and_commit_pass_actual_container_check(tmp_
     assert repaired["sourceRevision"] == "b" * 40
     assert passed["specificationDigest"] == failed["specificationDigest"]
     assert passed["archiveSha256"] != failed["archiveSha256"]
+
+
+def test_actual_cancellation_kills_validation_and_confirms_cleanup(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    import time
+
+    archive, digest = source(tmp_path)
+    before = set(containers())
+    cancelled = Event()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(
+            DockerValidationExecutor().run,
+            check=ValidationCheck("cancel", IMAGE, ("/bin/sh", "-c", "sleep 60")),
+            archive=archive, archive_sha256=digest, commit="a" * 40,
+            cancelled=cancelled,
+        )
+        deadline = time.monotonic() + 10
+        try:
+            while time.monotonic() < deadline:
+                active = subprocess.check_output(
+                    ["/usr/bin/docker", "ps", "-q", "--no-trunc", "--filter=label=adp.codex-validation=true"], text=True
+                ).split()
+                if set(active) - before:
+                    break
+                if running.done():
+                    running.result()
+                    pytest.fail("Validation ended before cancellation")
+                time.sleep(0.05)
+            else:
+                pytest.fail("Validation container did not start")
+        finally:
+            cancelled.set()
+        result = running.result(timeout=15)
+    assert result["status"] == "failed"
+    assert result["reason"] == "cancelled"
+    assert set(containers()) == before

@@ -125,3 +125,21 @@ then corrected and the affected runtime suite passed all 33 tests. Full gateway
 regression was not repeated after that wording correction. Latest-head CI was
 still running at the checkpoint. Both foundation #6195 and developer #6196 remain
 open: the release gates above are not satisfied by local fixture qualification.
+
+
+## Recovery continuation: CI and validation cancellation
+
+The recovered PR head had failing catalogue/probe expectations and an intermittent cancellation-finalization transaction conflict. Commit `0d181050b` corrects the catalogue expectations, refuses Codex profiles at the Anthropic-only probe worker before spend reservation, and retries rejected finalization transactions at most three times while rebuilding all authority fences. Caller-pinned versions and unknown write outcomes are not retried. A deterministic concurrent-receipt test fails before this fix and verifies one terminal event after retry; exhausted contention remains nonterminal.
+
+Validation cancellation now propagates a host-owned stop event into the Docker executor. The executor kills the active validation container and verifies exit and removal. The worker waits for validation termination before finalization. Unconfirmed cleanup prevents finalization and downgrades stop-only settlement proof so capacity is not released on SDK-child exit alone. Cancelled checks cannot publish acceptance evidence, and uncertain validation cannot be replayed in that host. The CI worker test step includes these cancellation and workspace-binding contracts.
+
+Validation performed with isolated configuration/token stores:
+
+- Catalogue, selection and probe routes: **75 passed**.
+- Task commands and routes, including injected finalization contention: **28 passed**.
+- Worker validation tools, signed client and workspace binding: **56 passed, 2 skipped** (opt-in Docker cases).
+- Real isolated Docker execution: **9 passed**, including cancellation after the container was observed running, verified removal, timeout, output bounds and source isolation. Image: `sha256:12ce6be82bed29b72198e4fdf3e51649aad17ab037d05975112b5fec0a2adf1d`.
+- Combined gateway, worker and official SDK with fixture inference: **9 passed, 9 skipped** (opt-in image/live cases).
+- Ruff checks and whitespace validation passed.
+
+These changes do not qualify deployment, Kubernetes validation, pause/resume, GitHub mention invocation, GitLab publication or memory lifecycle/gateway integration. The disposable repository for live developer PR qualification remains unspecified. Both stories remain open and runtime registration remains off.
