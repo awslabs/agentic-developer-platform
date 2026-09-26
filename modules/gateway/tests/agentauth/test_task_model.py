@@ -363,7 +363,7 @@ async def test_three_sequential_completed_tasks_release_slots_and_duplicate_sett
 
 @pytest.mark.asyncio
 async def test_sdk_request_refused_for_investigator_before_provider(model):
-    with pytest.raises(TaskStoreError, match="requires cyber persona"):
+    with pytest.raises(TaskStoreError, match="requires an SDK Task persona"):
         await execute(model, sdk_request=True)
     model.provider.assert_not_awaited()
     model.enforcement.check_budget_hierarchy.assert_not_awaited()
