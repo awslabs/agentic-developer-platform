@@ -20,7 +20,7 @@ CONTRAST_KEYS = {
 }
 KEYS = {
     "tenant_isolation": {"tenant_ids"},
-    "usage_tenant": IDENTITY,
+    "usage_tenant": IDENTITY | {"usage_run_id"},
     "capability_contrast": CONTRAST_KEYS,
     "human_task_coding": IDENTITY
     | PAID
@@ -114,6 +114,15 @@ def validate_fixture(name, value):
             f"{name}.{key} requires an explicit fixture identity",
         )
     if name == "usage_tenant":
+        if "usage_run_id" in value:
+            require(
+                isinstance(value["usage_run_id"], str)
+                and re.fullmatch(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    value["usage_run_id"],
+                ),
+                "usage_run_id requires an exact invocation UUID",
+            )
         return
     if name == "knowledge_lifecycle":
         from .remote.knowledge_lifecycle_plan import validate_dispatch_fixture

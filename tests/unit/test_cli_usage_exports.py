@@ -248,3 +248,48 @@ def test_export_checks_explicit_fixture_scope_before_accepting_records(
         assert all(
             v["records_observed"] == 1 for v in evidence["export_formats"].values()
         )
+
+
+@pytest.mark.parametrize("fault", [None, "coverage", "row", "missing"])
+def test_selected_run_exports_reject_broad_scope_and_foreign_rows(
+    modules, monkeypatch, fault
+):
+    remote, served = modules
+    run = "57e3ed64-0794-4df0-828f-565479f9ddac"
+    client = SimpleNamespace(binary="/isolated/adp", env={}, timeout=30, transcript=[])
+    flags = [
+        "--start",
+        "2026-09-26T00:00:00Z",
+        "--end",
+        "2026-09-26T01:00:00Z",
+        "--run",
+        run,
+    ]
+    calls = []
+
+    def invoke(argv, **kwargs):
+        assert argv[argv.index("--run") + 1] == run
+        mode = argv[argv.index("--format") + 1]
+        calls.append(mode)
+        value = page()
+        value["detail"]["scope"]["coverage"] = (
+            "direct_identity_records" if fault == "coverage" else "selected_run"
+        )
+        if fault != "missing":
+            value["detail"]["items"][0]["invocation_id"] = (
+                "other" if fault == "row" else run
+            )
+        return emitted(served, value, mode)
+
+    monkeypatch.setattr(remote.common, "bounded", invoke)
+    evidence = {"usage_run_id": run}
+    if fault:
+        with pytest.raises(remote.common.RemoteError):
+            remote.exercise(client, flags, evidence)
+    else:
+        remote.exercise(client, flags, evidence)
+        assert calls == ["ndjson", "csv"]
+        assert all(
+            item["records_observed"] == 1
+            for item in evidence["export_formats"].values()
+        )
