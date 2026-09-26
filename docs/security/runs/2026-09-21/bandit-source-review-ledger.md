@@ -171,3 +171,22 @@ All **1,470** original identities, severities and candidate links remain;
 **912** observations remain pending source review. This repair validates recorded
 integrity only, without live qualification or removal of runtime holds.
 #6108 remains open.
+
+## Observation submitter refusal before storage
+
+The one original B101 assertion in the Superplane observation receiver now
+explicitly refuses missing authenticated submitters with caller-safe HTTP 401
+before database access. Synthetic malformed AuthResult tests reproduce baseline
+AssertionError normally and premature database lookup under `-O`/`-OO`; the fix
+refuses consistently in all three modes. This does not claim the real
+authenticator emits malformed results or that baseline writes unauthorized data.
+
+All **38** offline contract/guard tests and **117** existing API authentication
+and observation-security tests pass. The latter use isolated in-memory SQLite.
+Fresh pinned Bandit reports zero B101 observations/errors. Receipt:
+`evidence/bandit-observation-submitter-guard.json`. All **1,470** original
+identities/severities remain. Current revalidation has **587** observations pending
+source review and **31** source-fixed/runtime-open observations, including this
+production guard. The fresh review reran all three guard regressions and the 117
+API tests successfully; the earlier 38-test contract run remains historical evidence.
+#6108 and all runtime/provider holds remain open.

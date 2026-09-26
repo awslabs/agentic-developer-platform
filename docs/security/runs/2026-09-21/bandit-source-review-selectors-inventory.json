@@ -7,13 +7,13 @@
   "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-bandit-review-selectors.json",
   "counts": {
     "reviewed-import-only-observation": 107,
-    "pending-source-review": 588,
+    "pending-source-review": 587,
     "nonsecurity-test-assertion": 187,
     "fixed": 405,
     "reviewed-bounded-sql-construction": 66,
     "reviewed-private-snapshot-permissions": 1,
     "reviewed-nonsecurity-randomness": 1,
-    "fixed-source-runtime-open": 30,
+    "fixed-source-runtime-open": 31,
     "reviewed-nonsecret-literal": 48,
     "reviewed-optimization-safe-guard": 35,
     "reviewed-parameterized-sql": 2
@@ -11672,8 +11672,10 @@
       "rule": "B101",
       "line": 347,
       "severity": "LOW",
-      "disposition": "pending-source-review",
-      "owner_issue": 6108
+      "disposition": "fixed-source-runtime-open",
+      "owner_issue": 6108,
+      "rationale": "A missing authenticated submitter now raises static ObservationRefused401 before storage lookup in normal/-O/-OO; the real contract and receiver deny paths remain covered. Synthetic malformed AuthResult does not prove production verifier could generate this state. Serving-image/runtime acceptance remains open under #6108.",
+      "evidence": "evidence/bandit-observation-submitter-guard.json"
     },
     {
       "selector": "bandit|bandit-results.sarif|run=0|ri=764",
