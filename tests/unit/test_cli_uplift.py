@@ -13175,3 +13175,162 @@ def test_coding_running_wait_validation_matches_worker(tmp_path, seconds, valid)
     else:
         with pytest.raises(config.ConfigError, match="Running wait"):
             parse(payload)
+
+
+def cancellation_cli_response(status="accepted"):
+    return {
+        "type": "abort_receipt",
+        "data": {
+            "terminal_cancellation_confirmed": False,
+            "receipt": {
+                "command_id": "owned-command",
+                "kind": "cancel",
+                "status": status,
+                "handoff": "not_started",
+                "command_sequence": 3,
+                "accepted_at": "2026-09-26T05:00:00Z",
+            },
+        },
+    }
+
+
+def test_coding_cancellation_replays_one_command_and_conflicts_changed_payload(
+    tmp_path,
+):
+    module, _ = shipped_script(tmp_path, "hosted_coding")
+    calls = []
+
+    class Cli:
+        def json(self, argv, expected):
+            calls.append((argv, expected))
+            if len(calls) == 3:
+                return {"status": "failed", "error": {"code": "task_conflict"}}
+            return cancellation_cli_response(
+                "cancelled" if len(calls) > 1 else "accepted"
+            )
+
+    result = module.cancel_with_replay(Cli(), "tsk-owned", "owned-command")
+    assert result["same_payload_replay"] == "confirmed"
+    assert result["changed_payload"] == "task_conflict"
+    assert calls[0] == calls[1] == calls[3]
+    assert all(
+        argv[:4] == ["task", "abort", "tsk-owned", "--human-login"] for argv, _ in calls
+    )
+    assert all(
+        argv[argv.index("--command-id") + 1] == "owned-command" for argv, _ in calls
+    )
+    assert calls[2][0][calls[2][0].index("--reason") + 1] != module.CANCEL_REASON
+    assert calls[2][1] == 5
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "preflight_success",
+        "foreign_command",
+        "different_sequence",
+        "conflict_success",
+        "unrelated_error",
+    ],
+)
+def test_coding_cancellation_replay_rejects_false_proof(tmp_path, fault):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    calls = []
+
+    class Cli:
+        def json(self, argv, expected):
+            calls.append(argv)
+            response = cancellation_cli_response()
+            if len(calls) == 2:
+                if fault == "preflight_success":
+                    response = {
+                        "type": "abort_confirmed",
+                        "data": {"terminal_cancellation_confirmed": True},
+                    }
+                elif fault == "foreign_command":
+                    response["data"]["receipt"]["command_id"] = "foreign"
+                elif fault == "different_sequence":
+                    response["data"]["receipt"]["command_sequence"] = 4
+            if len(calls) == 3:
+                if fault == "conflict_success":
+                    return response
+                return {"status": "failed", "error": {"code": "task_access_denied"}}
+            return response
+
+    with pytest.raises(common.RemoteError):
+        module.cancel_with_replay(Cli(), "tsk-owned", "owned-command")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "missing_receipt",
+        "duplicate_receipt",
+        "wrong_status",
+        "wrong_kind",
+        "wrong_sequence",
+        "child_running",
+        "recovery",
+        "queue_pending",
+        "foreign_task",
+        "completed",
+    ],
+)
+def test_coding_cancellation_requires_terminal_command_and_queue_ack(
+    tmp_path, monkeypatch, fault
+):
+    module, common = shipped_script(tmp_path, "hosted_coding")
+    receipt = cancellation_cli_response("cancelled")["data"]["receipt"]
+    original = {
+        key: receipt[key]
+        for key in ("command_id", "kind", "command_sequence", "accepted_at")
+    }
+    detail = {
+        "task_id": "tsk-owned",
+        "status": "cancelled",
+        "queue_ack_status": "confirmed",
+        "recovery_required": False,
+        "error": {"child_exit_confirmed": True, "recovery_required": False},
+        "command_receipts": [receipt],
+    }
+    if fault == "missing_receipt":
+        detail["command_receipts"] = []
+    if fault == "duplicate_receipt":
+        detail["command_receipts"] *= 2
+    if fault == "wrong_status":
+        receipt["status"] = "accepted"
+    if fault == "wrong_kind":
+        receipt["kind"] = "input"
+    if fault == "wrong_sequence":
+        receipt["command_sequence"] += 1
+    if fault == "child_running":
+        detail["error"]["child_exit_confirmed"] = False
+    if fault == "recovery":
+        detail["recovery_required"] = True
+    if fault == "queue_pending":
+        detail["queue_ack_status"] = "pending"
+    if fault == "foreign_task":
+        detail["task_id"] = "tsk-foreign"
+    if fault == "completed":
+        detail["status"] = "completed"
+    ticks = iter([0, 31])
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(ticks))
+
+    class Cli:
+        def json(self, argv, expected):
+            assert argv == module.cancellation_command("tsk-owned", "owned-command")
+            assert expected == 4
+            return cancellation_cli_response("cancelled")
+
+    if fault:
+        with pytest.raises(common.RemoteError):
+            module.confirm_cancellation(
+                Cli(), detail, "tsk-owned", "owned-command", original
+            )
+    else:
+        _, evidence = module.confirm_cancellation(
+            Cli(), detail, "tsk-owned", "owned-command", original
+        )
+        assert evidence["queue_ack_status"] == "confirmed"
+        assert evidence["terminal_same_payload_replay"] == "confirmed"

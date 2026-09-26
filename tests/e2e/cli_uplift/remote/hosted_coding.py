@@ -87,6 +87,119 @@ def require_control_receipt(control, task_id, command_id):
     )
 
 
+CANCEL_REASON = "E42 owned fixture cancellation"
+
+
+def cancellation_command(task_id, command_id, reason=CANCEL_REASON):
+    # The served agent abort bridge expects task_id in a command-only receipt.
+    # Task abort uses the existing API directly and has no terminal preflight.
+    return [
+        "task",
+        "abort",
+        task_id,
+        "--human-login",
+        "--command-id",
+        command_id,
+        "--reason",
+        reason,
+        "--yes",
+    ]
+
+
+def cancellation_receipt(response, command_id, original=None):
+    data = response.get("data") or {}
+    receipt = data.get("receipt") or {}
+    common.require(
+        response.get("type") == "abort_receipt"
+        and data.get("terminal_cancellation_confirmed") is False
+        and receipt.get("command_id") == command_id
+        and receipt.get("kind") == "cancel"
+        and receipt.get("status") in {"accepted", "cancelled"}
+        and receipt.get("handoff") == "not_started"
+        and type(receipt.get("command_sequence")) is int
+        and receipt["command_sequence"] > 0
+        and isinstance(receipt.get("accepted_at"), str)
+        and bool(receipt["accepted_at"]),
+        "Cancellation command receipt was not confirmed",
+    )
+    identity = {
+        key: receipt[key]
+        for key in ("command_id", "kind", "command_sequence", "accepted_at")
+    }
+    common.require(
+        original is None or identity == original,
+        "Cancellation replay changed its durable command identity",
+    )
+    return identity
+
+
+def cancel_with_replay(cli, task_id, command_id):
+    command = cancellation_command(task_id, command_id)
+    original = cancellation_receipt(cli.json(command, expected=4), command_id)
+    cancellation_receipt(cli.json(command, expected=4), command_id, original)
+    conflict = cli.json(
+        cancellation_command(task_id, command_id, CANCEL_REASON + " changed payload"),
+        expected=5,
+    )
+    common.require(
+        conflict.get("status") == "failed"
+        and (conflict.get("error") or {}).get("code") == "task_conflict",
+        "Changed cancellation payload did not produce Task conflict",
+    )
+    # Confirm that conflict did not replace the original committed payload.
+    cancellation_receipt(cli.json(command, expected=4), command_id, original)
+    return {
+        "request_task_id": task_id,
+        "receipt_identity": original,
+        "same_payload_replay": "confirmed",
+        "changed_payload": "task_conflict",
+        "original_after_conflict": "confirmed",
+        "cli": "adp task abort",
+    }
+
+
+def confirm_cancellation(cli, detail, task_id, command_id, original):
+    deadline = time.monotonic() + 30
+    while True:
+        common.require(
+            detail.get("task_id") == task_id and detail.get("status") == "cancelled",
+            "Cancellation terminal readback changed Task identity or outcome",
+        )
+        if (
+            detail.get("queue_ack_status") == "confirmed"
+            or time.monotonic() >= deadline
+        ):
+            break
+        time.sleep(1)
+        detail = cli.json(["agent", "status", "--run", task_id]).get("detail") or {}
+    error = detail.get("error") or {}
+    receipts = detail.get("command_receipts") or []
+    matching = [row for row in receipts if row.get("command_id") == command_id]
+    common.require(
+        detail.get("queue_ack_status") == "confirmed"
+        and detail.get("recovery_required") is False
+        and error.get("child_exit_confirmed") is True
+        and error.get("recovery_required") is False
+        and len(matching) == 1
+        and matching[0].get("status") == "cancelled"
+        and matching[0].get("handoff") == "not_started"
+        and all(matching[0].get(key) == value for key, value in original.items()),
+        "Cancellation lacks confirmed child exit, queue acknowledgement or exact terminal command receipt",
+    )
+    cancellation_receipt(
+        cli.json(cancellation_command(task_id, command_id), expected=4),
+        command_id,
+        original,
+    )
+    return detail, {
+        "command_id": command_id,
+        "command_status": "cancelled",
+        "child_exit_confirmed": True,
+        "queue_ack_status": "confirmed",
+        "terminal_same_payload_replay": "confirmed",
+    }
+
+
 def local_receipt(home):
     state = home / ".adp/state"
     paths = list((state / "hosted-tasks").glob("*.json"))
@@ -453,9 +566,9 @@ def _execute(config, evidence):
                     "E42 owned fixture cancellation",
                 ]
                 cli.json([*command, "--dry-run"])
-                control = cli.json([*command, "--yes"], expected=4)
-                evidence["control_receipt"] = control.get("detail")
-                require_control_receipt(control, task_id, evidence["command_id"])
+                evidence["cancellation_replay"] = cancel_with_replay(
+                    cli, task_id, evidence["command_id"]
+                )
             else:
                 evidence["steering_effect"] = (
                     "unsupported: coding runtime has no input-consumption path"
@@ -510,6 +623,14 @@ def _execute(config, evidence):
                 == ("cancelled" if action == "abort" else "completed"),
                 "Requested terminal outcome was not observed",
             )
+            if action == "abort":
+                detail, evidence["cancellation_terminal"] = confirm_cancellation(
+                    cli,
+                    detail,
+                    task_id,
+                    evidence["command_id"],
+                    evidence["cancellation_replay"]["receipt_identity"],
+                )
             evidence["result"] = detail.get("result")
             evidence["activity_readback"] = activity_readback(cli, detail)
             evidence["stream_replay"] = verify_replay(config, env, detail, events)
@@ -571,17 +692,9 @@ def _execute(config, evidence):
                 )
             if task_id and not terminal:
                 cli.run(
-                    [
-                        "agent",
-                        "abort",
-                        "--run",
-                        task_id,
-                        "--command-id",
-                        evidence["cleanup_command_id"],
-                        "--reason",
-                        "E42 cleanup",
-                        "--yes",
-                    ],
+                    cancellation_command(
+                        task_id, evidence["cleanup_command_id"], "E42 cleanup"
+                    ),
                     expected=None,
                 )
                 _, cleanup = cli.run(
