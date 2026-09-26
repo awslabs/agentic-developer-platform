@@ -956,6 +956,7 @@ async def _caller_has_standing_in_tenant(
             .where(
                 TenantMembership.user_id == user_id,
                 TenantMembership.tenant_id == target_tenant_id,
+                TenantMembership.revoked_at.is_(None),
             )
             .limit(1)
         )
@@ -1679,6 +1680,7 @@ async def _auto_switch_active_tenant(
     target_stmt = select(TenantMembership).where(
         TenantMembership.user_id == user_id,
         TenantMembership.tenant_id == target_tenant_id,
+        TenantMembership.revoked_at.is_(None),
     )
     target_membership = (await db.execute(target_stmt)).scalar_one_or_none()
     if target_membership is None:
@@ -1721,6 +1723,7 @@ async def _auto_switch_active_tenant(
         .where(
             TenantMembership.user_id == user_id,
             TenantMembership.tenant_id == target_tenant_id,
+            TenantMembership.revoked_at.is_(None),
         )
         .values(is_active=True)
     )

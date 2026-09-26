@@ -181,6 +181,38 @@ def vault(cli, evidence):
     ]
 
 
+def hierarchy(cli, evidence):
+    orgs = detail(cli.json(["admin", "org", "list", "--page-size", "1"]))
+    common.require(
+        isinstance(orgs.get("items"), list), "Organization list is malformed"
+    )
+    common.require(bool(orgs["items"]), "No authorized hierarchy fixture is visible")
+    org = orgs["items"][0].get("id")
+    common.require(isinstance(org, str) and org, "Organization ID is missing")
+    for area in ("department", "team", "member"):
+        result = detail(
+            cli.json(["admin", area, "list", "--org", org, "--page-size", "1"])
+        )
+        common.require(
+            result.get("org_id") == org
+            and result.get("kind") == area
+            and isinstance(result.get("items"), list),
+            "Hierarchy list lost its selected scope",
+        )
+        common.require(
+            all(
+                isinstance(row, dict) and row.get("org_id") == org
+                for row in result["items"]
+            ),
+            "Foreign hierarchy row was returned",
+        )
+    evidence.update(
+        org_id=org,
+        forms=["org", "department", "team", "member"],
+        qualification="bounded administrator reads only; membership and delete lifecycle acceptance remains separate",
+    )
+
+
 def budget(cli, evidence):
     periods = ("daily", "weekly", "monthly")
     for period in periods:
@@ -261,6 +293,7 @@ SCENARIOS = {
     "usage": usage,
     "activity": activity,
     "vault": vault,
+    "hierarchy": hierarchy,
     "budget": budget,
     "github_maintenance": github_maintenance,
 }

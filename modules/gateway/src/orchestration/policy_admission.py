@@ -257,6 +257,7 @@ async def _member_facts(session: AsyncSession, *, org_id: str, user_id: str) -> 
             select(TenantMembership.tenant_id).where(
                 TenantMembership.user_id == user_id,
                 TenantMembership.tenant_id == org_id,
+                TenantMembership.revoked_at.is_(None),
             )
         )
     ).scalar_one_or_none()

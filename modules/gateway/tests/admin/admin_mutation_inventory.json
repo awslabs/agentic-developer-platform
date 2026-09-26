@@ -287,6 +287,20 @@
     "classification": "durable-operation"
   },
   {
+    "method": "DELETE",
+    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
+    "module": "src.admin.hierarchy",
+    "endpoint": "remove",
+    "classification": "durable-operation"
+  },
+  {
+    "method": "PATCH",
+    "path": "/admin/organizations/{org_id}/hierarchy/{kind}/{key}",
+    "module": "src.admin.hierarchy",
+    "endpoint": "patch",
+    "classification": "durable-operation"
+  },
+  {
     "method": "POST",
     "path": "/admin/organizations/{org_id}/members",
     "module": "src.admin.routes",

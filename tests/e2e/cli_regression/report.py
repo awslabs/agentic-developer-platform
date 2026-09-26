@@ -43,7 +43,7 @@ def render(jobs, revision, ec2_revision="", ec2_scope="nightly"):
             [
                 "",
                 "Daily EC2 cases: E01 install, C01 login/refresh, E20 capabilities/doctor, "
-                "E21 usage/export reads, E22 Activity reads/missing-run errors, E24 vault metadata/previews, and E26 own budget period reads.",
+                "E21 usage/export reads, E22 Activity reads/missing-run errors, E24 vault metadata/previews, E26 own budget period reads, and E29 administrator hierarchy reads.",
                 "**Full CLI story acceptance is not established.** Active controls, "
                 "capability contrasts and marked spend reconciliation need their own fixtures.",
             ]

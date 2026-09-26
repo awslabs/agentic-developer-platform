@@ -28,7 +28,7 @@ This is the coverage target for Epic [#5644](https://github.com/aws-e/adp/issues
 | #5589 | [Budget CLI](budgets.md): own reads and exact-period administrator list/show/set/delete/status; E26 nightly reads, live enforcement acceptance pending | Existing budget APIs and usage accounting |
 | #5621 | Capabilities, diagnostics and command inventory | PR #5716 merged; live acceptance pending |
 | #5622 ([tenant CLI](tenant.md), source; live held) | Tenant selection and isolation | Existing deployment/session selection and server-authorized membership |
-| #5623 | Organizations, departments, teams and memberships | Existing administration APIs |
+| #5623 | [Hierarchy CLI](hierarchy.md): organizations, departments, teams, memberships and tenant-org links; E29 reads, live lifecycle acceptance pending | Protected administration APIs, revision adapters and durable membership removal |
 | #5624 | Service accounts, agent registrations and canonical principals | Existing identity/registration APIs |
 | #5625 | Access requests and session revocation | Existing authorized access administration |
 | #5626 | Person-wide caps and inherited defaults | Existing person budget policy |

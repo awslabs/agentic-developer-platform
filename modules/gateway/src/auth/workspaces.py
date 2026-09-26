@@ -175,7 +175,7 @@ async def _reconcile_after_failed_switch(
         membership = await db.scalar(
             select(TenantMembership).where(TenantMembership.id == membership.id).with_for_update().execution_options(populate_existing=True)
         )
-        if membership is None or not membership.is_active:
+        if membership is None or membership.revoked_at is not None or not membership.is_active:
             raise RuntimeError("Workspace membership no longer exists or is inactive")
     org = await db.get(Organization, org_id)
     if org is None:
@@ -217,7 +217,7 @@ async def select_workspace(db: AsyncSession, context: TokenContext, org_id: str,
         membership = await db.scalar(
             select(TenantMembership).where(TenantMembership.id == membership.id).with_for_update().execution_options(populate_existing=True)
         )
-        if not membership:
+        if not membership or membership.revoked_at is not None:
             raise HTTPException(403, "Membership no longer exists")
     selected = await _workspace(db, context, org, user, membership)
     previous_claims = None

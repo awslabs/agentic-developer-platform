@@ -149,3 +149,5 @@ with a newly triggered agent remains outside this key-scenario regression.
 E28 (#5634) runs in `story-reads`/default nightly with an existing GitHub App fixture. It performs App maintenance reads, disconnect/rotation previews (without opening key input), and invalid installation refusal. It never rotates or disconnects the shared App. Isolated live maintenance and OAuth/repository/webhook continuation remain separate acceptance holds.
 
 E23 (#5622) runs tenant list/current/explicit selection and unknown-selector refusal in the default nightly pipeline. E27 is a separate `tenant-isolation` suite for two existing memberships, concurrent selected-tenant reads, disposable local-default changes and refresh. Its fixture must be supplied explicitly; it does not qualify paid local-agent inference or revoked membership by approximation.
+
+E29 (#5623) adds bounded administrator organization/department/team/member reads with the served CLI. It performs no mutation or inference; a missing authorized organization cannot pass. Membership lifecycle and cleanup acceptance need separate owned fixtures.

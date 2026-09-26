@@ -245,5 +245,8 @@ async def add_user_to_org(db: AsyncSession, *, user_id: str, org_id: str, role: 
     except ValueError as exc:
         raise ResourceConflictError("User", "login_identity", str(exc)) from exc
 
+    from src.admin.membership_revocation import reactivate_membership
+
+    await reactivate_membership(db, org_id=org_id, user_id=target.id, role=normalize_membership_role(role))
     await upsert_tenant_membership(db, user_id=target.id, tenant_id=org_id, role=role, joined_via=JOINED_VIA)
     return target

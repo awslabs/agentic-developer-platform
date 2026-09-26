@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr, Field
 class DepartmentCreateRequest(BaseModel):
     """Request schema for creating a department."""
 
+    id: str | None = Field(None, min_length=1, max_length=255, description="Caller-owned stable create ID")
     name: str = Field(..., min_length=1, max_length=255, description="Department name")
     budget_limit: Decimal | None = Field(None, ge=0, description="Monthly budget limit in USD")
     description: str | None = Field(None, max_length=1024, description="Department description")
@@ -53,6 +54,7 @@ class DepartmentListResponse(BaseModel):
 class TeamCreateRequest(BaseModel):
     """Request schema for creating a team."""
 
+    id: str | None = Field(None, min_length=1, max_length=255, description="Caller-owned stable create ID")
     name: str = Field(..., min_length=1, max_length=255, description="Team name")
     description: str | None = Field(None, max_length=1024, description="Team description")
 

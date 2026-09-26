@@ -35,6 +35,7 @@ PURPOSES = {
     "story_activity": ("story_reads", {"mode": "activity"}),
     "tenant_smoke": ("tenant_isolation", {"mode": "smoke"}),
     "tenant_isolation": ("tenant_isolation", {"mode": "isolation"}),
+    "story_hierarchy": ("story_reads", {"mode": "hierarchy"}),
     "story_vault": ("story_reads", {"mode": "vault"}),
     "story_github_maintenance": ("story_reads", {"mode": "github_maintenance"}),
     # E01/E02/E03 — install the served release, then a real Cognito login.
