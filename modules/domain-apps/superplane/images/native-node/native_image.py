@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import io
 import os
 from pathlib import Path
 import re
@@ -47,6 +48,11 @@ class ImageRefused(ValueError):
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def file_sha(path):
+    with Path(path).open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def exact(value, keys):
@@ -270,12 +276,10 @@ def directory(path):
     return runner.secure_path(path, directory=True)
 
 
-def install_file(path, content, executable):
+def install_stream(path, source, executable):
     directory(path.parent)
     if path.exists() or path.is_symlink():
         runner.secure_path(path)
-        if path.read_bytes() == content:
-            return
         # This runs only on a verified never-enrolled builder. Replacement is
         # explicit reviewed image preparation, never an allocated-node repair.
     temporary = path.with_name(path.name + ".superplane-image-new")
@@ -285,10 +289,19 @@ def install_file(path, content, executable):
         0o755 if executable else 0o644,
     )
     with os.fdopen(fd, "wb") as destination:
-        destination.write(content)
+        while chunk := source.read(1024 * 1024):
+            destination.write(chunk)
         destination.flush()
         os.fsync(destination.fileno())
+    if path.exists() and file_sha(path) == file_sha(temporary):
+        temporary.unlink()
+        os.chmod(path, 0o755 if executable else 0o644)
+        return
     os.replace(temporary, path)
+
+
+def install_file(path, content, executable):
+    install_stream(path, io.BytesIO(content), executable)
 
 
 def manifest(lock):
@@ -376,7 +389,7 @@ def prepare(lock, bundle):
         ).strip()
         if state != "inactive":
             raise ImageRefused("base bootstrap is active or ambiguous")
-    if sha(Path(bundle).read_bytes()) != lock["bundle_sha256"]:
+    if file_sha(bundle) != lock["bundle_sha256"]:
         raise ImageRefused("runtime input bundle differs")
     with tarfile.open(bundle, mode="r:*") as archive:
         entries = planned_overlay(archive, lock)
@@ -392,7 +405,7 @@ def prepare(lock, bundle):
         bootstrap.verify_bootstrap_exclusive()
         for member, path in entries:
             with archive.extractfile(member) as source:
-                install_file(path, source.read(), bool(member.mode & 0o111))
+                install_stream(path, source, bool(member.mode & 0o111))
     for name in SOURCE_FILES:
         target = (
             Path("/opt/superplane/bin")

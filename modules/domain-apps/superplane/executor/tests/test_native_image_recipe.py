@@ -287,6 +287,73 @@ def test_changed_tool_refuses_before_it_can_execute(build_module, tmp_path):
         build_module.verify_tool(binary, {"sha256": "a" * 64})
 
 
+@pytest.mark.parametrize("change", ["extra", "missing", "unencrypted", "foreign-key"])
+def test_only_exact_ami_snapshots_can_be_retained(build_module, lock, change):
+    result = {"BlockDeviceMappings": [{"Ebs": {"SnapshotId": "snap-original"}}]}
+    observed = [
+        {
+            "SnapshotId": "snap-original",
+            "OwnerId": lock["account_id"],
+            "Encrypted": True,
+            "KmsKeyId": lock["builder"]["kms_key_id"],
+        }
+    ]
+    build_module.require_snapshot_provenance(lock, result, observed)
+    if change == "extra":
+        observed.append({**observed[0], "SnapshotId": "snap-intermediate"})
+    elif change == "missing":
+        observed.clear()
+    elif change == "unencrypted":
+        observed[0]["Encrypted"] = False
+    else:
+        observed[0]["KmsKeyId"] = "foreign-key"
+    with pytest.raises(recipe.ImageRefused):
+        build_module.require_snapshot_provenance(lock, result, observed)
+
+
+def test_bundle_hash_and_extraction_use_bounded_reads(monkeypatch, tmp_path):
+    content = b"runtime-closure" * 300000
+    archive = tmp_path / "runtime.tar"
+    archive.write_bytes(content)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("large runtime inputs must not use read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", forbidden)
+    assert recipe.file_sha(archive) == recipe.sha(content)
+    monkeypatch.setattr(recipe, "directory", lambda path: path)
+    monkeypatch.setattr(runner, "secure_path", lambda path, **kwargs: path)
+
+    class BoundedSource(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 < size <= 1024 * 1024
+            return super().read(size)
+
+    installed = tmp_path / "installed"
+    recipe.install_stream(installed, BoundedSource(content), executable=True)
+    assert recipe.file_sha(installed) == recipe.sha(content)
+    recipe.install_stream(installed, BoundedSource(content), executable=True)
+    assert not installed.with_name("installed.superplane-image-new").exists()
+
+
+def test_wrong_bundle_digest_refuses_before_mutation(monkeypatch, tmp_path, lock):
+    bundle = tmp_path / "runtime.tar"
+    bundle.write_bytes(b"unreviewed archive")
+    monkeypatch.setattr(recipe, "verify_sources", lambda _: None)
+    monkeypatch.setattr(recipe, "refuse_enrollment", lambda: None)
+    monkeypatch.setattr(recipe.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(runner, "fixed_command", lambda _: "inactive")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("wrong digest must refuse before mask, install or archive opening")
+
+    monkeypatch.setattr(recipe.subprocess, "run", forbidden)
+    monkeypatch.setattr(recipe.tarfile, "open", forbidden)
+    monkeypatch.setattr(recipe, "install_stream", forbidden)
+    with pytest.raises(recipe.ImageRefused, match="bundle differs"):
+        recipe.prepare(lock, bundle)
+
+
 def test_temporary_resources_cannot_be_reported_clean(build_module):
     build = build_module
     evidence = {"instances": [], "volumes": [], "key_pairs": []}

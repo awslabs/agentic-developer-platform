@@ -40,7 +40,7 @@ def write(path, value):
 
 def verify_tool(path, expected):
     path = Path(path).resolve(strict=True)
-    if not path.is_file() or image.sha(path.read_bytes()) != expected["sha256"]:
+    if not path.is_file() or image.file_sha(path) != expected["sha256"]:
         raise image.ImageRefused("build tool digest differs")
     return str(path)
 
@@ -222,6 +222,26 @@ def require_cleanup(evidence):
         )
 
 
+def require_snapshot_provenance(lock, result, observed):
+    snapshots = {snapshot["SnapshotId"]: snapshot for snapshot in observed}
+    required = {
+        mapping["Ebs"]["SnapshotId"]
+        for mapping in result["BlockDeviceMappings"]
+        if "Ebs" in mapping
+    }
+    if not required or required != snapshots.keys() or len(snapshots) != len(observed):
+        raise image.ImageRefused(
+            "missing or extra build snapshots keep cleanup unresolved"
+        )
+    if any(
+        snapshot.get("OwnerId") != lock["account_id"]
+        or snapshot.get("Encrypted") is not True
+        or snapshot.get("KmsKeyId") != lock["builder"]["kms_key_id"]
+        for snapshot in snapshots.values()
+    ):
+        raise image.ImageRefused("built snapshot provenance or encryption incomplete")
+
+
 def build(args):
     lock = image.read_lock(args.lock)
     image.verify_sources(lock)
@@ -234,7 +254,7 @@ def build(args):
         (args.bundle, lock["bundle_sha256"]),
         (args.dependency_review, lock["dependency_review_sha256"]),
     ):
-        if image.sha(Path(path).read_bytes()) != expected:
+        if image.file_sha(path) != expected:
             raise image.ImageRefused("reviewed image input differs")
     packer = verify_tool(args.packer, lock["tools"]["packer"])
     plugin = verify_tool(args.amazon_plugin, lock["tools"]["amazon_plugin"])
@@ -335,23 +355,7 @@ def build(args):
         or result.get("Public") is not False
     ):
         raise image.ImageRefused("built image not available in approved account")
-    snapshots = {snapshot["SnapshotId"]: snapshot for snapshot in evidence["snapshots"]}
-    required_snapshots = {
-        mapping["Ebs"]["SnapshotId"]
-        for mapping in result["BlockDeviceMappings"]
-        if "Ebs" in mapping
-    }
-    if (
-        not required_snapshots
-        or not required_snapshots <= snapshots.keys()
-        or any(
-            snapshots[identifier].get("OwnerId") != lock["account_id"]
-            or snapshots[identifier].get("Encrypted") is not True
-            or snapshots[identifier].get("KmsKeyId") != lock["builder"]["kms_key_id"]
-            for identifier in required_snapshots
-        )
-    ):
-        raise image.ImageRefused("built snapshot provenance or encryption incomplete")
+    require_snapshot_provenance(lock, result, evidence["snapshots"])
     descriptor = json.loads((output / "descriptor.json").read_text())
     image.runner.validate_runtime_manifest(descriptor["runtime_manifest"])
     expected_manifest = image.runner.canonical(

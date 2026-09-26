@@ -7,6 +7,15 @@ AWS EKS NVIDIA AMI is compatible. Building an image costs money and creates AWS
 resources; use the selected account's approved installation/build authority and
 budget before invoking `build.py`. A source merge does not authorize execution.
 
+This is currently a **prepared-input consumer and publication lane**, not a complete
+producer from a stock AWS NVIDIA AMI. It requires a compatible base and a separately
+produced, reviewed Python/runtime closure bundle. This directory does not yet produce
+that bundle or transform a stock root filesystem into the required layout. The
+observed AWS candidates have not been shown to satisfy its provisioning Python,
+bootstrap-state or filesystem prerequisites. A real bootstrap/offline customization
+producer must be implemented and validated before calling this an end-to-end AMI
+build path.
+
 The only maintained source is under `modules/domain-apps/superplane/`. The recipe
 reuses Packer's Amazon EBS builder and existing CodeBuild project/source delivery
 patterns; it creates no project, role, cluster or SSM Command document. It does not
@@ -58,6 +67,8 @@ artifacts or dependencies missing from the reviewed base. An ordinary venv is
 insufficient. Absolute manifest paths and all ancestors must be root-owned regular
 files/directories with no symlinks or group/other writes. Existing incompatible OS
 symlink layouts refuse; the recipe does not rewrite loader/OS directory layouts.
+Archive hashing and file installation stream bounded chunks; a wrong archive digest
+refuses before masking services or writing any installed file.
 
 The expected tree hashes must include the exact maintained modules added during
 preparation. Use the runtime's canonical relative-file/hash mapping, excluding only
@@ -119,7 +130,9 @@ so Packer can clean its temporary instance, EBS volumes and key pair. A final
 read-only, exact-build-tag inventory always records observed temporary resources,
 produced images and retained snapshots. `result.json` is written only when no live
 builder, volume or temporary key remains and exactly one owned available image is
-found. An unavailable inventory, interrupted cleanup or leftover resource is a
+found. The observed snapshot set must exactly equal that AMI's snapshot set; an
+extra intermediate snapshot keeps cleanup unresolved and cannot be reclassified as
+an intended retained artifact. An unavailable inventory, interrupted cleanup or leftover resource is a
 failure, not a “clean” receipt. Preserve `state.json`, logs and
 `cleanup-inventory.json`; the authorized operator reconciles exact remaining handles.
 The script never deletes an AMI/snapshot or guesses absence after a lost reply.
