@@ -1,0 +1,12 @@
+{
+  "image": "security27/skypilot:openssh-final",
+  "health": "passed",
+  "restart": "passed",
+  "status_request_roundtrip": "passed",
+  "task_parser": "passed",
+  "uid": 1000,
+  "python": "3.10.21",
+  "kubectl": "v1.35.9",
+  "cloud_network": "disabled",
+  "live_postgres_and_provisioning": "not tested"
+}
