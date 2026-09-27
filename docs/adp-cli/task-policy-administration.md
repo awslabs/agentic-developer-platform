@@ -29,3 +29,5 @@ Task enrollment authorizes explicit model-selection revisions. Changing a select
 New policies may carry `model_policy_versions`, a persona-to-revision map, allowing different Task personas to have independent authorized selections. Existing policies retain their legacy `model_policy_version` fallback. This change does not weaken the binding of running Tasks to their admitted model revision.
 
 Platform execution ceilings are 1,000 model turns, 360 minutes (6 hours), and 10,000 output tokens per model turn. Existing policies retain their configured limits; persona execution limits and model capabilities can impose lower bounds.
+
+Task submission no longer reserves the policy's full allowance against pilot qualification or tenant-day budgets. The former $25 qualification and $10/day Task caps are retired. Each model request still reserves its conservative cost against the admitted Task limit and the enforced organization, department, team and identity budgets before provider dispatch. Existing pilot reservations are retained for settlement and cleanup; changing deployments does not erase their accounting.

@@ -98,7 +98,7 @@ async def test_real_admission_reserves_once_and_failed_loser_cannot_release(clie
     receipt = task["budget_reservation"]
     await budget.abort_admission(receipt)  # Commit won; an old owner cannot release.
     target = budget._target(scope="qualification:test-qualification", cap=25)
-    assert (await reservations.snapshot(target)).total_usd == 1
+    assert await reservations.snapshot(target) is None
     await reservations.close()
 
 
@@ -161,7 +161,7 @@ async def test_expired_preacceptance_hold_cleanup_is_owner_fenced(client, commit
     shard = f"v1#{shard_number:02d}"
     target = budget._target(scope="qualification:test-qualification", cap=25)
     await budget.reap_abandoned(shard=shard)
-    assert (await reservations.snapshot(target)).total_usd == 1
+    assert await reservations.snapshot(target) is None
     if committed:
         client.update_item(
             TableName=AUTHORITY_TABLE,
@@ -172,7 +172,7 @@ async def test_expired_preacceptance_hold_cleanup_is_owner_fenced(client, commit
         )
     now[0] += timedelta(seconds=121)
     await budget.reap_abandoned(shard=shard)
-    assert (await reservations.snapshot(target)).total_usd == (1 if committed else 0)
+    assert await reservations.snapshot(target) is None
     raw = budget.authority._read(hold["authority_pk"], "RESERVATION")
     assert raw["state"] == {"S": "committed" if committed else "released"}
     assert not client.query(
@@ -196,3 +196,64 @@ def test_repository_binding_is_inside_durable_protected_grant(client, store):
     )
     with pytest.raises(WorkBindingError):
         store.resolve_work(request.dispatch_id)
+
+
+@pytest.mark.asyncio
+async def test_admission_above_old_pilot_caps_needs_no_qualification_or_redis(client, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.agentauth.bootstrap import BootstrapStore
+    from src.agentauth.task_budget import TaskBudget
+
+    monkeypatch.delenv("ADP_TASK_QUALIFICATION_ID", raising=False)
+    ledger = AsyncMock()
+    budget = TaskBudget(BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client), reservations=ledger, clock=lambda: NOW)
+    receipt = await budget.reserve_admission(tenant="tenant", principal="principal", idempotency_key="large", max_usd=100, request_digest="a" * 64)
+    assert receipt["amount_usd"] == "100"
+    assert receipt["targets"] == []
+    await budget.settle_admission(receipt, actual_usd=50)
+    await budget.abort_admission(receipt)
+    ledger.reserve.assert_not_awaited()
+    ledger.reconcile.assert_not_awaited()
+    ledger._get_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_pilot_hold_is_released_before_retry_and_task_cap_still_enforced(client):
+    from dataclasses import asdict
+    from datetime import timedelta
+    from decimal import Decimal
+
+    import fakeredis.aioredis
+    from boto3.dynamodb.types import TypeSerializer
+
+    from src.agentauth.bootstrap import BootstrapStore
+    from src.agentauth.task_budget import TaskBudget, TaskBudgetError
+    from src.budget.reservations import ReservationStore
+
+    now = [NOW]
+    ledger = ReservationStore(
+        redis_url=None, ttl_seconds=86400, clock=lambda: now[0].timestamp(), client=fakeredis.aioredis.FakeRedis(decode_responses=True)
+    )
+    budget = TaskBudget(BootstrapStore(table_name=AUTHORITY_TABLE, dynamodb_client=client), reservations=ledger, clock=lambda: now[0])
+    args = dict(tenant="tenant", principal="principal", idempotency_key="legacy", max_usd=1, request_digest="b" * 64)
+    old = await budget.reserve_admission(**args)
+    target = budget._target(scope="qualification:retired", cap=25)
+    await budget._initialize(target)
+    assert (await ledger.reserve(old["reservation_id"], Decimal(1), [target])).admitted
+    targets = [{**asdict(target), "headroom_usd": "25"}]
+    client.update_item(
+        TableName=AUTHORITY_TABLE,
+        Key={"pk": {"S": old["authority_pk"]}, "sk": {"S": "RESERVATION"}},
+        UpdateExpression="SET targets = :targets, qualification_id = :old",
+        ExpressionAttributeValues={":targets": TypeSerializer().serialize(targets), ":old": {"S": "retired"}},
+    )
+    now[0] += timedelta(seconds=121)
+    new = await budget.reserve_admission(**{**args, "max_usd": 100})
+    assert new["targets"] == []
+    assert new["owner_token"] != old["owner_token"]
+    assert (await ledger.snapshot(target)).total_usd == 0
+    await budget.reserve_model(task_id="task", operation_id="first", cap=1, amount="0.8")
+    with pytest.raises(TaskBudgetError, match="reservation refused"):
+        await budget.reserve_model(task_id="task", operation_id="second", cap=1, amount="0.3")
+    await ledger.close()
