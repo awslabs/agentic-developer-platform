@@ -80,6 +80,11 @@
         "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
         "generation": { "$ref": "common.schema.json#/$defs/generation" },
         "runtime_attempt_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "tool_grants": {
+          "description": "Frozen host-provided permissions for selecting Task tools; gateway authorization remains authoritative.",
+          "type": "array", "maxItems": 128, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$" }
+        },
         "harness": { "$ref": "codex-harness.schema.json#" },
         "repository": {
           "type": "object", "additionalProperties": false, "required": ["binding", "capabilities"],

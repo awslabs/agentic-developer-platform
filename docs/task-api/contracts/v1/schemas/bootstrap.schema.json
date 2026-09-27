@@ -98,6 +98,11 @@
         "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "input": { "$ref": "bootstrap.schema.json#/$defs/immutable_input" },
         "model_binding": { "$ref": "bootstrap.schema.json#/$defs/model_binding" },
+        "tool_grants": {
+          "description": "Frozen host-provided permissions for selecting Task tools; gateway authorization remains authoritative.",
+          "type": "array", "maxItems": 128, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$" }
+        },
         "harness": { "$ref": "codex-harness.schema.json#" },
         "limits": { "$ref": "bootstrap.schema.json#/$defs/run_limits" },
         "capabilities": {

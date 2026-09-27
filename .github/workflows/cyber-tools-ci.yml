@@ -39,6 +39,8 @@ jobs:
           node-version: '24'
       - name: Build and test shared Claude SDK runtime through cyber persona
         run: |
+          npm --prefix modules/agent-factory/task-agents/investigator ci --ignore-scripts
+          npm --prefix modules/agent-factory/task-agents/investigator run build
           npm --prefix modules/agent-factory/task-agents/cyber ci --ignore-scripts
           npm --prefix modules/agent-factory/task-agents/cyber run build
           npm --prefix modules/agent-factory/task-agents/cyber test

@@ -464,3 +464,14 @@ test('host start supports the configured and maximum platform execution limits',
   }
   assert.throws(() => parseHostFrame(JSON.stringify({ ...fixture.body, limits: { max_turns: 1000, max_output_tokens_per_turn: 10001 } })), /outside its permitted range/);
 });
+
+test('Cyber tool grants survive the shared start-frame parser', () => {
+  const body = loadFixture('valid', 'process-start-frame.json').body;
+  const grants = ['cyber.browser_start', 'cyber.browser_close'];
+  const parsed = parseHostFrame(JSON.stringify({...body, tool_grants: grants}));
+  assert.equal(parsed.type, 'start');
+  if (parsed.type === 'start') assert.deepEqual(parsed.tool_grants, grants);
+  for (const invalid of [null, 'cyber.browser_start', [null], ['cyber/browser'], ['cyber.browser_start','cyber.browser_start']]) {
+    assert.throws(() => parseHostFrame(JSON.stringify({...body, tool_grants: invalid})), ProtocolViolation);
+  }
+});

@@ -93,6 +93,7 @@ export interface StartFrame {
   invocation_id: string;
   generation: number;
   runtime_attempt_id?: string;
+  tool_grants?: string[];
   instructions: string;
   inputs?: Record<string, unknown>;
   acceptance_criteria?: string[];
@@ -341,6 +342,7 @@ const FRAME_KEYS: Record<string, readonly string[]> = {
     'invocation_id',
     'generation',
     'runtime_attempt_id',
+    'tool_grants',
     'instructions',
     'inputs',
     'acceptance_criteria',
@@ -574,6 +576,16 @@ function parseStartFrame(frame: Record<string, unknown>, maxTurns: number): Wire
     result.runtime_attempt_id = requireString(frame, 'runtime_attempt_id', 'start frame', {
       pattern: UUID4,
     });
+  }
+
+  if (frame['tool_grants'] !== undefined) {
+    const grants = frame['tool_grants'];
+    if (!Array.isArray(grants) || grants.length > 128 ||
+        grants.some(value => typeof value !== 'string' || !/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(value)) ||
+        new Set(grants).size !== grants.length) {
+      throw new ProtocolViolation('start frame tool_grants must be distinct bounded tool permissions');
+    }
+    result.tool_grants = [...grants];
   }
 
   if (frame['inputs'] !== undefined) {
