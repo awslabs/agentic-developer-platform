@@ -645,13 +645,13 @@ jobs:
             case "$(basename "$f")" in
               configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
             esac
-            # Namespace resources are cluster-scoped even when -n is supplied.
-            # Detect by rendered Kind rather than filename so a future rename or
-            # additional namespace manifest cannot broaden this runner's scope.
+            # Namespace and IngressClass are platform-owned cluster resources,
+            # even when -n is supplied. Detect by rendered Kind so a rename
+            # cannot make this namespaced deploy attempt a cluster-wide apply.
             if kubectl create --dry-run=client --validate=false -f "$f" \
                  -o jsonpath='{.kind}{"\n"}{range .items[*]}{.kind}{"\n"}{end}' \
-                 | grep -qx Namespace; then
-              echo "Skipping platform-owned Namespace manifest: $f"
+                 | grep -Eq '^(Namespace|IngressClass)$'; then
+              echo "Skipping platform-owned cluster-scoped manifest: $f"
               continue
             fi
             kubectl apply -f "$f" -n "${NAMESPACE}"

@@ -378,7 +378,7 @@ def test_root_based_eval_pods_use_the_dedicated_namespace():
     assert '"deployments"' not in eval_role
 
 
-def test_automatic_deploy_never_mutates_cluster_scoped_namespaces():
+def test_automatic_deploy_never_mutates_platform_owned_cluster_resources():
     workflow = (ROOT / ".github/workflows/gateway-deploy.yml").read_text()
     assert "kubectl create namespace ${{ env.NAMESPACE }}" not in workflow
     assert 'kubectl create namespace "${NAMESPACE}"' not in workflow
@@ -389,7 +389,7 @@ def test_automatic_deploy_never_mutates_cluster_scoped_namespaces():
     assert "kubectl apply -f modules/gateway/k8s/namespace.yaml" not in workflow
     assert "verify-restricted-admission.sh" not in workflow
     assert 'kubectl create --dry-run=client --validate=false -f "$f"' in workflow
-    assert "grep -qx Namespace" in workflow
+    assert "grep -Eq '^(Namespace|IngressClass)$'" in workflow
 
     rbac = (ROOT / "modules/agent-factory/infra/runner-rbac.tf").read_text()
     namespace_role = rbac[rbac.index('resource "kubernetes_cluster_role" "runner_namespace_manage"') :]
