@@ -57,7 +57,7 @@ on:
         type: boolean
         default: false
       ingestion_image_tag:
-        description: 'Ingestion image tag (default: latest built on main)'
+        description: 'Ingestion full source SHA or sha256 digest (default: latest published digest)'
         required: false
         default: ''
 
@@ -241,18 +241,25 @@ jobs:
           INGESTION_REPO="adp-${{ env.ENVIRONMENT }}-agent-context-ingestion"
           INPUT_TAG="${ADP_INPUT_146F27724A}"
           if [ -n "$INPUT_TAG" ]; then
-            MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${INPUT_TAG}"
+            if [[ "$INPUT_TAG" == sha256:* ]]; then
+              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}@${INPUT_TAG}"
+            else
+              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${INPUT_TAG}"
+            fi
           else
-            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" \
-              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" --filter tagStatus=TAGGED \
+              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageDigest' \
               --output text 2>/dev/null || echo "")
             if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
-              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${LATEST_TAG}"
+              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}@${LATEST_TAG}"
             else
               echo "::error::No ingestion image found in ECR. Run images-build first."
               exit 1
             fi
           fi
+
+          MIGRATION_IMAGE=$(python3 ../../platform/scripts/resolve-ecr-image.py "$MIGRATION_IMAGE")
+          echo "ADP_RESOLVED_INGESTION_IMAGE=$MIGRATION_IMAGE" >> "$GITHUB_ENV"
 
           # Generate unique Job ID (short git SHA + timestamp)
           MIGRATION_JOB_ID="$(date +%s)-$(echo $GITHUB_SHA | head -c 7)"
@@ -468,17 +475,24 @@ jobs:
           # Determine ingestion image
           INGESTION_REPO="adp-${ENVIRONMENT}-agent-context-ingestion"
           INPUT_TAG="${ADP_INPUT_146F27724A}"
-          if [ -n "$INPUT_TAG" ]; then
-            INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}:${INPUT_TAG}"
+          if [ -n "${ADP_RESOLVED_INGESTION_IMAGE:-}" ]; then
+            INGESTION_IMAGE="$ADP_RESOLVED_INGESTION_IMAGE"
+          elif [ -n "$INPUT_TAG" ]; then
+            if [[ "$INPUT_TAG" == sha256:* ]]; then
+              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}@${INPUT_TAG}"
+            else
+              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}:${INPUT_TAG}"
+            fi
           else
             # Get latest built tag
-            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" \
-              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" --filter tagStatus=TAGGED \
+              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageDigest' \
               --output text 2>/dev/null || echo "")
             if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
-              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}:${LATEST_TAG}"
+              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}@${LATEST_TAG}"
             fi
           fi
+          INGESTION_IMAGE=$(python3 ../../platform/scripts/resolve-ecr-image.py "$INGESTION_IMAGE")
           export INGESTION_IMAGE
           echo "Ingestion image: ${INGESTION_IMAGE}"
 
@@ -494,6 +508,12 @@ jobs:
           export NAMESPACE SERVICE_ACCOUNT INGESTION_REFRESH_SCHEDULE SQS_QUEUE_URL DYNAMO_TABLE
           template_file manifests/repo-refresh-cronjob.yaml | kubectl apply -f -
           echo "Ingestion CronJob deployed"
+
+          if [ "${VULN_SCAN_ENABLED:-true}" = true ]; then
+            export VULN_SCAN_SCHEDULE
+            template_file manifests/vuln-scan-cronjob.yaml | kubectl apply -f -
+            echo "Vulnerability scanner CronJob deployed with the same verified image"
+          fi
 
           # Deploy KEDA ScaledJob (if SQS configured)
           if [ -n "${SQS_QUEUE_URL:-}" ] && [ -f manifests/ingestion-scaledjob.yaml ]; then

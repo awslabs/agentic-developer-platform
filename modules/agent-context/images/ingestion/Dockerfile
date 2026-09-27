@@ -14,6 +14,21 @@
 # non-existent pseudo-version. ZOEKT_IMAGE_TAG defaults to "latest" (matches
 # manifests/zoekt.yaml + config.env).
 ARG ZOEKT_IMAGE_TAG=latest
+FROM public.ecr.aws/docker/library/python:3.13-slim AS libxml2-security
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config liblzma-dev zlib1g-dev && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:a2c9ae7b770da34860050c309f903221c67830c86e4a7e760692b803df95143a https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.9.tar.xz /tmp/libxml2.tar.xz
+RUN mkdir /src && tar -xJf /tmp/libxml2.tar.xz --strip-components=1 -C /src && rm /tmp/libxml2.tar.xz
+WORKDIR /src
+RUN ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu --without-python --disable-static --with-legacy --with-http --with-ftp && make -j4
+RUN make check > /tmp/libxml2-check.log 2>&1 || { tail -80 /tmp/libxml2-check.log; exit 1; }
+RUN make DESTDIR=/stage install && mkdir -p /package/usr/lib/x86_64-linux-gnu /package/usr/share/doc/libxml2 /package/DEBIAN /out && \
+    cp -a /stage/usr/lib/x86_64-linux-gnu/libxml2.so.2* /package/usr/lib/x86_64-linux-gnu/ && \
+    cp Copyright /package/usr/share/doc/libxml2/copyright && \
+    printf 'Package: libxml2\nVersion: 2.13.9-0+adp1\nArchitecture: amd64\nMaintainer: ADP Security <security@localhost>\nDepends: libc6 (>= 2.38), liblzma5, zlib1g\nSection: libs\nPriority: optional\nDescription: Upstream libxml2 2.13.9 ABI 2 security replacement\n' > /package/DEBIAN/control && \
+    dpkg-deb --build --root-owner-group /package /out/libxml2_2.13.9-0+adp1_amd64.deb && cp /tmp/libxml2-check.log /out/
+
+FROM ruby:3.4.11-slim-trixie@sha256:5b53e16f47e05acae56897d0f96b9d03dcb4563276e71c96415bf7777c9ba207 AS ruby-security
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
 FROM node:22.23.0-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS node-release
 FROM ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG} AS zoekt
 # Resolve the indexer binary to a fixed path regardless of where the upstream
@@ -75,11 +90,16 @@ RUN go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
 # the exact same version as the webserver — no fragile go-install pseudo-version.
 COPY --from=zoekt /tmp/zoekt-git-index /usr/local/bin/zoekt-git-index
 
-# Ruby + Sorbet (for scip-ruby — best-effort on untyped repos)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ruby ruby-dev bundler && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    gem install sorbet-static sorbet --no-document || true
+# Ruby 3.4.11 includes patched default zlib and Net::IMAP libraries.
+# Keep Sorbet and Bundler while replacing Debian's affected Ruby 3.3 packages.
+COPY --from=ruby-security /usr/local/bin/ /usr/local/bin/
+COPY --from=ruby-security /usr/local/lib/ /usr/local/lib/
+COPY --from=ruby-security /usr/local/include/ /usr/local/include/
+COPY --from=ruby-security /usr/local/share/ /usr/local/share/
+RUN apt-get update && apt-get install -y --no-install-recommends libyaml-0-2 libgmp10 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* && ldconfig \
+    && ruby -r zlib -r net/imap -e 'abort unless RUBY_VERSION == "3.4.11" && Zlib::VERSION == "3.2.3" && Net::IMAP::VERSION == "0.5.15"' \
+    && gem install sorbet-static sorbet --no-document
 
 # .NET SDK (for scip-dotnet)
 RUN curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet && \
@@ -236,6 +256,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /opt/adp-stdlib-security/apply.py \
     && python /opt/adp-stdlib-security/check.py \
     && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=curl-security /out/curl_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/curl.deb
+COPY --from=curl-security /out/libcurl4t64_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/openssl.deb
+COPY --from=curl-security /out/libcurl3t64-gnutls_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/gnutls.deb
+RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
+COPY --from=curl-security /licenses/ /opt/adp-curl-security/
+
+# Replace the ABI-2 library used by Chromium's LLVM/Mesa dependencies.
+COPY --from=libxml2-security /out/libxml2_2.13.9-0+adp1_amd64.deb /tmp/libxml2.deb
+RUN dpkg -i /tmp/libxml2.deb && ldconfig && rm /tmp/libxml2.deb
 
 USER appuser
 
