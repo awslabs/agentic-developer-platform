@@ -4,11 +4,11 @@
   "files": {
     "package.json": {
       "before": "352373d2ae3fa8b2db506665a16022601530cec4184246847994a1da32a114ae",
-      "after": "208561392cb763506c6953c231bada1ef0cb03ee91db2d91f81d53684e969f30"
+      "after": "3db6b644e92a5e19969144eeb60838d786c0de5cbbb677f8d896aa33ff3a6d08"
     },
     "package-lock.json": {
       "before": "001bebb6c5d6d80c0af2bd3d4c7c5503c868fd89839ee164bc28dce8494a6431",
-      "after": "9560bfcfbc9e6a2dfb9e72a5e39c6bab203b51479afc98ce501fa321b4d83f79"
+      "after": "c68aa04532a19485491e8a95b2f2e7579bf31526c32e3aeba89693aa13c14022"
     }
   }
 }

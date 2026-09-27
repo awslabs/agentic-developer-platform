@@ -33,6 +33,9 @@ RUN for package in libcurl4t64 libcurl3t64-gnutls; do \
 # An artifact target permits inspecting/exporting the exact Debian packages.
 FROM scratch AS packages
 COPY --from=build /out/ /out/
+COPY --from=build /packages/curl/usr/share/doc/curl/ /licenses/curl/
+COPY --from=build /packages/libcurl4t64/usr/share/doc/libcurl4t64/ /licenses/libcurl4t64/
+COPY --from=build /packages/libcurl3t64-gnutls/usr/share/doc/libcurl3t64-gnutls/ /licenses/libcurl3t64-gnutls/
 
 # Controlled repair overlay. BASE must be an immutable reviewed amd64 Trixie
 # candidate; build-overlay.py selects the base and original non-root identity.

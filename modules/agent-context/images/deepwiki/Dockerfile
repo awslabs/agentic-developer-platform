@@ -6,6 +6,9 @@
 
 # Build the exact Debian client source on Trixie; archive authentication uses
 # the trusted Debian keyring already present in this immutable base.
+# Tested immutable curl packages and licenses; build input only.
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
+
 FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS openssh-builder
 RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::AllowInsecureRepositories=false update \
@@ -74,7 +77,9 @@ COPY security/source-lock.json /opt/deepwiki-security/source-lock.json
 # Apply available vendor security updates while preserving upstream entrypoints.
 RUN apt-get update && apt-get -y upgrade \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
-    && python -m pip install --no-cache-dir GitPython==3.1.59 \
+    && python -m pip uninstall -y setuptools \
+    && python -c "import shutil,sysconfig; from pathlib import Path; shutil.rmtree(Path(sysconfig.get_path('purelib'))/'setuptools', ignore_errors=True)" \
+    && python -m pip install --no-cache-dir GitPython==3.1.59 setuptools==81.0.0 \
     && python -m pip check
 # Install through the package manager so client helpers/configuration and exact
 # downstream provenance remain intact; never claim this backport is upstream10.4.
@@ -90,6 +95,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && python /opt/adp-stdlib-security/apply.py --patch-file cpython-3.11.16.patch \
     && python /opt/adp-stdlib-security/check.py \
     && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=curl-security /out/curl_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/curl.deb
+COPY --from=curl-security /out/libcurl4t64_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/openssl.deb
+COPY --from=curl-security /out/libcurl3t64-gnutls_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/gnutls.deb
+RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
+COPY --from=curl-security /licenses/ /opt/adp-curl-security/
 
 # Override default config with our LiteLLM-proxy-aware configs
 # These point the "openai" provider at our LiteLLM proxy which routes to Bedrock
