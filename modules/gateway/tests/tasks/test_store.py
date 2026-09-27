@@ -3047,10 +3047,15 @@ def test_acceptance_and_turn_reader_support_platform_execution_ceilings(store):
     from src.agentauth.task_turns import task_turn_limit
 
     deadline = NOW + timedelta(hours=6)
-    request = _request(deadline_at=deadline, run_limits={
-        "max_turns": 1000, "max_output_tokens_per_turn": 10000, "max_usd": 1000,
-        "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
-    })
+    request = _request(
+        deadline_at=deadline,
+        run_limits={
+            "max_turns": 1000,
+            "max_output_tokens_per_turn": 10000,
+            "max_usd": 1000,
+            "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    )
     accepted = store.accept(request)
     assert accepted.state is TaskState.ACCEPTED
     assert task_turn_limit(store, request.task_id) == 1000
