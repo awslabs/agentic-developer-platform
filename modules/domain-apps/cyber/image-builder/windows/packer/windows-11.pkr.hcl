@@ -133,10 +133,10 @@ source "qemu" "windows-11" {
   winrm_password = var.winrm_password
   winrm_timeout  = var.winrm_timeout
 
-  # Boot — empty boot_command is intentional (StefanScherer pattern).
-  # Windows installer reads Autounattend.xml from floppy automatically.
-  boot_command = [""]
-  boot_wait    = "2m"
+  # Answer the Windows ISO boot prompt before it falls through to the empty
+  # disk/floppy. Repeat briefly across BIOS startup; then Autounattend takes over.
+  boot_command = ["<spacebar><wait2><spacebar><wait2><spacebar><wait2><spacebar>"]
+  boot_wait    = "2s"
 
   # Shutdown
   shutdown_command = "shutdown /s /t 10 /f /d p:4:1 /c \"Packer Shutdown\""
