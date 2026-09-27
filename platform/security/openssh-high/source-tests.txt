@@ -1,0 +1,52 @@
+#11 87.67 /usr/bin/mkdir -p `pwd`/regress/unittests/test_helper
+#11 87.72 /usr/bin/mkdir -p `pwd`/regress/unittests/test_helper
+#11 88.50 ../../regress/unittests/test_helper/test_helper.c: In function ‘siginfo’:
+#11 88.50 ../../regress/unittests/test_helper/test_helper.c:232:47: warning: ‘%s’ directive output may be truncated writing up to 511 bytes into a region of size between 234 and 243 [-Wformat-truncation=]
+#11 88.50   232 |         snprintf(s, len, "In test %u: \"%s\"%s%s\n", test_number,
+#11 88.50   233 |             active_test_name == NULL ? "<none>" : active_test_name,
+#11 88.50   234 |             *subtest_info != '\0' ? " - " : "", subtest_info);
+#11 88.50                  from ../../regress/unittests/test_helper/test_helper.c:20:
+#11 88.50     inlined from ‘test_info’ at ../../regress/unittests/test_helper/test_helper.c:232:2,
+#11 88.50     inlined from ‘siginfo’ at ../../regress/unittests/test_helper/test_helper.c:242:2:
+#11 91.41 ar rv regress/unittests/test_helper/libtest_helper.a regress/unittests/test_helper/test_helper.o regress/unittests/test_helper/fuzz.o
+#11 91.41 ar: creating regress/unittests/test_helper/libtest_helper.a
+#11 91.41 a - regress/unittests/test_helper/test_helper.o
+#11 91.41 a - regress/unittests/test_helper/fuzz.o
+#11 91.42 ranlib regress/unittests/test_helper/libtest_helper.a
+#11 91.42     regress/unittests/test_helper/libtest_helper.a \
+#11 91.48 cc -o regress/unittests/bitmap/test_bitmap -L. -Lopenbsd-compat/ -Wl,-z,relro -Wl,-z,now -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -fstack-protector-strong -Wl,--as-needed -Wl,-z,relro -Wl,-z,now  regress/unittests/bitmap/tests.o \
+#11 91.48     regress/unittests/test_helper/libtest_helper.a \
+#11 91.52     regress/unittests/test_helper/libtest_helper.a \
+#11 91.53     regress/unittests/test_helper/libtest_helper.a \
+#11 91.58     regress/unittests/test_helper/libtest_helper.a \
+#11 91.59 cc -o regress/unittests/match/test_match -L. -Lopenbsd-compat/ -Wl,-z,relro -Wl,-z,now -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -fstack-protector-strong -Wl,--as-needed -Wl,-z,relro -Wl,-z,now  regress/unittests/match/tests.o \
+#11 91.59     regress/unittests/test_helper/libtest_helper.a \
+#11 91.64     regress/unittests/test_helper/libtest_helper.a \
+#11 91.64     regress/unittests/test_helper/libtest_helper.a \
+#11 91.70     regress/unittests/test_helper/libtest_helper.a \
+#11 91.70     regress/unittests/test_helper/libtest_helper.a \
+#11 91.76 cc -o regress/unittests/utf8/test_utf8 -L. -Lopenbsd-compat/ -Wl,-z,relro -Wl,-z,now -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -fstack-protector-strong -Wl,--as-needed -Wl,-z,relro -Wl,-z,now  regress/unittests/utf8/tests.o \
+#11 91.76     regress/unittests/test_helper/libtest_helper.a \
+#11 92.58 /usr/bin/mkdir -p `pwd`/regress/unittests/test_helper
+#11 92.63 	 $V /src/openssh/debian/build-deb/regress/unittests/sshbuf/test_sshbuf ; \
+#11 92.63 	 $V /src/openssh/debian/build-deb/regress/unittests/sshkey/test_sshkey \
+#11 92.63 	$V /src/openssh/debian/build-deb/regress/unittests/sshsig/test_sshsig \
+#11 92.63 	$V /src/openssh/debian/build-deb/regress/unittests/authopt/test_authopt \
+#11 92.63 	$V /src/openssh/debian/build-deb/regress/unittests/bitmap/test_bitmap ; \
+#11 92.63 	$V /src/openssh/debian/build-deb/regress/unittests/conversion/test_conversion ; \
+#11 92.63 	$V /src/openssh/debian/build-deb/regress/unittests/kex/test_kex ; \
+#11 92.63 	$V /src/openssh/debian/build-deb/regress/unittests/hostkeys/test_hostkeys \
+#11 92.63 	$V /src/openssh/debian/build-deb/regress/unittests/match/test_match ; \
+#11 92.63 	$V /src/openssh/debian/build-deb/regress/unittests/misc/test_misc ; \
+#11 92.63 		$V /src/openssh/debian/build-deb/regress/unittests/utf8/test_utf8 ; \
+#11 92.67 test_sshbuf: ...................................................................................................... 103 tests ok
+#11 97.67 test_sshkey: .................................................................................... 84 tests ok
+#11 132.8 test_sshsig: ....... 7 tests ok
+#11 132.8 test_authopt: .................................................................................................................................................. 146 tests ok
+#11 133.0 test_bitmap: .. 2 tests ok
+#11 149.7 test_conversion: . 1 tests ok
+#11 149.7 test_kex: ........................................................................................................................................WARNING: could not open /etc/ssh/moduli (No such file or directory), using fixed modulus
+#11 152.3 ....................................................................................................................................... 332 tests ok
+#11 153.5 test_hostkeys: .................. 18 tests ok
+#11 153.5 test_match: ...... 6 tests ok
+#11 153.5 test_misc: ........................................... 43 tests ok
