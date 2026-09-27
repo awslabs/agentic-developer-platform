@@ -510,8 +510,8 @@ function requireEnvelope(
  * a returned error object invites a caller to carry on with a partially trusted
  * frame. The contract is explicit that invalid protocol fails the run.
  */
-export function parseHostFrame(line: string, maxTurns: 8 | 32 = 8): HostFrame {
-  if (maxTurns !== 8 && maxTurns !== 32) throw new ProtocolViolation("Unsupported Task turn profile");
+export function parseHostFrame(line: string, maxTurns: 8 | 32 | 1000 = 1000): HostFrame {
+  if (maxTurns !== 8 && maxTurns !== 32 && maxTurns !== 1000) throw new ProtocolViolation("Unsupported Task turn profile");
   const bytes = Buffer.byteLength(line, 'utf8');
   if (bytes > MAX_FRAME_BYTES) {
     throw new ProtocolViolation(`host frame of ${bytes} bytes exceeds the ${MAX_FRAME_BYTES}-byte bound`);
@@ -662,7 +662,7 @@ function parseStartFrame(frame: Record<string, unknown>, maxTurns: number): Wire
         'max_output_tokens_per_turn',
         'start frame limits',
         1,
-        4096,
+        10000,
       );
     }
     result.limits = parsedLimits;
@@ -897,7 +897,7 @@ export function assertChildFrame(frame: ChildFrame): void {
         throw new ProtocolViolation('model.request frame requires at least one message');
       }
       if (frame.max_tokens !== undefined) {
-        requireInteger(record, 'max_tokens', 'model.request frame', 1, 4096);
+        requireInteger(record, 'max_tokens', 'model.request frame', 1, 10000);
       }
       if (frame.system !== undefined) {
         requireString(record, 'system', 'model.request frame', { max: 16000 });

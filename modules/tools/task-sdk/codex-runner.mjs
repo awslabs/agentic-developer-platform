@@ -75,7 +75,7 @@ export async function runCodexTask(start, bridge, definitions, { spawnProcess = 
   binary = 'codex' } = {}) {
   const maxTokens = start.limits?.max_output_tokens_per_turn, maxRequests = start.limits?.max_turns;
   const deadline = Date.parse(start.limits?.deadline_at);
-  if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192 || !Number.isInteger(maxRequests) || maxRequests < 1 || maxRequests > 8 || !Number.isFinite(deadline) || deadline <= Date.now()) throw new ProtocolError('Missing live Codex Task limits');
+  if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 10000 || !Number.isInteger(maxRequests) || maxRequests < 1 || maxRequests > 1000 || !Number.isFinite(deadline) || deadline <= Date.now()) throw new ProtocolError('Missing live Codex Task limits');
   let home, proxy, tools, child, timer, killer;
   const stop = () => {
     if (!child?.pid) return;

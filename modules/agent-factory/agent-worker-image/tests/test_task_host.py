@@ -1460,3 +1460,16 @@ def test_only_known_predispatch_refusals_are_marked(
         prepared={"request_digest": "bound"},
     )
     assert result.get("pre_provider_refusal") == expected
+
+
+@pytest.mark.parametrize("turns,tokens,valid", [(400, 8001, True), (1000, 10000, True), (1001, 10000, False), (1000, 10001, False)])
+def test_worker_bootstrap_matches_platform_execution_ceilings(assignment_and_bootstrap, turns, tokens, valid):
+    from lib.task_protocol import TaskProtocolError, validate_bootstrap
+
+    assignment, _, bootstrap = assignment_and_bootstrap
+    bootstrap["limits"].update(max_turns=turns, max_output_tokens_per_turn=tokens)
+    if valid:
+        assert validate_bootstrap(bootstrap, assignment)["limits"]["max_turns"] == turns
+    else:
+        with pytest.raises(TaskProtocolError, match="task limits"):
+            validate_bootstrap(bootstrap, assignment)

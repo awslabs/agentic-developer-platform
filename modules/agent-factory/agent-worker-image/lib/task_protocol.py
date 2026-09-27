@@ -140,9 +140,9 @@ def validate_bootstrap(value: object, assignment) -> dict:
     )
     if (
         type(limits["max_turns"]) is not int
-        or not 1 <= limits["max_turns"] <= (32 if model["transport"] == "openai_responses" else 8)
+        or not 1 <= limits["max_turns"] <= 1000
         or type(limits["max_output_tokens_per_turn"]) is not int
-        or not 1 <= limits["max_output_tokens_per_turn"] <= 4096
+        or not 1 <= limits["max_output_tokens_per_turn"] <= 10000
     ):
         raise TaskProtocolError("task limits are invalid")
     capabilities = body.get("capabilities", [])
@@ -216,7 +216,7 @@ def validate_child_frame(value: object, task_id: str) -> dict:
             if reasoning["effort"] not in {"minimal", "low", "medium", "high", "xhigh"}:
                 raise TaskProtocolError("Responses effort is invalid")
             maximum = response["max_output_tokens"]
-            if type(maximum) is not int or not 1 <= maximum <= 4096:
+            if type(maximum) is not int or not 1 <= maximum <= 10000:
                 raise TaskProtocolError("Responses output bound is invalid")
             if "instructions" in response and (not isinstance(response["instructions"], str) or len(response["instructions"]) > 32000):
                 raise TaskProtocolError("Responses instructions exceed bound")
@@ -304,7 +304,7 @@ def validate_child_frame(value: object, task_id: str) -> dict:
             raise TaskProtocolError("task model turn is invalid")
         max_tokens = body.get("max_tokens")
         if max_tokens is not None and (
-            type(max_tokens) is not int or not 1 <= max_tokens <= 4096
+            type(max_tokens) is not int or not 1 <= max_tokens <= 10000
         ):
             raise TaskProtocolError("task model request is invalid")
     elif frame_type == "tool.request":
@@ -325,7 +325,7 @@ def validate_child_frame(value: object, task_id: str) -> dict:
         required = "sample_s3_uri" if operation in {"triage", "static", "dynamic"} else {"result": "job_id", "url_analysis": "url", "enrich": "sha256"}[operation]
         optional = {"focus", "yara_rules"} if operation in {"triage", "static", "dynamic"} else set()
         payload = _exact(body["payload"], {required}, optional)
-        if not isinstance(payload[required], str) or not 1 <= len(payload[required]) <= 4096:
+        if not isinstance(payload[required], str) or not 1 <= len(payload[required]) <= 10000:
             raise TaskProtocolError("cyber payload identifier is invalid")
         for key in optional & payload.keys():
             if not isinstance(payload[key], list) or len(payload[key]) > 32 or any(not isinstance(item, str) or not 1 <= len(item) <= 4000 for item in payload[key]):

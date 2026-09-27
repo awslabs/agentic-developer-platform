@@ -238,14 +238,12 @@ describe('unknown-outcome and limit discipline', () => {
     assert.throws(() => parseHostFrame(line), /confirmed model outcome must carry content/);
   });
 
-  test('start limits above the fixed pilot ceilings are refused', () => {
-    // limits.json fixes 8 turns and 4096 output tokens per turn. A host frame
-    // claiming more is not a larger grant to honour — it is a frame that does not
-    // match the contract the grant was issued under.
+  test('start limits above the platform ceilings are refused', () => {
+    // A host frame cannot exceed the platform execution ceilings.
     const fixture = loadFixture('valid', 'process-start-frame.json');
     const overreaching = {
       ...fixture.body,
-      limits: { max_turns: 99, max_output_tokens_per_turn: 4096 },
+      limits: { max_turns: 1001, max_output_tokens_per_turn: 10000 },
     };
     assert.throws(() => parseHostFrame(JSON.stringify(overreaching)), /outside its permitted range/);
   });
@@ -257,7 +255,7 @@ describe('unknown-outcome and limit discipline', () => {
       request_id: UUID,
       task_id: TASK_ID,
       turn_id: '2048c8ca-b910-43c8-861e-a092beb53813',
-      turn_number: 9,
+      turn_number: 1001,
       messages: [{ command_id: 'f6071829-3a4b-4c5d-9f70-819203142536', text: 'continue' }],
     });
     assert.throws(() => parseHostFrame(line), /turn_number is outside its permitted range/);
@@ -455,4 +453,14 @@ test('host deadline survives start parsing without inventing a fresh deadline', 
   for (const invalid of [null, 123, 'later', '2026-99-99T25:00:00Z']) {
     assert.throws(() => parseHostFrame(JSON.stringify({ ...fixture.body, limits: { deadline_at: invalid } })), ProtocolViolation);
   }
+});
+
+
+test('host start supports the configured and maximum platform execution limits', () => {
+  const fixture = loadFixture('valid', 'process-start-frame.json');
+  for (const limits of [{ max_turns: 400, max_output_tokens_per_turn: 8001 }, { max_turns: 1000, max_output_tokens_per_turn: 10000 }]) {
+    const result = parseHostFrame(JSON.stringify({ ...fixture.body, limits }));
+    assert.equal(result.type, 'start');
+  }
+  assert.throws(() => parseHostFrame(JSON.stringify({ ...fixture.body, limits: { max_turns: 1000, max_output_tokens_per_turn: 10001 } })), /outside its permitted range/);
 });
