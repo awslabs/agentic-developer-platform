@@ -60,7 +60,7 @@ async def verify_internal_token(
 
     token = authorization[len("Bearer ") :]
     if not settings.internal_api_token or not secrets.compare_digest(
-        token, settings.internal_api_token
+        token.encode("utf-8"), settings.internal_api_token.encode("utf-8")
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
