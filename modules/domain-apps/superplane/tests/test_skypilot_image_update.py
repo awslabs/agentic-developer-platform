@@ -6,7 +6,8 @@ import subprocess
 import pytest
 
 spec = importlib.util.spec_from_file_location(
-    "skypilot_image_update", Path(__file__).parents[1] / "infra/scripts/update_skypilot_image.py"
+    "skypilot_image_update",
+    Path(__file__).parents[1] / "infra/scripts/update_skypilot_image.py",
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -15,14 +16,25 @@ IMAGE = "example.invalid/skypilot@sha256:" + "a" * 64
 
 def runner(fail_rollout=False, conflict=False):
     calls = []
-    current = {"metadata": {"resourceVersion": "12", "generation": 3},
-               "spec": {"template": {"spec": {"containers": [
-                   {"name": "authenticated-transport", "image": "unchanged"},
-                   {"name": "skypilot-api", "image": "previous"}]}}}}
+    current = {
+        "metadata": {"resourceVersion": "12", "generation": 3},
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {"name": "authenticated-transport", "image": "unchanged"},
+                        {"name": "skypilot-api", "image": "previous"},
+                    ]
+                }
+            }
+        },
+    }
 
     def run(args, **kwargs):
         calls.append(args)
-        if (conflict and "patch" in args) or (fail_rollout and "rollout" in args and len(calls) == 3):
+        if (conflict and "patch" in args) or (
+            fail_rollout and "rollout" in args and len(calls) == 3
+        ):
             raise subprocess.CalledProcessError(1, args)
         return subprocess.CompletedProcess(args, 0, json.dumps(current), "")
 
@@ -36,7 +48,13 @@ def test_dry_run_is_server_only_and_preserves_transport():
     assert len(calls) == 2 and "--dry-run=server" in calls[1]
     patch = json.loads(calls[1][calls[1].index("-p") + 1])
     changes = [p for p in patch if p["op"] != "test"]
-    assert changes == [{"op": "replace", "path": "/spec/template/spec/containers/1/image", "value": IMAGE}]
+    assert changes == [
+        {
+            "op": "replace",
+            "path": "/spec/template/spec/containers/1/image",
+            "value": IMAGE,
+        }
+    ]
 
 
 def test_concurrent_deployment_conflict_stops_without_rollout_or_rollback():
@@ -57,7 +75,9 @@ def test_failed_rollout_restores_previous_image_with_generation_guard():
     assert "rollout" in calls[4]
 
 
-@pytest.mark.parametrize("image", ["example.invalid/skypilot:latest", "x@sha256:abc", IMAGE + "\n"])
+@pytest.mark.parametrize(
+    "image", ["example.invalid/skypilot:latest", "x@sha256:abc", IMAGE + "\n"]
+)
 def test_unpinned_or_malformed_image_is_rejected_without_cluster_call(image):
     calls, run = runner()
     with pytest.raises(ValueError):

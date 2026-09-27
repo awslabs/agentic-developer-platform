@@ -302,6 +302,15 @@ jobs:
           aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "$CLUSTER_NAME"
           kubectl get deployment -n skypilot
 
+      - name: Detect installer-owned authenticated runtime
+        id: runtime
+        env:
+          SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+        run: |
+          set -euo pipefail
+          MODE=$(python3 modules/domain-apps/superplane/infra/scripts/skypilot_release.py inspect --namespace "$SP_SKYPILOT_NAMESPACE")
+          echo "image_only=$MODE" >> "$GITHUB_OUTPUT"
+
       - name: Render manifests
         # Rendered to a directory first, then guarded, then applied. cyber pipes `sed`
         # straight into `kubectl apply`, which leaves no artifact to check — and the text that
@@ -380,8 +389,17 @@ jobs:
         if: inputs.image_only != true
         # Always runs, including before a real apply: it is the only check that the rendered
         # objects are valid against the cluster's actual schemas and admission controllers.
+        env:
+          PRESERVE_RUNTIME: ${{ steps.runtime.outputs.image_only }}
+          SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+          SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
         run: |
           set -euo pipefail
+          if [ "$PRESERVE_RUNTIME" = "true" ]; then
+            python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py \
+              --namespace "$SP_SKYPILOT_NAMESPACE" --image "$SP_SKYPILOT_IMAGE" --dry-run
+            exit 0
+          fi
           for f in /tmp/rendered/*; do
             echo "=== Validating $(basename "$f") ==="
             kubectl apply --dry-run=server -f "$f"
@@ -389,8 +407,17 @@ jobs:
 
       - name: Apply
         if: inputs.dry_run == false && inputs.image_only != true
+        env:
+          PRESERVE_RUNTIME: ${{ steps.runtime.outputs.image_only }}
+          SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+          SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
         run: |
           set -euo pipefail
+          if [ "$PRESERVE_RUNTIME" = "true" ]; then
+            python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py \
+              --namespace "$SP_SKYPILOT_NAMESPACE" --image "$SP_SKYPILOT_IMAGE"
+            exit 0
+          fi
           for f in /tmp/rendered/*; do
             echo "=== Applying $(basename "$f") ==="
             kubectl apply -f "$f"
@@ -419,6 +446,7 @@ jobs:
           # does not exist, so the summary reported "Mode:" with nothing after it. Deriving it
           # from the input that actually gates the apply step keeps the summary and the
           # behaviour in agreement.
+          SP_IMAGE_ONLY: ${{ steps.runtime.outputs.image_only }}
           SP_MODE: ${{ inputs.dry_run == false && 'apply' || 'dry-run (no changes applied)' }}
           SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
           SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
@@ -427,6 +455,7 @@ jobs:
             echo "## Superplane K8s rollout"
             echo "- **Environment**: ${SP_ENVIRONMENT}"
             echo "- **Mode**: ${SP_MODE}"
+            echo "- **Preserve installed authenticated runtime**: ${SP_IMAGE_ONLY:-false}"
             echo "- **SkyPilot image**: \`${SP_SKYPILOT_IMAGE}\`"
             echo "- **Namespace**: \`${SP_NAMESPACE}\`"
             echo "- **Status**: ${{ job.status }}"
