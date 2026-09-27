@@ -42,6 +42,9 @@ python -m pytest tests/e2e/chat/ --collect-only --timeout=300
 ### Against dev environment
 
 ```bash
+# Set AWS credentials and the deployed URL first, then resolve its live flag:
+export E2E_CHAT_EXPECTED_FLAG=$(python -m tests.e2e.chat.features)
+
 # With AWS credentials configured (profile or env vars):
 AWS_PROFILE=adp-dev E2E_CHAT_ENABLED=1 python -m pytest tests/e2e/chat/ -v
 
@@ -70,6 +73,7 @@ validate authentication only; they do not establish that chat is enabled or work
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `E2E_CHAT_ENABLED` | Yes | `0` | Must be `1` to enable tests |
+| `E2E_CHAT_EXPECTED_FLAG` | For live runs | — | `on` or `off`; verified against the actual deployment |
 | `E2E_CLOUDFRONT_URL` | No | `https://d1g6cal2ts4iis.cloudfront.net` | CloudFront URL to test |
 | `AWS_REGION` | No | `us-east-1` | AWS region |
 | `ENVIRONMENT` | No | `dev` | Environment name |
@@ -124,3 +128,9 @@ tests/e2e/chat/
   test_ack.py       # Scenario 18: immediate acknowledgement
   test_known_issues.py # Scenario 19: durability flag (xfail)
 ```
+
+When Chat is off, acceptance verifies both protected Chat routes redirect and
+Chat navigation is absent. OAuth and session-restoration checks still run.
+Chat interactions are deselected and require a separate flag-on deployment;
+a green flag-off run is not evidence that messaging works. CI discovers the
+flag before collection and independently checks it again during the suite.

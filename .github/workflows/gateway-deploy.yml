@@ -162,6 +162,8 @@ jobs:
           echo "budget_lambdas=$BUDGET_LAMBDAS" >> "$GITHUB_OUTPUT"
 
   deploy-backend:
+    outputs:
+      release_digest: ${{ steps.release.outputs.digest }}
     name: Build and Deploy Backend
     runs-on: arc-runner-org
     environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
@@ -656,6 +658,7 @@ jobs:
           done
 
       - name: Migrate schema then roll out new image
+        id: release
         env:
           ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
         run: |
@@ -664,6 +667,9 @@ jobs:
           trap 'rm -f "$RENDERED_DEPLOYMENT"' EXIT
           EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          RELEASE_IMAGE=$(python3 platform/scripts/resolve-ecr-image.py \
+            "${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}")
+          echo "digest=${RELEASE_IMAGE##*@}" >> "$GITHUB_OUTPUT"
 
           get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
 
@@ -736,15 +742,14 @@ jobs:
           # A bounded lock/index failure leaves the previous release serving.
           python3 modules/gateway/scripts/migrate-before-rollout.py \
             --manifest "$RENDERED_DEPLOYMENT" \
-            --image "${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}" \
+            --image "$RELEASE_IMAGE" \
             --namespace "${{ env.NAMESPACE }}"
-          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}|g" \
+          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${RELEASE_IMAGE}|g" \
             "$RENDERED_DEPLOYMENT" | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
-          # Stamp the image tag for this build. The manifest has a generic
-          # placeholder; this line pins to the commit SHA for audit.
+          # Keep the workload pinned to the same immutable image used by migrations.
           kubectl set image deployment/bedrockgateway \
-            bedrockgateway=${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6} \
+            "bedrockgateway=${RELEASE_IMAGE}" \
             -n ${{ env.NAMESPACE }}
 
           # HPA may add replicas during rollout, and each replacement needs its
@@ -1104,9 +1109,9 @@ jobs:
       adp_source_revision: ${{ inputs.adp_source_revision || '' }}
       adp_definition_revision: ${{ inputs.adp_definition_revision || '' }}
       # GitHub suppresses job outputs containing the masked AWS account ID.
-      # Pass only the immutable tag; the called job builds the URI after loading
-      # its trusted account config.
-      expected_image_tag: ${{ inputs.adp_source_revision || github.sha }}
+      # Pass only the deployed digest; the called job reconstructs the URI
+      # using its trusted account config.
+      expected_image_digest: ${{ needs.deploy-backend.outputs.release_digest }}
       account_id: ${{ inputs.account_id || '' }}
       environment: ${{ inputs.environment || 'dev' }}
       customer_account_id: ${{ inputs.customer_account_id || '' }}
@@ -1151,13 +1156,14 @@ jobs:
           customer_user_id: ${{ inputs.customer_user_id }}
       - name: Verify release pricing and enable the schedule
         env:
-          PRICING_RELEASE_TAG: ${{ inputs.adp_source_revision || github.sha }}
+          PRICING_RELEASE_DIGEST: ${{ needs.deploy-backend.outputs.release_digest }}
           ADP_KNOWN_PRICING_GAP: ${{ vars.ADP_KNOWN_PRICING_GAP || '' }}
         run: |
           set -euo pipefail
           command -v kubectl >/dev/null
           aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
-          PRICING_RELEASE_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_TAG}"
+          [[ "$PRICING_RELEASE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Missing valid deployed release digest"; exit 1; }
+          PRICING_RELEASE_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway@${PRICING_RELEASE_DIGEST}"
           PRICING_RECOVERY_ARGS=()
           case "$ADP_KNOWN_PRICING_GAP" in
             "") ;;

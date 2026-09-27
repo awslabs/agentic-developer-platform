@@ -887,7 +887,7 @@ async def _dispatch_one_unclaimed(
     selection = None
     from src.admin.persona_models.dispatch_selection import mapping_enabled, select_for_dispatch
 
-    if mapping_enabled() and (os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true" or await _shared_continuation(session, node)):
+    if mapping_enabled():
         try:
             selection = await select_for_dispatch(
                 session,

@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import runpy
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -323,10 +324,10 @@ def test_workflows_serialize_and_pin_release_image():
     jobs = workflows["gateway-deploy.yml"]["jobs"]
     assert jobs["finalize-pricing"]["needs"] == ["deploy-backend", "run-migrations"]
     assert "finalize-pricing" in jobs["smoke-test"]["needs"]
-    assert jobs["run-migrations"]["with"]["expected_image_tag"] == "${{ inputs.adp_source_revision || github.sha }}"
+    assert jobs["run-migrations"]["with"]["expected_image_digest"] == "${{ needs.deploy-backend.outputs.release_digest }}"
     assert "release_image" not in jobs["deploy-backend"].get("outputs", {})
     finalize = next(step for step in jobs["finalize-pricing"]["steps"] if step.get("name") == "Verify release pricing and enable the schedule")
-    assert "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_TAG}" in finalize["run"]
+    assert "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway@${PRICING_RELEASE_DIGEST}" in finalize["run"]
     migration = yaml.load((root / ".github/workflows/run-gateway-migrations.yml").read_text(), Loader=yaml.BaseLoader)
     migrate_steps = migration["jobs"]["migrate"]["steps"]
     context = next(i for i, step in enumerate(migrate_steps) if step.get("name") == "Select trusted EKS context")
@@ -490,3 +491,37 @@ def test_automatic_known_gap_recovery_is_limited_to_reviewed_dev_gap(cli, args, 
         with pytest.raises((RuntimeError, AssertionError)):
             rollout.finalize(args)
         assert cli.state == "DISABLED"
+
+
+@pytest.mark.parametrize(
+    "digest,tag,ok",
+    [
+        ("sha256:" + "a" * 64, "", True),
+        ("sha256:bad", "", False),
+        ("sha256:" + "a" * 64, "b" * 40, False),
+    ],
+)
+def test_migration_workflow_accepts_only_unambiguous_digest(digest, tag, ok):
+    workflow = yaml.load(
+        (GATEWAY.parents[1] / ".github/workflows/run-gateway-migrations.yml").read_text(),
+        Loader=yaml.BaseLoader,
+    )
+    step = next(s for s in workflow["jobs"]["migrate"]["steps"] if s.get("name") == "Migrate and verify activated pricing on the release image")
+    # Intercept only the final Python invocation; exercise the actual shell validation.
+    result = subprocess.run(
+        ["bash", "-c", 'python3() { printf "%s\\n" "$@"; };\n' + step["run"]],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "ACCOUNT_ID": ACCOUNT,
+            "AWS_REGION": "us-east-1",
+            "ENVIRONMENT": "dev",
+            "PRICING_EXPECTED_IMAGE": "",
+            "PRICING_EXPECTED_IMAGE_TAG": tag,
+            "PRICING_EXPECTED_IMAGE_DIGEST": digest,
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert (result.returncode == 0) is ok
+    if ok:
+        assert f"{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@{digest}" in result.stdout

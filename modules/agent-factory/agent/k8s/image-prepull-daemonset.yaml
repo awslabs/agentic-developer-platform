@@ -30,6 +30,13 @@ metadata:
     app.kubernetes.io/part-of: agent-gateway
     app.kubernetes.io/component: prepull
 spec:
+  # These pods only cache an image; they serve no requests and own no work.
+  # Restart caches concurrently so a large runner fleet does not serialize one
+  # full image pull per node before a release can finish.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "100%"
   selector:
     matchLabels:
       app.kubernetes.io/name: chat-agent-image-prepull

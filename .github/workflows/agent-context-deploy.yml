@@ -72,8 +72,8 @@ jobs:
   deploy:
     name: Deploy Services
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
-    timeout-minutes: 20
+    environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
+    timeout-minutes: 30
     # Manual dispatch always runs; auto (workflow_run) only on a successful build.
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
 
@@ -127,23 +127,14 @@ jobs:
             exit 1
           fi
 
-      - name: Create namespace
+      - name: Verify existing context storage
         run: |
-          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          echo "Namespace ${{ env.NAMESPACE }} ensured"
-
-      - name: Create StorageClass (ebs-gp3)
-        continue-on-error: true
-        run: |
-          # StorageClass is cluster-scoped; runner role may lack access.
-          # The SC already exists from initial cluster setup — skip gracefully.
-          if ! kubectl get storageclass ebs-gp3 >/dev/null 2>&1; then
-            kubectl apply -f modules/agent-context/kubernetes/storageclass-ebs-gp3.yaml \
-              && echo "Created ebs-gp3 StorageClass" \
-              || echo "WARNING: Cannot create StorageClass (likely RBAC). Assuming it exists."
-          else
-            echo "ebs-gp3 StorageClass already exists"
-          fi
+          # Release authority is confined to the existing namespace. Platform
+          # setup owns Namespace, StorageClass, CSI driver and PersistentVolume.
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/platform-data \
+            -n "$NAMESPACE" --timeout=30s
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/zoekt-index \
+            -n "$NAMESPACE" --timeout=30s
 
       - name: Deploy ConfigMap
         run: |
@@ -340,24 +331,6 @@ jobs:
             echo "ServiceAccount ${SERVICE_ACCOUNT} created with IRSA: ${IRSA_ROLE_ARN}"
           fi
 
-      - name: Deploy S3 Mountpoint storage (PV/PVC)
-        run: |
-          cd modules/agent-context
-          source scripts/_common.sh
-          load_config "$(pwd)"
-
-          # Check if Mountpoint CSI driver is installed
-          if kubectl get daemonset s3-csi-node -n kube-system >/dev/null 2>&1; then
-            echo "Mountpoint S3 CSI driver: installed"
-          else
-            echo "WARNING: Mountpoint S3 CSI driver not detected. PV/PVC may not bind."
-          fi
-
-          # Template and apply storage manifest
-          BUCKET_NAME="${S3_FILES_BUCKET}"
-          sed "s/<BUCKET_NAME>/${BUCKET_NAME}/g" manifests/s3-files-storage.yaml | kubectl apply -f -
-          echo "PV/PVC for S3 bucket: ${BUCKET_NAME}"
-
       - name: Deploy Zoekt (code search)
         run: |
           cd modules/agent-context
@@ -423,6 +396,20 @@ jobs:
           load_config "$(pwd)"
 
           if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+            # The upstream default does not support our nonroot, read-only
+            # manifest. Deploy the hardened project build by immutable digest.
+            DEEPWIKI_REPO="adp-${ENVIRONMENT}-agent-context-deepwiki"
+            # CodeBuild publishes latest only for the final runtime. The repo
+            # also contains newer intermediate build-input images with no CMD.
+            DEEPWIKI_DIGEST=$(aws ecr describe-images --repository-name "$DEEPWIKI_REPO" \
+              --image-ids imageTag=latest \
+              --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' \
+              --output text)
+            if [[ ! "$DEEPWIKI_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::No built DeepWiki image found. Run Agent Context Images Build first."
+              exit 1
+            fi
+            DEEPWIKI_IMAGE="${ECR_REGISTRY}/${DEEPWIKI_REPO}@${DEEPWIKI_DIGEST}"
             export NAMESPACE SERVICE_ACCOUNT DEEPWIKI_PORT DEEPWIKI_IMAGE LITELLM_PORT BEDROCK_REGION
             template_file manifests/deepwiki.yaml | kubectl apply -f -
             echo "DeepWiki deployed"
@@ -518,11 +505,34 @@ jobs:
             echo "KEDA ScaledJob deployed"
           fi
       - name: Wait for rollouts
+        env:
+          SKIP_DEEPWIKI: ${{ inputs.skip_deepwiki == true }}
         run: |
+          set -euo pipefail
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
           echo "Waiting for deployments to be ready..."
-          kubectl rollout status deploy/zoekt-webserver -n ${{ env.NAMESPACE }} --timeout=180s || echo "WARNING: Zoekt not ready"
-          kubectl rollout status deploy/litellm-proxy -n ${{ env.NAMESPACE }} --timeout=300s || echo "WARNING: LiteLLM not ready"
-          kubectl rollout status deploy/context-mcp -n ${{ env.NAMESPACE }} --timeout=180s || echo "WARNING: Context MCP not ready"
+          failed=0
+          for deployment in zoekt-webserver litellm-proxy context-mcp; do
+            kubectl rollout status "deploy/$deployment" -n "$NAMESPACE" --timeout=300s || failed=1
+          done
+          if [ "$SKIP_DEEPWIKI" != "true" ] && [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
+            kubectl rollout status deploy/deepwiki -n "$NAMESPACE" --timeout=300s || failed=1
+          fi
+          if [ "$failed" != 0 ]; then
+            kubectl get pods -n "$NAMESPACE" -o wide || true
+            # /ready exposes only status and exception type, never credentials.
+            # Query every MCP replica so an old healthy pod cannot hide the new
+            # replica's ACL failure while a rolling update is stalled.
+            for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=context-mcp -o name); do
+              echo "ACL readiness for $pod:"
+              kubectl exec -n "$NAMESPACE" "$pod" -c context-mcp -- python3 -c \
+                'import http.client; c=http.client.HTTPConnection("127.0.0.1",5100,timeout=5); c.request("GET","/ready"); r=c.getresponse(); print(r.status, r.read(4096).decode())' || true
+            done
+            echo "::error::Agent Context deployment did not become ready."
+            exit 1
+          fi
 
       - name: Verify deployment
         run: |

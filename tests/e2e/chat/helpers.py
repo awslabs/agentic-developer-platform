@@ -61,7 +61,7 @@ HISTORY_BLEED_PHRASES = [
 ]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class TestCredentials:
     """Cognito test user credentials resolved from Secrets Manager."""
 

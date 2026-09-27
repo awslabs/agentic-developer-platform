@@ -7,6 +7,20 @@ const CHECKPOINT_INTERVAL_MS = 15 * 60 * 1000;
 export function developerCheckpointGuidance(agentType: string): string {
   if (agentType !== 'developer') return '';
   return `
+### Developer progress
+
+For a repair, reproduce the reported command through its real entrypoint early.
+Use the provided evidence and existing test fixtures before building new mock
+servers. Batch related reads; do not repeatedly reread files already understood.
+Within 15 minutes, produce a bounded reproduction, a focused regression/change,
+or a concrete blocker with the missing evidence. If an experiment fails to
+answer the question, change approach instead of repeating the same investigation.
+An engine implementation run with no repository changes is stopped after 30
+minutes. Do not make empty edits to satisfy that bound: save useful evidence or
+report why implementation cannot proceed. Temporary files and heartbeats are not
+an implementation. Use short explicit command timeouts; long validation may use
+up to 10 minutes per command and must follow a saved checkpoint.
+
 ### Developer branch checkpoints
 
 For authorized implementation work, put the checkpoint strategy after the
@@ -61,7 +75,7 @@ function checkpointReminder(agentType: string): HookCallback {
     return {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: 'Scheduled developer checkpoint check: if this is authorized ' +
+        additionalContext: 'Progress check: identify the reproduced failure, what changed since the last check, and the next bounded action. If investigation has produced no change, save a focused regression or report the concrete missing evidence; do not continue rereading the same files. Scheduled developer checkpoint check: if this is authorized ' +
           'implementation work and changes have accumulated since the last verified push, ' +
           'publish a coherent checkpoint at the next safe boundary, following the branch ' +
           'checkpoint strategy in your plan. Inspect and selectively stage the diff; verify ' +
@@ -86,7 +100,7 @@ function checkpointReminder(agentType: string): HookCallback {
  * which is the exact failure spilling exists to prevent.
  *
  * `pause` (#3961) composes into the same shape. Its barrier is a `PreToolUse`
- * hook, which is unoccupied and therefore additive; its settle edge shares
+ * hook composed before developer command bounds; its settle edge shares
  * `PostToolUse` with the two above and so joins the merged callback. It returns
  * no `hookSpecificOutput` of its own, so it cannot displace either.
  */
@@ -96,35 +110,51 @@ export function createWorkerToolHooks(
   const spill = createSpillHookCallback(opts);
   const remind = checkpointReminder(opts.agentType);
   const pause = opts.pauseHooks;
+  const started = new Map<string, number>();
+  const finished = (input: HookInput, failed: boolean) => {
+    if (!('tool_use_id' in input)) return;
+    const began = started.get(input.tool_use_id);
+    started.delete(input.tool_use_id);
+    if (began !== undefined) opts.log?.(`Tool completed: ${input.tool_name} duration_ms=${Date.now() - began} failed=${failed}`);
+  };
   return {
     ...(pause
       ? {
-          // The admission barrier. Nothing else claims PreToolUse, so this is a
-          // straight addition rather than a merge.
-          //
-          // `timeout` is not optional in practice, even though the type allows it.
-          // The CLI enforces hook timeouts on its side and applies its own default
-          // when a matcher omits one; this hook is *designed* to block for as long
-          // as an operator holds the pause. Leaving the bound implicit means an
-          // undocumented default decides whether pause works at all, and if it is
-          // shorter than the budget every long pause aborts its parked tool, breaches
-          // the barrier and degrades to `unavailable`. The adapter derives the value
-          // from the gate's own budget so the two cannot drift.
-          PreToolUse: [{ hooks: [pause.preToolUse], timeout: pause.preToolUseTimeoutSeconds }],
-          // Both edges settle the admission: a tool that failed has stopped
-          // running just as surely as one that succeeded, and treating only
-          // success as an ending would leave a failed tool's admission
-          // outstanding forever — every later pause would then wait on it and
-          // never confirm.
-          PostToolUseFailure: [{ hooks: [pause.postToolUse] }],
           // Background work behind finished tools, which is the one thing the
           // barrier cannot see for itself.
           Stop: [{ hooks: [pause.onStop] }],
           SubagentStop: [{ hooks: [pause.onStop] }],
         }
       : {}),
+    ...((pause || opts.agentType === 'developer') ? {
+      // Preserve the pause adapter's timeout so a held gate outlasts SDK defaults.
+      PreToolUse: [{ timeout: pause?.preToolUseTimeoutSeconds ?? 10, hooks: [async (
+        input: HookInput, toolUseID?: string, options?: { signal: AbortSignal },
+      ) => {
+        const admission = await pause?.preToolUse(input, toolUseID, options) ?? {};
+        if (input.hook_event_name !== 'PreToolUse') return admission;
+        const prior = admission.hookSpecificOutput as Record<string, unknown> | undefined;
+        if (prior && 'permissionDecision' in prior && prior.permissionDecision === 'deny') return admission;
+        if (started.size >= 256) started.delete(started.keys().next().value!);
+        started.set(input.tool_use_id, Date.now());
+        if (opts.agentType !== 'developer' || input.tool_name !== 'Bash') return admission;
+        const original = input.tool_input as Record<string, unknown>;
+        const supplied = original.timeout;
+        const timeout = typeof supplied === 'number' && Number.isFinite(supplied) && supplied > 0
+          ? Math.min(supplied, 600_000) : 120_000;
+        return { ...admission, hookSpecificOutput: {
+          ...prior, hookEventName: 'PreToolUse' as const,
+          updatedInput: { ...original, ...((prior?.updatedInput as Record<string, unknown> | undefined) ?? {}), timeout },
+        } };
+      }] }],
+    } : {}),
+    PostToolUseFailure: [{ hooks: [async (input: HookInput) => {
+      finished(input, true);
+      return await pause?.postToolUse(input) ?? {};
+    }] }],
     PostToolUse: [{ hooks: [async (input: HookInput, toolUseID: string | undefined,
       options: { signal: AbortSignal }) => {
+      finished(input, false);
       const reminder = await remind(input, toolUseID, options);
       const spilled = await spill(input);
       // Settle before returning, so the admission is released even if the two

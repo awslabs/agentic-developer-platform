@@ -130,7 +130,7 @@ jobs:
           for NAME in "adp-${TF_VAR_environment:-dev}-pyjwt-layer" \
                       "adp-${TF_VAR_environment:-dev}-psycopg2-layer"; do
             EXISTS=$(aws codebuild batch-get-projects --names "$NAME" --region "$AWS_REGION" \
-              --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
+              --query 'projects | length(@)' --output text)
             if [ "$EXISTS" -ne 1 ]; then
               echo "::error::$NAME is missing — apply platform/infra before running gateway infrastructure."
               exit 1

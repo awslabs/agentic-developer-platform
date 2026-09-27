@@ -1,3 +1,37 @@
+# Keep Terraform1.15.7 behavior while rebuilding its exact dependency graph.
+FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS terraform-security
+ENV GOTOOLCHAIN=local CGO_ENABLED=0
+WORKDIR /src
+ADD --checksum=sha256:a81fbc916714d01effa519b8fe602d41a2b06bc9cdf898d809891fb57a7427ff https://codeload.github.com/hashicorp/terraform/tar.gz/214239d0a88cefc3919e79805c5ddd42b922af56 /tmp/terraform.tar.gz
+RUN tar -xzf /tmp/terraform.tar.gz --strip-components=1 -C /src && rm /tmp/terraform.tar.gz
+COPY modules/agent-factory/agent-worker-image/terraform-security-dependencies.patch /tmp/security.patch
+RUN git apply --check /tmp/security.patch && git apply /tmp/security.patch \
+    && sha256sum go.mod go.sum > /tmp/modules.sha256 \
+    && go mod download && go mod verify \
+    && go build -mod=readonly -p 2 -buildvcs=false -trimpath \
+      -ldflags "-s -w -X github.com/hashicorp/terraform/version.dev=no" -o /out/terraform . \
+    && sha256sum -c /tmp/modules.sha256
+
+# AWS CLI's official 2.37.4 bundle embeds vulnerable Python 3.14.6.
+# Build the maintained portable-exe source distribution with fixed Python.
+# This executable is ADP-built; the AWS release ZIP signature does not cover it.
+FROM public.ecr.aws/docker/library/python:3.14.7-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS awscli-security
+ARG TARGETARCH=amd64
+RUN test "$TARGETARCH" = amd64 && \
+    python -c 'import sys; assert sys.version_info[:3] == (3, 14, 7)' && \
+    apt-get update && apt-get install -y --no-install-recommends build-essential binutils && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src/awscli
+ADD --checksum=sha256:c4d840d5975cea7f3bb51441c6f602312e9ec9dae9afaf725561a250eee73a90 https://codeload.github.com/aws/aws-cli/tar.gz/d22f2115447d212da4af5fc35e440ec7f960aad4 /tmp/awscli-source.tar.gz
+RUN tar -xzf /tmp/awscli-source.tar.gz --strip-components=1 && rm /tmp/awscli-source.tar.gz
+# Upstream's download-deps backend enforces its bundled dependency hash locks.
+RUN ./configure --with-install-type=portable-exe --with-download-deps --prefix=/opt/awscli-adp && \
+    make -j2 && make install && \
+    cp LICENSE.txt /opt/awscli-adp/LICENSE.txt && \
+    cp -r build/exe/aws/THIRD_PARTY_LICENSES /opt/awscli-adp/THIRD_PARTY_LICENSES
+RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
+COPY modules/domain-apps/superplane/executor/awscli-build/source-build.json /opt/awscli-adp/source-build.json
+
 # =============================================================================
 # adp-agent worker image
 # Base: python:3.13-slim-bookworm (Debian, Python pre-installed)
@@ -172,10 +206,15 @@ RUN curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION
     rm /tmp/fzf.tar.gz && \
     fzf --version
 
-# Install Node.js 24 from NodeSource (supports Debian trixie).
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/*
+# Pin the official Node24 release and replace its bundled npm with the fixed
+# npm11 graph. This also removes the unpinned NodeSource setup script/repository.
+ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz /tmp/node.tar.xz
+RUN tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm /tmp/node.tar.xz \
+    && test "$(node --version)" = v24.21.0
+ADD --checksum=sha256:d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483 https://registry.npmjs.org/npm/-/npm-11.20.0.tgz /tmp/npm.tgz
+RUN rm -rf /usr/local/lib/node_modules/npm && mkdir -p /usr/local/lib/node_modules/npm \
+    && tar -xzf /tmp/npm.tgz --strip-components=1 -C /usr/local/lib/node_modules/npm \
+    && rm /tmp/npm.tgz && test "$(npm --version)" = 11.20.0
 
 # Install pnpm and yarn via corepack. The Node 24 image ships a yarn stub
 # at /usr/bin/yarn, so `npm install -g yarn` fails with EEXIST. Corepack
@@ -205,29 +244,18 @@ RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_$
     rm -rf /tmp/gh.tar.gz /tmp/gh_${GH_VERSION}_linux_amd64 && \
     gh --version
 
-# Install AWS CLI v2 (binary install from AWS — mirror-independent)
-RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && \
-    unzip -q /tmp/awscliv2.zip -d /tmp && \
-    /tmp/aws/install && \
-    rm -rf /tmp/aws /tmp/awscliv2.zip
+# Reuse the reviewed source-built portable AWS CLI, including provenance.
+COPY --from=awscli-security /opt/awscli-adp /opt/awscli-adp
+RUN ln -s /opt/awscli-adp/bin/aws /usr/local/bin/aws \
+    && aws --version
 
 # Install kubectl
 RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
     -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
 
-# Install Terraform — required by deploy-test agents running platform/infra,
-# gateway/infra, agent-factory/infra, webhook-ingress/infra apply steps.
-# Pinned to 1.15.7 (latest 1.15.x stable) which satisfies the
-# strictest module constraint (gateway/infra requires >= 1.14.0).
-ARG TERRAFORM_VERSION=1.15.7
-ARG TERRAFORM_SHA256=73bbb8f5188ad75d4fb853fd100ae4d7e146ef7af7db18776109642fdb7759d2
-RUN curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
-      -o /tmp/terraform.zip && \
-    echo "${TERRAFORM_SHA256}  /tmp/terraform.zip" | sha256sum -c - && \
-    unzip -q /tmp/terraform.zip -d /usr/local/bin && \
-    chmod +x /usr/local/bin/terraform && \
-    rm /tmp/terraform.zip && \
-    terraform version
+# Preserve the installed Terraform version; use the verified fixed Go rebuild.
+COPY --from=terraform-security /out/terraform /usr/local/bin/terraform
+RUN terraform version
 
 # Install bun runtime — required by AIDLC v2 hooks and engine tools which are
 # bun TypeScript. Pinned static binary from GitHub releases (same pattern as

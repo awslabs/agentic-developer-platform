@@ -7,7 +7,6 @@ import { ExplanationEvents, HISTORY_BYTES, HISTORY_EVENTS, MAX_SUBSCRIBERS } fro
 import { resilientQuery } from './utils/resilientQuery';
 import { createWorkerToolHooks } from './developer-checkpoints';
 import { TmpSpillStore } from './utils/spill';
-import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 
 type NativeHandle = { interrupt(): Promise<void>; close(): void };
 type Event = { type: string; at: string; [key: string]: unknown };
@@ -107,7 +106,7 @@ export async function runRegisteredControlFixture(): Promise<number> {
       if (process.env.ADP_CONTROL_BROWSER_EVAL === 'true') {
         for (const matcher of hooks.PreToolUse ?? []) {
           matcher.hooks = matcher.hooks.map(callback => {
-            const delayed: HookCallback = async (input, toolUseID, options) => {
+            const delayed: typeof callback = async (input, toolUseID, options) => {
               const result = await callback(input, toolUseID, options);
               // Keep a genuinely admitted Read in progress long enough for the
               // browser to observe pending pause. No shell/background inference.

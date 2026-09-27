@@ -92,25 +92,41 @@ resource "helm_release" "keda" {
   repository       = "https://kedacore.github.io/charts"
   chart            = "keda"
   namespace        = "keda"
-  version          = "2.16.0"
+  version          = "2.21.0"
   create_namespace = true
   wait             = true
   timeout          = 600
 
+  # Pin the three scanned artifacts while upgrading chart, CRDs and RBAC together.
   set {
-    name  = "serviceAccount.create"
+    name  = "image.keda.tag"
+    value = "2.21.0@sha256:81fe6547ce8d1cc29273f887b76507e9b853e5bc1f875ec23fe60061a38ed809"
+  }
+
+  set {
+    name  = "image.metricsApiServer.tag"
+    value = "2.21.0@sha256:255375037fe592732eeb554743aae360c2da88cf0b9b1258d0a987ef885f0881"
+  }
+
+  set {
+    name  = "image.webhooks.tag"
+    value = "2.21.0@sha256:e1969628cca6123e32eea13c47c75817091af2657fa68d9d0d58a8620d1b75b1"
+  }
+
+  set {
+    name  = "serviceAccount.operator.create"
     value = "true"
   }
 
   set {
-    name  = "serviceAccount.name"
+    name  = "serviceAccount.operator.name"
     value = "keda-operator"
   }
 
   # IRSA annotation so KEDA can authenticate to SQS for queue-depth polling.
   # Managed via Helm values so the annotation survives Helm reconciliation.
   set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    name  = "serviceAccount.operator.annotations.eks\\.amazonaws\\.com/role-arn"
     value = aws_iam_role.keda_operator.arn
   }
 

@@ -24,7 +24,7 @@ RUN --network=none sh /build-tools/build.sh
 # Official upstream commit d92819a9c9f3b99416e3580ff235fc9d3adf8b89.
 # Upstream publishes main/latest/sha tags; the configured v1.2.2 tag is unavailable.
 # Official multi-platform Node release; fixes CVE-2026-48930 in the builder and UI runtime.
-FROM node:22.23.0-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS node-release
+FROM node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node-release
 FROM ghcr.io/asyncfuncai/deepwiki-open@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f AS node-base
 USER root
 # Remove NodeSource Node20 instead of leaving a vulnerable second executable.
@@ -34,7 +34,7 @@ RUN apt-get purge -y nodejs \
 COPY --from=node-release /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-release /usr/local/LICENSE /opt/deepwiki-security/node-LICENSE
 RUN ln -s /usr/local/bin/node /usr/bin/node \
-    && test "$(node --version)" = v22.23.0
+    && test "$(node --version)" = v22.23.3
 # Next's cold SWC fallback queries the registry through npm. Preserve that path
 # with the checksum-pinned fixed package manager, including its dependency tree.
 ADD --checksum=sha256:d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483 https://registry.npmjs.org/npm/-/npm-11.20.0.tgz /tmp/npm.tgz

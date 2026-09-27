@@ -9,6 +9,8 @@ Authentication + WebSocket lifecycle tests (scenarios 1-3).
 from __future__ import annotations
 
 import time
+import pytest
+
 from urllib.parse import parse_qs, urlsplit
 
 from .helpers import (
@@ -39,6 +41,7 @@ def _is_workspace_response(response):
     return urlsplit(response.url).path.endswith("/auth/workspaces")
 
 
+@pytest.mark.chat_independent
 class TestLoginRoundTrip:
     """Scenario 1: Full email-button → Cognito hosted-UI → OAuth callback flow."""
 
@@ -76,6 +79,7 @@ class TestLoginRoundTrip:
         _assert_stored_session(page)
 
 
+@pytest.mark.chat_independent
 class TestSessionRestoration:
     """Stored-session startup is independent of the hosted OAuth login flow."""
 

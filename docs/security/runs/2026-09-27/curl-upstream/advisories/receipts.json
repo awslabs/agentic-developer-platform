@@ -1,0 +1,110 @@
+[
+  {
+    "id": "CVE-2026-10536",
+    "url": "https://curl.se/docs/CVE-2026-10536.html",
+    "sha256": "6a4bbc1cfa79501131b93d5af1c276526bcd8f6c82532698fb50bc03bb9417d2",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.21.0 B - Apply the patch to your version and rebuild C - Avoid using HTTP/2 stream dependencies TIMELINE This issue was reported to the cu"
+  },
+  {
+    "id": "CVE-2026-11856",
+    "url": "https://curl.se/docs/CVE-2026-11856.html",
+    "sha256": "6567dcf635e76a005ba10ad2cceeb5bb07bf74d9ec5c58c8aafc564ead15d345",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.21.0 B - Apply the patch to your version and rebuild C - Avoid reusing handles when changing origin TIMELINE This issue was reported to th"
+  },
+  {
+    "id": "CVE-2026-12064",
+    "url": "https://curl.se/docs/CVE-2026-12064.html",
+    "sha256": "8213a778526e9a3de78c48ed3427158080a6054e8ffabe4072f22071a6454c07",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.21.0 B - Apply the patch to your version and rebuild C - Avoid using --proto-default for scp or sftp TIMELINE This issue was reported to t"
+  },
+  {
+    "id": "CVE-2026-13608",
+    "url": "https://curl.se/docs/CVE-2026-13608.html",
+    "sha256": "4696e54b5730f97425b3c5f41ba9bf2b5ecb0fa8d99a88973dc8f7c2a74f0dbd",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.22.0 B - Apply the patch to your version and rebuild C - Avoid using LDAP:// (without TLS) TIMELINE This issue was reported to the curl pr"
+  },
+  {
+    "id": "CVE-2026-18924",
+    "url": "https://curl.se/docs/CVE-2026-18924.html",
+    "sha256": "1a9711baced82ca682f9d051b0c70875448e6fe74972a29430c99baebe5e3068",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.22.0 B - Apply the patch to your version and rebuild C - Avoid using HTTP/2 server push TIMELINE This issue was reported to the curl proje"
+  },
+  {
+    "id": "CVE-2026-19931",
+    "url": "https://curl.se/docs/CVE-2026-19931.html",
+    "sha256": "0188f096e00406cf83a655308e9680ec46ba5563800209d3e274620acdbdd75a",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.22.0 B - Apply the patch to your version and rebuild C - Enable CURLOPT_FORBID_REUSE for transfers using blank credentials. TIMELINE This "
+  },
+  {
+    "id": "CVE-2026-80229",
+    "url": "https://curl.se/docs/CVE-2026-80229.html",
+    "sha256": "712109f297df37345315c3e05c4fd83e0498f4e6211614bf73be80aa7610cec0",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.22.0 B - Apply the patch to your version and rebuild C - Enable CURLOPT_FORBID_REUSE for transfers using providers TIMELINE This issue was"
+  },
+  {
+    "id": "CVE-2026-80230",
+    "url": "https://curl.se/docs/CVE-2026-80230.html",
+    "sha256": "d0a7ee01058d6e1409dc52d08b06cce122232b94afbb81b10c9adc357c3ce102",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.22.0 B - Apply the patch to your version and rebuild TIMELINE This issue was reported to the curl project on August 24, 2026. curl 8.22.0 "
+  },
+  {
+    "id": "CVE-2026-80255",
+    "url": "https://curl.se/docs/CVE-2026-80255.html",
+    "sha256": "e40ce9b55b131387b56006bfeb45029d88e6868213e857f9d0a33e2049e7b335",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.22.0 B - Apply the patch to your version and rebuild C - Avoid using clear text HTTP transfers with cookies TIMELINE This issue was report"
+  },
+  {
+    "id": "CVE-2026-82209",
+    "url": "https://curl.se/docs/CVE-2026-82209.html",
+    "sha256": "dd116cad0e4c40879c1597a449db14ec6b803687ecacd775b933048df0583134",
+    "recommendation": "A - Upgrade curl to version 8.22.0 B - Apply the patch to your local version C - Do not use cookies TIMELINE This issue was reported to the curl project on August 26, 2026. curl 8."
+  },
+  {
+    "id": "CVE-2026-8286",
+    "url": "https://curl.se/docs/CVE-2026-8286.html",
+    "sha256": "1f9fa7816a9e16a7425bca70067a095247a4ba523902845d4ee5f7f721e0bb91",
+    "recommendation": "A - Upgrade to curl and libcurl 8.21.0 B - Apply the patch and rebuild libcurl C - Do not use clear-text IMAP/POP3/SMTP/FTP/LDAP transfers TIMELINE It was reported to the curl proj"
+  },
+  {
+    "id": "CVE-2026-8924",
+    "url": "https://curl.se/docs/CVE-2026-8924.html",
+    "sha256": "46bd687ba93123d30637ef4f53865391aaff3df1ca27a5677c1f4d0537c1dbb1",
+    "recommendation": "A - Upgrade curl to version 8.21.0 B - Apply the patch to your local version C - Do not use trailing dots on hostnames TIMELINE This issue was reported to the curl project on May 1"
+  },
+  {
+    "id": "CVE-2026-8926",
+    "url": "https://curl.se/docs/CVE-2026-8926.html",
+    "sha256": "ce0c5e90f784dd3ff85cf6196e0c04fb762b2fa8afaf590d9b4a7027dd261083",
+    "recommendation": "A - Upgrade curl to version 8.21.0 B - Apply the patch to your local version C - Do not use netrc for authentication data TIMELINE This issue was reported to the curl project on Ma"
+  },
+  {
+    "id": "CVE-2026-8927",
+    "url": "https://curl.se/docs/CVE-2026-8927.html",
+    "sha256": "1e477ce66b74f0a7c72da1cdf6964c66e35f666198573760490300a6ee1cb7f0",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.21.0 B - Apply the patch to your version and rebuild C - Avoid reusing handles when changing proxies TIMELINE This issue was reported to t"
+  },
+  {
+    "id": "CVE-2026-8932",
+    "url": "https://curl.se/docs/CVE-2026-8932.html",
+    "sha256": "abb6b186cdd28f81cb8e373df21bb785db300158614c025d8cf9b11d8b232bfb",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.21.0 B - Apply the patch to your version and rebuild C - Avoid reusing handles when changing client cert details TIMELINE This issue was r"
+  },
+  {
+    "id": "CVE-2026-9079",
+    "url": "https://curl.se/docs/CVE-2026-9079.html",
+    "sha256": "f7787f3370287deb73602fb79fc95c5bde29b3383147335236e16fae1c6e9ac0",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.21.0 B - Apply the patch to your version and rebuild C - Avoid reusing handles when changing proxy credentials TIMELINE This issue was rep"
+  },
+  {
+    "id": "CVE-2026-9080",
+    "url": "https://curl.se/docs/CVE-2026-9080.html",
+    "sha256": "54cad094eba610c61377d324eb05efad0ccf1966bf969a8bb7ebfdcdd55b2037",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.21.0 B - Apply the patch to your version and rebuild C - Avoid pausing within the socket callback TIMELINE This issue was reported to the "
+  },
+  {
+    "id": "CVE-2026-9545",
+    "url": "https://curl.se/docs/CVE-2026-9545.html",
+    "sha256": "5c168be1a9020ce29acd63ebb2911f7649ddc0ccf4ae0de4779e440de1e5efa4",
+    "recommendation": "A - Upgrade curl and libcurl to version 8.21.0 B - Apply the patch to your version and rebuild C - Avoid using TLS early data TIMELINE This issue was reported to the curl project o"
+  }
+]

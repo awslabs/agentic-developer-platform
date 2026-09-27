@@ -102,3 +102,20 @@ run "repository_arn_instead_of_name_is_refused" {
   variables { build_ecr_repository_names = ["arn:aws:ecr:us-east-1:123456789012:repository/adp-superplane-executor"] }
   expect_failures = [var.build_ecr_repository_names]
 }
+
+run "layer_checks_read_only_the_selected_artifact" {
+  command = plan
+  variables {
+    build_project_names = ["adp-test-pyjwt-layer"]
+  }
+  assert {
+    condition = one([
+      for s in jsondecode(aws_iam_role_policy.build_dispatch.policy).Statement : s if s.Sid == "VerifyPublishedLayerArtifacts"
+    ]).Resource == ["arn:aws:s3:::adp-terraform-state-123456789012/lambda-layers/pyjwt-py313.zip"]
+    error_message = "Layer verification may read only the selected exact output object."
+  }
+  assert {
+    condition     = !can(regex("s3:ListBucket", aws_iam_role_policy.build_dispatch.policy))
+    error_message = "Artifact existence checks must not gain bucket listing authority."
+  }
+}

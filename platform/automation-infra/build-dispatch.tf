@@ -34,6 +34,10 @@ variable "build_publish_worker_image_tag" {
 }
 
 locals {
+  build_layer_artifact_keys = [for project, key in {
+    "adp-${var.environment}-pyjwt-layer"    = "lambda-layers/pyjwt-py313.zip"
+    "adp-${var.environment}-psycopg2-layer" = "lambda-layers/psycopg2-py312.zip"
+  } : key if contains(var.build_project_names, project)]
   build_ecr_read_names = var.build_ecr_repository_names == null ? ["adp-*"] : var.build_ecr_repository_names
 }
 
@@ -73,7 +77,10 @@ resource "aws_iam_role_policy" "build_dispatch" {
     {
       Sid = "ImageAuthentication", Effect = "Allow", Action = ["ecr:GetAuthorizationToken", "sts:GetCallerIdentity"], Resource = "*"
     },
-    ], [for _ in range(var.build_publish_worker_image_tag ? 1 : 0) : {
+    ], [for _ in range(length(local.build_layer_artifact_keys) > 0 ? 1 : 0) : {
+      Sid      = "VerifyPublishedLayerArtifacts", Effect = "Allow", Action = ["s3:GetObject"],
+      Resource = [for key in local.build_layer_artifact_keys : "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/${key}"]
+      }], [for _ in range(var.build_publish_worker_image_tag ? 1 : 0) : {
       Sid      = "PublishWorkerBuildTag", Effect = "Allow", Action = ["ssm:PutParameter"],
       Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/cyber/worker-image-tag"
     }

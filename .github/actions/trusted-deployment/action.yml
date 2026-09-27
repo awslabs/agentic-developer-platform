@@ -19,8 +19,12 @@ runs:
         DEPLOY_ROLE_ARN: ${{ inputs.role_arn }}
       run: |
         set -euo pipefail
+        if [[ -z "$DEPLOY_ROLE_ARN" ]]; then
+          echo "::error::Missing ADP_DEPLOY_ROLE_ARN in the job protected environment. Configure the scoped trusted deployment role before retrying."
+          exit 1
+        fi
         test "$GITHUB_REF" = refs/heads/main
-        test "$GITHUB_EVENT_NAME" = workflow_dispatch -o "$GITHUB_EVENT_NAME" = workflow_call -o "$GITHUB_EVENT_NAME" = repository_dispatch -o "$GITHUB_EVENT_NAME" = push -o "$GITHUB_EVENT_NAME" = schedule
+        test "$GITHUB_EVENT_NAME" = workflow_dispatch -o "$GITHUB_EVENT_NAME" = workflow_call -o "$GITHUB_EVENT_NAME" = repository_dispatch -o "$GITHUB_EVENT_NAME" = push -o "$GITHUB_EVENT_NAME" = schedule -o "$GITHUB_EVENT_NAME" = workflow_run
         [[ "$DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/adp-[a-z0-9-]+-trusted-deployment$ ]]
         test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
         test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"

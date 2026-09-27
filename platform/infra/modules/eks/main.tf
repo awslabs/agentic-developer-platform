@@ -828,6 +828,8 @@ resource "aws_eks_addon" "cloudwatch_observability" {
 resource "aws_eks_addon" "metrics_server" {
   cluster_name = aws_eks_cluster.main.name
   addon_name   = "metrics-server"
+  # Verified EKS 1.35 security rebuild; keep a reviewed version on future applies.
+  addon_version = "v0.9.0-eksbuild.11"
 
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "OVERWRITE"

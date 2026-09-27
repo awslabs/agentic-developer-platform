@@ -180,6 +180,10 @@ spec:
             # would stay the literal relative string `~/.sky`, resolved against the working
             # directory, and the config mounted below at an absolute path would never be
             # read. Setting HOME explicitly removes the dependency on a passwd entry.
+            # getpass.getuser() also needs a username for UID 1000, which has no
+            # passwd entry in the upstream image. HOME alone does not supply it.
+            - name: USER
+              value: sky
             - name: HOME
               value: /home/sky
             # Belt and braces on the same hazard, from the other direction: this names the

@@ -62,6 +62,13 @@ RUN wget -q https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -O /tmp/npm.tgz \
     && rm /tmp/npm.tgz \
     && npm --version
 
+# The Node binary does not link system zlib; only Alpine's package manager
+# needs it. Runtime package installation is unavailable to the non-root agent.
+# Retain npm, bash and dumb-init, and remove the unused apk/zlib chain.
+RUN apk del --no-cache apk-tools libapk zlib \
+    && test ! -e /sbin/apk && test ! -e /lib/libz.so.1 \
+    && node -e "require('node:zlib').gzipSync('fixture')"
+
 # Create directories with proper ownership
 RUN mkdir -p /app /data /tmp/workspace && \
     chown -R agent:agent /app /data /tmp/workspace

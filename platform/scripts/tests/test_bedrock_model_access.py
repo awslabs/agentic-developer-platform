@@ -237,7 +237,8 @@ def test_prepare_and_verify_registers_before_invoking(monkeypatch, form):
     assert ops.count("invoke-model") == len(access.runtime_models())
 
 
-def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_path):
+@pytest.mark.parametrize("mode", ["prepare-and-verify", "verify"])
+def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_path, mode):
     relative = "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
     script = tmp_path / relative
     script.parent.mkdir(parents=True)
@@ -245,7 +246,7 @@ def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_p
     helper = tmp_path / "platform/scripts/enable-bedrock-models.sh"
     helper.parent.mkdir(parents=True)
     helper.write_text(
-        '#!/bin/bash\n[ "$1" = --prepare-and-verify ] || exit 9\necho "model denied" >&2\nexit 1\n'
+        f'#!/bin/bash\n[ "$1" = --{mode} ] || exit 9\necho "model denied" >&2\nexit 1\n'
     )
     binary = tmp_path / "bin"
     binary.mkdir()
@@ -259,6 +260,7 @@ def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_p
             **os.environ,
             "ENVIRONMENT": "test",
             "AGENT_IMAGE": "test:sha",
+            "ADP_CHAT_MODEL_ACCESS_MODE": mode,
             "PATH": str(binary) + os.pathsep + os.environ["PATH"],
         },
         capture_output=True,

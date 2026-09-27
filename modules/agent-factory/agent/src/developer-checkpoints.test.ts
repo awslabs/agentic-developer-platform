@@ -169,12 +169,21 @@ describe('pause barrier hook registration', () => {
     expect(timeoutMs).toBeGreaterThan(DEFAULT_PAUSE_TIMEOUT_MS);
   });
 
-  it('registers no PreToolUse matcher for a run without a control gate', () => {
-    // A run with no control listener must not acquire a barrier as a side effect.
+  it('bounds developer commands without granting control or permission authority', async () => {
+    // Command bounds do not grant tool permissions or install a pause gate.
     const hooks = createWorkerToolHooks({
       agentType: 'developer', store: { spill: jest.fn() }, thresholdBytes: 100, log: jest.fn(),
     });
-    expect(hooks.PreToolUse).toBeUndefined();
+    const result = await hooks.PreToolUse![0].hooks[0]({
+      ...input, hook_event_name: 'PreToolUse',
+    });
+    expect(result).toMatchObject({ hookSpecificOutput: { updatedInput: { timeout: 120_000 } } });
+    expect(result.hookSpecificOutput).not.toHaveProperty('permissionDecision');
+    expect(hooks.Stop).toBeUndefined();
+    const reviewer = createWorkerToolHooks({
+      agentType: 'reviewer', store: { spill: jest.fn() }, thresholdBytes: 100, log: jest.fn(),
+    });
+    expect(reviewer.PreToolUse).toBeUndefined();
   });
 
   /**
@@ -211,5 +220,23 @@ describe('pause barrier hook registration', () => {
     expect(pause.onStop).toHaveBeenCalledTimes(2);
     expect(pause.onStop).toHaveBeenNthCalledWith(1, { hook_event_name: 'Stop' });
     expect(pause.onStop).toHaveBeenNthCalledWith(2, { hook_event_name: 'SubagentStop', agent_id: 'agent-1' });
+  });
+});
+
+describe('developer command bounds', () => {
+  it.each([[undefined, 120000], [5000, 5000], [900000, 600000]])('bounds Bash timeout %s', async (supplied, expected) => {
+    const hooks = createWorkerToolHooks({agentType: 'developer', store: {spill: jest.fn()}, log: jest.fn()});
+    const callback = hooks.PreToolUse![0].hooks[0];
+    const result = await callback({...input, hook_event_name: 'PreToolUse', tool_input: {command: 'pytest tests', timeout: supplied}}, 'tool', {signal: new AbortController().signal});
+    expect(result).toMatchObject({hookSpecificOutput: {hookEventName: 'PreToolUse', updatedInput: {command: 'pytest tests', timeout: expected}}});
+  });
+  it('preserves a pause denial instead of allowing the command', async () => {
+    const denial = {hookSpecificOutput: {hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'cancelled'}};
+    const pause = {preToolUse: jest.fn(async () => denial), preToolUseTimeoutSeconds: 400,
+      postToolUse: jest.fn(), onStop: jest.fn(), dispose: jest.fn()};
+    const hooks = createWorkerToolHooks({agentType: 'developer', store: {spill: jest.fn()}, log: jest.fn(), pauseHooks: pause});
+    expect(hooks.PreToolUse![0].timeout).toBe(400);
+    const result = await hooks.PreToolUse![0].hooks[0]({...input, hook_event_name: 'PreToolUse'}, 'tool', {signal: new AbortController().signal});
+    expect(result).toEqual(denial);
   });
 });

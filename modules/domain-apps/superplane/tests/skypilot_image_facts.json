@@ -1,28 +1,27 @@
 {
   "_comment": [
-    "Replacement image facts for the reproducible S03 OCI rebuild. S21 must publish this exact",
-    "manifest without conversion and apply these facts with the final digest pins.",
-    "The rebuild preserves the complete SkyPilot 0.12.3 base and runtime config, adding only the",
-    "deterministic setuptools 81.0.0 layer recorded in S03-derived-image-provenance.json."
+    "Final published SkyPilot0.12.3 candidate with curl, rsync and authenticated OpenSSH source repairs.",
+    "Registry index/platform/config identities are verified in docs/security/runs/2026-09-27/skypilot-promotion/. Native SSH and API tests passed with actual UID1000 passwd identity."
   ],
-  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
+  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
   "skypilot_version": "0.12.3",
-  "image_index_digest": "sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
-  "amd64_manifest_digest": "sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
-  "config_blob_digest": "sha256:d05a57076d2c5c277b280d37d938716cedc908c25ae4e71931789ca7f7e0ef87",
+  "image_index_digest": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+  "amd64_manifest_digest": "sha256:21637f1843069b4cee58284ca0e044fb3dcb96a08033b30b5cde45d3fc1eca01",
+  "config_blob_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
   "config": {
     "Entrypoint": null,
     "Cmd": [
       "python3"
     ],
-    "User": null,
+    "User": "1000:1000",
     "WorkingDir": null,
     "Env": [
       "PATH=/opt/google-cloud-sdk/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "LANG=C.UTF-8",
       "GPG_KEY=A035C8C19219BA821ECEA86B64E628F8D684696D",
-      "PYTHON_VERSION=3.10.19",
-      "PYTHON_SHA256=c8f4a596572201d81dd7df91f70e177e19a70f1d489968b54b5fbbf29a97c076"
+      "PYTHON_VERSION=3.10.21",
+      "PYTHON_SHA256=a0da1e72132e950154eca0f6f47d5db828454700de20e5113667940d81e0db04",
+      "DEBIAN_FRONTEND=noninteractive"
     ]
   },
   "etc_passwd_uids": [
@@ -45,14 +44,16 @@
     42,
     996,
     998,
+    1000,
     65534
   ],
-  "has_uid_1000": false,
-  "home_entries": [],
+  "has_uid_1000": true,
+  "home_entries": [
+    "sky"
+  ],
   "package_facts": {
     "_comment": [
-      "The derived image preserves the SkyPilot 0.12.3 wheel and every startup contract value.",
-      "Only setuptools-owned site-packages paths change; live startup and restart validation passed."
+      "SkyPilot0.12.3 startup contract retained; isolated API startup/restart/status tests pass on Python3.10.21."
     ],
     "api_server_cmd": "-m sky.server.server",
     "api_server_cmd_source": "sky/server/common.py: API_SERVER_CMD",

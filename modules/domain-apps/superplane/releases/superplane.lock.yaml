@@ -82,9 +82,9 @@ source_access:
 # Digest-addressed and verifiable. Keys are referenced by name from the deploy side (U3),
 # so treat them as a contract.
 images:
-  skypilot-api: sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec
-  superplane-controller: sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed
-  superplane-api: sha256:f1897a677fa7a5e21b7a1aa8c0ab6a2a03b37b66a98443a06b200d72f4a9b259
+  skypilot-api: sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a
+  superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
+  superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
   superplane-executor: sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891
 
 image_sources:
@@ -92,27 +92,28 @@ image_sources:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-skypilot
     ecr_repository: adp-superplane-skypilot
-    tag: s03-f8d893cf
-    resolved_by: ECR manifest read-back with byte-identical SHA-256 verification, 2026-09-25
-    selected_because: S03 derived SkyPilot 0.12.3 image with verified setuptools 81.0.0 vendored dependency remediation
+    tag: security27-openssh-f8ba67f08
+    resolved_by: ECR index/platform/config byte identities verified, 2026-09-27
+    publication_receipt: docs/security/runs/2026-09-27/skypilot-promotion/publication.json
+    selected_because: Preserved S03 API contract plus signed curl/rsync and Debian OpenSSH backport; zero reviewed Critical candidate matches
   superplane-controller:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-controller
     ecr_repository: adp-superplane-controller
     source_path: src/superplane-controller
     build_workflow: .github/workflows/superplane-controller-build.yml
-    tag: 060a3c2764a408b6c3207db8795e0c8159ef28ea
-    resolved_by: ECR digest read-back, 2026-09-25; S01-image-evidence.json
-    selected_because: S01 reviewed controller advisory remediation and runtime validation
+    tag: security27-de59fd318
+    resolved_by: ECR digest read-back, 2026-09-27; wave1-publication.json
+    selected_because: x/net CVE-2026-46600 fix and unused curl/zlib removal; zero Critical/High candidate matches
   superplane-api:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-api
     ecr_repository: adp-superplane-api
     source_path: src/superplane-api
     build_workflow: .github/workflows/superplane-api-build.yml
-    tag: 27a5b943cb4081152069af76d9f5a90b18c918db
-    resolved_by: ECR digest read-back, 2026-09-25; S02 run 35847435952
-    selected_because: S02 removes python-jose and ecdsa; scope does not claim whole-image cleanliness
+    tag: security27-7f91b7107
+    resolved_by: ECR digest read-back, 2026-09-27; curl-removal-publication.json
+    selected_because: S02 retained plus unused curl removal and Debian updates; zero Critical candidate matches
   superplane-executor:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-executor

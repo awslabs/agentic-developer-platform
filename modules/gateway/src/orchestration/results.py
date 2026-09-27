@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import timedelta
@@ -373,6 +374,9 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 row = await run_result_for_assignment(session, node=node, dispatch=dispatch)
                 authenticated_assignment = row is not None
                 if row is None:
+                    row = await protected_failure_for_assignment(node=node, dispatch=dispatch)
+                    authenticated_assignment = row is not None
+                if row is None:
                     store = run_store if run_store is not None else EngineRunStore.from_env()
                     row = await asyncio.to_thread(store.get, dispatch["run_id"], dispatch["arrived_at"])
                 recovered_without_run_record = False
@@ -509,7 +513,11 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     # failure, using the existing node -> flow/claim/plan/execution
                     # lock order. A stale developer cannot fail a live reviewer.
                     identity = await current_identity(session, org_id=locked.org_id, node_id=locked.id)
-                    current = await load_execution(session, identity=identity, for_update=True) if identity is not None else None
+                    current = (
+                        await load_execution(session, identity=identity, for_update=True, released_failure_run_id=dispatch["run_id"])
+                        if identity is not None
+                        else None
+                    )
                     claim = await session.get(OrchestrationWorkClaim, identity.claim_id) if identity is not None else None
                     if (
                         identity is None
@@ -520,7 +528,10 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         or current.record.status in TERMINAL_EXECUTION_STATUSES
                         or current.record.pending_action_key is not None
                         or claim is None
-                        or claim.active_run_id != dispatch["run_id"]
+                        or not (
+                            claim.active_run_id == dispatch["run_id"]
+                            or (claim.state == "released" and claim.release_reason == "failed" and claim.claim_event_id == dispatch["run_id"])
+                        )
                     ):
                         report.waiting += 1
                         report.reasons[node.id] = "The failed worker no longer owns the current delivery execution; reconcile its current owner."
@@ -641,6 +652,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         ended = await advance_execution(
                             session,
                             identity=identity,
+                            released_failure_run_id=dispatch["run_id"],
                             advance=PhaseAdvance(
                                 phase=ExecutionPhase.CONCLUDED,
                                 status=ExecutionStatus.CONCLUDED,
@@ -656,7 +668,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             claim_id=identity.claim_id,
                             generation=identity.claim_generation,
                             reason=ReleaseReason.FAILED,
-                            terminal_evidence=f"authenticated failed run report:{dispatch['run_id']}",
+                            terminal_evidence=f"{row.get('status_source', 'authenticated_run_report')}:{dispatch['run_id']}",
                         )
                         if released.disposition not in {Disposition.ADMITTED, Disposition.DUPLICATE}:
                             raise ValueError("failed-worker claim release refused")
@@ -697,3 +709,41 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
             )
             await session.flush()
     return report
+
+
+async def protected_failure_for_assignment(*, node, dispatch, store=None):
+    """Settle terminal failures from gateway-owned authority, never activity hints.
+
+    Protected workers publish an atomic terminal outcome in EXEC instead of a
+    shared-role SQL report. Only a positively recorded failure of this exact
+    flow/node/attempt can use the failure path; success still needs delivery.
+    """
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true" and store is None:
+        return None
+    if store is None:
+        from src.agentauth.engine import get_engine_authority_writer
+
+        store = get_engine_authority_writer().store
+    raw = await asyncio.to_thread(store._read, f"TENANT#{node.org_id}", f"EXEC#{dispatch['run_id']}")
+    if not raw or raw.get("status") != {"S": "completed"}:
+        return None
+    outcome = raw.get("terminal_outcome", {}).get("S")
+    if outcome not in {"failed", "aborted", "cancelled", "budget_stopped"}:
+        return None
+    expected = {
+        "tenant_id": {"S": node.org_id},
+        "invocation_id": {"S": dispatch["run_id"]},
+        "flow_id": {"S": node.flow_id},
+        "orchestration_node_id": {"S": node.id},
+        "orchestration_node_attempt": {"N": str(node.attempts)},
+    }
+    if any(raw.get(key) != value for key, value in expected.items()):
+        raise ValueError("protected failure does not match node/tenant/flow/attempt")
+    return {
+        "tenant_id": node.org_id,
+        "engine_node_id": node.id,
+        "engine_attempt": node.attempts,
+        "status": "failed",
+        "status_source": "protected_execution",
+        "terminal_outcome": outcome,
+    }
