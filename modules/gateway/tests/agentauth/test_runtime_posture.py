@@ -43,7 +43,7 @@ def _clean_cache():
 async def _seed(session, *, posture: str = "report_only", revision: int = 2, compatibility_class: str = CLASS):
     row = PersonaModelPolicySetting(
         compatibility_class=compatibility_class,
-        harness_contract_revision="0.3.220",
+        harness_contract_revision="0.3.283",
         active_default_model_id="global.anthropic.claude-sonnet-4-6",
         revision=7,
         posture_revision=revision,

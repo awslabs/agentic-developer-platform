@@ -127,7 +127,7 @@ CONTROL_VERBS: tuple[str, ...] = ("pause", "resume", "steer", "abort")
 # update rather than as a live evaluation that silently accepts stale evidence.
 CONTROL_PROTOCOL_VERSION = 1
 CLAUDE_ADAPTER_ID = "claude"
-EXPECTED_CLAUDE_SDK_VERSION = "0.3.220"
+EXPECTED_CLAUDE_SDK_VERSION = "0.3.283"
 
 # Wave 3's two numeric bounds, named because both are easy to get subtly wrong.
 #

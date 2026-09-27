@@ -88,7 +88,7 @@ export const CLAUDE_ADAPTER_ID = 'claude';
  * are observed SDK behaviour, not a documented permanent guarantee. A version
  * bump is a prompt to re-run the contract suite, not a no-op.
  */
-export const CLAUDE_SDK_VERSION = '0.3.220';
+export const CLAUDE_SDK_VERSION = '0.3.283';
 
 /**
  * Reason `pause`/`resume` report unsupported when no gate is installed (#3961).

@@ -160,7 +160,7 @@ async def test_external_root_freezes_persona_mapping_before_publication(root_cli
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             enforcement_posture="report_only",
             revision=1,
             posture_revision=1,

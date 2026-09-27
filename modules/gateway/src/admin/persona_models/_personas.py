@@ -60,7 +60,7 @@ PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
 }
 
 COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION: dict[str, str] = {
-    "claude-agent-sdk": "0.3.220",
+    "claude-agent-sdk": "0.3.283",
     "codex-sdk": "0.155.1",
 }
 

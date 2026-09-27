@@ -122,7 +122,7 @@ class TestPersonaCompatibility:
         assert result is None
 
     def test_harness_revision_is_server_owned_without_cross_class_fallback(self):
-        assert persona_harness_contract_revision("developer") == "0.3.220"
+        assert persona_harness_contract_revision("developer") == "0.3.283"
         assert persona_harness_contract_revision("agent-codex-reviewer") == "0.155.1"
         assert compatibility_class_harness_contract_revision(COMPATIBILITY_CLASS_CODEX) == "0.155.1"
 

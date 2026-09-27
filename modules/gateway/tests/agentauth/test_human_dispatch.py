@@ -100,13 +100,13 @@ def _report_only_snapshot():
                 "revision": 7,
                 "posture": "report_only",
                 "posture_revision": 2,
-                "harness_contract_revision": "0.3.220",
+                "harness_contract_revision": "0.3.283",
             }
         },
         persona_contracts={
             "developer": {
                 "compatibility_class": "claude-agent-sdk",
-                "harness_contract_revision": "0.3.220",
+                "harness_contract_revision": "0.3.283",
             }
         },
         policy_revision="policy-7",

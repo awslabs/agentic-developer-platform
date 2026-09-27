@@ -1,7 +1,7 @@
 jest.mock('../utils/resilientQuery', () => ({ resilientQuery: jest.fn() }));
 jest.mock('../harnesses/claude-control', () => ({
   CLAUDE_ADAPTER_ID: 'claude',
-  CLAUDE_SDK_VERSION: '0.3.220',
+  CLAUDE_SDK_VERSION: '0.3.283',
 }));
 
 import manifest from './request-shape-manifest.json';
@@ -34,7 +34,7 @@ describe('Claude invocability probe', () => {
   it('pins a generated digest for every Claude catalogue model', () => {
     expect(manifest.probe_prompt_sha256).toBe(PROBE_PROMPT_SHA256);
     expect(manifest.models['global.anthropic.claude-sonnet-5']).toBe(
-      'b2e952e66f69e827bee940b1f895c82746b5d2ef989b036eebbd9c8290e228c9',
+      '800704b1c354ea9933c789b2fc74c118e4747bdaedd6e22ddd7f90a8a20bd418',
     );
     for (const [model, digest] of Object.entries(manifest.models)) {
       expect(digest).toMatch(/^[0-9a-f]{64}$/);

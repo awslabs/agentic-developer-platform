@@ -4,7 +4,8 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from src.admin.persona_models import catalogue_service, dispatch_selection, service
+from src.admin.persona_models import catalogue_service, service
+from src.agentauth import launch_configuration as dispatch_selection
 from src.internal import persona_model_selection
 from src.shared.database import get_db
 from src.shared.models.organization import User
@@ -161,3 +162,17 @@ async def test_protected_dispatch_preserves_authorized_saved_selection(mapped, m
     selected = await dispatch_selection.apply_dispatch_selection(mapped, envelope())
     assert selected["model_resolved"] == HAIKU
     assert selected["model_selection"]["principal_id"] == "human-root"
+
+
+@pytest.mark.parametrize("protected", ["true", "false"])
+async def test_engine_launch_and_individual_trigger_resolve_identically(mapped, monkeypatch, protected):
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", protected)
+    engine = await dispatch_selection.resolve_launch_configuration(mapped, org_id="tenant-a", user_id="root-sub", persona="developer")
+    individual = await dispatch_selection.apply_dispatch_selection(mapped, envelope())
+    assert engine == {key: individual[key] for key in ("model_selection", "model_resolved")}
+    assert engine["model_resolved"] == HAIKU
+
+
+async def test_engine_launch_refuses_invalid_configuration(mapped):
+    with pytest.raises(service.PreferenceRejectedError):
+        await dispatch_selection.resolve_launch_configuration(mapped, org_id="tenant-b", user_id="root-sub", persona="developer")

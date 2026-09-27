@@ -4776,7 +4776,7 @@ def wave2_preflight_payload(**overrides) -> dict:
         "adapter_id": _mod.CLAUDE_ADAPTER_ID,
         "sdk_version": _mod.EXPECTED_CLAUDE_SDK_VERSION,
         "package_versions": {
-            name: "0.3.220" for name in _mod.WAVE2_REQUIRED_PACKAGES
+            name: "0.3.283" for name in _mod.WAVE2_REQUIRED_PACKAGES
         },
         "deployed_components": deployed_components(),
         "ci_gates": required_ci_gates(),
@@ -11254,7 +11254,7 @@ def wave3_preflight_payload(**overrides) -> dict:
         "protocol_version": _mod.CONTROL_PROTOCOL_VERSION,
         "adapter_id": _mod.CLAUDE_ADAPTER_ID,
         "sdk_version": _mod.EXPECTED_CLAUDE_SDK_VERSION,
-        "package_versions": {name: "0.3.220" for name in _mod.WAVE2_REQUIRED_PACKAGES},
+        "package_versions": {name: "0.3.283" for name in _mod.WAVE2_REQUIRED_PACKAGES},
         "deployed_components": deployed_components(),
         "ci_gates": required_ci_gates(),
         "isolation_before_listener": True,

@@ -2031,13 +2031,13 @@ async def test_governed_dispatch_refuses_when_claims_are_disabled(session, monke
 class TestSavedPersonaMapping:
     @pytest.mark.parametrize("unavailable", [False, True])
     async def test_selection_precedes_state_change_and_uses_approver(self, session, monkeypatch, unavailable):
-        from src.admin.persona_models import dispatch_selection
+        from src.agentauth import launch_configuration as dispatch_selection
 
         monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
         monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
         _flow, node, _decision = await _ready_story(session)
 
-        async def select(db, *, org_id, user_id, persona):
+        async def select(db, *, org_id, user_id, persona, direct_model=None):
             assert user_id == APPROVER
             assert org_id == ORG_A
             assert persona == "developer"

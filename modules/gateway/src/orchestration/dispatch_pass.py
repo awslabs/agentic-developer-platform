@@ -884,24 +884,22 @@ async def _dispatch_one_unclaimed(
         owner, detail, required_input = description(code)
         raise _AdmissionRefusedError(_admission_refused(code, owner=owner, required_input=required_input, detail=detail))
 
-    selection = None
-    from src.admin.persona_models.dispatch_selection import mapping_enabled, select_for_dispatch
+    from src.agentauth.launch_configuration import resolve_launch_configuration
 
-    if mapping_enabled():
-        try:
-            selection = await select_for_dispatch(
-                session,
-                org_id=org_id,
-                user_id=user_id,
-                persona=EVALUATION_PERSONA if node.kind == NodeKind.EVAL.value else config.persona,
-            )
-        except Exception:
-            logger.exception("Saved persona model unavailable for node %s; node remains ready", node.id)
-            report.record(org_id, "policy_blocked")
-            report.policy_block_reasons["persona_model_selection_unavailable"] = (
-                report.policy_block_reasons.get("persona_model_selection_unavailable", 0) + 1
-            )
-            return
+    try:
+        launch_configuration = await resolve_launch_configuration(
+            session,
+            org_id=org_id,
+            user_id=user_id,
+            persona=EVALUATION_PERSONA if node.kind == NodeKind.EVAL.value else config.persona,
+        )
+    except Exception:
+        logger.exception("Agent configuration unavailable for node %s; node remains ready", node.id)
+        report.record(org_id, "policy_blocked")
+        report.policy_block_reasons["persona_model_selection_unavailable"] = (
+            report.policy_block_reasons.get("persona_model_selection_unavailable", 0) + 1
+        )
+        return
 
     # A repair inherits the implementation identity, not an old approval. Resolve
     # provider truth before consuming an attempt; failure leaves the node READY.
@@ -975,10 +973,7 @@ async def _dispatch_one_unclaimed(
         user_id=user_id,
         cognito_sub=cognito_sub,
     )
-    if selection is not None:
-        envelope["model_selection"] = selection
-        if selection["model"] is not None:
-            envelope["model_resolved"] = selection["model"]
+    envelope.update(launch_configuration)
 
     if correction is not None:
         detail = correction.detail

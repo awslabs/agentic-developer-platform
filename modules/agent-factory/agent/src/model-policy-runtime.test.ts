@@ -38,7 +38,7 @@ function signedReply(nonce: string, policy = responsePolicy, context?: any) {
 
 function policy(posture: string) {
   return { posture, posture_verified: true, status: 'proposed', decision: { schema_version: 1,
-    invocation_id: 'run-a', tenant_id: 'tenant-a', persona: 'developer', runtime_posture: posture, compatibility_class: 'claude-agent-sdk', harness_contract_revision: '0.3.220',
+    invocation_id: 'run-a', tenant_id: 'tenant-a', persona: 'developer', runtime_posture: posture, compatibility_class: 'claude-agent-sdk', harness_contract_revision: '0.3.283',
     resolved_model_id: model } };
 }
 

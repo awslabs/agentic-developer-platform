@@ -103,7 +103,7 @@ def snapshot(**changes) -> ModelPolicySnapshot:
     contracts = {
         persona: {
             "compatibility_class": "claude-agent-sdk",
-            "harness_contract_revision": "0.3.220",
+            "harness_contract_revision": "0.3.283",
         }
         for persona in ("architect", "developer", "reviewer")
     }
@@ -119,7 +119,7 @@ def snapshot(**changes) -> ModelPolicySnapshot:
                 "revision": 7,
                 "posture": "report_only",
                 "posture_revision": 2,
-                "harness_contract_revision": "0.3.220",
+                "harness_contract_revision": "0.3.283",
             }
         },
         "persona_contracts": contracts,
@@ -518,7 +518,7 @@ async def test_real_root_admission_creates_and_binds_snapshot_before_publication
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=1,
@@ -599,7 +599,7 @@ async def test_snapshot_admission_latency_stays_well_inside_webhook_budget(
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=1,
@@ -734,7 +734,7 @@ async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_ses
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=4,
             posture_revision=2,
@@ -782,7 +782,7 @@ async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_ses
     }
     assert built.persona_contracts["developer"] == {
         "compatibility_class": "claude-agent-sdk",
-        "harness_contract_revision": "0.3.220",
+        "harness_contract_revision": "0.3.283",
     }
 
 
@@ -856,7 +856,7 @@ async def test_report_only_mapping_snapshot_does_not_require_unproven_active_def
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=None,
             revision=1,
             posture_revision=1,
@@ -920,7 +920,7 @@ async def test_service_root_resolves_verified_alias_to_canonical_principal(db_se
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=1,
@@ -1008,7 +1008,7 @@ async def test_root_uses_only_fresh_tenant_and_principal_bound_lkg_on_database_o
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=8,
             posture_revision=3,
@@ -1101,7 +1101,7 @@ async def test_lkg_refuses_when_active_allowlist_revision_changed(
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=1,
@@ -1546,7 +1546,7 @@ async def _add_live_posture_setting(db_session, *, posture: str = "report_only",
     db_session.add(
         PersonaModelPolicySetting(
             compatibility_class="claude-agent-sdk",
-            harness_contract_revision="0.3.220",
+            harness_contract_revision="0.3.283",
             active_default_model_id=SONNET,
             revision=1,
             posture_revision=posture_revision,

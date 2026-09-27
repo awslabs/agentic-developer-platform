@@ -444,7 +444,7 @@ async def test_ac02_save_and_list(client: AsyncClient):
     assert entries["architect"]["source"] == "system-default"
     assert entries["architect"]["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert entries["architect"]["compatibility_class"] == "claude-agent-sdk"
-    assert entries["architect"]["harness_contract_revision"] == "0.3.220"
+    assert entries["architect"]["harness_contract_revision"] == "0.3.283"
     assert entries["architect"]["effective_is_candidate"] is False
     assert entries["architect"]["class_default_status"] == "proven"
     assert entries["agent-codex-reviewer"]["compatibility_class"] == "codex-sdk"
@@ -469,7 +469,7 @@ async def test_class_candidate_is_visible_but_never_reported_as_proven(client: A
     assert resp.status_code == 200
     architect = next(entry for entry in resp.json()["entries"] if entry["persona_key"] == "architect")
     assert architect["compatibility_class"] == "claude-agent-sdk"
-    assert architect["harness_contract_revision"] == "0.3.220"
+    assert architect["harness_contract_revision"] == "0.3.283"
     assert architect["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert architect["effective_is_candidate"] is True
     assert architect["class_default_status"] == "candidate"
@@ -875,7 +875,7 @@ async def test_ac08_reset_and_audit_survives(client: AsyncClient, engine):
     assert data["source"] == "system-default"
     assert data["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert data["compatibility_class"] == "claude-agent-sdk"
-    assert data["harness_contract_revision"] == "0.3.220"
+    assert data["harness_contract_revision"] == "0.3.283"
     assert data["effective_is_candidate"] is False
     assert data["class_default_status"] == "proven"
 
@@ -922,7 +922,7 @@ async def test_reset_response_names_candidate_class_default(client: AsyncClient,
     assert data["source"] == "system-default"
     assert data["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
     assert data["compatibility_class"] == "claude-agent-sdk"
-    assert data["harness_contract_revision"] == "0.3.220"
+    assert data["harness_contract_revision"] == "0.3.283"
     assert data["effective_is_candidate"] is True
     assert data["class_default_status"] == "candidate"
 

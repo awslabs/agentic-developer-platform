@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "compatibility_class": "claude-agent-sdk",
-  "harness_contract_revision": "0.3.220",
+  "harness_contract_revision": "0.3.283",
   "allowed_patterns": [
     "anthropic.claude-*",
     "us.anthropic.claude-*",
