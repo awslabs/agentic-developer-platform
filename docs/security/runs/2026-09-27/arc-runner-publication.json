@@ -1,0 +1,10 @@
+[
+  {
+    "component": "arc-runner",
+    "source_commit": "489f17109",
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:a5f75c5914fd6bc7ba81d6436609ead349628df43dc9d0b24ad35f5759ed568c",
+    "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner:security27-489f17109",
+    "matches_local_root": true,
+    "deployed": false
+  }
+]
