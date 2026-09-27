@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import subprocess
+import xml.etree.ElementTree as ET
 
 import pytest
 import yaml
@@ -77,3 +78,21 @@ def test_userdata_reports_real_pipeline_exit(tmp_path, build_exit):
     assert failure.exists() is (build_exit != 0)
     if failure.exists():
         assert "build-result" in failure.read_text()
+
+
+def test_windows_unattended_reserves_boot_partition_before_os_volume():
+    xml = ET.parse(ROOT / "modules/domain-apps/cyber/image-builder/windows/answer_files/Autounattend.xml")
+    ns = {"u": "urn:schemas-microsoft-com:unattend"}
+    disk = xml.find(".//u:DiskConfiguration/u:Disk", ns)
+    create = disk.findall("u:CreatePartitions/u:CreatePartition", ns)
+    modify = disk.findall("u:ModifyPartitions/u:ModifyPartition", ns)
+    os_id = xml.findtext(".//u:OSImage/u:InstallTo/u:PartitionID", namespaces=ns)
+    boot = [p for p in modify if p.findtext("u:Active", namespaces=ns) == "true"]
+    assert len(boot) == 1
+    boot_id = boot[0].findtext("u:PartitionID", namespaces=ns)
+    assert boot_id != os_id
+    reserved = next(p for p in create if p.findtext("u:Order", namespaces=ns) == boot_id)
+    assert int(reserved.findtext("u:Size", namespaces=ns)) >= 100
+    os_volume = next(p for p in create if p.findtext("u:Order", namespaces=ns) == os_id)
+    assert os_volume.findtext("u:Extend", namespaces=ns) == "true"
+    assert int(boot_id) < int(os_id)

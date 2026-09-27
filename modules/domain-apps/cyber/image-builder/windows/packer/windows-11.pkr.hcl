@@ -51,7 +51,7 @@ variable "output_dir" {
 
 variable "disk_size" {
   type    = string
-  default = "61440"
+  default = "65536"
 }
 
 variable "memory" {
@@ -92,6 +92,8 @@ source "qemu" "windows-11" {
   # build-pipeline.sh supplies local paths for both cached ISO inputs.
   cd_files = []
   qemuargs = [
+    # Windows 11 24H2 requires instructions absent from QEMU's default CPU.
+    ["-cpu", "host"],
     ["-drive", "file={{ .OutputDir }}/{{ .Name }},if=virtio,format=qcow2,cache=writeback"],
     ["-drive", "file=${var.iso_url},media=cdrom,index=2,readonly=on,format=raw"],
     ["-drive", "file=${var.virtio_iso_url},media=cdrom,index=3,readonly=on,format=raw"]
