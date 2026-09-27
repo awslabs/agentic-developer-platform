@@ -52,7 +52,7 @@ on:
         default: true
         type: boolean
       image_only:
-        description: 'Update only the existing SkyPilot container to the reviewed release-lock image'
+        description: 'Update existing SkyPilot and authentication containers to reviewed release-lock images'
         required: false
         default: false
         type: boolean
@@ -431,7 +431,15 @@ jobs:
           SP_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          args=(--namespace "$SP_NAMESPACE" --image "$SP_IMAGE")
+          transport_image=$(python3 - <<'PYTHON'
+          import yaml
+          from pathlib import Path
+          lock = yaml.safe_load(Path("modules/domain-apps/superplane/releases/superplane.lock.yaml").read_text())
+          source = lock["image_sources"]["superplane-api"]
+          print(source["registry"] + "/" + source["repository"] + "@" + lock["images"]["superplane-api"])
+          PYTHON
+          )
+          args=(--namespace "$SP_NAMESPACE" --image "$SP_IMAGE" --transport-image "$transport_image")
           python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py "${args[@]}" --dry-run
           if [ "$SP_DRY_RUN" = false ]; then
             python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py "${args[@]}"

@@ -83,3 +83,26 @@ def test_unpinned_or_malformed_image_is_rejected_without_cluster_call(image):
     with pytest.raises(ValueError):
         module.update("skypilot", image, run=run)
     assert not calls
+
+
+def test_transport_is_updated_in_same_guarded_patch_and_rollback():
+    calls, run = runner(fail_rollout=True)
+    transport = "example.invalid/api@sha256:" + "b" * 64
+    with pytest.raises(subprocess.CalledProcessError):
+        module.update("skypilot", IMAGE, run=run, transport_image=transport)
+    patch = json.loads(calls[1][calls[1].index("-p") + 1])
+    rollback = json.loads(calls[3][calls[3].index("-p") + 1])
+    assert patch[-1] == {
+        "op": "replace",
+        "path": "/spec/template/spec/containers/0/image",
+        "value": transport,
+    }
+    assert rollback[-2]["value"] == transport
+    assert rollback[-1]["value"] == "unchanged"
+
+
+def test_invalid_transport_image_rejected_before_cluster_calls():
+    calls, run = runner()
+    with pytest.raises(ValueError):
+        module.update("skypilot", IMAGE, run=run, transport_image="api:latest")
+    assert not calls
