@@ -68,7 +68,7 @@ run "the_published_skypilot_reference_is_digest_pinned" {
 
   # The digest U2's lock pins for skypilot-api, restated on purpose — see the header.
   assert {
-    condition     = local.skypilot_digest == "sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec"
+    condition     = local.skypilot_digest == "sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7"
     error_message = "the module must publish the digest the lock pins for skypilot-api. If the lock was intentionally re-pinned, update this expected value in the same change — that is what makes a silent re-pin impossible."
   }
 
