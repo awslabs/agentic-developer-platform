@@ -1,0 +1,42 @@
+name: ARC Runner Image Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview the reviewed runner image update without applying it'
+        type: boolean
+        default: true
+        required: true
+concurrency:
+  group: arc-runner-image-deploy-dev
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    environment: adp-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Verify target and connect to cluster
+        run: |
+          set -euo pipefail
+          account=$(aws sts get-caller-identity --query Account --output text)
+          test "$account" = 879318057152
+          echo "DEPLOY_ACCOUNT=$account" >> "$GITHUB_ENV"
+          aws eks update-kubeconfig --name adp-dev-eks-cluster --region us-east-1
+      - name: Preview and update only runner images
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(--account "$DEPLOY_ACCOUNT")
+          if [ "$DRY_RUN" = false ]; then args+=(--apply); fi
+          python3 platform/scripts/update-arc-runner-image.py "${args[@]}"
