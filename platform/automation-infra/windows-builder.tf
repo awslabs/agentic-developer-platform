@@ -16,6 +16,18 @@ variable "windows_cape_host_id" {
   type    = string
   default = ""
 }
+variable "windows_builder_ami_id" {
+  type    = string
+  default = ""
+}
+data "aws_ami" "windows_builder" {
+  count  = var.enable_windows_builder ? 1 : 0
+  owners = ["099720109477"]
+  filter {
+    name   = "image-id"
+    values = [var.windows_builder_ami_id]
+  }
+}
 locals {
   windows_prefix       = "adp-${var.environment}-imgbuilder-ci"
   windows_bucket       = "adp-${var.environment}-cape-assets"
@@ -54,6 +66,10 @@ resource "aws_iam_role" "windows_builder" {
       condition     = length(var.windows_builder_subnet_ids) > 0 && can(regex("^vpc-[0-9a-f]+$", var.windows_builder_vpc_id)) && can(regex("^i-[0-9a-f]+$", var.windows_cape_host_id))
       error_message = "Windows builds require an explicit existing VPC, subnet inventory and CAPE host."
     }
+    precondition {
+      condition     = data.aws_ami.windows_builder[0].owner_id == "099720109477" && can(regex("^ami-[0-9a-f]+$", var.windows_builder_ami_id))
+      error_message = "Windows builders require an exact reviewed Canonical base AMI."
+    }
   }
 }
 resource "aws_iam_role_policy" "windows_builder" {
@@ -69,9 +85,9 @@ resource "aws_iam_role_policy" "windows_builder" {
     { Effect = "Allow", Action = ["iam:GetInstanceProfile", "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:ListInstanceProfileTags", "iam:TagInstanceProfile", "iam:UntagInstanceProfile"], Resource = local.windows_profile },
     { Effect = "Allow", Action = ["iam:PassRole"], Resource = local.windows_role, Condition = { StringEquals = { "iam:PassedToService" = "ec2.amazonaws.com" } } },
     { Effect = "Allow", Action = ["ec2:Describe*"], Resource = "*" },
-    # AMIs may advance through Canonical's public SSM parameter, but only their
-    # images can launch, in the explicit private subnet inventory below.
-    { Sid = "CanonicalImage", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = "arn:aws:ec2:${var.aws_region}::image/*", Condition = { StringEquals = { "ec2:Owner" = "099720109477" } } },
+    # EC2's authorization context reports Canonical's public AMI owner as
+    # "amazon". Pin the verified ID instead of admitting every Amazon image.
+    { Sid = "CanonicalImage", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = "arn:aws:ec2:${var.aws_region}::image/${var.windows_builder_ami_id}" },
     { Sid = "PrivateSubnets", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = [for id in var.windows_builder_subnet_ids : "${local.windows_ec2}:subnet/${id}"] },
     { Sid = "BuilderSecurityGroup", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = "${local.windows_ec2}:security-group/*", Condition = { StringEquals = { "ec2:ResourceTag/Name" = "${local.windows_prefix}-sg-builder" } } },
     { Sid = "NewInstance", Effect = "Allow", Action = ["ec2:RunInstances"], Resource = "${local.windows_ec2}:instance/*", Condition = { StringEquals = { "aws:RequestTag/Name" = "${local.windows_prefix}-builder", "ec2:InstanceType" = "c8i.4xlarge" }, ArnEquals = { "ec2:InstanceProfile" = local.windows_profile } } },

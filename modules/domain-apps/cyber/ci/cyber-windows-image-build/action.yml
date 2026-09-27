@@ -15,15 +15,16 @@ runs:
       python3 - <<'PYENV'
       import os, uuid
       with open(os.environ["GITHUB_ENV"], "a") as stream:
-          for key in ['AWS_REGION', 'ENVIRONMENT', 'ASSETS_BUCKET', 'CAPE_HOST_ID', 'TF_DIR']:
+          for key in ['AWS_REGION', 'ENVIRONMENT', 'ASSETS_BUCKET', 'CAPE_HOST_ID', 'TF_DIR', 'BUILDER_AMI_ID']:
               marker = uuid.uuid4().hex
-              stream.write(f"{key}<<{marker}\n{os.environ[key]}\n{marker}\n")
+              stream.write(f"{key}<<{marker}\n{os.environ.get(key, '')}\n{marker}\n")
       PYENV
   - name: Load deployment config
     uses: ./.github/actions/load-deploy-config
   - name: Verify reviewed runner tools
     run: |
       set -euo pipefail
+      test -n "$BUILDER_AMI_ID" || { echo "::error::Configure ADP_WINDOWS_BUILDER_AMI_ID in the protected environment"; exit 1; }
       for tool in aws terraform jq python3; do
         command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
       done
@@ -64,8 +65,12 @@ runs:
         -var="build_host_enabled=true" \
         -var="builder_permissions_boundary_arn=arn:aws:iam::${ACCOUNT_ID}:policy/adp-${ENVIRONMENT}-windows-builder-ceiling" \
         -var="builder_name_suffix=ci" \
+        -var="builder_ami_id=${BUILDER_AMI_ID}" \
         -var="account_id=${ACCOUNT_ID}" \
         -var="idle_period_seconds=21600"
+      BUILDER_INSTANCE_ID=$(terraform output -raw builder_instance_id)
+      [[ "$BUILDER_INSTANCE_ID" =~ ^i-[0-9a-f]+$ ]]
+      echo "BUILDER_INSTANCE_ID=$BUILDER_INSTANCE_ID" >> "$GITHUB_ENV"
     shell: bash
   - name: Wait for build output in S3
     run: |
@@ -98,6 +103,15 @@ runs:
           aws s3 cp "$FAIL_MARKER" - --region "${AWS_REGION}" 2>/dev/null || true
           exit 1
         fi
+
+        STATE=$(aws ec2 describe-instances --instance-ids "$BUILDER_INSTANCE_ID" \
+          --region "$AWS_REGION" --query 'Reservations[0].Instances[0].State.Name' --output text)
+        case "$STATE" in
+          shutting-down|terminated|stopping|stopped)
+            echo "::error::Builder $BUILDER_INSTANCE_ID is $STATE before publishing its image."
+            exit 1
+            ;;
+        esac
 
         if (( i % 12 == 0 )); then
           echo "  Still building... ($((i * 15 / 60)) min elapsed)"
@@ -185,6 +199,7 @@ runs:
         -var="build_host_enabled=false" \
         -var="builder_permissions_boundary_arn=arn:aws:iam::${ACCOUNT_ID}:policy/adp-${ENVIRONMENT}-windows-builder-ceiling" \
         -var="builder_name_suffix=ci" \
+        -var="builder_ami_id=${BUILDER_AMI_ID}" \
         -var="account_id=${ACCOUNT_ID}" \
         -var="idle_period_seconds=21600"
     shell: bash

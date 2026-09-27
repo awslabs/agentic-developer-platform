@@ -17,7 +17,7 @@
 # ---------------------------------------------------------------------------
 
 data "aws_ssm_parameter" "ubuntu_ami" {
-  count = var.build_host_enabled ? 1 : 0
+  count = var.build_host_enabled && var.builder_ami_id == "" ? 1 : 0
   name  = "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id"
 }
 
@@ -134,7 +134,7 @@ resource "aws_iam_instance_profile" "builder" {
 resource "aws_instance" "builder" {
   count = var.build_host_enabled ? 1 : 0
 
-  ami           = data.aws_ssm_parameter.ubuntu_ami[0].value
+  ami           = var.builder_ami_id != "" ? var.builder_ami_id : data.aws_ssm_parameter.ubuntu_ami[0].value
   instance_type = var.build_instance_type
   subnet_id     = local.subnet_id
 
@@ -313,7 +313,9 @@ resource "aws_cloudwatch_metric_alarm" "builder_idle" {
   evaluation_periods  = var.idle_period_seconds / 300
   threshold           = var.idle_cpu_threshold
   comparison_operator = "LessThanThreshold"
-  treat_missing_data  = "breaching"
+  # A new instance has no prior CPU history. Missing samples must not count
+  # toward the idle window or CloudWatch terminates it during first boot.
+  treat_missing_data = "missing"
 
   dimensions = {
     InstanceId = aws_instance.builder[0].id

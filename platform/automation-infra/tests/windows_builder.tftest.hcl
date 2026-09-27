@@ -1,5 +1,6 @@
 mock_provider "external" {}
 mock_provider "aws" {
+  mock_data "aws_ami" { defaults = { owner_id = "099720109477" } }
   mock_resource "aws_iam_policy" {
     defaults = { arn = "arn:aws:iam::123456789012:policy/test-policy" }
   }
@@ -26,6 +27,7 @@ variables {
   aws_region                 = "us-east-1"
   cluster_name               = "adp-test-eks-cluster"
   repository                 = "aws-e/adp"
+  windows_builder_ami_id     = "ami-0123456789abcdef0"
   enable_windows_builder     = true
   windows_builder_vpc_id     = "vpc-0123456789abcdef0"
   windows_builder_subnet_ids = ["subnet-0123456789abcdef0"]
@@ -33,6 +35,10 @@ variables {
 }
 run "bounded_windows_identity" {
   command = apply
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.windows_builder[0].policy).Statement : s if try(s.Sid, "") == "CanonicalImage"]).Resource == "arn:aws:ec2:us-east-1::image/ami-0123456789abcdef0"
+    error_message = "Only the exact reviewed AMI may launch, never all Amazon images."
+  }
   assert {
     condition     = one([for s in jsondecode(aws_iam_role_policy.windows_builder[0].policy).Statement : s if try(s.Sid, "") == "CreateBoundedBuilderRole"]).Resource == "arn:aws:iam::123456789012:role/adp-test-imgbuilder-ci-builder-role"
     error_message = "CI lifecycle must not adopt or delete legacy standalone builder roles."

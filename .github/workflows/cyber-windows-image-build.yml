@@ -20,6 +20,8 @@ jobs:
     runs-on: arc-runner-org
     environment: adp-windows-build-dev
     timeout-minutes: 120
+    env:
+      BUILDER_AMI_ID: ${{ vars.ADP_WINDOWS_BUILDER_AMI_ID }}
     permissions:
       id-token: write
       contents: read
