@@ -375,3 +375,16 @@ callback key, and Kubernetes access confined to `agent-context`. Release jobs
 verify the existing bound `platform-data` and `zoekt-index` claims; platform
 setup owns the namespace, CSI driver, StorageClass and PersistentVolume. This
 identity does not create IAM resources or mutate cluster-scoped storage.
+
+## SkyPilot manifest deployment
+
+`enable_skypilot_deployment=true` provisions the dedicated
+`adp-<environment>-skypilot-trusted-deployment` identity for
+`superplane-k8s-deploy.yml`. Its protected environment is
+`adp-skypilot-deploy-<environment>` and must permit only main. Set
+`ADP_DEPLOY_ROLE_ARN` to that role and `ADP_DEPLOY_REGION` to the cluster region.
+The identity reads the nine existing Superplane configuration parameters and
+manages namespaced objects only in `skypilot`; it has no secret-value reads,
+Terraform, IAM mutation, publishing, or Superplane control-plane authority.
+The workflow prepares its pinned YAML parser in an ephemeral Python environment.
+Validate with `dry_run=true` before an intended manifest rollout.

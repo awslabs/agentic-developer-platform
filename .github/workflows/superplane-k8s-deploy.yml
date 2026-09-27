@@ -66,7 +66,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     name: Roll out Superplane manifests
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-skypilot-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       id-token: write
       contents: read
@@ -94,10 +94,15 @@ jobs:
       - name: Verify reviewed runner tools
         run: |
           set -euo pipefail
-          for tool in aws terraform kubectl jq python3 psql; do
+          for tool in aws kubectl jq python3; do
             command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
           done
-          python3 -c 'import yaml'
+      - name: Prepare manifest parser
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/skypilot-python"
+          "$RUNNER_TEMP/skypilot-python/bin/python" -m pip install --quiet PyYAML==6.0.3
+          echo "$RUNNER_TEMP/skypilot-python/bin" >> "$GITHUB_PATH"
 
       - name: Preflight — are there manifests to apply?
         # U3 owns the manifests, and at the time this lane was written there are none: the
@@ -290,7 +295,7 @@ jobs:
           set -euo pipefail
           CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
           aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "$CLUSTER_NAME"
-          kubectl cluster-info
+          kubectl get deployment -n skypilot
 
       - name: Render manifests
         # Rendered to a directory first, then guarded, then applied. cyber pipes `sed`
