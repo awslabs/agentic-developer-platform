@@ -30,3 +30,25 @@ npm test
 ```
 
 Tests cover domain validation, uncertain submission recovery without duplicate Tasks, active-run exclusion, cross-origin submission refusal, and report integrity checks. The recorded sample is a prior investigation, not a current safety guarantee.
+
+### Hosted client
+
+The existing ADP S3/CloudFront frontend serves `/domain-mri` behind its normal
+Cognito sign-in. It is a browser-only Task API client: no additional server,
+proxy endpoint, service credential, or gateway backend deployment is required.
+
+The client calls `/api/v1/tasks` with the signed-in user's Cognito access token,
+then uses the existing status, SSE events, cancellation and artifact endpoints.
+The Cyber persona's saved model selection and the user's Task policy determine
+execution; the client does not override models or budgets. Authorized humans
+need an active workspace membership and existing human Task enrollment.
+
+The page preserves an idempotency key across ambiguous submission retries,
+recovers the current Task and event cursor from session storage on refresh,
+and verifies report SHA-256 before displaying it in a sandboxed iframe. Report
+and Task data are fetched with authorization; no recorded reports or service
+secrets are published as frontend assets. The standalone local demo above
+retains its separate replay mode.
+
+Publish with the existing frontend-only deployment workflow. Gateway backend,
+worker images, API authorization and infrastructure remain unchanged.

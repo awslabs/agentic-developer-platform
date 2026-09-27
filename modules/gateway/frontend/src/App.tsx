@@ -19,6 +19,8 @@ import { NextLoading } from './components/next/NextLoading';
 // what decides whether any /next chunk is fetched at all.
 import { NewUiGate } from './components/next/NewUiGate';
 
+const DomainMRI = lazy(() => import('./pages/DomainMRI'));
+
 // Lazy load pages for code splitting
 const Login = lazy(() => import('./pages/Login'));
 const AuthCallback = lazy(() => import('./pages/AuthCallback'));
@@ -103,6 +105,7 @@ function App() {
               </ProtectedRoute>
             }
           >
+            <Route path="/domain-mri" element={<DomainMRI />} />
             <Route element={<MainLayout />}>
               <Route path="/" element={<RoleBasedRedirect />} />
               <Route path="/dashboard" element={<DashboardRedirect />} />
