@@ -108,6 +108,7 @@ source "qemu" "windows-11" {
     "../scripts/fixnetwork.ps1",
     "../scripts/disable-screensaver.ps1",
     "../scripts/disable-winrm.ps1",
+    "../scripts/finalize-image.ps1",
     "../scripts/enable-winrm.ps1",
     "../scripts/cape-configure-winrm.ps1",
     "../scripts/microsoft-updates.bat",
@@ -141,7 +142,7 @@ source "qemu" "windows-11" {
   boot_wait    = "2s"
 
   # Shutdown
-  shutdown_command = "shutdown /s /t 10 /f /d p:4:1 /c \"Packer Shutdown\""
+  shutdown_command = "powershell -NoProfile -ExecutionPolicy Bypass -File A:\\finalize-image.ps1"
   shutdown_timeout = "15m"
 
   # VNC for debugging (disabled in headless mode but available if needed)
@@ -161,8 +162,5 @@ build {
     script = "../scripts/provision-cape.ps1"
   }
 
-  # Disable WinRM before final image (security best practice)
-  provisioner "powershell" {
-    script = "../scripts/disable-winrm.ps1"
-  }
+  # shutdown_command schedules transport cleanup outside the active WinRM session.
 }

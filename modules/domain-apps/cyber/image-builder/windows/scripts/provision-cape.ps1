@@ -13,26 +13,29 @@
 
 $ErrorActionPreference = "Continue"
 $log = "C:\cape\provision.log"
-New-Item -Path "C:\cape" -ItemType Directory -Force | Out-Null
+New-Item -Path "C:\cape" -ItemType Directory -Force -ErrorAction Stop | Out-Null
 
 # ---------------------------------------------------------------------------
 # 1. Python 3.12 (silent)
 # ---------------------------------------------------------------------------
 "$(Get-Date -Format o) Installing Python 3.12..." | Out-File $log -Append
-Invoke-WebRequest "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" `
+Invoke-WebRequest -UseBasicParsing -ErrorAction Stop "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" `
   -OutFile "C:\cape\python-installer.exe"
-Start-Process "C:\cape\python-installer.exe" `
-  -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0" -Wait
+$installer = Start-Process "C:\cape\python-installer.exe" `
+  -ArgumentList "/quiet", "InstallAllUsers=1", "TargetDir=C:\Python312", "PrependPath=1", "Include_test=0" -Wait -PassThru -ErrorAction Stop
+if ($installer.ExitCode -notin @(0, 3010)) { throw "Python installation failed: $($installer.ExitCode)" }
+if (-not (Test-Path "C:\Python312\python.exe")) { throw "CAPE Python executable is missing" }
 "$(Get-Date -Format o) Python installed." | Out-File $log -Append
 
 # ---------------------------------------------------------------------------
 # 2. CAPE guest agent
 # ---------------------------------------------------------------------------
 "$(Get-Date -Format o) Fetching CAPE agent..." | Out-File $log -Append
-Invoke-WebRequest "https://raw.githubusercontent.com/kevoreilly/CAPEv2/master/agent/agent.py" `
+Invoke-WebRequest -UseBasicParsing -ErrorAction Stop "https://raw.githubusercontent.com/kevoreilly/CAPEv2/master/agent/agent.py" `
   -OutFile "C:\cape\agent.py"
 schtasks /create /tn "CAPEAgent" /tr "C:\Python312\python.exe C:\cape\agent.py" `
   /sc ONSTART /ru SYSTEM /rl HIGHEST /f
+if ($LASTEXITCODE -ne 0) { throw "Could not register the CAPE agent task" }
 "$(Get-Date -Format o) CAPE agent scheduled task created." | Out-File $log -Append
 
 # ---------------------------------------------------------------------------
@@ -97,5 +100,18 @@ New-Item -Path $dlPath -ItemType Directory -Force | Out-Null
 "$(Get-Date -Format o) Cleaning up installer..." | Out-File $log -Append
 Remove-Item "C:\cape\python-installer.exe" -Force -ErrorAction SilentlyContinue
 
-"$(Get-Date -Format o) CAPE provision complete." | Out-File $log -Append
-Write-Output "CAPE provisioning finished successfully."
+
+
+# Publication requires an actual responding agent, not merely a registered task.
+Start-ScheduledTask -TaskName "CAPEAgent" -ErrorAction Stop
+$agentReady = $false
+for ($attempt = 0; $attempt -lt 20; $attempt++) {
+  try {
+    $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8000/status" -TimeoutSec 3
+    if ($response.StatusCode -eq 200) { $agentReady = $true; break }
+  } catch { Start-Sleep -Seconds 3 }
+}
+if (-not $agentReady) { throw "CAPE agent did not become ready before image publication" }
+"$(Get-Date -Format o) CAPE agent readiness verified." | Out-File $log -Append
+Write-Output "CAPE provisioning finished successfully; guest agent responds on port 8000."
+exit 0
