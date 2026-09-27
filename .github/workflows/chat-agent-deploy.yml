@@ -24,6 +24,14 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      legacy_security_update:
+        description: 'Promote the reviewed legacy gateway security image after a test Job'
+        type: boolean
+        default: false
+      legacy_dry_run:
+        description: 'Validate the legacy gateway update server-side without applying'
+        type: boolean
+        default: true
       skip_deploy:
         description: 'Only build the image; skip the ScaledJob update.'
         type: boolean
@@ -47,7 +55,7 @@ env:
 jobs:
   build-and-deploy:
     name: Build TS Image and Update Chat ScaledJob
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.legacy_security_update != true
     runs-on: arc-runner-org
     environment: adp-chat-deploy-dev
     # AWS authority comes from the protected deployment environment.
@@ -154,3 +162,35 @@ jobs:
           else
             echo "- **ScaledJob**: chat-agent-worker in ns ${{ env.NAMESPACE }} on ${{ env.EKS_CLUSTER }}" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  legacy-security-update:
+    name: Update existing legacy gateway security image
+    if: github.ref == 'refs/heads/main' && inputs.legacy_security_update == true
+    runs-on: arc-runner-org
+    environment: adp-chat-deploy-dev
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: us-east-1
+      - name: Validate and promote reviewed legacy gateway image
+        env:
+          DRY_RUN: ${{ inputs.legacy_dry_run }}
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = 879318057152
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION"
+          args=()
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          python3 modules/agent-factory/scripts/update-legacy-gateway-image.py "${args[@]}"
