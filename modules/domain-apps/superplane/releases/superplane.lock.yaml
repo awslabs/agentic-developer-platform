@@ -84,7 +84,7 @@ source_access:
 images:
   skypilot-api: sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec
   superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
-  superplane-api: sha256:f1897a677fa7a5e21b7a1aa8c0ab6a2a03b37b66a98443a06b200d72f4a9b259
+  superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
   superplane-executor: sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891
 
 image_sources:
@@ -110,9 +110,9 @@ image_sources:
     ecr_repository: adp-superplane-api
     source_path: src/superplane-api
     build_workflow: .github/workflows/superplane-api-build.yml
-    tag: 27a5b943cb4081152069af76d9f5a90b18c918db
-    resolved_by: ECR digest read-back, 2026-09-25; S02 run 35847435952
-    selected_because: S02 removes python-jose and ecdsa; scope does not claim whole-image cleanliness
+    tag: security27-7f91b7107
+    resolved_by: ECR digest read-back, 2026-09-27; curl-removal-publication.json
+    selected_because: S02 retained plus unused curl removal and Debian updates; zero Critical candidate matches
   superplane-executor:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-executor
