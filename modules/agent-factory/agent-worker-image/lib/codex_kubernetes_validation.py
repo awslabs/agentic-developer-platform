@@ -211,6 +211,8 @@ class KubernetesValidationExecutor(RepositoryValidationExecutor):
                 # Operator qualification includes enforced NetworkPolicy and
                 # kubelet podPidsLimit <= 128. Do not schedule on arbitrary nodes.
                 "nodeSelector": {"adp.dev/validation-isolation": "v1"},
+                "tolerations": [{"key": "adp.dev/validation", "operator": "Equal",
+                                 "value": "only", "effect": "NoSchedule"}],
                 "terminationGracePeriodSeconds": 1, "automountServiceAccountToken": False,
                 "enableServiceLinks": False, "hostNetwork": False, "hostPID": False, "hostIPC": False,
                 "dnsPolicy": "None", "dnsConfig": {"nameservers": ["127.0.0.1"]},
