@@ -37,14 +37,14 @@ PREVIEW_JOURNEYS = ("use", "admin")
 ROUTE_JOURNEY = {
     "/activity": "use",
     "/settings/connections": "use",
-    "/budgets": "admin",
+    "/budget": "use",
     "/ratelimits": "admin",
 }
 
 CURRENT_PAGES = [
     ("/runs", "Dashboard", "/api/me/agent-run-stats"),
     ("/activity", "Agent Activity", "/api/me/agent-invocations"),
-    ("/budgets", "Budget Management", "/api/budget/person-default/platform"),
+    ("/budgets", "Budget & Spend", "/api/budget/hierarchy"),
     ("/settings/connections", "Connections", "/api/admin/connections"),
 ]
 
@@ -146,7 +146,8 @@ def test_legacy_routes_unchanged(authed_page, base_url, path, heading, api_path,
     assert structured, "Page API did not return structured data"
     record_property("real_api_path", api_path)
     record_property("real_api_status", response.status)
-    expect(authed_page).to_have_url(base_url + path)
+    expected_path = "/budget?view=manage" if path == "/budgets" else path
+    expect(authed_page).to_have_url(base_url + expected_path)
     expect(authed_page.get_by_role("heading", name=heading, exact=True)).to_be_visible()
     _current(authed_page)
 
@@ -182,13 +183,9 @@ def test_entry_return_and_shared_identity(authed_page, base_url):
 def test_preview_links_match_current_navigation(authed_page, base_url, record_property):
     """Presence parity per journey, not count parity.
 
-    The preview deliberately offers one destination twice: in Administration both
-    `budgets` ("Budgets") and `model-access-admin` ("Model access") point at
-    /budgets, because Bedrock account routing lives inside the Budgets page today
-    and is surfaced under its own name. The current sidebar has one /budgets link,
-    so asserting equal counts would fail on correct behaviour. The honest comparison
-    is direction: a route the visible current nav OFFERS must be reachable in the
-    preview, and a route it WITHHOLDS must not appear anywhere in it.
+    Compare the current destination in its owning journey. Budget & Spend is
+    available in Use ADP; its management tab is an administrator capability on
+    the same page. The legacy /budgets redirect is verified separately above.
     """
     _current(authed_page)
     _identity(authed_page)
