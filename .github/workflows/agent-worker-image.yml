@@ -152,7 +152,26 @@ jobs:
       - name: Verify actual child to gateway model HTTP contract
         run: pytest -q tests/task-api/test_model_message_seam.py
 
+  model-readiness:
+    name: Verify Runtime Model Readiness
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
+    runs-on: arc-runner-org
+    environment: adp-model-checks-${{ inputs.environment || 'dev' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Establish trusted model checks identity
+        uses: ./.github/actions/trusted-checks
+        with:
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Verify default model access before publishing the runtime
+        run: bash platform/scripts/enable-bedrock-models.sh --verify
+
   build:
+    needs: model-readiness
     name: Build Agent Runtime Image
     if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
     runs-on: arc-runner-org
@@ -192,16 +211,12 @@ jobs:
           for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
             command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
           done
-      # Publishing :latest can affect unpinned workers on their next start.
-      - name: Verify default model access before publishing the runtime
-        run: bash platform/scripts/enable-bedrock-models.sh --prepare-and-verify
-
       - name: Verify CodeBuild project exists
         run: |
           EXISTS=$(aws codebuild batch-get-projects \
             --names "${{ env.CODEBUILD_PROJECT }}" \
             --region "${AWS_REGION}" \
-            --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
+            --query 'projects | length(@)' --output text)
           if [ "$EXISTS" -eq 0 ]; then
             echo "CodeBuild project ${{ env.CODEBUILD_PROJECT }} does not exist." >&2
             echo "Run Platform Infra Apply to create it (defined in platform/infra/modules/codebuild/main.tf)." >&2

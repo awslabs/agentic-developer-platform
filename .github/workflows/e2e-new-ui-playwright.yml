@@ -57,6 +57,7 @@ jobs:
     name: Playwright New UI Acceptance
     # Skip when the upstream deploy failed — there is no new bundle to accept.
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    environment: adp-browser-checks-${{ github.event.inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     timeout-minutes: 30
 
@@ -68,15 +69,12 @@ jobs:
           # whatever main has drifted to since.
           ref: ${{ github.event.workflow_run.head_sha || '' }}
 
-      # Credentials are configured BEFORE any SSM / Secrets Manager read. The
-      # chat workflow resolves its URL first and swallows read failures with
-      # `|| echo ""`; here a failed read must not be indistinguishable from an
-      # absent value, because the flag lookup below picks a test mode from it.
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+      # Use the browser fixture identity before SSM and Secrets Manager reads.
+      - name: Establish trusted browser checks identity
+        uses: ./.github/actions/trusted-checks
         with:
-          role-to-assume: ${{ secrets.AWS_E2E_ROLE_ARN || secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: us-east-1
 
       - name: Resolve environment
         env:
@@ -97,37 +95,7 @@ jobs:
       - name: Resolve dashboard URL
         env:
           INPUT_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url }}
-        run: |
-          set -euo pipefail
-          OVERRIDE="$INPUT_CLOUDFRONT_URL"
-          if [ -n "$OVERRIDE" ]; then
-            URL="$OVERRIDE"
-            echo "Using dispatch override: $URL"
-          else
-            URL=$(aws ssm get-parameter \
-              --name "/adp/${ENVIRONMENT}/gateway/frontend-url" \
-              --query Parameter.Value --output text 2>/dev/null || echo "")
-            if [ -z "$URL" ] || [ "$URL" = "None" ]; then
-              DOMAIN=$(aws ssm get-parameter \
-                --name "/adp/${ENVIRONMENT}/gateway/cloudfront-domain" \
-                --query Parameter.Value --output text 2>/dev/null || echo "")
-              if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "None" ]; then
-                URL="https://${DOMAIN}"
-              else
-                URL=""
-              fi
-            fi
-            if [ -z "$URL" ]; then
-              echo "::error::Could not resolve a dashboard URL from SSM for '${ENVIRONMENT}' (/adp/${ENVIRONMENT}/gateway/frontend-url or .../cloudfront-domain)."
-              exit 1
-            fi
-            echo "Resolved from SSM: $URL"
-          fi
-          if [[ "$URL" == *$'\n'* || "$URL" == *$'\r'* ]]; then
-            echo "::error::dashboard URL must be a single line"
-            exit 1
-          fi
-          printf 'E2E_CLOUDFRONT_URL=%s\n' "$URL" >> "$GITHUB_ENV"
+        run: bash .github/scripts/resolve-dashboard-url.sh
 
       # tests/e2e/new_ui/conftest.py requires E2E_NEW_UI_EXPECTED_FLAG=on|off
       # explicitly (it raises pytest.UsageError without it) and then asserts the
@@ -229,7 +197,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          python - <<'PY'
+          python3 - <<'PY'
           import os, sys, xml.etree.ElementTree as ET
           from pathlib import Path
 

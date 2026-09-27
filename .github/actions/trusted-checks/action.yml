@@ -2,7 +2,7 @@ name: Trusted checks identity
 description: Exchange protected-environment GitHub OIDC for the operational checks role; no ambient credential fallback.
 inputs:
   role_arn:
-    description: Role ARN from the protected environment's ADP_SCAN_ROLE_ARN variable
+    description: Role ARN from the protected environment's ADP_CHECKS_ROLE_ARN variable
     required: true
   region:
     required: true
@@ -16,6 +16,10 @@ runs:
         DEPLOY_ROLE_ARN: ${{ inputs.role_arn }}
       run: |
         set -euo pipefail
+        if [[ -z "$DEPLOY_ROLE_ARN" ]]; then
+          echo "::error::Missing ADP_CHECKS_ROLE_ARN in the job protected environment. Configure the scoped trusted checks role before retrying."
+          exit 1
+        fi
         test "$GITHUB_REF" = refs/heads/main
         test "$GITHUB_EVENT_NAME" = workflow_dispatch -o "$GITHUB_EVENT_NAME" = workflow_call -o "$GITHUB_EVENT_NAME" = push -o "$GITHUB_EVENT_NAME" = schedule -o "$GITHUB_EVENT_NAME" = workflow_run
         [[ "$DEPLOY_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/adp-[a-z0-9-]+-trusted-checks$ ]]

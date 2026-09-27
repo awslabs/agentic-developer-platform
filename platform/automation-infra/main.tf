@@ -81,7 +81,7 @@ resource "aws_iam_role_policy" "deployment_identity_management" {
         Resource = concat([
           aws_iam_role.deployment.arn, aws_iam_role.frontend_deployment.arn, aws_iam_role.build.arn, aws_iam_role.scan.arn, aws_iam_role.rules.arn, aws_iam_role.checks.arn,
           aws_iam_policy.deployment_base.arn, aws_iam_policy.deployment_services.arn,
-        ], distinct(values(var.deployment_role_boundaries)), [for policy in aws_iam_policy.deployment_role_lifecycle : policy.arn])
+        ], [for role in aws_iam_role.browser_checks : role.arn], [for role in aws_iam_role.model_checks : role.arn], distinct(values(var.deployment_role_boundaries)), [for policy in aws_iam_policy.deployment_role_lifecycle : policy.arn])
       },
       {
         Sid = "NeverRemoveWorkloadCeilings", Effect = "Deny", Action = ["iam:DeleteRolePermissionsBoundary"], Resource = "*"

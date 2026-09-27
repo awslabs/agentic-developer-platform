@@ -52,18 +52,6 @@
       "sts get-caller-identity"
     ]
   },
-  "e2e-chat-playwright.yml/e2e-chat": {
-    "authority": "existing-oidc",
-    "operations": [
-      "ssm get-parameter"
-    ]
-  },
-  "e2e-new-ui-playwright.yml/e2e-new-ui": {
-    "authority": "existing-oidc",
-    "operations": [
-      "ssm get-parameter"
-    ]
-  },
   "eval-cli-uplift.yml/evaluate": {
     "authority": "existing-oidc",
     "operations": [

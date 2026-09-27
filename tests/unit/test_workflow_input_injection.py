@@ -112,6 +112,10 @@ def _execute_step(tmp_path, workflow, name, values, stub=None):
     import subprocess
     import sys
     script = _step_script(workflow, name)
+    if name == 'Resolve dashboard URL':
+        helper = Path('.github/scripts/resolve-dashboard-url.sh')
+        (tmp_path / helper).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / helper).write_text((REPO_ROOT / helper).read_text())
     # Keep the workflow's fixed scratch path inside the isolated test directory.
     script = script.replace('/tmp/seed.sql', str(tmp_path / 'seed.sql'))
     env = dict(os.environ, GITHUB_ENV=str(tmp_path / 'github-env'),

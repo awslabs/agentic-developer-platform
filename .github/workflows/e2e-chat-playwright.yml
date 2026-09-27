@@ -17,7 +17,7 @@ on:
       cloudfront_url:
         description: 'CloudFront URL to test against (default: dev)'
         required: false
-        default: 'https://d1g6cal2ts4iis.cloudfront.net'
+        default: ''
 
 permissions:
   id-token: write
@@ -35,6 +35,7 @@ env:
 jobs:
   e2e-chat:
     name: Playwright Chat E2E
+    environment: adp-browser-checks-${{ github.event.inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     timeout-minutes: 30
 
@@ -48,44 +49,16 @@ jobs:
       # Playwright drives a browser against the SPA and S3 is only reachable via the
       # distribution (OAC). That is also why runbook 6.1 cannot drop the NAT EIPs
       # from the CloudFront allowlist: this workflow needs them.
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Establish trusted browser checks identity
+        uses: ./.github/actions/trusted-checks
         with:
-          role-to-assume: ${{ secrets.AWS_E2E_ROLE_ARN || secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
-
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: us-east-1
 
       - name: Resolve dashboard URL
         env:
           INPUT_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url }}
-        run: |
-          set -e
-          if [ -n "$INPUT_CLOUDFRONT_URL" ]; then
-            URL="$INPUT_CLOUDFRONT_URL"
-            echo "Using dispatch override: $URL"
-          else
-            DOMAIN=$(aws ssm get-parameter \
-              --name "/adp/${ENVIRONMENT}/gateway/frontend-url" \
-              --query Parameter.Value --output text 2>/dev/null || echo "")
-            if [ -z "$DOMAIN" ]; then
-              DOMAIN=$(aws ssm get-parameter \
-                --name "/adp/${ENVIRONMENT}/gateway/cloudfront-domain" \
-                --query Parameter.Value --output text 2>/dev/null || echo "")
-              [ -n "$DOMAIN" ] && DOMAIN="https://${DOMAIN}"
-            fi
-            if [ -z "$DOMAIN" ]; then
-              echo "::error::Could not resolve a dashboard URL from SSM (/adp/${ENVIRONMENT}/gateway/frontend-url or .../cloudfront-domain)."
-              exit 1
-            fi
-            URL="$DOMAIN"
-            echo "Resolved from SSM: $URL"
-          fi
-          if [[ "$URL" == *$'\n'* || "$URL" == *$'\r'* ]]; then
-            echo "::error::dashboard URL must be a single line"
-            exit 1
-          fi
-          printf 'E2E_CLOUDFRONT_URL=%s\n' "$URL" >> "$GITHUB_ENV"
-
+        run: bash .github/scripts/resolve-dashboard-url.sh
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7

@@ -331,3 +331,30 @@ credential exchange with no ambient credential fallback. No runner IAM policy is
 expanded by this routing change. This pool does not provide the dedicated node
 and tokenless service-account isolation described for `arc-runner-deployment`.
 Other deployment workflows retain their dedicated runner selection.
+
+## CI identity repair (27 September 2026)
+
+The live build dispatcher was configured for the executor only, while the main
+workflows also dispatch Superplane API/controller/monitor, agent-context images,
+and the agent runtime. `environments/dev/automation-ci.tfvars.json` records the
+reviewed existing projects and ECR repositories for those lanes. Supply this as
+an override **after** the retained operator inputs; it is not a complete input
+file for an unrestricted apply. Recovery targets are `aws_iam_role_policy.build_dispatch`
+and `aws_iam_role_policy.browser_checks`. Keep unrelated deployment inputs and
+resources intact. Verify existing project/repository names before adapting it to
+another installation.
+
+Browser suites use the separate `adp-browser-checks-dev` GitHub environment,
+restricted to main, with `ADP_CHECKS_ROLE_ARN` pointing to
+`adp-dev-browser-trusted-checks`. Enable `enable_browser_checks` to provision that
+identity. It reads the exact test-admin secret, authenticates against the existing
+Cognito pool, reads five dashboard parameters and filters two fixture log groups.
+The lightweight smoke-check role retains its existing permissions. Neither
+browser checks nor build dispatch receives deployment or IAM mutation authority.
+
+Runtime image publication waits for the model-readiness job in
+`adp-model-checks-dev`. Its `ADP_CHECKS_ROLE_ARN` names
+`adp-dev-model-trusted-checks`; the role can inspect availability and invoke only
+the explicitly inventoried runtime defaults. The check retains a bounded live
+invocation but does not register use cases or accept Marketplace agreements.
+Account model-access preparation remains a platform deployment operation.

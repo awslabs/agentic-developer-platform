@@ -95,7 +95,7 @@ jobs:
           EXISTS=$(aws codebuild batch-get-projects \
             --names "${CODEBUILD_PROJECT}" \
             --region "${AWS_REGION}" \
-            --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
+            --query 'projects | length(@)' --output text)
           if [ "$EXISTS" -ne 1 ]; then
             echo "::error::${CODEBUILD_PROJECT} is missing — apply platform/infra before running this build lane."
             exit 1
