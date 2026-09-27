@@ -8,7 +8,7 @@ Model preferences are separate. **Agent Models** displays the Task budget for th
 
 ## Platform ceiling
 
-The deployment operator sets `task_max_usd_per_task` in the webhook infrastructure configuration. It is published in the gateway configuration as `ADP_TASK_MAX_USD_PER_TASK`. The default remains USD 1. Values must be finite and positive; invalid configuration refuses policy writes. The UI displays the configured ceiling. The Task policy store is the authoritative validator for all policy-writing APIs, including human enrollment.
+The deployment operator sets `task_max_usd_per_task` in the webhook infrastructure configuration. It is published in the gateway configuration as `ADP_TASK_MAX_USD_PER_TASK`. The platform ceiling defaults to USD 1,000. This is the maximum an administrator can configure, not a default grant: existing identity Task limits and organization budgets are unchanged. Values must be finite and positive; invalid configuration refuses policy writes. The UI displays the configured ceiling. The Task policy store is the authoritative validator for all policy-writing APIs, including human enrollment.
 
 This is an **enrollment/edit ceiling**, not an organization budget. Changing it does not rewrite existing policies, increase any account's spending authority, or terminate existing Tasks. An organization administrator must explicitly save a new service-account budget within the ceiling. Organization, department, team and identity budget enforcement still applies. New Tasks snapshot their admitted limits; current authorization checks continue to apply to running Tasks.
 

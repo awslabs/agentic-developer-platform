@@ -19,7 +19,7 @@ TASK_SCOPES = {"submit", "read", "input", "cancel", "artifacts"}
 MAX_DURATION_MINUTES = 360
 MAX_TURNS = 8
 MAX_OUTPUT_TOKENS = 4096
-DEFAULT_MAX_USD = Decimal("1")
+DEFAULT_MAX_USD = Decimal("1000")
 PLATFORM_CAP_ENV = "ADP_TASK_MAX_USD_PER_TASK"
 
 

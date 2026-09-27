@@ -118,7 +118,7 @@ def test_stale_expected_version_cannot_overwrite_current_policy(store):
                 "max_duration_minutes": 30,
                 "max_turns": 8,
                 "max_output_tokens_per_turn": 4096,
-                "max_usd_per_task": Decimal("1.01"),
+                "max_usd_per_task": Decimal("1000.01"),
             }
         ),
     ],
@@ -230,14 +230,18 @@ def test_codex_turn_budget_is_optional_bounded_and_preserves_legacy_limit(store)
             repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=1, policy=value, updated_by="human-admin-1")
 
 
-def test_operator_ceiling_does_not_raise_existing_policy(store, monkeypatch):
+@pytest.mark.parametrize("ceiling", [None, "20"])
+def test_operator_ceiling_does_not_raise_existing_policy(store, monkeypatch, ceiling):
     repository, _ = store
     first = repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=policy(), updated_by="admin")
-    monkeypatch.setenv("ADP_TASK_MAX_USD_PER_TASK", "20")
+    monkeypatch.delenv("ADP_TASK_MAX_USD_PER_TASK", raising=False)
     assert repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)["limits"]["max_usd_per_task"] == 1
-    changed = policy(limits={**first["limits"], "max_usd_per_task": Decimal("15")})
+    if ceiling is not None:
+        monkeypatch.setenv("ADP_TASK_MAX_USD_PER_TASK", ceiling)
+    amount = Decimal(ceiling or "1000")
+    changed = policy(limits={**first["limits"], "max_usd_per_task": amount})
     result = repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=1, policy=changed, updated_by="admin")
-    assert TaskPolicyResponse.model_validate(result).limits.max_usd_per_task == 15
+    assert TaskPolicyResponse.model_validate(result).limits.max_usd_per_task == amount
 
 
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "-1", "0", "oops"])
