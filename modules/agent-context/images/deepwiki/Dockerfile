@@ -81,6 +81,13 @@ RUN apt-get update && apt-get -y upgrade \
     && python -c "import shutil,sysconfig; from pathlib import Path; shutil.rmtree(Path(sysconfig.get_path('purelib'))/'setuptools', ignore_errors=True)" \
     && python -m pip install --no-cache-dir GitPython==3.1.59 setuptools==81.0.0 \
     && python -m pip check
+# The active application venv and system build tooling are separate installs.
+# Patch the system setuptools vendored jaraco.context/wheel without changing /opt/venv.
+ADD --checksum=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670 https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl /tmp/setuptools-84.0.0-py3-none-any.whl
+RUN /usr/local/bin/python3.11 -m pip install --no-cache-dir --no-deps /tmp/setuptools-84.0.0-py3-none-any.whl \
+    && rm /tmp/setuptools-84.0.0-py3-none-any.whl \
+    && /usr/local/bin/python3.11 -m pip check
+
 # Install through the package manager so client helpers/configuration and exact
 # downstream provenance remain intact; never claim this backport is upstream10.4.
 COPY --from=openssh-builder /out/openssh-client_10.0p1-7+deb13u4+adp.security.1_amd64.deb /tmp/openssh-client.deb

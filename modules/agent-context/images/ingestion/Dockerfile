@@ -11,22 +11,11 @@
 # Use the same immutable ADP security build as the search Deployment.
 # Override ZOEKT_IMAGE only together with the serving image.
 ARG ZOEKT_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f
-FROM public.ecr.aws/docker/library/python:3.13-slim AS libxml2-security
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config liblzma-dev zlib1g-dev && rm -rf /var/lib/apt/lists/*
-ADD --checksum=sha256:a2c9ae7b770da34860050c309f903221c67830c86e4a7e760692b803df95143a https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.9.tar.xz /tmp/libxml2.tar.xz
-RUN mkdir /src && tar -xJf /tmp/libxml2.tar.xz --strip-components=1 -C /src && rm /tmp/libxml2.tar.xz
-WORKDIR /src
-RUN ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu --without-python --disable-static --with-legacy --with-http --with-ftp && make -j4
-RUN make check > /tmp/libxml2-check.log 2>&1 || { tail -80 /tmp/libxml2-check.log; exit 1; }
-RUN make DESTDIR=/stage install && mkdir -p /package/usr/lib/x86_64-linux-gnu /package/usr/share/doc/libxml2 /package/DEBIAN /out && \
-    cp -a /stage/usr/lib/x86_64-linux-gnu/libxml2.so.2* /package/usr/lib/x86_64-linux-gnu/ && \
-    cp Copyright /package/usr/share/doc/libxml2/copyright && \
-    printf 'Package: libxml2\nVersion: 2.13.9-0+adp1\nArchitecture: amd64\nMaintainer: ADP Security <security@localhost>\nDepends: libc6 (>= 2.38), liblzma5, zlib1g\nSection: libs\nPriority: optional\nDescription: Upstream libxml2 2.13.9 ABI 2 security replacement\n' > /package/DEBIAN/control && \
-    dpkg-deb --build --root-owner-group /package /out/libxml2_2.13.9-0+adp1_amd64.deb && cp /tmp/libxml2-check.log /out/
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2 AS high-security-tools
 
 FROM ruby:3.4.11-slim-trixie@sha256:5b53e16f47e05acae56897d0f96b9d03dcb4563276e71c96415bf7777c9ba207 AS ruby-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
-FROM node:22.23.0-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS node-release
+FROM node:22.23.2-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS node-release
 FROM ${ZOEKT_IMAGE} AS zoekt
 
 FROM public.ecr.aws/docker/library/python:3.13-slim
@@ -41,6 +30,7 @@ RUN apt-get update && \
         g++ \
         make \
         unzip \
+        libicu76 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
@@ -58,7 +48,7 @@ RUN test ! -e /usr/bin/node && ln -s /usr/local/bin/node /usr/bin/node \
     && rm /tmp/npm.tgz \
     && ln -s /usr/lib/node_modules/npm/bin/npm-cli.js /usr/bin/npm \
     && ln -s /usr/lib/node_modules/npm/bin/npx-cli.js /usr/bin/npx \
-    && test "$(node --version)" = v22.23.0 \
+    && test "$(node --version)" = v22.23.2 \
     && test "$(npm --version)" = 11.20.0
 
 # SCIP indexers via npm (global install)
@@ -76,7 +66,7 @@ ENV GOPATH="/opt/go"
 ENV PATH="/usr/local/go/bin:/opt/go/bin:${PATH}"
 
 # scip-go (module at github.com/scip-code/scip-go, binary in cmd/scip-go)
-RUN go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
+COPY --from=high-security-tools /bin/scip-go /opt/go/bin/scip-go
 
 # Matched static indexer from the hardened search image; git is supplied here.
 COPY --from=zoekt /usr/local/bin/zoekt-git-index /usr/local/bin/zoekt-git-index
@@ -93,26 +83,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends libyaml-0-2 lib
     && gem install sorbet-static sorbet --no-document
 
 # .NET SDK (for scip-dotnet)
-RUN curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0 --install-dir /usr/share/dotnet && \
-    ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet || true
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --version 8.0.425 --install-dir /usr/share/dotnet && \
+    ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 ENV DOTNET_ROOT="/usr/share/dotnet"
 
 # JVM deferred — scip-java not in current corpus (D7 in neptune-deep-graph-design.md)
 # When Java support is added, install: default-jdk-headless maven
 
-# Install Syft for SBOM generation (dual-rail #1358)
-ARG SYFT_VERSION=1.52.0
-RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-    | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"
-
-# Install OSV-Scanner + Trivy for vulnerability scanning (#2536)
+# Validated Go 1.26.8 builds with fixed transitive modules; source locks and
+# reproduction recipes are in high-security/. Keep OSV's independent release.
+COPY --from=high-security-tools /bin/syft /bin/trivy /usr/local/bin/
+COPY --from=high-security-tools /bin/tsc /usr/lib/node_modules/@sourcegraph/scip-python/node_modules/@typescript/typescript-linux-x64/lib/tsc
+COPY --from=high-security-tools /usr/share/licenses/ingestion-security-tools/ /usr/share/licenses/ingestion-security-tools/
+COPY --from=zoekt /usr/share/licenses/ /usr/share/licenses/zoekt-security/
 ARG OSV_SCANNER_VERSION=2.6.0
-ARG TRIVY_VERSION=0.74.0
 RUN curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
-        -o /usr/local/bin/osv-scanner && \
-    chmod +x /usr/local/bin/osv-scanner && \
-    curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
-        | tar xz -C /usr/local/bin trivy
+        -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner
 
 # Regenerate the verified legacy SCIP bindings before resolving modern protobuf.
 COPY security-build/patch-codegraph-wheel.py /tmp/patch-codegraph-wheel.py
@@ -255,8 +241,18 @@ RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
 COPY --from=curl-security /licenses/ /opt/adp-curl-security/
 
 # Replace the ABI-2 library used by Chromium's LLVM/Mesa dependencies.
-COPY --from=libxml2-security /out/libxml2_2.13.9-0+adp1_amd64.deb /tmp/libxml2.deb
+COPY --from=high-security-tools /packages/libxml2_2.13.9-0+adp3_amd64.deb /tmp/libxml2.deb
 RUN dpkg -i /tmp/libxml2.deb && ldconfig && rm /tmp/libxml2.deb
+
+# Source backports and the actual .NET assembly, not version-only metadata.
+COPY --from=high-security-tools /packages/nltk-3.10.3+adp1-py3-none-any.whl /tmp/
+RUN python -m pip install --no-cache-dir --no-deps /tmp/nltk-3.10.3+adp1-py3-none-any.whl \
+    && rm /tmp/nltk-3.10.3+adp1-py3-none-any.whl && python -m pip check
+COPY --from=high-security-tools /packages/xml.8.0.4.nupkg /tmp/
+COPY high-security/patch-dotnet.py /tmp/patch-dotnet.py
+RUN python /tmp/patch-dotnet.py && rm /tmp/xml.8.0.4.nupkg /tmp/patch-dotnet.py \
+    && HOME=/tmp/adp-dotnet-validation DOTNET_CLI_HOME=/tmp/adp-dotnet-validation XDG_CACHE_HOME=/tmp/adp-dotnet-validation/.cache dotnet format --version \
+    && rm -rf /tmp/adp-dotnet-validation
 
 USER appuser
 

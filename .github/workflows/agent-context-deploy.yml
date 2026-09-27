@@ -60,6 +60,11 @@ on:
         description: 'Ingestion full source SHA or sha256 digest (default: latest published digest)'
         required: false
         default: ''
+      deepwiki_image_tag:
+        description: 'DeepWiki source tag or sha256 digest (default: latest runtime digest)'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: agent-context-deploy
@@ -397,6 +402,8 @@ jobs:
 
       - name: Deploy DeepWiki
         if: ${{ inputs.skip_deepwiki != true }}
+        env:
+          ADP_INPUT_DEEPWIKI_IMAGE_TAG: ${{ inputs.deepwiki_image_tag }}
         run: |
           cd modules/agent-context
           source scripts/_common.sh
@@ -405,18 +412,8 @@ jobs:
           if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
             # The upstream default does not support our nonroot, read-only
             # manifest. Deploy the hardened project build by immutable digest.
-            DEEPWIKI_REPO="adp-${ENVIRONMENT}-agent-context-deepwiki"
-            # CodeBuild publishes latest only for the final runtime. The repo
-            # also contains newer intermediate build-input images with no CMD.
-            DEEPWIKI_DIGEST=$(aws ecr describe-images --repository-name "$DEEPWIKI_REPO" \
-              --image-ids imageTag=latest \
-              --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' \
-              --output text)
-            if [[ ! "$DEEPWIKI_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::No built DeepWiki image found. Run Agent Context Images Build first."
-              exit 1
-            fi
-            DEEPWIKI_IMAGE="${ECR_REGISTRY}/${DEEPWIKI_REPO}@${DEEPWIKI_DIGEST}"
+            export ENVIRONMENT AWS_REGION ECR_REGISTRY
+            DEEPWIKI_IMAGE=$(bash scripts/resolve-deepwiki-image.sh "${ADP_INPUT_DEEPWIKI_IMAGE_TAG:-}")
             export NAMESPACE SERVICE_ACCOUNT DEEPWIKI_PORT DEEPWIKI_IMAGE LITELLM_PORT BEDROCK_REGION
             template_file manifests/deepwiki.yaml | kubectl apply -f -
             echo "DeepWiki deployed"
