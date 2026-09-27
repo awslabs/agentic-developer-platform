@@ -88,10 +88,17 @@ async def put_policy(
     admin, locator = await enrolled_target(db, current_user, user_id)
     # Only installed canonical Task executables qualify. Repository developer
     # authority cannot be created by labelling an investigator as a developer.
-    if set(body.allowed_personas) - {"agent-task-investigator", "agent-task-cyber", *CODING_PERSONAS}:
+    if set(body.allowed_personas) - {"agent-task-investigator", "agent-task-cyber", "agent-task-gpt-developer", *CODING_PERSONAS}:
         raise HTTPException(422, "Unsupported Task executable")
     if CODING_PERSONAS.intersection(body.allowed_personas) and not getattr(body, "repository_scopes", []):
         raise HTTPException(422, "Coding Tasks require explicit repository scope")
+    # Native developer Tasks fetch through the administrator-owned repository
+    # binding, rather than the legacy bounded-file snapshot protocol. Admission
+    # still freezes this binding, tools, model revision and acceptance checks.
+    if "agent-task-gpt-developer" in body.allowed_personas and (
+        not body.repositories or any(not binding.validation_checks for binding in body.repositories.values())
+    ):
+        raise HTTPException(422, "Native developer Tasks require repository bindings with validation checks")
     try:
         policy = await run_in_threadpool(
             policy_store.put,
