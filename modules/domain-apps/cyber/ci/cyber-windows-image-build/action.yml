@@ -63,6 +63,7 @@ runs:
       terraform apply -auto-approve -lock-timeout=120s \
         -var="build_host_enabled=true" \
         -var="builder_permissions_boundary_arn=arn:aws:iam::${ACCOUNT_ID}:policy/adp-${ENVIRONMENT}-windows-builder-ceiling" \
+        -var="builder_name_suffix=ci" \
         -var="account_id=${ACCOUNT_ID}" \
         -var="idle_period_seconds=21600"
     shell: bash
@@ -183,6 +184,7 @@ runs:
       terraform apply -auto-approve -lock-timeout=120s \
         -var="build_host_enabled=false" \
         -var="builder_permissions_boundary_arn=arn:aws:iam::${ACCOUNT_ID}:policy/adp-${ENVIRONMENT}-windows-builder-ceiling" \
+        -var="builder_name_suffix=ci" \
         -var="account_id=${ACCOUNT_ID}" \
         -var="idle_period_seconds=21600"
     shell: bash

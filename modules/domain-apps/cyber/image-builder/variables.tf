@@ -80,3 +80,13 @@ variable "builder_permissions_boundary_arn" {
   description = "Operator-owned workload ceiling required by the Windows CI identity."
   default     = null
 }
+
+variable "builder_name_suffix" {
+  type        = string
+  description = "Separate automated builders from pre-existing standalone build resources."
+  default     = ""
+  validation {
+    condition     = can(regex("^[a-z0-9-]*$", var.builder_name_suffix))
+    error_message = "Builder suffix must contain only lowercase letters, digits and hyphens."
+  }
+}

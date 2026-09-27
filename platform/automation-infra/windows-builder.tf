@@ -17,7 +17,7 @@ variable "windows_cape_host_id" {
   default = ""
 }
 locals {
-  windows_prefix       = "adp-${var.environment}-imgbuilder"
+  windows_prefix       = "adp-${var.environment}-imgbuilder-ci"
   windows_bucket       = "adp-${var.environment}-cape-assets"
   windows_iam          = "arn:aws:iam::${data.aws_caller_identity.current.account_id}"
   windows_ec2          = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}"

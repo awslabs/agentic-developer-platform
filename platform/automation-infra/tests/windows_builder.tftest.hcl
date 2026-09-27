@@ -34,6 +34,10 @@ variables {
 run "bounded_windows_identity" {
   command = apply
   assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.windows_builder[0].policy).Statement : s if try(s.Sid, "") == "CreateBoundedBuilderRole"]).Resource == "arn:aws:iam::123456789012:role/adp-test-imgbuilder-ci-builder-role"
+    error_message = "CI lifecycle must not adopt or delete legacy standalone builder roles."
+  }
+  assert {
     condition     = can(regex("^adp-[a-z0-9-]+-trusted-deployment$", aws_iam_role.windows_builder[0].name))
     error_message = "The role name must satisfy the shared trusted-deployment admission guard."
   }
