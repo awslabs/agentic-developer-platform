@@ -199,7 +199,7 @@ async def recovery_claim(
         runtime=runtime,
     )
     try:
-        if not body.cursor and env.get("ADP_TASK_QUALIFICATION_ID"):
+        if not body.cursor:
             from src.agentauth.task_budget import task_budget
 
             await task_budget(store.repository).reap_abandoned(shard=body.shard)

@@ -124,6 +124,8 @@ def test_attempt_racing_terminal_cancel_is_refused_by_actual_store(store, monkey
 
 @pytest.mark.asyncio
 async def test_no_child_terminal_proof_releases_real_admission_hold(store):
+    from dataclasses import asdict
+    from decimal import Decimal
     from types import SimpleNamespace
 
     import fakeredis.aioredis
@@ -144,9 +146,13 @@ async def test_no_child_terminal_proof_releases_real_admission_hold(store):
     hold = await budget.reserve_admission(
         tenant="tenant-a", principal="svc-principal-1", idempotency_key="cancelled", max_usd=1, request_digest="a" * 64
     )
+    # Seed an accepted pre-upgrade pilot hold: cancellation must still settle it.
+    target = budget._target(scope="qualification:cancel-test", cap=25)
+    await budget._initialize(target)
+    assert (await ledger.reserve(hold["reservation_id"], Decimal(1), [target])).admitted
+    hold["targets"] = [{**asdict(target), "headroom_usd": "25"}]
     req = _request(budget_reservation=hold)
     store.accept(req)
-    target = budget._target(scope="qualification:cancel-test", cap=25)
     assert (await ledger.snapshot(target)).total_usd == 1
     commands = cancel(store, req)
     assert commands.cancel_unstarted(req.task_id)

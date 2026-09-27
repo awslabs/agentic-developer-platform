@@ -230,7 +230,7 @@ def test_lambda_gateway_acceptance_and_dispatch_preserve_exact_input(flow):
     assert json.loads(replay["body"])["idempotent_replay"] is True
     assert len(flow.model_calls) == 1
     target = flow.budget._target(scope="qualification:http-integration", cap=25)
-    assert flow.web.portal.call(flow.reservations.snapshot, target).total_usd == 1
+    assert flow.web.portal.call(flow.reservations.snapshot, target) is None
 
 
 def test_tampered_proof_never_reaches_admission(flow):
@@ -349,7 +349,7 @@ def test_uploaded_artifact_admission_preserves_closed_dispatch_reference(flow):
     assert replay["statusCode"] == 202
     assert json.loads(replay["body"])["task_id"] == task["task_id"]
     target = flow.budget._target(scope="qualification:http-integration", cap=25)
-    assert flow.web.portal.call(flow.reservations.snapshot, target).total_usd == 1
+    assert flow.web.portal.call(flow.reservations.snapshot, target) is None
 
 
 def test_artifact_retry_after_pretransaction_failure_reuses_original_budget_hold(flow, monkeypatch, caplog):
@@ -378,12 +378,12 @@ def test_artifact_retry_after_pretransaction_failure_reuses_original_budget_hold
     assert "TaskStoreError" in [getattr(record, "error_class", "") for record in caplog.records]
     assert "secret-body-must-not-be-logged" not in caplog.text
     target = flow.budget._target(scope="qualification:http-integration", cap=25)
-    assert flow.web.portal.call(flow.reservations.snapshot, target).total_usd == 1
+    assert flow.web.portal.call(flow.reservations.snapshot, target) is None
     monkeypatch.setattr(flow.store, "accept", original)
     flow.budget.clock = lambda: storage_tests.NOW + timedelta(seconds=121)
     response = submit(raw)
     assert response["statusCode"] == 202, response
-    assert flow.web.portal.call(flow.reservations.snapshot, target).total_usd == 1
+    assert flow.web.portal.call(flow.reservations.snapshot, target) is None
 
 
 def enable_cyber_policy(flow):

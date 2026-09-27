@@ -1,11 +1,10 @@
-"""Strict Task pilot reservations on the existing platform reservation ledger."""
+"""Task admission leases and strict per-Task model reservations."""
 
 from __future__ import annotations
 
 import hashlib
-import os
 import uuid
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -35,14 +34,13 @@ class TaskBudget:
     def __init__(self, authority, *, reservations=None, qualification_id=None, clock=None):
         self.authority = authority
         self.reservations = reservations or BudgetEnforcementService()._get_reservations()
-        self.qualification_id = qualification_id or os.environ.get("ADP_TASK_QUALIFICATION_ID", "")
+        # Retained only for compatibility with stored admission records/callers.
+        self.qualification_id = qualification_id or "per-task-v1"
         self.clock = clock or (lambda: datetime.now(UTC))
-        if not self.qualification_id:
-            raise TaskBudgetError("task qualification budget is not configured")
 
     def _target(self, *, scope, cap):
-        # All pilot counters share a Redis cluster hash tag. Tenant identity is
-        # still explicitly part of each tenant counter's server-derived scope.
+        # Retain the existing per-Task ledger namespace so an upgrade cannot
+        # reset spending already recorded by running Tasks.
         return ReservationTarget(
             org_id="task-qualification",
             entity_type="task_pilot",
@@ -67,10 +65,8 @@ class TaskBudget:
 
     async def reserve_admission(self, *, tenant, principal, idempotency_key, max_usd, request_digest):
         reservation_id = "task-admit:" + hashlib.sha256((tenant + "\0" + principal + "\0" + idempotency_key).encode()).hexdigest()
-        targets = [
-            self._target(scope="qualification:" + self.qualification_id, cap=25),
-            self._target(scope="tenant-day:" + tenant + ":" + self.clock().strftime("%Y-%m-%d"), cap=10),
-        ]
+        # Admission keeps its fenced lease, but does not reserve pilot budgets.
+        # Real hierarchy and Task limits are reserved before provider dispatch.
         key = {"pk": {"S": "TASK_CAPACITY#" + hashlib.sha256(reservation_id.encode()).hexdigest()}, "sk": {"S": "RESERVATION"}}
         owner = str(uuid.uuid4())
         now = int(self.clock().timestamp())
@@ -79,7 +75,7 @@ class TaskBudget:
             "amount_usd": str(max_usd),
             "request_digest": request_digest,
             "qualification_id": self.qualification_id,
-            "targets": [{**asdict(target), "headroom_usd": str(target.headroom_usd)} for target in targets],
+            "targets": [],
             "status": "reserved",
             "owner_token": owner,
             "lease_expires_at": now + 120,
@@ -98,13 +94,14 @@ class TaskBudget:
                 previous.get("state") == "preparing" and int(previous["lease_expires_at"]) >= now
             ):
                 raise TaskBudgetError("task admission already pending")
-            # A takeover reuses the exact hold and its original budget periods.
-            # The original owner's acceptance is fenced by owner_token+lease.
-            record.update({name: previous[name] for name in ("amount_usd", "qualification_id", "targets")})
-            targets = [_restore_target(value) for value in record["targets"]]
-            # DynamoDB restores numeric TTLs as Decimal. The protected grant
-            # digest requires canonical JSON on retry as well as first admit.
-            record["targets"] = [{**asdict(target), "headroom_usd": str(target.headroom_usd)} for target in targets]
+            # Release an expired, uncommitted legacy pilot hold before takeover.
+            # abort_admission's owner CAS cannot release an accepted Task's hold.
+            if previous.get("targets") and previous.get("state") == "preparing":
+                await self.abort_admission(previous)
+                raw = self.authority._read(key["pk"]["S"], "RESERVATION")
+                previous = {name: deserializer.deserialize(value) for name, value in raw.items()}
+                if previous.get("state") != "released":
+                    raise TaskBudgetError("task admission already pending")
             condition = "owner_token = :old AND #state = :state"
             values = {":old": {"S": previous["owner_token"]}, ":state": {"S": previous["state"]}}
         put = {
@@ -132,11 +129,6 @@ class TaskBudget:
             if exc.response["Error"]["Code"] in {"ConditionalCheckFailedException", "TransactionCanceledException"}:
                 raise TaskBudgetError("task admission already pending") from None
             raise
-        for target in targets:
-            await self._initialize(target)
-        result = await self.reservations.reserve(reservation_id, Decimal(record["amount_usd"]), targets)
-        if result is None or not result.admitted:
-            raise TaskBudgetError("task budget reservation refused")
         return record
 
     async def abort_admission(self, reservation):
@@ -188,12 +180,13 @@ class TaskBudget:
             self.authority.client.delete_item(TableName=self.authority.table, Key={"pk": work["pk"], "sk": work["sk"]})
 
     async def settle_admission(self, reservation, *, actual_usd, uncommitted=False):
-        if reservation["qualification_id"] != self.qualification_id:
-            raise TaskBudgetError("task qualification budget changed")
         targets = [_restore_target(value) for value in reservation["targets"]]
         amount = Decimal(str(actual_usd))
-        if amount < 0 or amount > Decimal(reservation["amount_usd"]):
+        if not amount.is_finite() or amount < 0 or amount > Decimal(reservation["amount_usd"]):
             raise TaskBudgetError("task settlement exceeds reservation")
+        if not targets:
+            return
+        # Legacy accepted Tasks settle their original recorded pilot targets.
         # Existing ledger reconciliation retains actual usage, releasing only
         # unspent headroom. A backend error preserves the original upper bound.
         await self.reservations.reconcile(reservation["reservation_id"], amount, targets)
