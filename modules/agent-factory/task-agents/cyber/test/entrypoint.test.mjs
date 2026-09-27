@@ -30,11 +30,17 @@ test('built Cyber entrypoint carries frozen grants through to SDK and final repo
     models++;const names=frame.sdk_request.tools.map(t=>t.name);
     assert.ok(names.includes('mcp__cyber__browser_start'));
     assert.ok(!names.includes('mcp__cyber__url_analysis'));
+    if(models===1){
+     send('model.result',{turn_id:frame.turn_id,operation_status:'confirmed',content:[{type:'thinking',thinking:'',signature:'opaque-provider-signature'},{type:'tool_use',id:'toolu_skill',name:'mcp__cyber__read_skill',input:{name:'url-analysis'}}],stop_reason:'tool_use',usage:{input_tokens:100,output_tokens:50}});
+     continue;
+    }
+    const thinking=frame.sdk_request.messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).find(b=>b.type==='thinking');
+    assert.deepEqual(thinking,{type:'thinking',thinking:'',signature:'opaque-provider-signature'});
     send('model.result',{turn_id:frame.turn_id,operation_status:'confirmed',content:[{type:'tool_use',id:'toolu_final',name:'mcp__cyber__submit_report',input:{summary:'Supplied URL recorded; live evidence was not requested in this test.',findings:[],uncertainties:['Scripted provider response'],recommendations:[]}}],stop_reason:'tool_use',usage:{input_tokens:100,output_tokens:50}});
    }
    if(frame.type==='result')result=frame.report;
   }
   const [code]=await exit;
-  assert.equal(code,0,stderr);assert.ok(ready);assert.equal(models,1);assert.match(result.summary,/Supplied URL/);
+  assert.equal(code,0,stderr);assert.ok(ready);assert.equal(models,2);assert.match(result.summary,/Supplied URL/);
  } finally {clearTimeout(timer);child.kill('SIGKILL');await rm(home,{recursive:true,force:true});}
 });

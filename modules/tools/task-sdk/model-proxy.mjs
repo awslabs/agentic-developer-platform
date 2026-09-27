@@ -35,6 +35,10 @@ export function normalizeRequest(body, limit) {
   const select = (value, keys) => Object.fromEntries(keys.filter(key => value[key] !== undefined && value[key] !== null).map(key => [key, value[key]]));
   const block = value => {
     if (value.type === 'text') return select(value, ['type', 'text']);
+    if (value.type === 'thinking') {
+      if (typeof value.thinking !== 'string' || value.thinking.length > 32000 || typeof value.signature !== 'string' || !value.signature || value.signature.length > 16000) throw new ProtocolError('invalid signed thinking block');
+      return select(value, ['type', 'thinking', 'signature']);
+    }
     if (value.type === 'tool_use') return select(value, ['type', 'id', 'name', 'input']);
     if (value.type === 'tool_result') {
       const result = select(value, ['type', 'tool_use_id', 'content', 'is_error']);
@@ -92,6 +96,10 @@ export function streamedMessage(message) {
     if (block.type === 'text') {
       emit('content_block_start', { index, content_block: { type: 'text', text: '' } });
       emit('content_block_delta', { index, delta: { type: 'text_delta', text: block.text } });
+    } else if (block.type === 'thinking') {
+      emit('content_block_start', { index, content_block: { type: 'thinking', thinking: '', signature: '' } });
+      emit('content_block_delta', { index, delta: { type: 'thinking_delta', thinking: block.thinking } });
+      emit('content_block_delta', { index, delta: { type: 'signature_delta', signature: block.signature } });
     } else if (block.type === 'tool_use') {
       emit('content_block_start', { index, content_block: { ...block, input: {} } });
       emit('content_block_delta', { index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } });

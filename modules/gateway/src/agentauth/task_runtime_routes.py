@@ -211,6 +211,15 @@ class ModelToolUse(BaseModel):
     input: dict
 
 
+class ModelThinking(BaseModel):
+    """Opaque signed provider state; never report or progress content."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["thinking"]
+    thinking: str = Field(max_length=32000)
+    signature: str = Field(min_length=1, max_length=16000)
+
+
 class ModelImageSource(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["base64"]
@@ -246,7 +255,7 @@ class ModelToolResult(BaseModel):
 class SdkMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["user", "assistant"]
-    content: str | list[ModelText | ModelToolUse | ModelToolResult] = Field(min_length=1, max_length=32000)
+    content: str | list[ModelText | ModelThinking | ModelToolUse | ModelToolResult] = Field(min_length=1, max_length=32000)
 
     @model_validator(mode="after")
     def role_blocks(self):
@@ -254,8 +263,8 @@ class SdkMessage(BaseModel):
             if len(self.content) > 64:
                 raise ValueError("too many content blocks")
             for block in self.content:
-                if isinstance(block, ModelToolUse) and self.role != "assistant":
-                    raise ValueError("tool_use requires assistant role")
+                if isinstance(block, ModelToolUse | ModelThinking) and self.role != "assistant":
+                    raise ValueError("tool_use and thinking require assistant role")
                 if isinstance(block, ModelToolResult) and self.role != "user":
                     raise ValueError("tool_result requires user role")
         return self

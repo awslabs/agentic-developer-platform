@@ -60,9 +60,12 @@ def _valid_response_block(block, request):
         return False
     from pydantic import ValidationError
 
-    from src.agentauth.task_runtime_routes import ModelToolUse
+    from src.agentauth.task_runtime_routes import ModelThinking, ModelToolUse
 
     try:
+        if block.get("type") == "thinking":
+            ModelThinking.model_validate(block)
+            return True
         tool = ModelToolUse.model_validate(block)
     except ValidationError:
         return False

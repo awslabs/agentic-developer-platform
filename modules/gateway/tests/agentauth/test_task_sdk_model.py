@@ -111,3 +111,36 @@ def test_sdk_accepts_bounded_inline_image_but_never_remote_image_urls():
         request({"type": "image", "source": {"type": "url", "url": "https://untrusted.example/image"}})
     with pytest.raises(ValidationError):
         request({"type": "image", "source": {**image["source"], "data": base64.b64encode(b"\xff\xd8\xff" + b"a" * 12000).decode()}})
+
+
+@pytest.mark.parametrize("text", ["", "private model state"])
+def test_signed_thinking_roundtrips_with_sdk_tool_history(text):
+    block = {"type": "thinking", "thinking": text, "signature": "opaque-signed-state"}
+    request = sdk_request()
+    request["messages"][1]["content"].insert(0, block)
+    assert SdkRequest.model_validate(request).model_dump(exclude_none=True) == request
+    assert _valid_response_block(block, request)
+    assert not _valid_response_block(block, {"messages": []})
+    AnthropicTextQuoteAdapter._reject_unbounded_features(request)
+    request["messages"][1]["role"] = "user"
+    with pytest.raises(ValidationError):
+        SdkRequest.model_validate(request)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "thinking", "thinking": "", "signature": ""},
+        {"type": "thinking", "thinking": ""},
+        {"type": "thinking", "thinking": 123, "signature": "sig"},
+        {"type": "thinking", "thinking": "x" * 32001, "signature": "sig"},
+        {"type": "thinking", "thinking": "", "signature": "x" * 16001},
+        {"type": "thinking", "thinking": "", "signature": "sig", "url": "https://example.com"},
+    ],
+)
+def test_malformed_thinking_refused(block):
+    request = sdk_request()
+    assert not _valid_response_block(block, request)
+    request["messages"][1]["content"].insert(0, block)
+    with pytest.raises(ValidationError):
+        SdkRequest.model_validate(request)
