@@ -30,6 +30,8 @@ on:
         default: false
 
 env:
+  ADP_CHAT_EXISTING_NAMESPACE_ONLY: 'true'
+  ADP_CHAT_MODEL_ACCESS_MODE: verify
   ADP_CHAT_MODEL_POLICY_ENABLED: ${{ vars.ADP_CHAT_MODEL_POLICY_ENABLED || 'false' }}
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
@@ -43,7 +45,7 @@ jobs:
     name: Build TS Image and Update Chat ScaledJob
     if: github.ref == 'refs/heads/main'
     runs-on: arc-runner-org
-    environment: adp-deploy-dev
+    environment: adp-chat-deploy-dev
     # AWS authority comes from the protected deployment environment.
     permissions:
       id-token: write

@@ -358,3 +358,12 @@ Runtime image publication waits for the model-readiness job in
 the explicitly inventoried runtime defaults. The check retains a bounded live
 invocation but does not register use cases or accept Marketplace agreements.
 Account model-access preparation remains a platform deployment operation.
+
+Chat releases use `adp-chat-deploy-dev`, with `ADP_DEPLOY_ROLE_ARN` naming
+`adp-dev-chat-trusted-deployment`. `enable_chat_deployment` provisions the exact
+chat CodeBuild/source scope, read-only agent-factory state and gateway URL access,
+model verification, and EKS admin access scoped to `adp-gateway-agents`. It does
+not grant IAM, Terraform state writes, other namespaces, or model registration.
+CI uses the existing namespace and verifies model access; standalone setup keeps
+its original namespace creation and model preparation behavior. Provision the
+namespace with the owning factory deployment before enabling this lane.

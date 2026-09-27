@@ -10,6 +10,8 @@
 #
 # Optional env:
 #   NAMESPACE           (default: adp-gateway-agents)
+#   ADP_CHAT_MODEL_ACCESS_MODE (prepare-and-verify by default; verify for CI)
+#   ADP_CHAT_EXISTING_NAMESPACE_ONLY (true for scoped CI deployment)
 #
 set -euo pipefail
 
@@ -25,9 +27,14 @@ MANIFEST="${SCRIPT_DIR}/chat-scaledjob.yaml"
 PREPULL_MANIFEST="${SCRIPT_DIR}/image-prepull-daemonset.yaml"
 INFRA_DIR="${SCRIPT_DIR}/../../infra"
 
+case "${ADP_CHAT_MODEL_ACCESS_MODE:-prepare-and-verify}" in
+  verify|prepare-and-verify) ;;
+  *) echo "Unsupported chat model access mode" >&2; exit 1 ;;
+esac
+
 # Check account access before changing the ConfigMap or admitting new chat jobs.
 bash "${SCRIPT_DIR}/../../../../platform/scripts/enable-bedrock-models.sh" \
-  --prepare-and-verify --region "$AWS_REGION"
+  "--${ADP_CHAT_MODEL_ACCESS_MODE:-prepare-and-verify}" --region "$AWS_REGION"
 
 # Verify the selected release before any cluster mutation; both consumers use this digest.
 AGENT_IMAGE=$(python3 "$SCRIPT_DIR/../../../../platform/scripts/resolve-ecr-image.py" "$AGENT_IMAGE")
@@ -86,7 +93,9 @@ echo "  RESPONSE_QUEUE_URL=${RESPONSE_QUEUE_URL}"
 echo "  AGENT_IMAGE=${AGENT_IMAGE}"
 echo "  SIGV4_PROXY_TARGET=${SIGV4_PROXY_TARGET}"
 
-kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+if [[ "${ADP_CHAT_EXISTING_NAMESPACE_ONLY:-false}" != true ]]; then
+  kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+fi
 
 if [[ "$ADP_CHAT_MODEL_POLICY_ENABLED" == true ]]; then
   kubectl apply -f "${SCRIPT_DIR}/chat-model-rbac.yaml"
