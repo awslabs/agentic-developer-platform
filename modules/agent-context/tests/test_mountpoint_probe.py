@@ -43,7 +43,7 @@ def test_production_mount_modes_and_reader_group_are_consistent(module):
     )  # group never writes; other gets no access
     source = (ROOT / "manifests/zoekt.yaml").read_text()
     rendered = Template(source).safe_substitute(
-        NAMESPACE="agent-context", SERVICE_ACCOUNT="agent-context-sa", ZOEKT_IMAGE_TAG="test"
+        NAMESPACE="agent-context", SERVICE_ACCOUNT="agent-context-sa", ZOEKT_IMAGE="example.invalid/zoekt@sha256:test"
     )
     deployment = next(doc for doc in yaml.safe_load_all(rendered) if doc["kind"] == "Deployment")
     pod = deployment["spec"]["template"]["spec"]

@@ -1,0 +1,14 @@
+{
+  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f",
+  "platform_digest": "sha256:26f2f9d0104e4aab05c9650f09c0af365ed1e28f6f58f3807ee04ef65bfd4508",
+  "config_digest": "sha256:699f8d0274a252cd2930e13859bd9a0ddff32eae02e8858863a31e11c5ee8965",
+  "time": "2026-09-27T20:14:06.570080+00:00",
+  "scan_receipt": "/workspaces/projects/security27-high-closure/zoekt-final-scan/receipt.json",
+  "rollback_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
+  "binary_sha256": {
+    "zoekt": "4f995f2f579fedb5ba0b8852a183e930b0567f9393c84e30189bf6e421b3f0fa",
+    "zoekt-webserver": "94b670d015c8e494bda7b2bb5eff77bf7362febe58f4d9a56106f6e23eaeaf94",
+    "zoekt-git-index": "1a65ae530a89013e4785a90d49a0e469b07abf03f9a61406317d0d72c1d342a1"
+  },
+  "license_files": 180
+}

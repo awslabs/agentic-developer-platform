@@ -8,12 +8,9 @@
 #   docker build -t agent-context/ingestion:latest .
 #   docker tag agent-context/ingestion:latest ${ECR_REGISTRY}/agent-context/ingestion:latest
 #   docker push ${ECR_REGISTRY}/agent-context/ingestion:latest
-# zoekt-git-index binary, copied from the SAME official image the webserver runs
-# (ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}) so the indexer and webserver are
-# guaranteed version-matched (#2361). This replaces a `go install` that pinned a
-# non-existent pseudo-version. ZOEKT_IMAGE_TAG defaults to "latest" (matches
-# manifests/zoekt.yaml + config.env).
-ARG ZOEKT_IMAGE_TAG=latest
+# Use the same immutable ADP security build as the search Deployment.
+# Override ZOEKT_IMAGE only together with the serving image.
+ARG ZOEKT_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f
 FROM public.ecr.aws/docker/library/python:3.13-slim AS libxml2-security
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config liblzma-dev zlib1g-dev && rm -rf /var/lib/apt/lists/*
 ADD --checksum=sha256:a2c9ae7b770da34860050c309f903221c67830c86e4a7e760692b803df95143a https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.9.tar.xz /tmp/libxml2.tar.xz
@@ -30,11 +27,7 @@ RUN make DESTDIR=/stage install && mkdir -p /package/usr/lib/x86_64-linux-gnu /p
 FROM ruby:3.4.11-slim-trixie@sha256:5b53e16f47e05acae56897d0f96b9d03dcb4563276e71c96415bf7777c9ba207 AS ruby-security
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
 FROM node:22.23.0-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS node-release
-FROM ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG} AS zoekt
-# Resolve the indexer binary to a fixed path regardless of where the upstream
-# image places it (avoids hardcoding /usr/local/bin which may drift).
-SHELL ["/bin/sh", "-c"]
-RUN cp "$(command -v zoekt-git-index || find / -name zoekt-git-index -type f 2>/dev/null | head -1)" /tmp/zoekt-git-index
+FROM ${ZOEKT_IMAGE} AS zoekt
 
 FROM public.ecr.aws/docker/library/python:3.13-slim
 
@@ -85,10 +78,8 @@ ENV PATH="/usr/local/go/bin:/opt/go/bin:${PATH}"
 # scip-go (module at github.com/scip-code/scip-go, binary in cmd/scip-go)
 RUN go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7
 
-# zoekt-git-index — builds .zoekt shards from a git checkout (#2361).
-# Copied from the official zoekt image (the `zoekt` build stage above) so it's
-# the exact same version as the webserver — no fragile go-install pseudo-version.
-COPY --from=zoekt /tmp/zoekt-git-index /usr/local/bin/zoekt-git-index
+# Matched static indexer from the hardened search image; git is supplied here.
+COPY --from=zoekt /usr/local/bin/zoekt-git-index /usr/local/bin/zoekt-git-index
 
 # Ruby 3.4.11 includes patched default zlib and Net::IMAP libraries.
 # Keep Sorbet and Bundler while replacing Debian's affected Ruby 3.3 packages.
