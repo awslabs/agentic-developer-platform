@@ -21,6 +21,15 @@ ACCOUNT = "123456789012"
 IMAGE = f"{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:" + "a" * 40
 FUNCTION = "bedrockgw-dev-pricing-refresh"
 ARN = f"arn:aws:lambda:us-east-1:{ACCOUNT}:function:{FUNCTION}"
+KNOWN_CLAUDE_MODELS = [
+    "anthropic.claude-fable-5",
+    "anthropic.claude-fable-5-1",
+    "anthropic.claude-mythos-5-1",
+    "anthropic.claude-opus-4-7",
+    "anthropic.claude-opus-4-8",
+    "anthropic.claude-opus-5",
+    "anthropic.claude-sonnet-5",
+]
 
 
 def pod(name, image=IMAGE, ready=True, terminating=False):
@@ -42,6 +51,8 @@ class FakeCLI:
         self.function_error = False
         self.refresh_status = "published"
         self.partial = False
+        self.retained_variants = 30
+        self.retained_models = []
         self.failed_sources = []
         self.timeout = 180
         self.confirm_enable = True
@@ -103,7 +114,8 @@ class FakeCLI:
                         "variants": 330,
                         "partial": self.partial,
                         "fresh_variants": 300,
-                        "retained_variants": 30 if self.partial else 0,
+                        "retained_variants": self.retained_variants if self.partial else 0,
+                        "retained_models": self.retained_models if self.partial else [],
                         "failed_sources": self.failed_sources,
                     }
                 )
@@ -450,3 +462,31 @@ def test_partial_recovery_cannot_hide_transport_failure(cli, args):
     with pytest.raises(AssertionError, match="Transport failures"):
         rollout.finalize(args)
     assert cli.state == "DISABLED"
+
+
+@pytest.mark.parametrize("change", [None, "account", "environment", "region", "count", "models", "failed_source"])
+def test_automatic_known_gap_recovery_is_limited_to_reviewed_dev_gap(cli, args, change):
+    cli.partial = True
+    cli.retained_variants = 264
+    cli.retained_models = KNOWN_CLAUDE_MODELS.copy()
+    args.account_id = "879318057152"
+    args.allow_known_claude_gap = True
+    if change == "account":
+        args.account_id = ACCOUNT
+    elif change == "environment":
+        args.environment = "prod"
+    elif change == "region":
+        args.region = "eu-west-1"
+    elif change == "count":
+        cli.retained_variants = 265
+    elif change == "models":
+        cli.retained_models.append("anthropic.unreviewed")
+    elif change == "failed_source":
+        cli.failed_sources = ["https://aws.example/failed"]
+    if change is None:
+        rollout.finalize(args)
+        assert cli.state == "ENABLED"
+    else:
+        with pytest.raises((RuntimeError, AssertionError)):
+            rollout.finalize(args)
+        assert cli.state == "DISABLED"

@@ -328,7 +328,25 @@ def finalize(args):
         if not (refresh.get("status") == "published"):
             raise AssertionError("Refresh did not publish a validated generation")
         if refresh.get("partial"):
-            if not getattr(args, "allow_partial_refresh", False):
+            known_gap = getattr(args, "allow_known_claude_gap", False)
+            if known_gap and not (
+                args.account_id == "879318057152"
+                and args.environment == "dev"
+                and args.region == "us-east-1"
+                and refresh.get("retained_variants") == 264
+                and refresh.get("retained_models")
+                == [
+                    "anthropic.claude-fable-5",
+                    "anthropic.claude-fable-5-1",
+                    "anthropic.claude-mythos-5-1",
+                    "anthropic.claude-opus-4-7",
+                    "anthropic.claude-opus-4-8",
+                    "anthropic.claude-opus-5",
+                    "anthropic.claude-sonnet-5",
+                ]
+            ):
+                raise RuntimeError("Retained rates differ from the reviewed dev Claude source gap")
+            if not (getattr(args, "allow_partial_refresh", False) or known_gap):
                 raise RuntimeError("Refresh retained older rates; schedule remains disabled. Review source gaps before --allow-partial-refresh.")
             if not (refresh.get("fresh_variants", 0) > 0):
                 raise AssertionError("Partial refresh has no freshly verified prices")
@@ -368,6 +386,11 @@ if __name__ == "__main__":
         "--allow-partial-refresh",
         action="store_true",
         help="Resume scheduling after a validated partial publication with no transport failures; retained prices stay stale",
+    )
+    parser.add_argument(
+        "--allow-known-claude-gap",
+        action="store_true",
+        help="Resume only for the reviewed 264-variant dev Claude widget gap; retain partial-refresh alarms",
     )
     parser.add_argument("--readiness-timeout", type=int, default=180, help="Seconds to wait for required release replicas (0-600)")
     args = parser.parse_args()
