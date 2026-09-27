@@ -92,3 +92,11 @@ The shared Claude Agent SDK lifecycle and model transport now live in
 New tool calls use generic `tool.request` frames and the host-owned
 `ADP_TASK_TOOL_ROUTES` registry. URL tool architecture, permissions and deployment
 are documented in `modules/domain-apps/cyber/tools/URL-TOOLS.md`.
+
+Common Crawl scans publish confirmed query states through the existing Task
+progress channel while polling. State changes appear immediately; unchanged
+pending queries get a reminder at most once every 30 seconds, including elapsed
+time and observed scan bytes when available. Completion reports the number of
+returned captures, not a claim of exhaustive coverage. Empty, failed, cancelled,
+partial and still-pending outcomes remain explicit limitations. This adds no
+model turns, query submissions, gateway endpoints or frontend dependencies.

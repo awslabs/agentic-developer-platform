@@ -6,6 +6,7 @@ import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod';
 import { OPERATIONS, SKILLS, ProtocolError } from './protocol.mjs';
 import { startProxy } from './model-proxy.mjs';
+import { archiveProgress } from './archive-progress.mjs';
 
 const text = z.string().min(1).max(4000);
 const refs = z.array(z.string().min(1).max(200)).max(50);
@@ -55,9 +56,10 @@ export function groundedReport(value, evidence) {
     uncertainties: [...report.uncertainties, ...unsupported] };
 }
 
-export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../skills/', import.meta.url)), read = readFile, sleep = delay } = {}) {
+export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../skills/', import.meta.url)), read = readFile, sleep = delay, now = Date.now } = {}) {
   const mutations = new Map();
   const unfinishedJobs = new Set();
+  const publishArchiveProgress = archiveProgress(bridge, now);
   let lastPoll = 0;
   const grants = bridge.start.tool_grants ?? [];
   if (!Array.isArray(grants) || grants.some(value => typeof value !== 'string')) throw new ProtocolError('Invalid Task tool grants');
@@ -76,6 +78,9 @@ export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../
         if (bridge.controller.signal.aborted) throw new Error('cancelled');
         if (!['result', 'common_crawl_result', 'browser_inspect'].includes(operation)) bridge.progress(`Starting ${operation.replaceAll('_', ' ')}.`);
         let receipt = await bridge.cyber(operation, payload);
+        const archiveScan = operation === 'common_crawl_scan' || operation === 'common_crawl_result';
+        const scanId = receipt.result?.scan_id || payload.scan_id;
+        if (archiveScan) publishArchiveProgress(receipt, scanId);
         // Await accepted URL work without spending a model turn on every poll.
         // Only read-only result calls repeat; submissions and browser actions never do.
         const polling = operation === 'common_crawl_scan' ? ['common_crawl_result', 'scan_id']
@@ -85,7 +90,9 @@ export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../
           if (!id) throw new ProtocolError('Pending URL operation lacks its reference');
           await sleep(Math.min(10000, 2000 * 2 ** poll), undefined, { signal: bridge.controller.signal });
           receipt = await bridge.cyber(polling[0], { [polling[1]]: id });
+          publishArchiveProgress(receipt, scanId);
         }
+        if (polling && receipt.result?.status === 'pending') publishArchiveProgress(receipt, scanId, true);
         const job = receipt.result?.job_id || receipt.result?.scan_id;
         if (job && receipt.result?.status === 'pending') unfinishedJobs.add(job);
         if (['result', 'common_crawl_result', 'browser_inspect'].includes(operation) && receipt.operation_status === 'confirmed' &&
