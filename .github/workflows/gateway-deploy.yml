@@ -747,7 +747,9 @@ jobs:
             bedrockgateway=${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6} \
             -n ${{ env.NAMESPACE }}
 
-          kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
+          # HPA may add replicas during rollout, and each replacement needs its
+          # readiness probe before the previous pod can drain.
+          kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=600s
       - name: Update the scheduled orchestration engine
         env:
           ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}

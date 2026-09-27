@@ -33,7 +33,7 @@ class SyncTests(unittest.TestCase):
         self.rollout_fail_at = None
         self.ready_pod = True
 
-    def command(self, args):
+    def command(self, args, timeout=360):
         self.calls.append(args)
         if args[:3] == ['aws', 'sts', 'get-caller-identity']:
             return json.dumps({'Account': self.account})
@@ -97,6 +97,7 @@ class SyncTests(unittest.TestCase):
         self.rollout_fail_at = 1
         with self.assertRaises(subprocess.CalledProcessError):
             self.sync()
+        self.assertIn('--timeout=600s', next(c for c in self.calls if c[:3] == ['kubectl', 'rollout', 'status']))
         self.assertFalse(self.updates())
 
     def test_second_parity_check_does_not_wait_for_full_rollout_again(self):

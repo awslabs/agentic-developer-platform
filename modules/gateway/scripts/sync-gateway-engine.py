@@ -10,8 +10,8 @@ import re
 import subprocess
 
 
-def command(args):
-    return subprocess.check_output(args, text=True, timeout=360).strip()
+def command(args, timeout=360):
+    return subprocess.check_output(args, text=True, timeout=timeout).strip()
 
 
 def admission_settings(environment):
@@ -53,7 +53,7 @@ def synchronize(*, image, account, region, environment, namespace, verify_only=F
     def gateway(*, wait_for_rollout=False):
         if wait_for_rollout:
             command(['kubectl', 'rollout', 'status', 'deployment/bedrockgateway',
-                     '-n', namespace, '--timeout=300s'])
+                     '-n', namespace, '--timeout=600s'], timeout=660)
         deployment = json.loads(command(['kubectl', 'get', 'deployment/bedrockgateway',
                                          '-n', namespace, '-o', 'json']))
         containers = deployment['spec']['template']['spec']['containers']
