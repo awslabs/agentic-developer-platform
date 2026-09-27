@@ -1,13 +1,13 @@
 {
   "_comment": [
-    "Final published SkyPilot0.12.3 candidate with curl, rsync and authenticated OpenSSH source repairs.",
-    "Registry index/platform/config identities are verified in docs/security/runs/2026-09-27/skypilot-promotion/. Native SSH and API tests passed with actual UID1000 passwd identity."
+    "Facts re-collected from the final High-maintenance image. All SkyPilot Python source files match the previous published image; package startup facts remain applicable.",
+    "Exact source-file hash inventory and collector are retained with high-skypilot evidence."
   ],
-  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
   "skypilot_version": "0.12.3",
-  "image_index_digest": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
-  "amd64_manifest_digest": "sha256:21637f1843069b4cee58284ca0e044fb3dcb96a08033b30b5cde45d3fc1eca01",
-  "config_blob_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
+  "image_index_digest": "sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "amd64_manifest_digest": "sha256:4c881a130e5e1abd5f70b7e518616bd62648d85c2f2cd919d8395bb9f48cf233",
+  "config_blob_digest": "sha256:0f7ef7d2bae81dddef93f3007ecbbe7648009671ae7d285cdcea66900ea6d603",
   "config": {
     "Entrypoint": null,
     "Cmd": [

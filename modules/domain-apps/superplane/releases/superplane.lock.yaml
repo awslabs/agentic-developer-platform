@@ -82,7 +82,7 @@ source_access:
 # Digest-addressed and verifiable. Keys are referenced by name from the deploy side (U3),
 # so treat them as a contract.
 images:
-  skypilot-api: sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a
+  skypilot-api: sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4
   superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
   superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
   superplane-platform-monitor: sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9
@@ -103,10 +103,10 @@ image_sources:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-skypilot
     ecr_repository: adp-superplane-skypilot
-    tag: security27-openssh-f8ba67f08
+    tag: security27-high-openssh-20260927
     resolved_by: ECR index/platform/config byte identities verified, 2026-09-27
-    publication_receipt: docs/security/runs/2026-09-27/skypilot-promotion/publication.json
-    selected_because: Preserved S03 API contract plus signed curl/rsync and Debian OpenSSH backport; zero reviewed Critical candidate matches
+    publication_receipt: docs/security/runs/2026-09-27/high-skypilot/publication.json
+    selected_because: Preserved SkyPilot contract with tested tool, XML, crypto, HTTP parser and OpenSSH maintenance; zero reviewed Critical, residual OS High findings retained
   superplane-controller:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-controller
