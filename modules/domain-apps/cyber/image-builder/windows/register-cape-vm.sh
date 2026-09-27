@@ -137,7 +137,7 @@ fi
 echo "=== Step 4/6: Create running clean snapshot ==="
 virsh snapshot-create-as --domain "$VM_NAME" --name clean \
   --description "Agent-ready state for CAPE analysis - ${BUILD_DATE}"
-virsh snapshot-dumpxml "$VM_NAME" clean | grep -q '<state>running</state>'
+virsh snapshot-dumpxml "$VM_NAME" clean | grep '<state>running</state>' > /dev/null
 
 # ---------------------------------------------------------------------------
 # 5. Power off the new guest before CAPE takes ownership.

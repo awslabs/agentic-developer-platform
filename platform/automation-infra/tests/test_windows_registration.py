@@ -27,7 +27,7 @@ case "$name" in
     case "$1" in
       dominfo) [[ "$FAILURE" == existing ]] ;;
       domifaddr) echo 'vnet0 52:54:00:aa:bb:cc ipv4 192.168.100.120/24' ;;
-      snapshot-dumpxml) echo '<domainsnapshot><state>running</state></domainsnapshot>' ;;
+      snapshot-dumpxml) echo '<domainsnapshot><state>running</state>'; python3 -c 'print("x" * 131072)'; echo '</domainsnapshot>' ;;
       domstate) echo 'shut off' ;;
     esac ;;
   curl) [[ "$FAILURE" != agent ]] ;;
