@@ -30,6 +30,8 @@ class SyncTests(unittest.TestCase):
         self.gateway_env = {'AGENT_AUTHORITY_ENABLED': 'true', 'ADP_WORK_CLAIMS_ENABLED': 'true'}
         self.engine_env = dict(self.gateway_env)
         self.admission_race = False
+        self.rollout_fail_at = None
+        self.ready_pod = True
 
     def command(self, args):
         self.calls.append(args)
@@ -38,10 +40,18 @@ class SyncTests(unittest.TestCase):
         if args[:3] == ['aws', 'ecr', 'describe-images']:
             return json.dumps({'imageDetails': [{'imageDigest': NEW.split('@')[1]}]})
         if args[:3] == ['kubectl', 'rollout', 'status']:
+            if self.rollout_fail_at == sum(c[:3] == ['kubectl', 'rollout', 'status'] for c in self.calls):
+                raise subprocess.CalledProcessError(1, args)
             return ''
+        if args[:3] == ['kubectl', 'get', 'pods']:
+            return json.dumps({'items': [{'metadata': {'name': 'gateway-ready'},
+                                           'status': {'phase': 'Running', 'containerStatuses': [{
+                                               'name': 'bedrockgateway', 'ready': self.ready_pod,
+                                               'imageID': NEW}]}}]})
         if args[:2] == ['kubectl', 'get']:
-            return json.dumps({'spec': {'template': {'spec': {'containers': [
-                {'name': 'bedrockgateway', 'image': self.gateway}]}}}})
+            return json.dumps({'spec': {'selector': {'matchLabels': {'app': 'bedrockgateway'}},
+                                        'template': {'spec': {'containers': [
+                                            {'name': 'bedrockgateway', 'image': self.gateway}]}}}})
         if args[:2] == ['kubectl', 'exec']:
             return json.dumps(self.gateway_env)
         if args[:3] == ['aws', 'lambda', 'get-function']:
@@ -82,6 +92,29 @@ class SyncTests(unittest.TestCase):
         self.engine = NEW
         self.sync()
         self.assertFalse(self.updates())
+
+    def test_initial_rollout_remains_required_before_lambda_update(self):
+        self.rollout_fail_at = 1
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.sync()
+        self.assertFalse(self.updates())
+
+    def test_second_parity_check_does_not_wait_for_full_rollout_again(self):
+        self.rollout_fail_at = 2
+        self.assertEqual(self.sync()['status'], 'verified')
+        self.assertEqual(sum(c[:3] == ['kubectl', 'rollout', 'status'] for c in self.calls), 1)
+        self.assertEqual(sum(c[:3] == ['kubectl', 'get', 'pods'] for c in self.calls), 2)
+
+    def test_verify_only_checks_ready_pod_without_rollout_wait(self):
+        self.engine = NEW
+        self.rollout_fail_at = 1
+        self.assertEqual(self.sync(verify_only=True)['status'], 'verified')
+        self.assertFalse(any(c[:3] == ['kubectl', 'rollout', 'status'] for c in self.calls))
+
+    def test_parity_requires_a_ready_pod_on_the_release_digest(self):
+        self.ready_pod = False
+        with self.assertRaisesRegex(ValueError, 'No ready gateway pod'):
+            self.sync(verify_only=True)
 
     def test_missing_tick_work_claim_flag_refuses_before_any_update(self):
         self.engine_env.pop('ADP_WORK_CLAIMS_ENABLED')

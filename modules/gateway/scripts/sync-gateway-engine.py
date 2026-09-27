@@ -50,26 +50,49 @@ def synchronize(*, image, account, region, environment, namespace, verify_only=F
 
     expected = pinned(image)
 
-    def gateway():
-        command(['kubectl', 'rollout', 'status', 'deployment/bedrockgateway',
-                 '-n', namespace, '--timeout=300s'])
+    def gateway(*, wait_for_rollout=False):
+        if wait_for_rollout:
+            command(['kubectl', 'rollout', 'status', 'deployment/bedrockgateway',
+                     '-n', namespace, '--timeout=300s'])
         deployment = json.loads(command(['kubectl', 'get', 'deployment/bedrockgateway',
                                          '-n', namespace, '-o', 'json']))
         containers = deployment['spec']['template']['spec']['containers']
         actual = next(c['image'] for c in containers if c['name'] == 'bedrockgateway')
         if pinned(actual) != expected:
             raise ValueError('Gateway changed or does not match the requested release')
-        # Read a running pod, not ConfigMap values that old pods may not have
-        # loaded. -S avoids unrelated site/instrumentation startup output.
-        observed = json.loads(command([
-            'kubectl', 'exec', 'deployment/bedrockgateway', '-n', namespace,
-            '-c', 'bedrockgateway', '--', 'python', '-S', '-c',
-            'import json,os; print(json.dumps({k:os.environ.get(k,"false") for k in '
-            '["AGENT_AUTHORITY_ENABLED","ADP_WORK_CLAIMS_ENABLED"]}))',
-        ]))
+        selector = ','.join(f'{key}={value}' for key, value in sorted(
+            deployment['spec']['selector']['matchLabels'].items()))
+        pods = json.loads(command(['kubectl', 'get', 'pods', '-n', namespace,
+                                   '-l', selector, '-o', 'json']))['items']
+        # Read admission settings from a ready pod running the requested digest.
+        # A deployment-level exec can choose a terminating or previous-release
+        # pod while Karpenter replaces nodes. -S avoids startup output.
+        ready = []
+        for pod in pods:
+            if pod['status']['phase'] != 'Running' or pod['metadata'].get('deletionTimestamp'):
+                continue
+            statuses = pod['status'].get('containerStatuses', [])
+            target = next((c for c in statuses if c['name'] == 'bedrockgateway'), None)
+            image_id = target.get('imageID', '').removeprefix('docker-pullable://') if target else ''
+            if target and target.get('ready') and image_id == expected:
+                ready.append(pod['metadata']['name'])
+        if not ready:
+            raise ValueError('No ready gateway pod runs the requested release digest')
+        for pod_name in ready:
+            try:
+                observed = json.loads(command([
+                    'kubectl', 'exec', 'pod/' + pod_name, '-n', namespace,
+                    '-c', 'bedrockgateway', '--', 'python', '-S', '-c',
+                    'import json,os; print(json.dumps({k:os.environ.get(k,"false") for k in '
+                    '["AGENT_AUTHORITY_ENABLED","ADP_WORK_CLAIMS_ENABLED"]}))',
+                ]))
+                break
+            except subprocess.CalledProcessError:
+                if pod_name == ready[-1]:
+                    raise
         return admission_settings(observed)
 
-    gateway_admission = gateway()
+    gateway_admission = gateway(wait_for_rollout=not verify_only)
     function = f'arn:aws:lambda:{region}:{account}:function:adp-{environment}-orchestration-tick'
     # Missing function and permission errors are failures, not evidence of parity.
     before = aws('lambda', 'get-function', '--function-name', function)
