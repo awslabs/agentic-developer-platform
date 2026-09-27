@@ -63,13 +63,14 @@ jobs:
               echo "matrix={\"image\":[\"$INPUT\"]}" >> "$GITHUB_OUTPUT"
             fi
           else
-            # Detect which image directories changed
+            # Select only targets with provisioned CodeBuild projects. Zoekt is
+            # published separately and deployed through its reviewed digest pin.
             CHANGED=$(git diff --name-only HEAD^ HEAD \
               | grep '^modules/agent-context/images/' \
               | awk -F/ '{print $4}' \
               | sort -u \
               | jq -R . \
-              | jq -sc 'map(select(. != "shared"))')
+              | jq -sc 'map(select(. == "ingestion" or . == "codegraph-context" or . == "litellm-proxy" or . == "deepwiki" or . == "context-mcp"))')
             # If buildspec or workflow changed, rebuild all
             if git diff --name-only HEAD^ HEAD | grep -qE '(codebuild/bs-agent-context-image\.yml|\.github/workflows/agent-context-images-build\.yml)'; then
               echo 'matrix={"image":["ingestion","codegraph-context","litellm-proxy","deepwiki","context-mcp"]}' >> "$GITHUB_OUTPUT"
