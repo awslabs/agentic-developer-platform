@@ -37,13 +37,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import VerifiedCaller
 from app.cluster_authorization import REFUSAL, authorized_cluster_ids
-from app.models.cluster_grant_scope import CLUSTER_USE
 from app.models.cluster import Cluster
+from app.models.cluster_grant_scope import CLUSTER_USE
 from app.models.cluster_membership import (
     STATE_ACTIVE,
     STATE_RESERVED,
     ClusterMembership,
 )
+from app.models.workspace import Workspace
 from app.services.provisioning import ProvisioningRefused
 
 # Cluster statuses eligible for a new member. Mirrors the existing dedicated-path
@@ -56,6 +57,19 @@ ELIGIBLE_CLUSTER_STATUSES = frozenset({"Ready", "Active"})
 # live membership when checking for namespace/identity conflicts. `removed` does
 # not: a removed membership is a tombstone, not a current occupant.
 LIVE_MEMBERSHIP_STATES = frozenset({STATE_RESERVED, STATE_ACTIVE})
+RETIRING_OWNER_STATES = frozenset({"Teardown", "retired", "Deleted"})
+
+
+async def _owner_accepts_members(db: AsyncSession, cluster: Cluster) -> bool:
+    if cluster.workspace_id is None:
+        return True
+    owner_status = await db.scalar(
+        select(Workspace.status).where(
+            Workspace.id == cluster.workspace_id,
+            Workspace.org_id == cluster.org_id,
+        )
+    )
+    return owner_status is not None and owner_status not in RETIRING_OWNER_STATES
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,8 @@ async def list_eligible_clusters(
     clusters = result.scalars().all()
     eligible: list[EligibleCluster] = []
     for cluster in clusters:
+        if not await _owner_accepts_members(db, cluster):
+            continue
         member_result = await db.execute(
             select(ClusterMembership.id).where(
                 ClusterMembership.cluster_id == cluster.id,
@@ -164,6 +180,7 @@ async def resolve_shared_target(
         or cluster.org_id != org_id
         or not cluster.sharing_enabled
         or cluster.status not in ELIGIBLE_CLUSTER_STATUSES
+        or not await _owner_accepts_members(db, cluster)
     ):
         raise ProvisioningRefused(
             "no eligible shared cluster matches the selected identifier for this "

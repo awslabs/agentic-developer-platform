@@ -104,7 +104,16 @@ async def test_registry_exposes_only_current_reader_metadata(client, monkeypatch
 
 @pytest.mark.parametrize(
     "change",
-    ["revoked", "expired", "namespace", "removed", "cluster", "sharing", "mutator"],
+    [
+        "revoked",
+        "expired",
+        "namespace",
+        "removed",
+        "cluster",
+        "sharing",
+        "mutator",
+        "teardown",
+    ],
 )
 async def test_reader_binding_refuses_stale_membership_or_credential(
     monkeypatch, change
@@ -122,6 +131,8 @@ async def test_reader_binding_refuses_stale_membership_or_credential(
             current.scope = "mutator"
         elif change == "removed":
             (await db.get(ClusterMembership, member.id)).state = "removed"
+        elif change == "teardown":
+            (await db.get(Workspace, workspace.id)).status = "Teardown"
         elif change == "cluster":
             replacement = Cluster(
                 id=uuid.uuid4(),
@@ -140,6 +151,70 @@ async def test_reader_binding_refuses_stale_membership_or_credential(
             (await db.get(Cluster, cluster.id)).sharing_enabled = False
         await db.commit()
         assert await reader_membership(db, org, str(workspace.id)) is None
+
+
+async def test_retiring_one_member_does_not_withdraw_peer_reader(monkeypatch):
+    org, workspace, member, _, cluster = await shared_reader(monkeypatch)
+    peer_id = uuid.uuid4()
+    peer_namespace = "sp-ws-" + peer_id.hex
+    peer_member_id = uuid.uuid4()
+    async with async_session_test() as db:
+        db.add(
+            Workspace(
+                id=peer_id,
+                org_id=org,
+                name="peer",
+                isolation_mode="namespace",
+                cluster_id=cluster.id,
+                shared_cluster_id=cluster.id,
+                namespace_name=peer_namespace,
+                status="Ready",
+            )
+        )
+        await db.flush()
+        db.add(
+            ClusterMembership(
+                id=peer_member_id,
+                org_id=org,
+                workspace_id=peer_id,
+                cluster_id=cluster.id,
+                generation="b" * 64,
+                namespace=peer_namespace,
+                namespace_uid="peer-namespace-uid",
+                state="active",
+                operation_id=uuid.uuid4(),
+            )
+        )
+        await db.flush()
+        db.add(
+            MembershipCredential(
+                membership_id=peer_member_id,
+                revision=1,
+                scope="reader",
+                namespace_uid="peer-namespace-uid",
+                service_account_uid="peer-sa-uid",
+                expires_at=datetime.now(UTC) + timedelta(minutes=10),
+                state="active",
+                projection_uid="peer-secret-uid",
+                projection_namespace="superplane",
+                projection_namespace_uid="management-namespace-uid",
+                projection_name="peer-workspace-access",
+                content_digest="c" * 64,
+                projection_version="6",
+                observed_at=datetime.now(UTC),
+            )
+        )
+        await db.commit()
+        first = await reader_membership(db, org, str(workspace.id))
+        second = await reader_membership(db, org, str(peer_id))
+        assert first["membership_credential"]["generation"] == member.generation
+        assert second["membership_credential"]["generation"] == "b" * 64
+        (await db.get(Workspace, workspace.id)).status = "Teardown"
+        await db.commit()
+        assert await reader_membership(db, org, str(workspace.id)) is None
+        assert (await reader_membership(db, org, str(peer_id)))[
+            "membership_credential"
+        ]["namespace"] == peer_namespace
 
 
 async def test_projected_revision_is_not_normal_authority_and_claim_must_match(

@@ -16,11 +16,11 @@ from superplane_contracts import Submitter
 from app.database import get_session
 from app.models.cluster import Cluster
 from app.models.cluster_membership import ClusterMembership
-from app.models.membership_credential import MembershipCredential
 from app.models.controller_execution import (
     ControllerExecution,
     ControllerExecutionAccounting,
 )
+from app.models.membership_credential import MembershipCredential
 from app.models.organization import Organization
 from app.models.workspace import Workspace
 from app.routers.heartbeat import _authenticated_submitter
@@ -218,6 +218,7 @@ async def reader_membership(db, org_id, workspace_id, *, provisional_identity=No
             Workspace.cluster_id == ClusterMembership.cluster_id,
             Workspace.shared_cluster_id == ClusterMembership.cluster_id,
             Workspace.namespace_name == ClusterMembership.namespace,
+            Workspace.status.notin_(["Teardown", "retired", "Deleted"]),
             Cluster.sharing_enabled.is_(True),
             Cluster.status.in_(["Ready", "Active"]),
             ClusterMembership.state.in_(

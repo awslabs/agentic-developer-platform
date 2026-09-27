@@ -200,6 +200,38 @@ class TestResolveSharedTarget:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("owner_status", ["Teardown", "retired", "Deleted"])
+    async def test_retiring_owner_is_not_offered_or_resolved(self, owner_status):
+        await _seed()
+        async with async_session_test() as session:
+            owner = Workspace(
+                id=uuid.uuid4(),
+                org_id=ORG_A,
+                name="cluster-owner",
+                isolation_mode="dedicated",
+                cluster_id=SHARED_CLUSTER,
+                status="Ready",
+            )
+            session.add(owner)
+            await session.flush()
+            cluster = await session.get(Cluster, SHARED_CLUSTER)
+            cluster.workspace_id = owner.id
+            await session.commit()
+            assert [
+                item.id
+                for item in await list_eligible_clusters(
+                    session, ORG_A, caller=_caller()
+                )
+            ] == [SHARED_CLUSTER]
+            owner.status = owner_status
+            await session.commit()
+            assert await list_eligible_clusters(session, ORG_A, caller=_caller()) == []
+            with pytest.raises(ProvisioningRefused):
+                await resolve_shared_target(
+                    session, ORG_A, SHARED_CLUSTER, caller=_caller()
+                )
+
+    @pytest.mark.asyncio
     async def test_refuses_a_cluster_belonging_to_another_organization(self):
         """Cross-organization selection is refused even under the correct AWS account.
 
