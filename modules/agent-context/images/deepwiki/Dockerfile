@@ -4,6 +4,23 @@
 # Build: docker build -t deepwiki:latest .
 # The image uses OPENAI_BASE_URL to route all LLM calls through the LiteLLM proxy.
 
+# Build the exact Debian client source on Trixie; archive authentication uses
+# the trusted Debian keyring already present in this immutable base.
+FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS openssh-builder
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::AllowInsecureRepositories=false update \
+    && apt-get -y --no-install-recommends install dpkg-dev git gpgv \
+    && apt-get -y --no-install-recommends -Ppkg.openssh.nognome,noudeb build-dep openssh=1:10.0p1-7+deb13u4
+WORKDIR /src
+RUN apt-get --download-only source openssh=1:10.0p1-7+deb13u4 \
+    && mkdir -p /out/source-authentication \
+    && cp /var/lib/apt/lists/*InRelease /out/source-authentication/ \
+    && sha256sum /var/lib/apt/lists/*Sources* /usr/share/keyrings/debian-archive-keyring.gpg > /out/source-authentication/metadata-sha256.txt \
+    && apt-cache showsrc openssh > /out/source-authentication/apt-showsrc.txt
+COPY security/openssh/ /build-tools/
+RUN python /build-tools/authenticate-source.py && python /build-tools/prepare.py
+RUN --network=none sh /build-tools/build.sh
+
 # Official upstream commit d92819a9c9f3b99416e3580ff235fc9d3adf8b89.
 # Upstream publishes main/latest/sha tags; the configured v1.2.2 tag is unavailable.
 # Official multi-platform Node release; fixes CVE-2026-48930 in the builder and UI runtime.
@@ -59,6 +76,13 @@ RUN apt-get update && apt-get -y upgrade \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir GitPython==3.1.59 \
     && python -m pip check
+# Install through the package manager so client helpers/configuration and exact
+# downstream provenance remain intact; never claim this backport is upstream10.4.
+COPY --from=openssh-builder /out/openssh-client_10.0p1-7+deb13u4+adp.security.1_amd64.deb /tmp/openssh-client.deb
+RUN dpkg --force-confold -i /tmp/openssh-client.deb \
+    && rm /tmp/openssh-client.deb \
+    && test "$(dpkg-query -W -f='${Version}' openssh-client)" = '1:10.0p1-7+deb13u4+adp.security.1'
+COPY --from=openssh-builder /out/source-lock.json /opt/deepwiki-security/openssh-source-lock.json
 # Reviewed CPython3.11 port; helpers/checks are canonical, source hashes are branch-specific.
 COPY security/stdlib311/ /opt/adp-stdlib-security/
 COPY security-stdlib/apply.py security-stdlib/check.py security-stdlib/PSF-LICENSE.txt /opt/adp-stdlib-security/
