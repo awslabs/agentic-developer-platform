@@ -152,6 +152,11 @@ async def validate_continuation_assignment(session, *, execution, grant, node):
         or data.get("action") != execution["orchestration_continuation_action"]["S"]
         or data.get("authority_reference_id") != grant.authority.reference_id
         or data.get("parent_principal") != execution.get("parent_principal", {}).get("S")
+        or (execution.get("orchestration_review_repairs") == {"BOOL": True})
+        != (
+            (data.get("envelope", {}).get("review_cycle_input") or {}).get("allow_story_repairs") is True
+            and data.get("action") == Action.REVIEW.value
+        )
     ):
         raise BootstrapRefusedError("continuation assignment changed")
 
@@ -466,6 +471,15 @@ class ReviewCycleServices:
             raw, parent, inputs, principal, _ = await self.authorize(
                 session, context, node, binding, detail["active_run_id"], effect.action, reserve=True
             )
+            allow_story_repairs = effect.action is Action.REPAIR
+            if effect.action is Action.REVIEW:
+                try:
+                    await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REPAIR)
+                    allow_story_repairs = True
+                except CycleBlockedError:
+                    # Explicit review-only policies retain read-only contents
+                    # access. The persona itself cannot grant repair authority.
+                    pass
             bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_bootstrap_failure(raw)
             if not bootstrap_retry and (raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}):
                 raise CycleBlockedError("previous_worker_not_completed")
@@ -502,7 +516,7 @@ class ReviewCycleServices:
                 key: detail[key] for key in ("action", "repo", "pr_number", "head_sha", "accepted_scope", "remaining_attempts", "remaining_spend_usd")
             }
             envelope["review_cycle_input"].update(
-                allow_story_repairs=effect.action is Action.REPAIR,
+                allow_story_repairs=allow_story_repairs,
                 findings=detail.get("findings", []),
                 review_artifact=detail.get("review_artifact"),
                 operation_key=action.operation_key,
@@ -519,6 +533,7 @@ class ReviewCycleServices:
                     "author_run_id": detail["author_run_id"],
                     "execution_id": context.execution.id,
                     "expected_head_sha": detail["head_sha"],
+                    "allow_story_repairs": allow_story_repairs,
                     "repo": binding.repo,
                     "pr_number": binding.pr_number,
                     "provider_repository_id": binding.provider_repository_id,
@@ -536,6 +551,10 @@ class ReviewCycleServices:
                 "parent_grant_id": {"S": parent.grant_id},
                 "parent_grant_epoch": {"N": str(parent.revocation_epoch)},
             }
+            if effect.action is Action.REVIEW and allow_story_repairs:
+                # The credential broker reads trusted execution metadata, never
+                # the worker's envelope, when granting branch-write access.
+                metadata["orchestration_review_repairs"] = {"BOOL": True}
             saved = {
                 "operation_key": action.operation_key,
                 "run_id": run_id,

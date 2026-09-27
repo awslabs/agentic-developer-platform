@@ -68,6 +68,21 @@ def test_codex_continuation_uses_engine_action_not_persona_inference(action):
     assert runtime_action(execution, SimpleNamespace(kind="story", attempts=1)) is None
 
 
+def test_reviewer_repairs_require_trusted_continuation_capability():
+    execution = {
+        "persona": {"S": "agent-codex-reviewer"},
+        "orchestration_continuation_receipt": {"S": "committed"},
+        "orchestration_continuation_action": {"S": "review"},
+        "orchestration_review_repairs": {"BOOL": True},
+    }
+    node = SimpleNamespace(kind="story", attempts=1)
+    assert runtime_action(execution, node) is Action.REPAIR
+    execution["orchestration_review_repairs"] = {"S": "true"}
+    assert runtime_action(execution, node) is Action.REVIEW
+    execution["review_cycle_input"] = {"allow_story_repairs": True}
+    assert runtime_action(execution, node) is Action.REVIEW
+
+
 async def _assignment(session, *, policy, node_kwargs=None, execution_extra=None):
     """One running, protected assignment: flow + accepted policy + node + grant.
 
@@ -139,6 +154,24 @@ async def test_current_assignment_can_obtain_repository_scoped_credential(sessio
 )
 async def test_unscopable_brokers_refuse_policy_flow(session, assignment, path):
     assert (await check(session, assignment, path)).reason is DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE
+
+
+@pytest.mark.parametrize("repair_allowed", [True, False])
+async def test_review_repair_credentials_obey_current_policy(session, assignment, repair_allowed):
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
+    actions = ["develop", "review", "merge"] + (["repair"] if repair_allowed else [])
+    plan.plan_document = {**plan.plan_document, "execution_policy": {**plan.plan_document["execution_policy"], "allowed_actions": actions}}
+    assignment.execution.update(
+        persona={"S": "agent-codex-reviewer"},
+        orchestration_continuation_receipt={"S": "committed"},
+        orchestration_continuation_action={"S": "review"},
+        orchestration_review_repairs={"BOOL": True},
+    )
+    await session.flush()
+    result = await check(session, assignment)
+    assert result.permitted is repair_allowed
+    if repair_allowed:
+        assert result.permissions["contents"] == "write"
 
 
 @pytest.mark.parametrize("field,value", [("repo", "other/repo"), ("tenant_id", "other-tenant"), ("orchestration_node_id", "other-node")])
