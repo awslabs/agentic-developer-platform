@@ -1,0 +1,12 @@
+.:1053 {
+  errors
+  health :18080
+  ready :18181
+  hosts {
+    192.0.2.42 security-fixture.invalid
+  }
+  cache 30
+  loop
+  reload
+  loadbalance
+}
