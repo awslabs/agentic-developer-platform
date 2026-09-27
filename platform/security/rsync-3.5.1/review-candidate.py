@@ -87,7 +87,8 @@ assert collections.Counter(d["severity"] for d in dispositions) == {
     "Critical": 5,
     "High": 19,
 }
-curl = json.loads((proof / "curl-review.json").read_text())
+curl_path = Path(sys.argv[3]) if len(sys.argv) > 3 else proof / "curl-review.json"
+curl = json.loads(curl_path.read_text())
 assert curl["docker_root_descriptor"] == receipt["docker_root_descriptor"]
 indices = {d["native_match_index"] for d in dispositions + curl["dispositions"]}
 remaining = collections.Counter(
