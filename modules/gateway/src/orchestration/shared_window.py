@@ -37,6 +37,36 @@ class WindowRenewalRequest(BaseModel):
     expected_snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
+def accepted_document_hash(plan):
+    document = plan.plan_document or {}
+    if document.get("execution_continuation") is not None:
+        return digest(document)
+    # Normal acceptance hashes the compiler's canonical executable document,
+    # excluding presentation provenance and absent optional policy/eval fields.
+    # A shared continuation deliberately uses its complete adoption document.
+    from .compile import plan_hash
+    from .proposal import LoopProposal
+
+    try:
+        return plan_hash(LoopProposal.model_validate(document))
+    except ValueError as error:
+        raise WindowRenewalError("accepted_document_unverifiable") from error
+
+
+async def policy_owner_matches(session, actor_id, policy):
+    if actor_id == policy.principal_id:
+        return True
+    # Protected plans can retain the verified login subject, while the human
+    # control route attributes decisions to the canonical workspace user ID.
+    from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
+
+    try:
+        owner = await resolve_root_user_entity_id(session, policy.org_id, policy.principal_id or "")
+    except UnresolvableUserEntityError:
+        return False
+    return actor_id == owner
+
+
 def apply_window(policy, limit, decision_id, wall_clock=None):
     # Copy private financial attributes as well as the public policy. Rebuilding
     # from model_dump would discard the already verified run/chain ceilings.
@@ -100,12 +130,12 @@ async def effective_shared_window(session, plan, policy):
         decision.actor_kind != "human"
         or decision.actor_role != "platform_admin"
         or not decision.actor_id
-        or decision.actor_id != policy.principal_id
+        or not await policy_owner_matches(session, decision.actor_id, policy)
         or data.get("contract") != CONTRACT
         or data.get("org_id") != plan.org_id
         or data.get("flow_id") != plan.flow_id
         or data.get("plan_hash") != plan.plan_hash
-        or plan.plan_hash != digest(plan.plan_document)
+        or plan.plan_hash != accepted_document_hash(plan)
         or data.get("original_policy_hash") != original.policy_hash
         or original.policy_hash != policy_hash(original)
         or policy.policy_hash != policy_hash(policy)
@@ -134,7 +164,7 @@ async def prepare_renewal(session, *, flow_id, actor, request):
     flow, plan = await current_plan(session, flow_id=flow_id, actor=actor)
     if plan.version != request.expected_plan_version or plan.plan_hash != request.expected_plan_hash:
         raise WindowRenewalError("accepted_plan_changed")
-    if plan.plan_hash != digest(plan.plan_document):
+    if plan.plan_hash != accepted_document_hash(plan):
         raise WindowRenewalError("accepted_document_hash_changed")
     marker = (plan.plan_document or {}).get("execution_continuation")
     if marker is not None:
@@ -158,7 +188,7 @@ async def prepare_renewal(session, *, flow_id, actor, request):
         raise WindowRenewalError("expired_policy_requires_explicit_reacceptance")
     if not valid_extension(policy.expires_at, request.expires_at, now, policy.limits.max_wall_clock_seconds, request.max_wall_clock_seconds):
         raise WindowRenewalError("renewal_must_extend_within_24_hours")
-    if actor.actor_id != policy.principal_id:
+    if not await policy_owner_matches(session, actor.actor_id, policy):
         raise WindowRenewalError("original_principal_required")
     if flow.state not in {"pending", "running"}:
         raise WindowRenewalError("flow_not_running")

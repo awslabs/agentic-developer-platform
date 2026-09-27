@@ -31,3 +31,10 @@ Renewal leaves the accepted plan, node attempts, released claims, concluded
 executions and budget enforcement setting intact. The next scheduled tick must
 independently pass automatic recovery and ordinary dispatch admission. Renewing
 time does not authorize retries after exhausted attempts or policy refusals.
+
+Protected renewal verifies the same canonical plan hash used by normal plan
+compilation. Shared continuations retain their full adoption-document hash.
+Historical protected policies may name the verified login subject; renewal
+resolves that subject within the tenant and records the authenticated canonical
+workspace user as the decision actor. Receipt reads recheck that owner mapping.
+The accepted policy principal and executable document remain unchanged.

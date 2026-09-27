@@ -11,11 +11,12 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from src.orchestration.compile import ApprovalContext
+from src.orchestration.compile import ApprovalContext, plan_hash
 from src.orchestration.continuation import digest
 from src.orchestration.execution_policy import policy_hash, stamp_policy
 from src.orchestration.models import OrchestrationDecision, OrchestrationExecution
 from src.orchestration.policy_admission import load_in_force_policy
+from src.orchestration.proposal import LoopProposal
 from src.orchestration.review_cycle import CycleBlockedError
 from src.orchestration.shared_amendment import SharedAppendError
 from src.orchestration.shared_retry import RetryIncreaseRequest, accept_retry_increase, preview_retry_increase, verified_limits_increased
@@ -377,11 +378,18 @@ async def protected_window(window, monkeypatch):
     policy.user_credentials = None
     policy.expires_at = datetime.now(UTC) + timedelta(days=7)
     policy.policy_id = policy.policy_hash = policy.principal_id = None
-    policy = stamp_policy(policy, principal_id=APPROVER, org_id=b.s.flow.org_id)
-    document = copy.deepcopy(b.s.plan.plan_document)
-    document.pop("execution_continuation")
-    document["execution_policy"] = policy.model_dump(mode="json")
-    b.s.plan.plan_document, b.s.plan.plan_hash = document, digest(document)
+    policy = stamp_policy(policy, principal_id=f"sub:{APPROVER}", org_id=b.s.flow.org_id)
+    proposal = LoopProposal(
+        flow_slug=b.s.flow.slug,
+        title=b.s.flow.title,
+        org_id=b.s.flow.org_id,
+        spec_revision="window-regression",
+        execution_policy=policy,
+        description="Owner-authored provenance retained by normal acceptance.",
+    )
+    document = proposal.model_dump(mode="json")
+    b.s.plan.plan_document, b.s.plan.plan_hash = document, plan_hash(proposal)
+    assert b.s.plan.plan_hash != digest(document)
     started = datetime.now(UTC) - timedelta(seconds=policy.limits.max_wall_clock_seconds + 60)
     b.s.session.add(
         OrchestrationDecision(
@@ -469,5 +477,44 @@ async def test_protected_receipt_tampering_refuses_admission(protected_window, c
             reason=json.dumps(data),
         )
     )
+    await b.s.session.flush()
+    assert (await effective(b)).refusal is not None
+
+
+@pytest.mark.parametrize("field", ["title", "policy"])
+async def test_protected_window_rejects_changed_executable_document(protected_window, field):
+    b = protected_window
+    document = copy.deepcopy(b.s.plan.plan_document)
+    if field == "title":
+        document["title"] += " changed"
+    else:
+        document["execution_policy"]["limits"]["max_attempts_per_node"] += 1
+    b.s.plan.plan_document = document
+    await b.s.session.flush()
+    with pytest.raises(WindowRenewalError, match="accepted_document_hash_changed"):
+        await preview(b)
+
+
+async def test_protected_window_uses_compiler_provenance_hash_rules(protected_window):
+    b = protected_window
+    document = copy.deepcopy(b.s.plan.plan_document)
+    document["description"] = "Updated provenance, with exactly the same executable plan."
+    b.s.plan.plan_document = document
+    await b.s.session.flush()
+    await accept(b)
+    assert (await effective(b)).policy.limits.max_wall_clock_seconds == b.request.max_wall_clock_seconds
+
+
+async def test_protected_window_receipt_rechecks_canonical_owner(protected_window):
+    from src.shared.models.organization import User
+
+    b = protected_window
+    receipt, _ = await accept(b)
+    row = await b.s.session.get(OrchestrationDecision, receipt["decision_id"])
+    assert row.actor_id == APPROVER
+    assert json.loads(row.reason)["principal_id"] == f"sub:{APPROVER}"
+    assert (await effective(b)).policy is not None
+    user = await b.s.session.get(User, APPROVER)
+    user.cognito_sub = "replacement-login-subject"
     await b.s.session.flush()
     assert (await effective(b)).refusal is not None
