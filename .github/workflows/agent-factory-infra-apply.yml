@@ -193,6 +193,14 @@ jobs:
             echo "No destroys in plan. Proceeding."
           fi
 
+      - name: Verify ARC controller and live scale-set compatibility
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -euo pipefail
+          umask 077
+          terraform show -json tfplan > "$RUNNER_TEMP/arc-upgrade-plan.json"
+          python3 ../../../platform/scripts/check-arc-upgrade.py --plan "$RUNNER_TEMP/arc-upgrade-plan.json"
+
       - name: Terraform Apply
         id: apply
         working-directory: ${{ env.TF_WORKING_DIR }}

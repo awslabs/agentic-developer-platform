@@ -8,7 +8,7 @@ COPY go.mod go.sum ./
 ENV CGO_ENABLED=0 GOMAXPROCS=2
 RUN go mod download && go mod verify
 RUN --network=none set -eu; \
-    flags="-s -w -X github.com/actions/actions-runner-controller/build.Version=0.14.2-adp.security.1 -X github.com/actions/actions-runner-controller/build.CommitSHA=9bb16ae49d0ce585d8e682aa7e2668a6e832d5d8"; \
+    flags="-s -w -X github.com/actions/actions-runner-controller/build.Version=0.14.2 -X github.com/actions/actions-runner-controller/build.CommitSHA=9bb16ae49d0ce585d8e682aa7e2668a6e832d5d8"; \
     go build -p 2 -trimpath -ldflags="$flags" -o /out/manager main.go; \
     go build -p 2 -trimpath -ldflags="$flags" -o /out/ghalistener ./cmd/ghalistener; \
     go build -p 2 -trimpath -ldflags="-s -w" -o /out/github-webhook-server ./cmd/githubwebhookserver; \

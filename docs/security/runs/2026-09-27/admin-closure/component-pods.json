@@ -1,0 +1,1767 @@
+[
+  {
+    "namespace": "adp-gateway",
+    "name": "authority-probe-gateway-20260920-7d4cf7f67b-c5h72",
+    "uid": "964928ae-80fe-4683-b3e2-4a84ab609652",
+    "node": "i-0fd8e2febebe584cc",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "bedrockgateway",
+        "image": "sha256:db10214d8e0c13d6c479c3fa92e0970346dd4b29e0ddc4a18a2e1d5b7d859c14",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:4c2a6f5900c058d995416e687093debbf238673ada281d8f3f406fc09ef1769e",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:06:59Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "agent-context",
+    "name": "zoekt-webserver-54944494fc-dp8bb",
+    "uid": "5c9028f2-2880-428b-b480-159c7a059bfc",
+    "node": "i-0a699d666b1b22917",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "prepare-index",
+        "image": "sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db496e9647fb",
+        "imageID": "docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "terminated": {
+            "containerID": "containerd://0faeabdc9c5d08d95b4c6c526baf8d10addf08a619f477225ea794f909a46090",
+            "exitCode": 0,
+            "finishedAt": "2026-09-27T18:12:09Z",
+            "reason": "Completed",
+            "startedAt": "2026-09-27T18:11:47Z"
+          }
+        }
+      },
+      {
+        "name": "opentelemetry-auto-instrumentation-nodejs",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-node:v0.12.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-node@sha256:d28ba22730cbc406be6cce0455a1a48226fdd6ed174dac40b75c9ef15e82cc21",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "terminated": {
+            "containerID": "containerd://01f8ecb54252e5b4eaace7042a8b4eb00bef81ea3db5712547fc00340a4a4d85",
+            "exitCode": 0,
+            "finishedAt": "2026-09-27T18:13:19Z",
+            "reason": "Completed",
+            "startedAt": "2026-09-27T18:12:48Z"
+          }
+        }
+      },
+      {
+        "name": "opentelemetry-auto-instrumentation-python",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-python:v0.19.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-python@sha256:45ecbbde076db8dfaf677adc67a8bc937ffc38ca603f4017b36d3cbe685e085d",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "terminated": {
+            "containerID": "containerd://8ab4e032bf8653274c83682b4e5a0ca65179459245869722e77757096c303700",
+            "exitCode": 0,
+            "finishedAt": "2026-09-27T18:13:24Z",
+            "reason": "Completed",
+            "startedAt": "2026-09-27T18:13:24Z"
+          }
+        }
+      },
+      {
+        "name": "opentelemetry-auto-instrumentation-dotnet",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-dotnet:v1.15.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/observability/adot-autoinstrumentation-dotnet@sha256:fde075c90e5f967d7f931f1eb50f0103e51431930d304bc4124d23fe8e64c495",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "terminated": {
+            "containerID": "containerd://2526401534efeedd494db7d002bdf4fda03a3bceeeae1141ba0c10460650c6a6",
+            "exitCode": 0,
+            "finishedAt": "2026-09-27T18:13:25Z",
+            "reason": "Completed",
+            "startedAt": "2026-09-27T18:13:25Z"
+          }
+        }
+      },
+      {
+        "name": "shard-sync",
+        "image": "sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db496e9647fb",
+        "imageID": "docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:13:34Z"
+          }
+        }
+      },
+      {
+        "name": "zoekt-webserver",
+        "image": "sha256:7de4b924c133a49c5215712f82fbba4e046bb6e69541b152e7e5c4ea1a172d23",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:713fa47caf137bc06798dbc019a46be1af0f7ea5b2240a39bce65d2d97bbba66",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:13:33Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "arc-systems",
+    "name": "arc-gha-rs-controller-55d4769df-fl7gn",
+    "uid": "004edb7d-bfa1-4457-b636-0cb8e6770f90",
+    "node": "i-0df3c5635f01e3a8f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "manager",
+        "image": "sha256:8fa4c5bc64e8f450605208d49af51e7b965dd553201380708c79b63a50579105",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:18:54Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "arc-systems",
+    "name": "arc-runner-agent-5f66b876-listener",
+    "uid": "d510180a-8fa4-47b2-ba45-9f7672f75033",
+    "node": "i-0df3c5635f01e3a8f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "listener",
+        "image": "sha256:8fa4c5bc64e8f450605208d49af51e7b965dd553201380708c79b63a50579105",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:18:58Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "arc-systems",
+    "name": "arc-runner-cip-744d6f9f-listener",
+    "uid": "b11aafbc-34e2-424a-8e1b-076e61d7f577",
+    "node": "i-0fd8e2febebe584cc",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "listener",
+        "image": "sha256:8fa4c5bc64e8f450605208d49af51e7b965dd553201380708c79b63a50579105",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:18:59Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "arc-systems",
+    "name": "arc-runner-org-5f66b876-listener",
+    "uid": "0ac6c7d2-cced-4f62-b825-adf755a97216",
+    "node": "i-0df3c5635f01e3a8f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "listener",
+        "image": "sha256:8fa4c5bc64e8f450605208d49af51e7b965dd553201380708c79b63a50579105",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-controller@sha256:e81b3b3d138d29d784f9c1d98a4caf98eccbea55a74d667011310f85f9c2fa50",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:18:57Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "keda",
+    "name": "keda-admission-webhooks-76f48b574d-mdsst",
+    "uid": "6eb55e7e-b0d0-42e0-aa2f-18ac47298d6b",
+    "node": "i-07b62eb51391bee50",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "keda-admission-webhooks",
+        "image": "sha256:0f69bf12ac05119a196a4438e5dea3d491a53975374ae329774f012bf6d79b70",
+        "imageID": "ghcr.io/kedacore/keda-admission-webhooks@sha256:e1969628cca6123e32eea13c47c75817091af2657fa68d9d0d58a8620d1b75b1",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:00:56Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "keda",
+    "name": "keda-operator-6698d7f6b5-srp5j",
+    "uid": "1c0cc134-88c8-4662-b4a0-73258627fe4c",
+    "node": "i-07b62eb51391bee50",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "keda-operator",
+        "image": "sha256:bf4f1bf7e1b1b11d6082c90f104c73d6d89cddf201723f41af8351a1c8bc3333",
+        "imageID": "ghcr.io/kedacore/keda@sha256:81fe6547ce8d1cc29273f887b76507e9b853e5bc1f875ec23fe60061a38ed809",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:01:00Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "keda",
+    "name": "keda-operator-metrics-apiserver-7f79f648c6-sk6v4",
+    "uid": "a2b041b1-22ed-4d77-b603-1913ffad1b62",
+    "node": "i-07b62eb51391bee50",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "keda-operator-metrics-apiserver",
+        "image": "sha256:3e9e8f2d3a5aa8a5bd5e989912fe7e22beede7f8e868db1857bd641fb616b8a4",
+        "imageID": "ghcr.io/kedacore/keda-metrics-apiserver@sha256:255375037fe592732eeb554743aae360c2da88cf0b9b1258d0a987ef885f0881",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:00:58Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-controller-85b7c46fb-vfv7q",
+    "uid": "9a84ed27-0211-4d33-b009-baf7019113c7",
+    "node": "i-0fd8e2febebe584cc",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "s3-csi-controller",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:39Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-2c2jl",
+    "uid": "a856e5cb-3077-4e28-95c7-23fc912ea08c",
+    "node": "i-0a1ba81ed105deff0",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:04Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:01Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:26Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-2n9qx",
+    "uid": "200610cb-80e8-465d-a6c7-90c771b49351",
+    "node": "i-01fa64aaf099726d2",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:35Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:32Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:31Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-2rdwf",
+    "uid": "93dbb9b3-917f-48d5-8602-c5cd4793a62d",
+    "node": "i-0035436287e77c68e",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:47Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:47Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:46Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-66s7r",
+    "uid": "9872f954-abab-4a8e-b8ec-c1bb0d85204d",
+    "node": "i-0a4b8bd25997e49e6",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:11Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:07Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:05Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-7jh4h",
+    "uid": "20ceccaf-fec3-44c6-bad5-d34d3796d2a7",
+    "node": "i-035042e4fd5c3653f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:44Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:44Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:44Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-8fk9h",
+    "uid": "79291f85-552e-4e62-8fa1-eb43c0b1ed32",
+    "node": "i-0c47684504c67fa9e",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:06Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:03Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:59Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-8p8ml",
+    "uid": "bc643e7d-dc1c-4e84-88fd-7c70c01e0ff0",
+    "node": "i-03474f89801be2abf",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:29Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:29Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:27Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-9pq5m",
+    "uid": "52d8297b-9cbf-429e-94d1-fd2011ae70d5",
+    "node": "i-0cd98905cc975720a",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:06Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:00Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:51Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-9x2z2",
+    "uid": "c06e9b7c-701f-4221-917a-8fda071629e6",
+    "node": "i-0db448466c2d34406",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:10Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:02Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:54Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-b2nq6",
+    "uid": "2466ecda-6e6d-42a2-85f3-157175c26ee5",
+    "node": "i-0872a03e85fc7e4d6",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:59Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:51Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:33Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-b8pfl",
+    "uid": "f4127a0d-1232-48da-9e3a-f544894974d8",
+    "node": "i-039776ad99058439a",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:16Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:09Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:06Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-fddb4",
+    "uid": "6afb3948-19c5-41cc-aa52-9c0c97dd34f2",
+    "node": "i-091da5c8b980bcebb",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:48Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:48Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:47Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-gr9t2",
+    "uid": "70498940-0e6f-4f13-a2c3-f03bf99bc501",
+    "node": "i-0df3c5635f01e3a8f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:05Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:05Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:05Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-h4dnb",
+    "uid": "152f3e21-ca21-4713-9eff-76b08b0c98b4",
+    "node": "i-0e5ddcba88accecf1",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:39Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:39Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:39Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-j84wf",
+    "uid": "071e4d10-4680-4af0-8cea-fbfab78540cc",
+    "node": "i-01ec295df201ea58c",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:18Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:08Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:57Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-lcvmq",
+    "uid": "eae44d43-acc0-4329-bac4-2fa6c6a10da1",
+    "node": "i-0b5c0273f958509f2",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:26Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:25Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:24Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-ln6fq",
+    "uid": "08b56e16-03bf-41a9-987e-754bd49d46b8",
+    "node": "i-0fd8e2febebe584cc",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:42Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:42Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:09:42Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-m8xzz",
+    "uid": "b555e5d6-a28c-48d8-9205-6abcbd874ec0",
+    "node": "i-070ff422733514a46",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:10Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:05Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:59Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-mdc9n",
+    "uid": "fa09799c-60c7-405f-aa8b-56f100a7abf8",
+    "node": "i-0acfe33f122be2e55",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:17Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:09Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:00Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-mngpp",
+    "uid": "f24034ac-07b8-4d76-b4ff-dcb7bfc30959",
+    "node": "i-05f1852a5f0af9223",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:01Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:51Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:43Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-mx4vc",
+    "uid": "4934a681-cec7-4124-97a7-167c26e2ceef",
+    "node": "i-08fdb846affbcc7fb",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:10Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:02Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:57Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-nxv6k",
+    "uid": "1efc23ca-99f2-4919-933d-9fadbcf13010",
+    "node": "i-01ac5f817f67ac042",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:49Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:48Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:39Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-rz6h9",
+    "uid": "7aae4d24-941a-4839-a215-33b554c33d2a",
+    "node": "i-0d1246beed4bdb46e",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:01Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:54Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:45Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-sqrqx",
+    "uid": "34c70301-a68f-4e23-be3a-0a13050130ae",
+    "node": "i-0a3974189ed7e493f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:14Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:13Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:38Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-tnxrs",
+    "uid": "d52b48d2-797f-4505-ab59-fde18fd49f7b",
+    "node": "i-07b62eb51391bee50",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:02Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:02Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:01Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-tpzw2",
+    "uid": "1d2af807-c33e-42b7-8371-52a12aee6d28",
+    "node": "i-00b85108328431d7b",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:13:24Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:13:23Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:13:22Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-vw5dk",
+    "uid": "0d3c4b36-6394-46b8-bf76-5a4f4e020d56",
+    "node": "i-0f235adcd2e67c696",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:57Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:41Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:18Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-w769t",
+    "uid": "fbdebbbd-124e-41b9-aab6-be775ec127d2",
+    "node": "i-0649eb2e0458ac11d",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:20Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:08Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:59Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-z4qfk",
+    "uid": "3fe08dff-84e9-46d0-9b25-2968e19fd2d5",
+    "node": "i-0a699d666b1b22917",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:47Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:45Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:28Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-z9qnn",
+    "uid": "a183c64b-3bad-45d0-9ca9-47e8d81f6728",
+    "node": "i-0d394539b831cc815",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:06Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:58Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:49Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "kube-system",
+    "name": "s3-csi-node-zpc24",
+    "uid": "16e55ab6-b5bc-47f7-9dad-8d29ca8ade10",
+    "node": "i-058218a1e27ab2313",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "liveness-probe",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe:v2.19.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/livenessprobe@sha256:8e00443e13311e92bbf0227fb98f1ffff417be82f2eae79a67df16736cf1c1a3",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:30Z"
+          }
+        }
+      },
+      {
+        "name": "node-driver-registrar",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar:v2.17.0-eksbuild.5",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/csi-node-driver-registrar@sha256:55c3eed041215e13100a6a5792b74d473660b3595047f0582fb1bb9d8c918eda",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:29Z"
+          }
+        }
+      },
+      {
+        "name": "s3-plugin",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:10:22Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "mount-s3",
+    "name": "mp-nldck",
+    "uid": "17e3465b-01a6-415b-af75-e826951ae8b9",
+    "node": "i-0a699d666b1b22917",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "mountpoint",
+        "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver:v2.8.0",
+        "imageID": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/aws-s3-csi-driver@sha256:515896d39c19515286bbd45dddd95d36f10e1cb8233350bb7c0e00c14bd9b526",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T18:11:28Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "superplane",
+    "name": "superplane-api-568ff95b67-nqjt4",
+    "uid": "b82a5f5c-4858-4465-af72-f908b362dd96",
+    "node": "i-0df3c5635f01e3a8f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "superplane-api",
+        "image": "sha256:283f95ea22162d5521dea589482813ccfcf70996de96a366e72b88e609f73f05",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:70edd98cb9ed0ec48ec34dade114d6315815194009296f8c54a74fc5be2a748e",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:12:09Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "superplane",
+    "name": "superplane-controller-7bf7667d75-f4ckn",
+    "uid": "fefcb46c-e38a-4e82-a349-8f073d8291bb",
+    "node": "i-035042e4fd5c3653f",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "superplane-controller",
+        "image": "sha256:34c344b6ee94c7f37e784e83dc5f9bd24e2eeda8f9f64a69019d713e90909829",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:13:33Z"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "superplane",
+    "name": "superplane-platform-monitor-78855db97c-jrwqz",
+    "uid": "522b0d72-2734-4a62-92c3-6b899e55acd5",
+    "node": "i-0fd8e2febebe584cc",
+    "phase": "Running",
+    "containers": [
+      {
+        "name": "superplane-platform-monitor",
+        "image": "sha256:10716ab167a23f81c48f9077651248280e5ef57740fb36217b972e5dc0739ab2",
+        "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
+        "ready": true,
+        "restartCount": 0,
+        "state": {
+          "running": {
+            "startedAt": "2026-09-27T16:14:25Z"
+          }
+        }
+      }
+    ]
+  }
+]

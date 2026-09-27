@@ -1,0 +1,16 @@
+{
+    "clusterName": "adp-dev-eks-cluster",
+    "principalArn": "arn:aws:iam::879318057152:role/adp-dev-box-prsaws-InstanceRole-d4vWBvnYsVUy",
+    "associatedAccessPolicy": {
+        "policyArn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
+        "accessScope": {
+            "type": "namespace",
+            "namespaces": [
+                "adp-agents",
+                "adp-gateway"
+            ]
+        },
+        "associatedAt": "2026-09-24T11:21:04.180000+00:00",
+        "modifiedAt": "2026-09-27T18:15:17.084000+00:00"
+    }
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/",
+    "status": 200,
+    "response_bytes": 5494
+  },
+  {
+    "path": "/search?q=type:repo",
+    "status": 200,
+    "response_bytes": 3993
+  }
+]

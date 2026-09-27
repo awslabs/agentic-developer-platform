@@ -26,7 +26,10 @@ spec:
   mountOptions:
     - allow-delete
     - allow-overwrite
-    # CSI v1.15 systemd does not delegate fsGroup. Synthetic FUSE ownership
+    # Explicit options avoid IMDS discovery from Mountpoint pods on hop-limit-1 nodes.
+    - region=<AWS_REGION>
+    - maximum-throughput-gbps=1
+    # Synthetic FUSE ownership
     # grants UID10001 owner writes and GID10001 read/traverse only; never chown S3.
     - allow-other
     - uid=10001
