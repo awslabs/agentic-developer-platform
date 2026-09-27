@@ -1,7 +1,5 @@
 # Critical remediation continuation — two-hour outcome
 
-> Superseded for current state by [Critical closure at 18:15 UTC](2026-09-27-critical-closure.md): **0 Critical /153 High**. This document preserves the earlier checkpoint.
-
 Window: **2026-09-27 12:58:45–14:58:45 UTC**. Repository: `aws-e/adp`. Epic: https://github.com/aws-e/adp/issues/6492.
 
 **Incomplete: 32 unique Critical advisories remain.** Tested candidates and merged source are not counted as deployed fixes. This supersedes the current-state claims in [the earlier handoff](2026-09-27-critical-high.md), retained as historical evidence.
