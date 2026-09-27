@@ -513,7 +513,11 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     # failure, using the existing node -> flow/claim/plan/execution
                     # lock order. A stale developer cannot fail a live reviewer.
                     identity = await current_identity(session, org_id=locked.org_id, node_id=locked.id)
-                    current = await load_execution(session, identity=identity, for_update=True) if identity is not None else None
+                    current = (
+                        await load_execution(session, identity=identity, for_update=True, released_failure_run_id=dispatch["run_id"])
+                        if identity is not None
+                        else None
+                    )
                     claim = await session.get(OrchestrationWorkClaim, identity.claim_id) if identity is not None else None
                     if (
                         identity is None
@@ -524,7 +528,10 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         or current.record.status in TERMINAL_EXECUTION_STATUSES
                         or current.record.pending_action_key is not None
                         or claim is None
-                        or claim.active_run_id != dispatch["run_id"]
+                        or not (
+                            claim.active_run_id == dispatch["run_id"]
+                            or (claim.state == "released" and claim.release_reason == "failed" and claim.claim_event_id == dispatch["run_id"])
+                        )
                     ):
                         report.waiting += 1
                         report.reasons[node.id] = "The failed worker no longer owns the current delivery execution; reconcile its current owner."
@@ -645,6 +652,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         ended = await advance_execution(
                             session,
                             identity=identity,
+                            released_failure_run_id=dispatch["run_id"],
                             advance=PhaseAdvance(
                                 phase=ExecutionPhase.CONCLUDED,
                                 status=ExecutionStatus.CONCLUDED,

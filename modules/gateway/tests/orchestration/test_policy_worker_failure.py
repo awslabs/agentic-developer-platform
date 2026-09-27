@@ -20,6 +20,10 @@ from tests.orchestration.test_review_cycle import ORG, REPO, cycle, pg_server, p
     [
         "failed",
         "protected_failed",
+        "protected_released_failed",
+        "protected_released_other_run",
+        "protected_released_new_generation",
+        "protected_released_completed",
         "unfinished",
         "wrong_attempt",
         "successor_active",
@@ -69,6 +73,19 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
                 claim.active_run_id = "orch:successor-reviewer"
             else:
                 claim.generation += 1
+        if evidence.startswith("protected_released"):
+            # Seed the state left by the protected terminal callback. The cycle
+            # fixture also has a handoff, which is absent in the failed live run.
+            claim = await db.get(OrchestrationWorkClaim, cycle.identity.claim_id)
+            claim.state = "released"
+            claim.active_run_id = None
+            claim.release_reason = "failed"
+            if evidence == "protected_released_other_run":
+                claim.claim_event_id = "orch:other"
+            if evidence == "protected_released_new_generation":
+                claim.generation += 1
+            if evidence == "protected_released_completed":
+                claim.release_reason = "completed"
         if evidence == "pending_action":
             execution = await db.get(OrchestrationExecution, cycle.execution.id)
             execution.pending_action_key = "unknown-effect"
@@ -84,7 +101,7 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
                 )
             )
         await db.commit()
-    if evidence == "protected_failed":
+    if evidence.startswith("protected"):
         monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
         protected = Mock()
         protected._read.return_value = {
@@ -132,8 +149,8 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
         node = await db.get(OrchestrationNode, cycle.node.id)
         assert node.attempts == 1
         assert result.errors == int(evidence in {"wrong_attempt", "release_refused"})
-        assert result.advanced == int(evidence in {"failed", "protected_failed"})
-        assert node.state == ("failed" if evidence in {"failed", "protected_failed"} else "running")
+        assert result.advanced == int(evidence in {"failed", "protected_failed", "protected_released_failed"})
+        assert node.state == ("failed" if evidence in {"failed", "protected_failed", "protected_released_failed"} else "running")
         merged.assert_not_called()
         if not evidence.startswith("advisory"):
             advisory.get.assert_not_called()
@@ -141,7 +158,7 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
             execution = await db.get(OrchestrationExecution, cycle.execution.id)
             claim = await db.get(OrchestrationWorkClaim, cycle.identity.claim_id)
             assert execution.status != "concluded" and claim.state == "held"
-        if evidence not in {"failed", "protected_failed"}:
+        if evidence not in {"failed", "protected_failed", "protected_released_failed"}:
             return
         decisions = list((await db.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == "result_observed"))).all())
         assert len(decisions) == 1
@@ -160,7 +177,7 @@ async def test_policy_failure_requires_current_authenticated_terminal_and_preser
         assert resumed.actor_kind == "human"
         assert node.attempts == 1  # Only dispatch can consume the next attempt.
         original = await db.get(OrchestrationRunReport, cycle.root)
-        if evidence == "protected_failed":
+        if evidence.startswith("protected"):
             assert original is None
         else:
             assert original.terminal_receipt["outcome"] == "failed"
@@ -220,3 +237,26 @@ async def test_protected_failure_rejects_success_active_and_wrong_scope(mutation
     else:
         with pytest.raises(ValueError, match="protected failure"):
             await call
+
+
+async def test_released_failure_authority_only_allows_conclusion(cycle):  # noqa: F811
+    from src.orchestration.execution_state import ExecutionPhase, ExecutionStatus
+    from src.orchestration.execution_store import ExecutionStoreError, PhaseAdvance, advance_execution, load_execution
+
+    async with cycle.factory() as db:
+        claim = await db.get(OrchestrationWorkClaim, cycle.identity.claim_id)
+        claim.state = "released"
+        claim.active_run_id = None
+        claim.release_reason = "failed"
+        await db.flush()
+        ordinary = await load_execution(db, identity=cycle.identity)
+        assert ordinary.reason == "claim_not_held"
+        with pytest.raises(ExecutionStoreError, match="only permits terminal conclusion"):
+            await advance_execution(
+                db,
+                identity=cycle.identity,
+                released_failure_run_id=cycle.root,
+                advance=PhaseAdvance(
+                    phase=ExecutionPhase.ADMITTED, status=ExecutionStatus.AWAITING_EXTERNAL, expected_revision=cycle.execution.revision
+                ),
+            )
