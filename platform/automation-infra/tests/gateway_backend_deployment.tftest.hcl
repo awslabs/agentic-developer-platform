@@ -70,4 +70,12 @@ run "gateway_backend_profile_is_bounded" {
     )
     error_message = "Gateway profile must dispatch only the existing gateway build."
   }
+  assert {
+    condition = (
+      contains(local.gateway_backend_lambdas, "arn:aws:lambda:us-east-1:123456789012:function:bedrockgw-test-pricing-refresh:$LATEST") &&
+      contains(local.gateway_backend_lambdas, "arn:aws:lambda:us-east-1:123456789012:function:bedrockgw-test-budget-usage-tracker:$LATEST") &&
+      !contains(local.gateway_backend_lambdas, "arn:aws:lambda:us-east-1:123456789012:function:bedrockgw-test-pricing-refresh:*")
+    )
+    error_message = "Gateway Lambda code updates require exact $LATEST resource ARNs."
+  }
 }

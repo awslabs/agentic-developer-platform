@@ -24,11 +24,15 @@ locals {
   gateway_backend_project = "arn:aws:codebuild:${var.aws_region}:${local.gateway_backend_account}:project/${var.name_prefix}-gateway-build"
   gateway_backend_build   = "arn:aws:codebuild:${var.aws_region}:${local.gateway_backend_account}:build/${var.name_prefix}-gateway-build:*"
   gateway_backend_repo    = "arn:aws:ecr:${var.aws_region}:${local.gateway_backend_account}:repository/adp-gateway"
-  gateway_backend_lambdas = [for name in [
+  gateway_backend_lambdas = flatten([for name in [
     "bedrockgw-${var.environment}-pricing-refresh",
     "bedrockgw-${var.environment}-budget-usage-tracker",
     "adp-${var.environment}-orchestration-tick",
-  ] : "arn:aws:lambda:${var.aws_region}:${local.gateway_backend_account}:function:${name}"]
+    ] : [
+    "arn:aws:lambda:${var.aws_region}:${local.gateway_backend_account}:function:${name}",
+    # UpdateFunctionCode authorizes the mutable code revision as $LATEST.
+    "arn:aws:lambda:${var.aws_region}:${local.gateway_backend_account}:function:${name}:$LATEST",
+  ]])
   gateway_backend_secret_arns = [for secret in data.aws_secretsmanager_secret.gateway_backend : secret.arn]
   gateway_backend_api_id = var.enable_gateway_backend_deployment ? try(
     regex("^https://([a-z0-9]+)\\.execute-api\\.", nonsensitive(data.aws_ssm_parameter.gateway_backend_api_url[0].value))[0],
