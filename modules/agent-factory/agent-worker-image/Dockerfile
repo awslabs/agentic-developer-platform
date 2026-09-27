@@ -1,4 +1,8 @@
 # Keep Terraform1.15.7 behavior while rebuilding its exact dependency graph.
+# Authenticated curl packages and licenses, built and tested in #6540.
+# This immutable artifact is a build input, not a deployable worker image.
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
+
 FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS terraform-security
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
 WORKDIR /src
@@ -403,6 +407,14 @@ RUN printf '#!/bin/sh\nexec python3 -m adp_review "$@"\n' > /usr/local/bin/adp-r
 # tree is reachable directly and needs no staging step. pydantic is already installed
 # above. `lib/contract_selfcheck.py` is the build gate.
 COPY --chown=agent:agent contracts/ /app/contracts/
+
+# Install after all apt operations so normal worker builds retain the reviewed
+# curl repair instead of reverting to the vulnerable distribution packages.
+COPY --from=curl-security /out/curl_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/curl.deb
+COPY --from=curl-security /out/libcurl4t64_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/openssl.deb
+COPY --from=curl-security /out/libcurl3t64-gnutls_8.22.0-0+adp1_amd64.deb /tmp/adp-curl/gnutls.deb
+RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
+COPY --from=curl-security /licenses/ /opt/adp-curl-security/
 
 # Set working directory and switch to non-root user
 WORKDIR /work
