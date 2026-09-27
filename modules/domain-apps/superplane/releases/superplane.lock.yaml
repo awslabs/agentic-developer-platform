@@ -82,7 +82,7 @@ source_access:
 # Digest-addressed and verifiable. Keys are referenced by name from the deploy side (U3),
 # so treat them as a contract.
 images:
-  skypilot-api: sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7
+  skypilot-api: sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a
   superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
   superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
   superplane-executor: sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891
@@ -92,10 +92,10 @@ image_sources:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-skypilot
     ecr_repository: adp-superplane-skypilot
-    tag: security27-3717936b4
-    resolved_by: ECR root digest read-back, 2026-09-27; skypilot-publication.json
-    publication_receipt: docs/security/runs/2026-09-27/skypilot-publication.json
-    selected_because: S03 base plus OS, Python 3.10.21, kubectl and compatible provider dependency security fixes
+    tag: security27-openssh-f8ba67f08
+    resolved_by: ECR index/platform/config byte identities verified, 2026-09-27
+    publication_receipt: docs/security/runs/2026-09-27/skypilot-promotion/publication.json
+    selected_because: Preserved S03 API contract plus signed curl/rsync and Debian OpenSSH backport; zero reviewed Critical candidate matches
   superplane-controller:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-controller

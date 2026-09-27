@@ -1,46 +1,13 @@
-"""The pinned SkyPilot image must actually START an API server — Issue #5042 (U3).
+"""Keep the pinned SkyPilot API launcher, native identity and writable HOME coherent.
 
-## The reproduction these tests lock down
-
-A checkpoint review of `328080ca` raised this as a P1: the Deployment pinned an image and
-wired a Service, probes and a NetworkPolicy around port 46580, but never told the container
-what to run.
-
-The pinned image's config blob declares `Cmd: ["python3"]` and no `Entrypoint`. Verified from
-the registry by digest, hashing each response body: the image index hashes to the digest
-`releases/superplane.lock.yaml` pins, its amd64 manifest to `sha256:ab4e67e7…b318`, and that
-manifest's config blob to `sha256:528a1f79…62a1`. Those recorded facts live in
-`skypilot_image_facts.json`, which documents how to re-fetch them.
-
-So a container overriding neither `command` nor `args` starts a **bare Python interpreter**.
-Nothing listens on 46580, ever. What makes this worse than an obvious crash is the shape of the
-symptom: `python3` with no TTY does not exit, so the container stays Running and only the
-readiness probe fails — indistinguishable at a glance from a slow or unhealthy server. The
-Service, the probes and the NetworkPolicy all look correct, because individually they are.
-
-## Why these tests read the real package rather than upstream documentation
-
-The review's instruction was to "verify against the pinned version's actual CLI/server
-behavior rather than inferring from upstream controller constants". Every expectation below is
-therefore taken from `skypilot==0.12.0` — the version the image installs — and recorded in
-`skypilot_image_facts.json` with its source path:
-
-*   `-m sky.server.server` is the package's OWN launcher (`sky/server/common.py`,
-    `API_SERVER_CMD`, invoked as `[sys.executable, *API_SERVER_CMD.split()]`).
-*   `--host` defaults to `127.0.0.1`. That is the second half of the defect: even a container
-    that ran the right module would bind loopback inside its own network namespace and refuse
-    every connection from the Service.
-*   uid 1000 does not exist in the image and there is no `/home` entry, so with `HOME` unset
-    `os.path.expanduser('~/.sky')` returns the path UNCHANGED (documented CPython behaviour,
-    bpo-10496) — a relative path resolved against the working directory. `test_expanduser_…`
-    below executes that, so the claim is demonstrated rather than asserted.
-
-## What is NOT claimed here
-
-These are offline manifest and image-level checks. They prove the container is told to start a
-server that binds an interface the Service can reach; they do not prove a server came up
-against a real database, and nothing here is an isolation, backup, retention or restore claim.
-Database hosting (Decision 2) is unresolved and this file decides nothing about it.
+Image facts are collected from the published immutable index/platform/config and
+actual passwd database. The deployment must explicitly start sky.server.server,
+bind its service interface and retain writable absolute config/HOME paths. The
+current candidate adds a passwd entry for existing UID1000 because native SSH
+requires it; the historical missing-passwd expanduser failure remains covered as
+an independent Python mechanism test. Packaged SSH and API runtime acceptance is
+recorded with the security candidate; these manifest tests do not replace live
+Postgres/provisioning acceptance.
 """
 
 from __future__ import annotations
@@ -268,7 +235,7 @@ def test_deploy_mode_is_not_enabled(api_container, package):
 # ---------------------------------------------------------------------------
 
 
-def test_expanduser_returns_an_unusable_path_without_home_or_a_passwd_entry(facts):
+def test_expanduser_returns_an_unusable_path_without_home_or_a_passwd_entry():
     """DEMONSTRATE the mechanism rather than assert it.
 
     With `HOME` unset and the current uid absent from the password database, CPython returns
@@ -276,11 +243,6 @@ def test_expanduser_returns_an_unusable_path_without_home_or_a_passwd_entry(fact
     and the absolutely-mounted config is never read. Run in a subprocess with a stubbed `pwd`
     so the host's own passwd file cannot make this pass for the wrong reason.
     """
-    assert not facts["has_uid_1000"], (
-        "uid 1000 now exists in the image, which changes this failure mode"
-    )
-    assert facts["home_entries"] == []
-
     script = (
         "import sys, types, os\n"
         "fake = types.ModuleType('pwd')\n"
@@ -303,8 +265,15 @@ def test_expanduser_returns_an_unusable_path_without_home_or_a_passwd_entry(fact
     )
 
 
+def test_image_uid_resolves_for_native_ssh(facts):
+    assert facts["has_uid_1000"]
+    assert 1000 in facts["etc_passwd_uids"]
+    assert "sky" in facts["home_entries"]
+    assert facts["config"]["User"] == "1000:1000"
+
+
 def test_home_is_set_explicitly(api_container, pod_spec, package):
-    """Required because the pod runs as a uid the image's passwd file does not contain."""
+    """Keep HOME on the explicit writable mount even with a valid passwd entry."""
     security = pod_spec.get("securityContext") or {}
     assert security.get("runAsUser") == 1000, (
         "this test is written for runAsUser 1000; if the uid changed, re-check whether it "

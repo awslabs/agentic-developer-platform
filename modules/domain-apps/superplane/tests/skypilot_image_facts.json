@@ -1,19 +1,19 @@
 {
   "_comment": [
-    "Security27 candidate based on published S03 SkyPilot0.12.3, with distro/Python/provider fixes.",
-    "Manifest/config identities verified from archived build and ECR read-back; see docs/security/runs/2026-09-27/skypilot-candidate-evidence.json and skypilot-publication.json."
+    "Final published SkyPilot0.12.3 candidate with curl, rsync and authenticated OpenSSH source repairs.",
+    "Registry index/platform/config identities are verified in docs/security/runs/2026-09-27/skypilot-promotion/. Native SSH and API tests passed with actual UID1000 passwd identity."
   ],
-  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
+  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
   "skypilot_version": "0.12.3",
-  "image_index_digest": "sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
-  "amd64_manifest_digest": "sha256:22a2831322db89b07ae5ee2c9fb3f74b2fc047e135b9cec86ec3fa3e1d5c835e",
-  "config_blob_digest": "sha256:0e793e95f3596810fea1b42efa56b3bfad61fed5072964fa679fa3e8e8a537c1",
+  "image_index_digest": "sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
+  "amd64_manifest_digest": "sha256:21637f1843069b4cee58284ca0e044fb3dcb96a08033b30b5cde45d3fc1eca01",
+  "config_blob_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
   "config": {
     "Entrypoint": null,
     "Cmd": [
       "python3"
     ],
-    "User": "root",
+    "User": "1000:1000",
     "WorkingDir": null,
     "Env": [
       "PATH=/opt/google-cloud-sdk/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -44,10 +44,13 @@
     42,
     996,
     998,
+    1000,
     65534
   ],
-  "has_uid_1000": false,
-  "home_entries": [],
+  "has_uid_1000": true,
+  "home_entries": [
+    "sky"
+  ],
   "package_facts": {
     "_comment": [
       "SkyPilot0.12.3 startup contract retained; isolated API startup/restart/status tests pass on Python3.10.21."
