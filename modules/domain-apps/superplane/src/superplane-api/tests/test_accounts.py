@@ -1,6 +1,7 @@
 """Tests for account onboarding and vault credential endpoints."""
 
 import asyncio
+import json
 import uuid
 
 import pytest
@@ -422,6 +423,114 @@ class TestValidationErrorsDoNotEchoTheRejectedValue:
     FAKE_ARN = (
         "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake-not-real-AbCdEf"
     )
+
+    @pytest.mark.asyncio
+    async def test_encoded_confusables_cannot_persist_through_either_write_route(
+        self, client
+    ):
+        from app.models.cloud_account import CloudAccount
+        from app.models.credential import CredentialRegistry
+        from sqlalchemy import select
+
+        from tests.conftest import async_session_test
+
+        org_id = uuid.uuid4()
+        await _seed_organization(org_id)
+        headers = _auth_header(org_id)
+        for encoded in (
+            self.FAKE_ARN.replace(":", "%EF%BC%9A"),
+            self.FAKE_ARN.replace(":", "&#xff1a;"),
+        ):
+            account = await client.post(
+                "/accounts",
+                json={
+                    "name": "test",
+                    "account_id": "test",
+                    "role_arn": "role",
+                    "external_id": "id",
+                    "adp_credential_ids": [encoded],
+                },
+                headers=headers,
+            )
+            credential = await client.post(
+                "/vault/credentials",
+                json={
+                    "name": "test",
+                    "provider": "nebius",
+                    "adp_credential_id": encoded,
+                },
+                headers=headers,
+            )
+            for response in (account, credential):
+                assert response.status_code == 422, response.text
+                assert encoded not in response.text
+                assert "fake-not-real" not in response.text
+        async with async_session_test() as session:
+            assert (await session.scalars(select(CloudAccount))).all() == []
+            assert (await session.scalars(select(CredentialRegistry))).all() == []
+
+    @pytest.mark.asyncio
+    async def test_oversized_list_and_elements_return_scrubbed_422s(self, client):
+        org_id = uuid.uuid4()
+        headers = _auth_header(org_id)
+        for references in (["r" * 256], ["r" * 255] * 65):
+            response = await client.post(
+                "/accounts",
+                json={
+                    "name": "test",
+                    "account_id": "test",
+                    "role_arn": "role",
+                    "external_id": "id",
+                    "adp_credential_ids": references,
+                },
+                headers=headers,
+            )
+            assert response.status_code == 422, response.text
+            assert "r" * 255 not in response.text
+        credential = await client.post(
+            "/vault/credentials",
+            json={"name": "test", "provider": "nebius", "adp_credential_id": "r" * 256},
+            headers=headers,
+        )
+        assert credential.status_code == 422, credential.text
+        assert "r" * 255 not in credential.text
+
+    @pytest.mark.asyncio
+    async def test_valid_opaque_reference_survives_both_routes_unchanged(self, client):
+        from app.models.cloud_account import CloudAccount
+        from app.models.credential import CredentialRegistry
+        from sqlalchemy import select
+
+        from tests.conftest import async_session_test
+
+        org_id = uuid.uuid4()
+        await _seed_organization(org_id)
+        headers = _auth_header(org_id)
+        reference = "vault:secret/data/team/ref%2Fv2"
+        account = await client.post(
+            "/accounts",
+            json={
+                "name": "test",
+                "account_id": "test",
+                "role_arn": "role",
+                "external_id": "id",
+                "adp_credential_ids": [reference],
+            },
+            headers=headers,
+        )
+        credential = await client.post(
+            "/vault/credentials",
+            json={"name": "test", "provider": "nebius", "adp_credential_id": reference},
+            headers=headers,
+        )
+        assert account.status_code == credential.status_code == 201
+        async with async_session_test() as session:
+            stored_account = (await session.scalars(select(CloudAccount))).one()
+            stored_credential = (
+                await session.scalars(select(CredentialRegistry))
+            ).one()
+        assert json.loads(stored_account.adp_credential_ids_json) == [reference]
+        assert stored_credential.adp_credential_id == reference
 
     @pytest.mark.asyncio
     async def test_422_body_does_not_contain_the_submitted_arn(self, client):

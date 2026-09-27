@@ -2,6 +2,7 @@
 
 import html
 import re
+import unicodedata
 import urllib.parse
 import uuid
 from datetime import datetime
@@ -127,16 +128,13 @@ _SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # is not an option -- `sk` is a common English word ending, so it would refuse
     # `risk-<20+>`, `task-...`, `desk-...`, `ask-...`.
     #
-    # Length is what separates the two cases, because the prefix alone cannot:
+    # Length is the only available tradeoff, because the prefix alone cannot:
     # `risk-01HQ8V3XK2WERTYUIOPASDFGH` and `xsk-ant-api03-<40>` are the same shape to a
-    # regex. A real provider key carries a 30+ unbroken run; a `<word>sk-<slug>` handle
-    # does not, because its entropy segment is a human-chosen identifier. Measured: 0
-    # false positives over 50k each of uuid4, ULID, 40-char hex and 44-char base62, and
-    # over the word-slug corpus above.
+    # regex. A 30+ unbroken run catches long keys but also refuses `risk-<30+>`
+    # and `task-<30+>` handles. Shorter word slugs remain registerable; this is
+    # a deliberate false-refusal cost of catching long prefixed provider keys.
     #
-    # The residual gap is stated rather than papered over: a laundered key whose unbroken
-    # run is 20-29 characters is still accepted. Closing it needs a rule that cannot also
-    # keep `risk-`-style handles registerable, so the boundary sits here deliberately.
+    # A laundered key whose unbroken run is 20-29 characters is still accepted.
     re.compile(r"sk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{30,}"),
 )
 
@@ -205,6 +203,13 @@ _INVISIBLE_PATTERN = re.compile(
 )
 
 
+MAX_ADP_REFERENCE_LENGTH = 255
+MAX_ADP_REFERENCE_COUNT = 64
+_MAX_DECODE_ROUNDS = 129
+_MAX_RECOVERABLE_FORMS = 2 * _MAX_DECODE_ROUNDS + 2
+_MAX_RECOVERABLE_FORM_LENGTH = 4096
+
+
 def validate_adp_credential_id(value: str) -> str:
     """Reject anything that is a secret ARN or a secret value rather than a reference.
 
@@ -224,8 +229,24 @@ def validate_adp_credential_id(value: str) -> str:
         ValueError: if the value is empty, contains invisible or control characters, embeds
             an ARN anywhere in the string, matches a known secret shape, or is too long to
             be a reference.
+
+    The 255-character bound matches the registry and connection columns; 129 decode
+    rounds cover every percent nesting that fits (127 layers plus a fixed-point check).
+    At most 260 recoverable forms of 4096 characters each may be examined; exceeding
+    either bound fails closed. Normalization never changes the stored reference.
     """
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
+        raise ValueError(
+            "adp_credential_id must be a non-empty ADP credential reference; "
+            "an empty reference resolves to nothing"
+        )
+    if len(value) > MAX_ADP_REFERENCE_LENGTH:
+        raise ValueError(
+            "adp_credential_id must be a short opaque reference, not secret material "
+            f"(got {len(value)} characters). This record must never hold a "
+            "credential value."
+        )
+    if not value.strip():
         raise ValueError(
             "adp_credential_id must be a non-empty ADP credential reference; "
             "an empty reference resolves to nothing"
@@ -293,9 +314,8 @@ def validate_adp_credential_id(value: str) -> str:
     #
     # Only used for matching. The value is never rewritten, so nothing is normalized into
     # storage and the stored string stays exactly what the submitter sent.
-    # The literal value, plus its fully-decoded form, plus each with whitespace removed. The
-    # literal stays load-bearing alongside the decoded form because one secret shape needs
-    # whitespace present: `Bearer\s+...` cannot match a string stripped of it.
+    # The literal and each decoded form are tested with and without NFKC normalization
+    # and whitespace removal. Unstripped forms still matter for `Bearer\s+...`.
     #
     # Decoded to a FIXED POINT, not a fixed number of layers. Applying the three decoders
     # once each left `%253A` accepted -- `unquote` turns it into `%3A`, which needs a second
@@ -303,38 +323,37 @@ def validate_adp_credential_id(value: str) -> str:
     # decoding only `%3A` was. A consumer that decodes twice recovers the exact ARN, so the
     # loop runs until the string stops changing.
     #
-    # Terminating and bounded: every decoder either shortens the string or leaves it alone
-    # (`%XX`/`&#NN;`/`\uXXXX` are all longer than the single character they produce), so the
-    # length strictly decreases each round. A bound equal to the input length is therefore
-    # sufficient to reach a fixed point at any encoding depth that fits in the column; an
-    # 8-round constant was not sufficient because a 9-layer value can be only 84 bytes.
-    decoded = candidate
-    for _ in range(len(candidate)):
-        nxt = urllib.parse.unquote(
-            html.unescape(
-                _JSON_UNICODE_ESCAPE_PATTERN.sub(
-                    lambda m: chr(int(m.group(1), 16)), decoded
-                )
-            )
-        )
-        if nxt == decoded:
+    # Normalization can itself reveal another escape marker (a decoded fullwidth percent
+    # sign becomes `%`). Decode both normalized and unnormalized forms until neither
+    # operation discovers a new form; refuse rather than accept on budget exhaustion.
+    decoded_forms = {candidate}
+    pending_forms = [candidate]
+    for _ in range(_MAX_RECOVERABLE_FORMS):
+        if not pending_forms:
             break
-        decoded = nxt
-    else:
-        # Defensive fail-closed branch for a future decoder that changes without shortening.
+        form = pending_forms.pop()
+        for next_form in (
+            unicodedata.normalize("NFKC", form),
+            urllib.parse.unquote(
+                html.unescape(
+                    _JSON_UNICODE_ESCAPE_PATTERN.sub(
+                        lambda match: chr(int(match.group(1), 16)), form
+                    )
+                )
+            ),
+        ):
+            if len(next_form) > _MAX_RECOVERABLE_FORM_LENGTH:
+                raise ValueError("ADP credential reference contains excessive escaping")
+            if next_form not in decoded_forms:
+                decoded_forms.add(next_form)
+                pending_forms.append(next_form)
+    if pending_forms:
         raise ValueError("ADP credential reference contains excessive escaping")
 
-    # Only the literal and the fixed point, not the intermediate single-decoder results.
-    # Those were measured dead: `%`, `&`, `#` and `;` appear in none of the pattern
-    # character classes, so decoding can only ever *create* a match, never destroy one --
-    # which makes the fully-decoded form strictly subsume every partial decode. Confirmed
-    # by mutation (dropping either single form changed no test result) and by a 200k-case
-    # adversarial search over interleaved escapes and structure-breaking entities, which
-    # found 0 values a partial decode matches and the fixed point does not.
     recoverable_forms = tuple(
         {
             form
-            for base in (candidate, decoded)
+            for base in decoded_forms
             for form in (base, _WHITESPACE_RUN_PATTERN.sub("", base))
         }
     )
@@ -416,15 +435,6 @@ def validate_adp_credential_id(value: str) -> str:
             f"U+{ord(interior_ws.group()):04X}). An ADP credential ID is a single opaque "
             "handle; whitespace inside one exists only to break up another value, and a "
             "consumer that strips it recovers that value exactly."
-        )
-
-    # The column is VARCHAR(255), so a value over it would be truncated or rejected by the
-    # database anyway -- failing here names the actual reason instead.
-    if len(candidate) > 255:
-        raise ValueError(
-            "adp_credential_id must be a short opaque reference, not secret material "
-            f"(got {len(candidate)} characters). This record must never hold a "
-            "credential value."
         )
 
     return candidate

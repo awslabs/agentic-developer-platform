@@ -1,11 +1,183 @@
 """Tests verifying all SQLAlchemy models are importable and have correct table names."""
 
+import html
 import json
-
-import pytest
+import unicodedata
+import urllib.parse
 
 import app.models  # noqa: F401 — triggers model registration with Base
+import pytest
 from app.database import Base
+
+
+class TestEncodedConfusableCredentialReferences:
+    ARN = "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake-not-real-AbCdEf"
+
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            ARN,
+            ARN.replace(":", "%EF%BC%9A"),
+            ARN.replace(":", "&#xff1a;"),
+            ARN.replace("a", "&#xFF41;", 1),
+            ARN.replace(":", "&#65306;", 1).replace("&", "%2526", 1),
+            ARN.replace(":", "%EF%BC%853A", 1),
+            ARN.replace(":", "%25EF%25BC%25853A", 1),
+            ARN.replace(":", "%EF%BC%86#58;", 1),
+            "AKIAIOSFODNN7EXAMPLE",
+            urllib.parse.quote("AKIAIOSFODNN7EXAMPLE".replace("A", "Ａ", 1)),
+        ],
+    )
+    def test_storable_recoverable_material_is_refused_at_every_entry_point(
+        self, encoded
+    ):
+        from app.models.cloud_account import CloudAccount
+        from app.models.credential import CredentialRegistry, validate_adp_credential_id
+        from app.models.provider_connection import (
+            ProviderConnection,
+            ProviderConnectionBinding,
+        )
+        from app.schemas.account import (
+            RegisterAccountRequest,
+            RegisterCredentialRequest,
+        )
+        from pydantic import ValidationError
+
+        assert len(encoded) <= 255
+        recovered = encoded
+        for _ in range(5):
+            recovered = unicodedata.normalize(
+                "NFKC", urllib.parse.unquote(html.unescape(recovered))
+            )
+        assert recovered in (self.ARN, "AKIAIOSFODNN7EXAMPLE")
+
+        with pytest.raises(ValueError):
+            validate_adp_credential_id(encoded)
+        for model in (
+            CredentialRegistry,
+            ProviderConnection,
+            ProviderConnectionBinding,
+        ):
+            with pytest.raises(ValueError):
+                model(adp_credential_id=encoded)
+        with pytest.raises(ValueError):
+            CloudAccount(adp_credential_ids_json=json.dumps([encoded]))
+        with pytest.raises(ValidationError):
+            RegisterCredentialRequest(
+                name="test", provider="nebius", adp_credential_id=encoded
+            )
+        with pytest.raises(ValidationError):
+            RegisterAccountRequest(
+                name="test",
+                account_id="test",
+                role_arn="role",
+                external_id="id",
+                adp_credential_ids=[encoded],
+            )
+
+    def test_normalization_is_required_to_refuse_the_storable_bypass(self, monkeypatch):
+        from app.models import credential
+
+        encoded = self.ARN.replace(":", "%EF%BC%9A")
+        assert len(encoded) <= 255
+        with pytest.raises(ValueError, match="must not be an ARN"):
+            credential.validate_adp_credential_id(encoded)
+        monkeypatch.setattr(
+            credential.unicodedata, "normalize", lambda _form, value: value
+        )
+        assert credential.validate_adp_credential_id(encoded) == encoded
+
+    def test_deepest_storable_percent_nesting_is_still_examined(self):
+        from app.models.credential import validate_adp_credential_id
+
+        encoded = "arn%3Aaws:s::"
+        while len(encoded) + 2 <= 255:
+            encoded = encoded.replace("%", "%25")
+        assert len(encoded) == 255
+        with pytest.raises(ValueError, match="must not be an ARN"):
+            validate_adp_credential_id(encoded)
+
+    def test_exhausted_detection_budget_fails_closed(self, monkeypatch):
+        from app.models import credential
+
+        monkeypatch.setattr(credential, "_MAX_RECOVERABLE_FORMS", 1)
+        with pytest.raises(ValueError, match="excessive escaping"):
+            credential.validate_adp_credential_id("ref%252Fmore")
+
+    def test_bounds_run_at_schema_and_model_without_decoding_large_values(
+        self, monkeypatch
+    ):
+        from app.models import credential
+        from app.models.cloud_account import CloudAccount
+        from app.schemas.account import RegisterAccountRequest
+        from pydantic import ValidationError
+
+        oversized = "v" * 256
+        monkeypatch.setattr(
+            credential.urllib.parse,
+            "unquote",
+            lambda _value: pytest.fail("decoded oversized input"),
+        )
+        with pytest.raises(ValueError, match="short opaque reference"):
+            credential.validate_adp_credential_id(oversized)
+        with pytest.raises(ValueError, match="short opaque reference"):
+            CloudAccount(adp_credential_ids_json=json.dumps([oversized]))
+        with pytest.raises(ValidationError):
+            RegisterAccountRequest(
+                name="test",
+                account_id="test",
+                role_arn="role",
+                external_id="id",
+                adp_credential_ids=[oversized],
+            )
+        references = ["ref"] * 65
+        with pytest.raises(ValueError, match="at most 64"):
+            CloudAccount(adp_credential_ids_json=json.dumps(references))
+        with pytest.raises(ValidationError):
+            RegisterAccountRequest(
+                name="test",
+                account_id="test",
+                role_arn="role",
+                external_id="id",
+                adp_credential_ids=references,
+            )
+        with pytest.raises(ValueError, match="reference list limit"):
+            CloudAccount(adp_credential_ids_json="[" + " " * 100_000 + "]")
+
+    def test_valid_printable_opaque_references_are_not_normalized_or_decoded(self):
+        from app.models.cloud_account import CloudAccount
+        from app.models.credential import CredentialRegistry
+        from app.models.provider_connection import (
+            ProviderConnection,
+            ProviderConnectionBinding,
+        )
+        from app.schemas.account import RegisterAccountRequest
+
+        reference = "vault:secret/data/team/ref%2Fv2"
+        assert (
+            CredentialRegistry(adp_credential_id=reference).adp_credential_id
+            == reference
+        )
+        for model in (ProviderConnection, ProviderConnectionBinding):
+            assert model(adp_credential_id=reference).adp_credential_id == reference
+        assert json.loads(
+            CloudAccount(
+                adp_credential_ids_json=json.dumps([reference])
+            ).adp_credential_ids_json
+        ) == [reference]
+        assert RegisterAccountRequest(
+            name="test",
+            account_id="test",
+            role_arn="role",
+            external_id="id",
+            adp_credential_ids=[reference],
+        ).adp_credential_ids == [reference]
+
+    def test_long_sk_word_slug_is_refused_without_changing_the_detector(self):
+        from app.models.credential import validate_adp_credential_id
+
+        with pytest.raises(ValueError, match="secret material"):
+            validate_adp_credential_id("risk-" + "x" * 30)
 
 
 def test_all_tables_registered():

@@ -1776,6 +1776,58 @@ async def enforcing_connection(client, domain_signing_keys, monkeypatch):
 class TestRegistrationRefusesSecretMaterial:
     """Acceptance 1: a credential POINTER is accepted; a secret is refused."""
 
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            FAKE_SECRET_ARN.replace(":", "%EF%BC%9A"),
+            FAKE_SECRET_ARN.replace(":", "&#xff1a;"),
+            FAKE_SECRET_ARN.replace(":", "%EF%BC%853A", 1),
+            "r" * 256,
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_encoded_confusable_reference_is_refused_before_connection_write(
+        self, client, encoded
+    ):
+        from app.models.provider_connection import (
+            ProviderConnection,
+            ProviderConnectionBinding,
+        )
+        from sqlalchemy import select
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        response = await _register(
+            client, _auth_header(org), workspace, credential_id=encoded
+        )
+        assert response.status_code == 400, response.text
+        assert encoded not in response.text
+        if encoded != "r" * 256:
+            assert "fake-not-real" not in response.text
+        async with async_session_test() as session:
+            assert (await session.scalars(select(ProviderConnection))).all() == []
+            assert (
+                await session.scalars(select(ProviderConnectionBinding))
+            ).all() == []
+
+    @pytest.mark.asyncio
+    async def test_opaque_reference_is_stored_without_decoding(self, client):
+        from app.models.provider_connection import (
+            ProviderConnection,
+            ProviderConnectionBinding,
+        )
+        from sqlalchemy import select
+
+        reference = "vault:secret/data/team/ref%2Fv2"
+        org, workspace = await _seed_org_workspace_credentials(reference)
+        response = await _register(
+            client, _auth_header(org), workspace, credential_id=reference
+        )
+        assert response.status_code == 201, response.text
+        async with async_session_test() as session:
+            connection = (await session.scalars(select(ProviderConnection))).one()
+            binding = (await session.scalars(select(ProviderConnectionBinding))).one()
+        assert connection.adp_credential_id == binding.adp_credential_id == reference
+
     @pytest.mark.asyncio
     async def test_a_valid_reference_is_accepted(self, client):
         """The positive case. Created PENDING — an unvalidated reference admits nothing."""

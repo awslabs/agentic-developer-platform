@@ -75,6 +75,7 @@ from superplane_contracts.secrets import assert_no_secret_material
 from app.auth import _grant_to_policy_object
 from app.database import get_session
 from app.middleware.auth import get_current_org
+from app.models.credential import validate_adp_credential_id
 from app.models.provider_connection import ProviderConnection, ProviderConnectionBinding
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
@@ -373,6 +374,11 @@ def _reference_or_400(payload: Any, *, field: str = "payload") -> CredentialRefe
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{field} must be a JSON object",
         )
+    if payload.get("credential_id") is not None:
+        try:
+            validate_adp_credential_id(payload["credential_id"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     try:
         reference = accept_connection_request(payload)
         if any(
