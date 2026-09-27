@@ -2095,3 +2095,42 @@ def test_issued_decision_retains_canonical_owner_for_shadow_evidence(owner_kind,
     decision = resolve_decision(frozen, invocation_id="run-review", persona="reviewer", now=NOW).to_dict()
     assert decision["principal_kind"] == owner_kind
     assert decision["principal_id"] == owner_id
+
+
+def test_native_codex_contract_does_not_use_claude_sdk_revision():
+    from src.admin.persona_models.catalogue import persona_harness_contract_revision
+
+    contracts, _ = model_policy_module._contract_maps()
+    assert contracts["agent-codex-reviewer"]["harness_contract_revision"] == persona_harness_contract_revision("agent-codex-reviewer")
+    assert contracts["agent-codex-reviewer"]["harness_contract_revision"] != HARNESS_CONTRACT_REVISION
+
+
+@pytest.mark.parametrize("mapping", ["openai.gpt-6-sol", None])
+def test_legacy_codex_snapshot_keeps_explicit_model_and_requires_verified_live_posture(mapping):
+    from dataclasses import replace
+
+    from src.admin.persona_models.catalogue import persona_harness_contract_revision
+    from src.agentauth.runtime_posture import LivePosture
+
+    inherited = snapshot(
+        mappings={"agent-codex-reviewer": mapping} if mapping else {},
+        persona_contracts={"agent-codex-reviewer": {"compatibility_class": "codex-sdk", "harness_contract_revision": HARNESS_CONTRACT_REVISION}},
+    )
+    original_digest = policy_digest(inherited.to_dict())
+    with pytest.raises(ModelPolicyError, match="class_default_unavailable"):
+        resolve_decision(inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW)
+    live = LivePosture("codex-sdk", "enforcing", 2, NOW, NOW + timedelta(seconds=30), "live")
+    if mapping is None:
+        with pytest.raises(ModelPolicyError, match="class_default_unavailable"):
+            resolve_decision(inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW, live=live)
+        return
+    result = resolve_decision(inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW, live=live)
+    assert result.resolved_model_id == mapping and result.resolution_source == "principal-mapping"
+    assert result.harness_contract_revision == persona_harness_contract_revision("agent-codex-reviewer")
+    assert result.runtime_posture == "enforcing" and result.posture_revision == 2
+    assert result.snapshot_runtime_posture is None and result.snapshot_posture_revision is None
+    assert result.snapshot_digest == original_digest == policy_digest(inherited.to_dict())
+    with pytest.raises(ModelPolicyError, match="persona_incompatible"):
+        resolve_decision(
+            inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW, live=replace(live, compatibility_class="claude-agent-sdk")
+        )

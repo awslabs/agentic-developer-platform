@@ -31,3 +31,11 @@ observed failure using the same fenced transaction. It cannot overwrite a
 snapshot, control registration or credential-issuance marker and does not reset
 attempts, claims, grants or workload bindings. Preserve the gateway log reference
 in deployment evidence. Queueing the successor remains the engine's responsibility.
+
+New snapshots use each persona's registered SDK revision, rather than stamping
+Claude's revision onto Codex. At runtime, the known legacy Codex stamp can be
+interpreted using the current registered Codex contract after live class posture
+is verified. An explicit frozen model can be resolved without a historical class
+default that did not yet exist; absent historical posture remains null evidence.
+The snapshot and its digest remain immutable, no default model is substituted,
+and the current model-permission and invocability checks still apply.
