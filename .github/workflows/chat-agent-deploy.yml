@@ -29,6 +29,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: chat-agent-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   ADP_CHAT_EXISTING_NAMESPACE_ONLY: 'true'
   ADP_CHAT_MODEL_ACCESS_MODE: verify
