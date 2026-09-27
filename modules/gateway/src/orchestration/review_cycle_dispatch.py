@@ -377,6 +377,14 @@ class ReviewCycleServices:
                 await self.authorize(session, context, node, binding, envelope["message_id"], effect.action, reserve=True)
                 if await self.head(binding) != effect.intent.detail["head_sha"]:
                     raise CycleBlockedError("head_changed_before_dispatch")
+                # Continuations transfer an existing claim rather than calling
+                # admit_pending. Attach the parent's immutable model settings
+                # here, while the protected child is still pending and before
+                # a queued worker can bind it active. Use the same preparation
+                # path as ordinary dispatch; runtime posture remains authoritative.
+                from src.agentauth.model_policy import ensure_snapshot_report_only
+
+                await ensure_snapshot_report_only(session, store=self.writer.store, invocation_id=envelope["message_id"])
             cfg = self.config or DispatchPassConfig.from_env()
             queue = self.queue or _get_sqs_client(cfg.aws_region)
             await asyncio.to_thread(

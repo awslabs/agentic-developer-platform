@@ -306,6 +306,29 @@ async def review(ctx, *, approve=False, findings=None, publication=False):
 
 async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     ctx = cycle
+    from src.agentauth.model_policy import _persist_snapshot
+    from tests.agentauth.test_model_policy import live_snapshot
+
+    parent_snapshot = live_snapshot(tenant_id=ORG, correlation_id=ctx.flow.id, root_invocation_id=ctx.root)
+    # The developer has already completed; seed the immutable snapshot it would
+    # have received during its normal pending admission.
+    parent = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{ctx.root}")
+    parent["status"] = {"S": "pending"}
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=parent)
+    expected_digest = await _persist_snapshot(store=ctx.store, invocation_id=ctx.root, tenant_id=ORG, snapshot=parent_snapshot)
+    await ctx.finish(ctx.root)
+    original_send = ctx.service.queue.send_message
+
+    def assert_snapshot_before_send(**kwargs):
+        envelope = json.loads(kwargs["MessageBody"])
+        child = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{envelope['message_id']}")
+        assert child["status"] == {"S": "pending"}
+        assert child["model_policy_snapshot_digest"] == {"S": expected_digest}
+        assert child["model_policy_root_invocation_id"] == {"S": ctx.root}
+        assert child["model_policy_correlation_id"] == {"S": ctx.flow.id}
+        return original_send(**kwargs)
+
+    ctx.service.queue.send_message = assert_snapshot_before_send
     result = await tick(ctx)
     assert result.effects_succeeded == 1, (result, (await state(ctx))[0].block_detail)
     first = ctx.calls[-1]
