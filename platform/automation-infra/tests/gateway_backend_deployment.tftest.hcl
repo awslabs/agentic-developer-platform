@@ -72,6 +72,13 @@ run "gateway_backend_profile_is_bounded" {
   }
   assert {
     condition = (
+      contains([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : s.Resource if s.Action == "codebuild:BatchGetBuilds"], "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-gateway-build") &&
+      contains([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s.NotResource if try(s.Sid, "") == "DenyOtherBuildEvidence"], "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-gateway-build")
+    )
+    error_message = "Polling a build ID requires access to the exact CodeBuild project ARN."
+  }
+  assert {
+    condition = (
       contains(local.gateway_backend_lambdas, "arn:aws:lambda:us-east-1:123456789012:function:bedrockgw-test-pricing-refresh:$LATEST") &&
       contains(local.gateway_backend_lambdas, "arn:aws:lambda:us-east-1:123456789012:function:bedrockgw-test-budget-usage-tracker:$LATEST") &&
       !contains(local.gateway_backend_lambdas, "arn:aws:lambda:us-east-1:123456789012:function:bedrockgw-test-pricing-refresh:*")

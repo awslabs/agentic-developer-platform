@@ -22,7 +22,6 @@ locals {
   gateway_backend_account = data.aws_caller_identity.current.account_id
   gateway_backend_cluster = "arn:aws:eks:${var.aws_region}:${local.gateway_backend_account}:cluster/${var.cluster_name}"
   gateway_backend_project = "arn:aws:codebuild:${var.aws_region}:${local.gateway_backend_account}:project/${var.name_prefix}-gateway-build"
-  gateway_backend_build   = "arn:aws:codebuild:${var.aws_region}:${local.gateway_backend_account}:build/${var.name_prefix}-gateway-build:*"
   gateway_backend_repo    = "arn:aws:ecr:${var.aws_region}:${local.gateway_backend_account}:repository/adp-gateway"
   gateway_backend_lambdas = flatten([for name in [
     "bedrockgw-${var.environment}-pricing-refresh",
@@ -82,7 +81,8 @@ resource "aws_iam_policy" "gateway_backend_ceiling" {
     { Sid = "DenyOtherSecrets", Effect = "Deny", Action = "secretsmanager:GetSecretValue", NotResource = local.gateway_backend_secret_arns },
     { Sid = "DenyOtherExecutables", Effect = "Deny", Action = ["lambda:UpdateFunctionCode", "lambda:InvokeFunction"], NotResource = local.gateway_backend_lambdas },
     { Sid = "DenyOtherBuilds", Effect = "Deny", Action = "codebuild:StartBuild", NotResource = local.gateway_backend_project },
-    { Sid = "DenyOtherBuildEvidence", Effect = "Deny", Action = "codebuild:BatchGetBuilds", NotResource = local.gateway_backend_build },
+    # BatchGetBuilds evaluates against its project, even when called with a build ID.
+    { Sid = "DenyOtherBuildEvidence", Effect = "Deny", Action = "codebuild:BatchGetBuilds", NotResource = local.gateway_backend_project },
     { Sid = "DenyOtherClusters", Effect = "Deny", Action = "eks:DescribeCluster", NotResource = local.gateway_backend_cluster },
     { Sid = "DenyOtherParameterWrites", Effect = "Deny", Action = "ssm:PutParameter", NotResource = local.gateway_backend_ssm_write },
     { Sid = "DenyOtherSchedules", Effect = "Deny", Action = ["events:DisableRule", "events:EnableRule"], NotResource = local.gateway_backend_pricing_rule },
@@ -135,7 +135,7 @@ resource "aws_iam_role_policy" "gateway_backend" {
       local.gateway_backend_cfn_objects,
     ) },
     { Effect = "Allow", Action = "codebuild:StartBuild", Resource = local.gateway_backend_project },
-    { Effect = "Allow", Action = "codebuild:BatchGetBuilds", Resource = local.gateway_backend_build },
+    { Effect = "Allow", Action = "codebuild:BatchGetBuilds", Resource = local.gateway_backend_project },
     { Effect = "Deny", Action = "codebuild:StartBuild", Resource = local.gateway_backend_project,
       Condition = { Null = { "codebuild:serviceRole" = "false" }, ArnNotEquals = {
         "codebuild:serviceRole" = "arn:aws:iam::${local.gateway_backend_account}:role/${var.name_prefix}-codebuild-gateway-build",
