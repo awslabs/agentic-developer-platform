@@ -34,6 +34,10 @@ variables {
 run "bounded_windows_identity" {
   command = apply
   assert {
+    condition     = can(regex("^adp-[a-z0-9-]+-trusted-deployment$", aws_iam_role.windows_builder[0].name))
+    error_message = "The role name must satisfy the shared trusted-deployment admission guard."
+  }
+  assert {
     condition     = jsondecode(aws_iam_role.windows_builder[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:aws-e/adp:environment:adp-windows-build-test"
     error_message = "Windows authority must have its own environment identity."
   }

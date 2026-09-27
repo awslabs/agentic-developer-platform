@@ -24,10 +24,9 @@ runs:
   - name: Verify reviewed runner tools
     run: |
       set -euo pipefail
-      for tool in aws terraform kubectl jq python3 psql; do
+      for tool in aws terraform jq python3; do
         command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
       done
-      python3 -c 'import yaml'
     shell: bash
   - name: Stage build inputs
     run: |

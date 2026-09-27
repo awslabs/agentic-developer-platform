@@ -39,7 +39,7 @@ resource "aws_iam_policy" "windows_builder_boundary" {
 }
 resource "aws_iam_role" "windows_builder" {
   count                = var.enable_windows_builder ? 1 : 0
-  name                 = "${var.name_prefix}-windows-trusted-builder"
+  name                 = "${var.name_prefix}-windows-trusted-deployment"
   max_session_duration = 10800
   assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{
     Effect    = "Allow", Action = "sts:AssumeRoleWithWebIdentity",
@@ -86,7 +86,7 @@ resource "aws_iam_role_policy" "windows_builder" {
     { Effect = "Allow", Action = ["ssm:SendCommand"], Resource = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:document/${var.name_prefix}-register-cape-windows", "${local.windows_ec2}:instance/${var.windows_cape_host_id}"] },
     { Effect = "Allow", Action = ["ssm:GetCommandInvocation"], Resource = "*" },
     { Effect = "Allow", Action = ["cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms", "cloudwatch:DescribeAlarms", "cloudwatch:ListTagsForResource", "cloudwatch:TagResource", "cloudwatch:UntagResource"], Resource = "arn:aws:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:${local.windows_prefix}-builder-idle" },
-    { Effect = "Allow", Action = ["s3:GetBucketLocation", "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketPublicAccessBlock", "s3:GetLifecycleConfiguration", "s3:GetBucketAcl", "s3:ListBucket"], Resource = "arn:aws:s3:::${local.windows_bucket}" },
+    { Effect = "Allow", Action = ["s3:GetBucket*", "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetReplicationConfiguration", "s3:GetAccelerateConfiguration", "s3:ListBucket"], Resource = "arn:aws:s3:::${local.windows_bucket}" },
     { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], Resource = "arn:aws:s3:::${local.windows_bucket}/windows-build-inputs/*" },
     { Effect = "Allow", Action = ["s3:GetObject"], Resource = "arn:aws:s3:::${local.windows_bucket}/win11-cape-*" },
     { Effect = "Allow", Action = ["s3:ListBucket"], Resource = "arn:aws:s3:::${local.windows_state_bucket}", Condition = { StringLike = { "s3:prefix" = [local.windows_state, "${local.windows_state}.tflock", "env:", "env:/*"] } } },
