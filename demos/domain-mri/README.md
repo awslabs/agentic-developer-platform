@@ -30,3 +30,22 @@ npm test
 ```
 
 Tests cover domain validation, uncertain submission recovery without duplicate Tasks, active-run exclusion, cross-origin submission refusal, and report integrity checks. The recorded sample is a prior investigation, not a current safety guarantee.
+
+## Direct HTTPS demo access
+
+For a temporary remote demo, forward an HTTPS tunnel to the loopback server and
+set `MRI_PUBLIC_ORIGIN` to that exact HTTPS origin. Also set
+`MRI_DEMO_ACCESS_KEY` to 32 cryptographically random bytes encoded as 64 hex
+characters. The server refuses public mode without both settings.
+
+Share `https://YOUR_DEMO_HOST/?demo_key=YOUR_GENERATED_KEY` privately with demo
+attendees. Opening it creates a Secure, HttpOnly, SameSite cookie and redirects
+to `/`, removing the key from the address bar. Static files and every API route
+require that session; there is no login form. The link grants use of this demo,
+including billable live submissions. Rotate the key to revoke access.
+
+The tunnel process and server must both remain running. Free tunnels can expire
+or change their hostname; share the tested current link, not `localhost` or an
+old tunnel address. For Pinggy's free service, attendees click **Enter site**
+once before the demo opens; the tunnel expires after 60 minutes. This is a
+temporary presentation endpoint, not a permanent platform deployment.
