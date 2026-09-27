@@ -87,10 +87,14 @@ source "qemu" "windows-11" {
   iso_url      = var.iso_url
   iso_checksum = var.iso_checksum
 
-  # VirtIO drivers ISO as secondary CD-ROM (drive E: in Autounattend.xml)
+  # qemuargs replaces every default for a repeated option. Preserve the target
+  # disk and Windows installer when adding the VirtIO CD-ROM (drive E:).
+  # build-pipeline.sh supplies local paths for both cached ISO inputs.
   cd_files = []
   qemuargs = [
-    ["-drive", "file=${var.virtio_iso_url},media=cdrom,index=3"]
+    ["-drive", "file={{ .OutputDir }}/{{ .Name }},if=virtio,format=qcow2,cache=writeback"],
+    ["-drive", "file=${var.iso_url},media=cdrom,index=2,readonly=on,format=raw"],
+    ["-drive", "file=${var.virtio_iso_url},media=cdrom,index=3,readonly=on,format=raw"]
   ]
 
   # Floppy drive — Autounattend.xml + bootstrap scripts (StefanScherer pattern)
