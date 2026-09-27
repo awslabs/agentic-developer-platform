@@ -53,7 +53,8 @@ resource "aws_security_group" "builder" {
 resource "aws_iam_role" "builder" {
   count = var.build_host_enabled ? 1 : 0
 
-  name = "${local.name_prefix}-builder-role"
+  name                 = "${local.name_prefix}-builder-role"
+  permissions_boundary = var.builder_permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

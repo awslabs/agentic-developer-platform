@@ -18,7 +18,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     name: Build Windows 11 CAPE Image
     runs-on: arc-runner-org
-    environment: adp-deploy-dev
+    environment: adp-windows-build-dev
     timeout-minutes: 120
     permissions:
       id-token: write
@@ -32,6 +32,7 @@ jobs:
         git fetch --no-tags origin "$GITHUB_SHA"
         git merge-base --is-ancestor HEAD FETCH_HEAD
     - name: Establish trusted deployment identity
+      id: identity
       uses: ./.github/actions/trusted-deployment
       with:
         role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}

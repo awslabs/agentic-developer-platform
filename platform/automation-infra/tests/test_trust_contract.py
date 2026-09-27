@@ -126,6 +126,8 @@ def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
                 assert steps[matching[0]]["with"]["role_arn"] == "${{ vars.ADP_FRONTEND_DEPLOY_ROLE_ARN }}"
             elif kind == "deployment" and name == "agent-context-deploy.yml":
                 assert job["environment"].startswith("adp-context-deploy-"), name
+            elif kind == "deployment" and name == "cyber-windows-image-build.yml":
+                assert job["environment"] == "adp-windows-build-dev", name
             elif kind == "deployment" and name == "chat-agent-deploy.yml":
                 assert job["environment"] == "adp-chat-deploy-dev", name
             elif kind == "deployment" and name in {"gateway-deploy.yml", "run-gateway-migrations.yml", "pricing-finalize.yml"}:

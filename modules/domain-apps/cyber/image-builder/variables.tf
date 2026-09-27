@@ -74,3 +74,9 @@ variable "idle_period_seconds" {
   description = "Duration in seconds the host must be idle before auto-termination (4 hours)"
   default     = 14400
 }
+
+variable "builder_permissions_boundary_arn" {
+  type        = string
+  description = "Operator-owned workload ceiling required by the Windows CI identity."
+  default     = null
+}
