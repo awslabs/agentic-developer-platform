@@ -1,0 +1,15 @@
+# Ingestion and DeepWiki High maintenance, 2026-09-27
+
+This preserves the ingestion application and index formats while replacing vulnerable toolchain components: Go 1.26.8 builds of Syft, Trivy, scip-go and the embedded TypeScript compiler; Node 22.23.2; the compatible Zoekt indexer; NLTK model-path backports; the actual .NET XML 8.0.4 assembly; and libxml2 ABI-2 security backports. ICU is installed so dotnet-format and XML signing work with the existing SDK.
+
+Published ingestion candidate: `adp-dev-agent-context-ingestion@sha256:41b743bb0e0600c0c9e2dc62ba01af3e07a88723732fc7ca6a8765491d55ea8b` in account 879318057152, us-east-1. This is a candidate, not proof of live closure. Raw scans retain version-based matches requiring exact-image review. OS package maintenance is a separate layer.
+
+Build this directory's Dockerfile to assemble from immutable donor artifacts. The tool artifact includes licenses and original packages. `rebuild-go-tools.py` records source revisions, module locks and build flags; it requires Go 1.26.8. Preserve all original adjacent TypeScript .d.ts files: the noembed compiler loads them from its installation directory. `rebuild-nltk.sh` builds the exact source commit incorporating the model-path security sweep. Build `libxml2/Dockerfile` separately to reproduce the adp3 Debian package; it applies the aggregate source patch with zero fuzz and runs the full upstream suite.
+
+Libxml2 is based on official 2.13.9 (tarball SHA256 a2c9ae7b770da34860050c309f903221c67830c86e4a7e760692b803df95143a) with six upstream 2.15.4 fixes. The legacy WriteEscape function additionally gets the same size_t/INT_MAX guard as Write. A callback-size regression fails on the intermediate adp2 build and passes adp3. Python bindings are explicitly disabled. The new XInclude regression uses the 2.13 diagnostic text while retaining its fallback and network-prohibition assertions.
+
+NLTK source is 574270e2ad368c8816976e584da56ddfb3fefbad, locally labeled 3.10.3+adp1; four upstream path-security suites passed 700 tests with 63 optional skips. .NET's package is the real NuGet System.Security.Cryptography.Xml 8.0.4, SHA256 941fd70e782208c4c52fa8b2d81b682603cde85608f625d75f842ee7b628b1bf; patch-dotnet.py replaces its DLL and updates dependency edges, file version and package SHA512.
+
+Validation receipts cover real Python/TypeScript/Go SCIP output, Syft Go-runtime cataloging, offline Trivy scanning, old/new TypeScript diagnostic parity, Chromium DOM/canvas/screenshot, Ruby zlib/IMAP, Bundler, Sorbet, LLVM loading, and positive/tampered XML signature checks. Run the Python runtime/indexer checks inside the candidate with network disabled. Full binary and raw scan archives remain outside git.
+
+DeepWiki's sibling high-security/Dockerfile updates system setuptools to 84.0.0, removing its vendored jaraco.context and wheel findings while preserving the /opt/venv application environment. Candidate digest d2e9d67fd1b46d49bb9e5e68d78bef7c7d419d2292c8e4a74116e1458f0828ed. UID 10001 and fastapi/adalflow imports passed with networking disabled.
