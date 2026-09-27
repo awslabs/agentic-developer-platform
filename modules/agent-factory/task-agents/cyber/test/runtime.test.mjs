@@ -173,3 +173,13 @@ test('Task policy filters both MCP handlers and the model catalogue', async () =
  assert.ok(options.allowedTools.includes('mcp__cyber__browser_start'));
  assert.ok(!options.allowedTools.includes('mcp__cyber__url_analysis'));
 });
+
+test('SDK system-role reminders use the Anthropic system field without changing conversation or tools',()=>{
+ const messages=[{role:'user',content:'Investigate this URL'},{role:'system',content:[{type:'text',text:'SDK environment reminder',cache_control:{type:'ephemeral'}}]},{role:'assistant',content:[{type:'tool_use',id:'t1',name:'browser_start',input:{url:'https://example.com'}}]},{role:'user',content:[{type:'tool_result',tool_use_id:'t1',content:'Observed page'}]}];
+ const value=normalizeRequest({system:'Task instructions',messages,tools:[{name:'browser_start',input_schema:{type:'object'}}]},8001).sdk_request;
+ assert.deepEqual(value.system,[{type:'text',text:'Task instructions'},{type:'text',text:'SDK environment reminder'}]);
+ assert.deepEqual(value.messages,[messages[0],messages[2],messages[3]]);
+ assert.equal(value.tools[0].name,'browser_start');assert.equal(messages[1].role,'system');
+ assert.throws(()=>normalizeRequest({messages:[{role:'system',content:'Reminder only'}]},8001));
+ assert.throws(()=>normalizeRequest({messages:[messages[0],{role:'system',content:[{type:'tool_use',id:'bad'}]}]},8001));
+});

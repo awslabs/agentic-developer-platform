@@ -51,12 +51,26 @@ export function normalizeRequest(body, limit) {
     }
     throw new ProtocolError('unsupported SDK content block');
   };
-  const sdk_request = { messages: body.messages.map(message => ({ role: message.role,
+  // New SDK versions emit environment reminders as system-role messages.
+  // Anthropic transports carry those in the separate system field, not messages.
+  const reminders = [];
+  const messages = body.messages.filter(message => {
+    if (message.role !== 'system') return true;
+    const content = typeof message.content === 'string' ? [{type: 'text', text: message.content}] : message.content;
+    if (!Array.isArray(content) || !content.length || content.some(value => value.type !== 'text' || typeof value.text !== 'string' || !value.text)) {
+      throw new ProtocolError('unsupported SDK system message');
+    }
+    reminders.push(...content.map(value => select(value, ['type', 'text'])));
+    return false;
+  });
+  if (!messages.length) throw new ProtocolError('SDK conversation messages required');
+  const sdk_request = { messages: messages.map(message => ({ role: message.role,
     content: Array.isArray(message.content) ? message.content.map(block) : message.content })) };
   if (body.system != null) sdk_request.system = Array.isArray(body.system) ? body.system.map(value => {
     if (value.type !== 'text') throw new ProtocolError('unsupported SDK system block');
     return select(value, ['type', 'text']);
   }) : body.system;
+  if (reminders.length) sdk_request.system = [...(Array.isArray(sdk_request.system) ? sdk_request.system : sdk_request.system ? [{type: 'text', text: sdk_request.system}] : []), ...reminders];
   if (body.tools != null) sdk_request.tools = body.tools.map(value => {
     if (value.type && value.type !== 'custom') throw new ProtocolError('server tools forbidden');
     return select(value, ['name', 'description', 'input_schema']);
