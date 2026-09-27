@@ -1,5 +1,5 @@
 diff --git a/go.mod b/go.mod
-index 5abf45d..ef20545 100644
+index 5abf45d..4ba6ffe 100644
 --- a/go.mod
 +++ b/go.mod
 @@ -1,6 +1,6 @@
@@ -38,7 +38,7 @@ index 5abf45d..ef20545 100644
 +	golang.org/x/tools v0.49.0
  	golang.org/x/tools/cmd/cover v0.1.0-deprecated
 -	google.golang.org/grpc v1.80.0
-+	google.golang.org/grpc v1.83.1
++	google.golang.org/grpc v1.83.2
  	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1
  	google.golang.org/protobuf v1.36.11
  	honnef.co/go/tools v0.6.0
@@ -123,7 +123,7 @@ index 5abf45d..ef20545 100644
  	gopkg.in/inf.v0 v0.9.1 // indirect
  	gopkg.in/ini.v1 v1.66.2 // indirect
 diff --git a/go.sum b/go.sum
-index b74c7d6..2929a4c 100644
+index b74c7d6..0277fb9 100644
 --- a/go.sum
 +++ b/go.sum
 @@ -1,5 +1,5 @@
@@ -342,7 +342,7 @@ index b74c7d6..2929a4c 100644
  google.golang.org/grpc v1.14.0/go.mod h1:yo6s7OP7yaDglbqo1J04qKzAhqBH6lvTonzMVmEdcZw=
  google.golang.org/grpc v1.19.0/go.mod h1:mqu4LbDTu4XGKhr4mRzUsmM4RtVoemTSY81AxZiDr8c=
  google.golang.org/grpc v1.22.0/go.mod h1:Y5yQAOtifL1yxbo5wqy6BxZv8vAUGQwXBOALyacEbxg=
-@@ -1068,8 +1070,8 @@ google.golang.org/grpc v1.25.1/go.mod h1:c3i+UQWmh7LiEpx4sFZnkU36qjEYZ0imhYfXVyQ
+@@ -1068,8 +1070,10 @@ google.golang.org/grpc v1.25.1/go.mod h1:c3i+UQWmh7LiEpx4sFZnkU36qjEYZ0imhYfXVyQ
  google.golang.org/grpc v1.27.0/go.mod h1:qbnxyOmOxrQa7FizSgH+ReBfzJrCY1pSN7KXBS8abTk=
  google.golang.org/grpc v1.33.1/go.mod h1:fr5YgcSWrqhRRxogOsw7RzIpsmvOZ6IcH4kBYTpR3n0=
  google.golang.org/grpc v1.38.0/go.mod h1:NREThFqKR1f3iQ6oBuvc5LadQuXVGo9rkm5ZGrQdJfM=
@@ -350,6 +350,8 @@ index b74c7d6..2929a4c 100644
 -google.golang.org/grpc v1.80.0/go.mod h1:ho/dLnxwi3EDJA4Zghp7k2Ec1+c2jqup0bFkw07bwF4=
 +google.golang.org/grpc v1.83.1 h1:HIO0+BEtBP6soyqvqC8sNUjZ7bTs+0hFQuFF+RAy++Y=
 +google.golang.org/grpc v1.83.1/go.mod h1:kDyl6SKsiHKt0uylY5gtn5cEjkrIOhQOGDgIc4JGwzQ=
++google.golang.org/grpc v1.83.2 h1:EManeRomTObA0BU7I8vXgg/78uE5MJ9M8B39EX2WscU=
++google.golang.org/grpc v1.83.2/go.mod h1:YPI1hK3kDked6iHvgX3tR0y+nX/qpMFKhPgFsokw1S8=
  google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1 h1:F29+wU6Ee6qgu9TddPgooOdaqsxTMunOoj8KA5yuS5A=
  google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1/go.mod h1:5KF+wpkbTSbGcR9zteSqZV6fqFOWBl4Yde8En8MryZA=
  google.golang.org/protobuf v0.0.0-20200109180630-ec00e32a8dfd/go.mod h1:DFci5gLYBciE7Vtevhsrf46CRTquxDuWsQurQQe4oz8=

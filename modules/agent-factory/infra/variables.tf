@@ -73,7 +73,7 @@ variable "runner_image_repo" {
 variable "runner_image_tag" {
   description = "Tag or tag@sha256 digest for the ARC runner image. Used when runner_image is empty."
   type        = string
-  default     = "security27-489f17109@sha256:a5f75c5914fd6bc7ba81d6436609ead349628df43dc9d0b24ad35f5759ed568c"
+  default     = "security27-high-a7611fce1@sha256:6b7b01d0a8e852467ca6a48771550beb14ac09edf213cd3a11ad2bdca4c920eb"
 }
 
 variable "enable_public_cfn_bucket" {

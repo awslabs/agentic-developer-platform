@@ -54,7 +54,82 @@ RUN git apply --check /tmp/kaniko-security-dependencies.patch \
         -o /out/executor ./cmd/executor \
     && sha256sum -c /tmp/kaniko-modules.sha256
 
-FROM ghcr.io/actions/actions-runner:2.337.0
+# Rebuild bundled tools with fixed Go dependencies, keeping reviewed source pins.
+FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS high-tools-build
+ENV GOTOOLCHAIN=local GOMAXPROCS=2 CGO_ENABLED=0
+RUN apt-get update && apt-get install -y --no-install-recommends libseccomp-dev && rm -rf /var/lib/apt/lists/*
+COPY security/high-tools/*.patch /patches/
+WORKDIR /src/buildx
+RUN git init . && git remote add origin https://github.com/docker/buildx.git \
+    && git fetch --depth=1 origin 0b265a9f62db554fa9aba6dd19e1bd5704bc7d8a && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = 0b265a9f62db554fa9aba6dd19e1bd5704bc7d8a \
+    && git apply --check /patches/buildx.patch && git apply /patches/buildx.patch \
+    && sha256sum go.mod go.sum > /tmp/buildx-modules.sha256 \
+    && go mod download && go mod verify \
+    && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
+        -ldflags "-s -w -X github.com/docker/buildx/version.Version=v0.37.1" -o /out/buildx ./cmd/buildx \
+    && sha256sum -c /tmp/buildx-modules.sha256
+WORKDIR /src/helm
+RUN git init . && git remote add origin https://github.com/helm/helm.git \
+    && git fetch --depth=1 origin 144ca65f8501953fa8b41cd1d37c7223051c85b7 && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = 144ca65f8501953fa8b41cd1d37c7223051c85b7 \
+    && git apply --check /patches/helm.patch && git apply /patches/helm.patch \
+    && sha256sum go.mod go.sum > /tmp/helm-modules.sha256 \
+    && go mod download && go mod verify \
+    && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
+        -ldflags "-s -w -X helm.sh/helm/v3/internal/version.version=v3.22.0" -o /out/helm ./cmd/helm \
+    && sha256sum -c /tmp/helm-modules.sha256
+WORKDIR /src/acr
+RUN git init . && git remote add origin https://github.com/osscontainertools/docker-credential-acr.git \
+    && git fetch --depth=1 origin 726f4811d1f2da429555fce4c1868c1a7be96f19 && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = 726f4811d1f2da429555fce4c1868c1a7be96f19 \
+    && git apply --check /patches/acr.patch && git apply /patches/acr.patch \
+    && sha256sum go.mod go.sum > /tmp/acr-modules.sha256 \
+    && go mod download && go mod verify \
+    && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
+        -ldflags "-s -w" -o /out/docker-credential-acr-env . \
+    && sha256sum -c /tmp/acr-modules.sha256
+WORKDIR /src/runc
+RUN git init . && git remote add origin https://github.com/opencontainers/runc.git \
+    && git fetch --depth=1 origin bb14dabeb7185bb72c8c86735d090dcb20f36587 && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = bb14dabeb7185bb72c8c86735d090dcb20f36587 \
+    && git apply --check /patches/runc.patch && git apply /patches/runc.patch \
+    && sha256sum go.mod go.sum > /tmp/runc-modules.sha256 \
+    && go mod download && go mod verify \
+    && CGO_ENABLED=1 go build -mod=readonly -p 1 -trimpath -buildvcs=false -buildmode=pie -tags "seccomp urfave_cli_no_docs netgo osusergo" \
+        -ldflags "-s -w -X main.gitCommit=bb14dabeb7185bb72c8c86735d090dcb20f36587 -linkmode external -extldflags -static-pie" -o /out/runc . \
+    && sha256sum -c /tmp/runc-modules.sha256
+
+# Exact CPython3.14.7 adapters with statically linked Expat2.8.5.
+# Build-only artifact, source and normal XML checks are committed in
+# platform/arc-runner/security/high-tools/Dockerfile.python314-expat.
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9e6dd602c215e93c5e3cd489d4dbbd070d69ac7944caee65b0e46965bc49b881 AS python314-expat
+
+# AWS CLI's official 2.37.4 bundle embeds vulnerable Python 3.14.6.
+# Build the maintained portable-exe source distribution with fixed Python.
+# This executable is ADP-built; the AWS release ZIP signature does not cover it.
+FROM public.ecr.aws/docker/library/python:3.14.7-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS awscli-security
+ARG TARGETARCH=amd64
+RUN test "$TARGETARCH" = amd64 && \
+    python -c 'import sys; assert sys.version_info[:3] == (3, 14, 7)' && \
+    apt-get update && apt-get install -y --no-install-recommends build-essential binutils && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src/awscli
+ADD --checksum=sha256:c4d840d5975cea7f3bb51441c6f602312e9ec9dae9afaf725561a250eee73a90 https://codeload.github.com/aws/aws-cli/tar.gz/d22f2115447d212da4af5fc35e440ec7f960aad4 /tmp/awscli-source.tar.gz
+RUN tar -xzf /tmp/awscli-source.tar.gz --strip-components=1 && rm /tmp/awscli-source.tar.gz
+# Upstream's download-deps backend enforces its bundled dependency hash locks.
+RUN ./configure --with-install-type=portable-exe --with-download-deps --prefix=/opt/awscli-adp && \
+    make -j2 && make install && \
+    cp LICENSE.txt /opt/awscli-adp/LICENSE.txt && \
+    cp -r build/exe/aws/THIRD_PARTY_LICENSES /opt/awscli-adp/THIRD_PARTY_LICENSES
+COPY --from=python314-expat /modules/ /opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload/
+COPY --from=python314-expat /manifest.json /opt/awscli-adp/python314-expat-manifest.json
+COPY --from=python314-expat /licenses/ /opt/awscli-adp/XML-LICENSES/
+RUN PYTHONPATH=/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload python -c 'import pyexpat, _elementtree; import xml.etree.ElementTree as E; assert pyexpat.EXPAT_VERSION == "expat_2.8.5"; assert E.fromstring("<root>valid</root>").text == "valid"'
+RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
+COPY security/high-tools/awscli-source-build.json /opt/awscli-adp/source-build.json
+
+FROM ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -121,12 +196,11 @@ RUN apt-get update \
 RUN pip3 install --no-cache-dir --break-system-packages boto3==1.43.102 \
     && python3 -c "import boto3, botocore.auth; print(f'boto3={boto3.__version__} botocore={botocore.__version__}')"
 
-# ── AWS CLI v2 ──────────────────────────────────────────────────────────────
-RUN curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip \
-    && unzip -q /tmp/awscli.zip -d /tmp \
-    && /tmp/aws/install \
-    && rm -rf /tmp/aws /tmp/awscli.zip \
-    && aws --version
+# ── AWS CLI v2, portable source build with patched Python ──────────────────
+COPY --from=awscli-security /opt/awscli-adp /opt/awscli-adp
+RUN rm -rf /usr/local/aws-cli && ln -sf /opt/awscli-adp/bin/aws /usr/local/bin/aws \
+    && ln -sf /opt/awscli-adp/bin/aws_completer /usr/local/bin/aws_completer \
+    && aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
 
 # ── Terraform (matches project version per session-context: 1.14.x) ─────────
 ENV TERRAFORM_VERSION=1.14.9
@@ -142,15 +216,10 @@ RUN curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/ku
     && chmod +x /usr/local/bin/kubectl \
     && kubectl version --client
 
-# ── Helm 3 (security refresh, checksum-verified upstream binary) ─────────────
-ENV HELM_VERSION=3.22.0
-RUN curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" \
-        -o /tmp/helm.tar.gz \
-    && echo "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb  /tmp/helm.tar.gz" | sha256sum -c - \
-    && tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm \
-    && install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm \
-    && rm -rf /tmp/helm.tar.gz /tmp/linux-amd64 \
-    && helm version
+# ── Helm 3, same 3.22 release with fixed crypto dependency ──────────────────
+COPY --from=high-tools-build /out/helm /usr/local/bin/helm
+COPY --from=high-tools-build /src/helm/LICENSE /usr/local/share/licenses/helm/LICENSE
+RUN helm version
 
 # ── gh CLI (latest) ─────────────────────────────────────────────────────────
 RUN mkdir -p -m 755 /etc/apt/keyrings \
@@ -187,6 +256,23 @@ COPY kaniko-security-NOTICE /usr/local/share/licenses/kaniko/NOTICE
 RUN chmod -R 777 /kaniko
 ENV PATH="/kaniko:${PATH}"
 
+# Update the inherited Docker daemon/runtime tools without removing build capabilities.
+ADD --checksum=sha256:d8db66739d2e28d4933786d73e918d9be643a67fbd835db1bf740d650a259e70 https://download.docker.com/linux/static/stable/x86_64/docker-29.8.1.tgz /tmp/docker.tgz
+ADD --checksum=sha256:d65eda6a188aac1006848d8060099be88ba9c4bcddbfd9a23a961194710d0dd4 https://github.com/containerd/containerd/releases/download/v2.4.1/containerd-2.4.1-linux-amd64.tar.gz /tmp/containerd.tgz
+RUN tar -xzf /tmp/docker.tgz -C /tmp \
+    && install -m 0755 /tmp/docker/dockerd /tmp/docker/docker-proxy /tmp/docker/docker-init /usr/bin/ \
+    && mkdir /tmp/containerd && tar -xzf /tmp/containerd.tgz -C /tmp/containerd \
+    && install -m 0755 /tmp/containerd/bin/* /usr/bin/
+COPY --from=high-tools-build /out/runc /usr/bin/runc
+COPY --from=high-tools-build /out/buildx /usr/local/lib/docker/cli-plugins/docker-buildx
+COPY --from=high-tools-build /out/docker-credential-acr-env /kaniko/docker-credential-acr-env
+COPY --from=high-tools-build /src/buildx/LICENSE /usr/local/share/licenses/buildx/LICENSE
+COPY --from=high-tools-build /src/runc/LICENSE /usr/local/share/licenses/runc/LICENSE
+COPY --from=high-tools-build /src/acr/LICENSE /usr/local/share/licenses/docker-credential-acr/LICENSE
+COPY security/high-tools/source-lock.json security/high-tools/NOTICE /usr/local/share/licenses/adp-tools/
+COPY security/high-tools/docker-LICENSE /usr/local/share/licenses/docker/LICENSE
+COPY security/high-tools/containerd-LICENSE /usr/local/share/licenses/containerd/LICENSE
+
 # Preserve the runner Node runtimes and install compatible patched npm 11.
 COPY security/check-npm-tar.cjs /tmp/check-npm-tar.cjs
 RUN curl -fsSL https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -o /tmp/runner-npm.tgz \
@@ -205,6 +291,21 @@ RUN curl -fsSL https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -o /tmp/runner-n
     && /home/runner/externals/node24/bin/node /home/runner/externals/node24/lib/node_modules/npm/bin/npm-cli.js --version \
     && /home/runner/externals/node24/bin/node /tmp/check-npm-tar.cjs /home/runner/externals/node24/lib/node_modules/npm/node_modules/tar \
     && rm /tmp/runner-npm.tgz
+
+# Use the same patched npm release for the interactive Node22 CLI.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    && cp -a /home/runner/externals/node24/lib/node_modules/npm /usr/local/lib/node_modules/npm \
+    && npm --version \
+    && node /tmp/check-npm-tar.cjs /usr/local/lib/node_modules/npm/node_modules/tar
+
+# Runner 2.337 supports this migration flag. Its internal hashFiles path still
+# names node20, so compatibility links also run that path with supported Node24.
+# Workflows requiring Node20-only behavior must migrate before using this image.
+ENV FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true
+RUN rm -rf /home/runner/externals/node20 /home/runner/externals/node20_alpine \
+    && ln -s node24 /home/runner/externals/node20 \
+    && ln -s node24_alpine /home/runner/externals/node20_alpine \
+    && /home/runner/externals/node20/bin/node --version | grep '^v24\.'
 
 # ── Cleanup ─────────────────────────────────────────────────────────────────
 RUN apt-get clean \

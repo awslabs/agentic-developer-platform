@@ -1,0 +1,17 @@
+ADP security rebuilds of upstream tools, 2026-09-27.
+Exact source commits and reviewed dependency patches: source-lock.json.
+
+Buildx 0.37.1 (Apache-2.0), Helm 3.22.0 (Apache-2.0),
+runc 1.4.3 (Apache-2.0), osscontainertools/docker-credential-acr (Apache-2.0).
+Go toolchain 1.26.8. The build retains upstream tool behavior and upgrades
+vulnerable Go modules. Upstream license texts are copied into the final image.
+
+Docker daemon 29.8.1 and containerd 2.4.1 come from checksum-pinned upstream
+release archives. AWS CLI 2.37.4 is rebuilt from its pinned upstream source with
+Python 3.14.7; its license and third-party licenses accompany the executable.
+
+Node20 paths are compatibility links to supported Node24 runtimes. This is an
+intentional runtime migration, not a Node20 security backport.
+The original licenses for all embedded Go dependencies remain available from
+their checksum-verified module sources. Complete module metadata is embedded
+in the rebuilt binaries and recorded by the candidate SBOM.

@@ -16,6 +16,15 @@ RUN git apply --check /tmp/security.patch && git apply /tmp/security.patch \
       -ldflags "-s -w -X github.com/hashicorp/terraform/version.dev=no" -o /out/terraform . \
     && sha256sum -c /tmp/modules.sha256
 
+# Export the verified CLI without copying the build toolchain or module cache.
+FROM scratch AS terraform-security-artifact
+COPY --from=terraform-security /out/terraform /terraform
+
+# Exact CPython3.14.7 adapters with statically linked Expat2.8.5.
+# Build-only artifact, source and normal XML checks are committed in
+# platform/arc-runner/security/high-tools/Dockerfile.python314-expat.
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9e6dd602c215e93c5e3cd489d4dbbd070d69ac7944caee65b0e46965bc49b881 AS python314-expat
+
 # AWS CLI's official 2.37.4 bundle embeds vulnerable Python 3.14.6.
 # Build the maintained portable-exe source distribution with fixed Python.
 # This executable is ADP-built; the AWS release ZIP signature does not cover it.
@@ -33,6 +42,10 @@ RUN ./configure --with-install-type=portable-exe --with-download-deps --prefix=/
     make -j2 && make install && \
     cp LICENSE.txt /opt/awscli-adp/LICENSE.txt && \
     cp -r build/exe/aws/THIRD_PARTY_LICENSES /opt/awscli-adp/THIRD_PARTY_LICENSES
+COPY --from=python314-expat /modules/ /opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload/
+COPY --from=python314-expat /manifest.json /opt/awscli-adp/python314-expat-manifest.json
+COPY --from=python314-expat /licenses/ /opt/awscli-adp/XML-LICENSES/
+RUN PYTHONPATH=/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload python -c 'import pyexpat, _elementtree; import xml.etree.ElementTree as E; assert pyexpat.EXPAT_VERSION == "expat_2.8.5"; assert E.fromstring("<root>valid</root>").text == "valid"'
 RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
 COPY modules/domain-apps/superplane/executor/awscli-build/source-build.json /opt/awscli-adp/source-build.json
 
