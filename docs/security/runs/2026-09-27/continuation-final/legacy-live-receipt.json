@@ -1,0 +1,10 @@
+{
+  "image": "***.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+  "previous_image": "***.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway:062d3e08f5a8342383b2e7a71dde37309e34e419",
+  "dry_run": false,
+  "test_job": "security27-legacy-gateway-1790519412669598818",
+  "observed_image_ids": [
+    "***.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af"
+  ],
+  "desired_image_verified": true
+}
