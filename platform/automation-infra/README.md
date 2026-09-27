@@ -367,3 +367,11 @@ not grant IAM, Terraform state writes, other namespaces, or model registration.
 CI uses the existing namespace and verifies model access; standalone setup keeps
 its original namespace creation and model preparation behavior. Provision the
 namespace with the owning factory deployment before enabling this lane.
+
+Agent Context releases use `adp-context-deploy-dev` and its
+`adp-dev-context-trusted-deployment` role (`ADP_DEPLOY_ROLE_ARN`). Enable
+`enable_context_deployment` for exact configuration/ECR reads, the existing
+callback key, and Kubernetes access confined to `agent-context`. Release jobs
+verify the existing bound `platform-data` and `zoekt-index` claims; platform
+setup owns the namespace, CSI driver, StorageClass and PersistentVolume. This
+identity does not create IAM resources or mutate cluster-scoped storage.

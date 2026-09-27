@@ -1,5 +1,4 @@
 """Benign SSH/Git compatibility using disposable credentials and loopback only."""
-import json
 import subprocess
 import sys
 import uuid
@@ -131,8 +130,10 @@ try:
                     input=client_check, capture_output=True, text=True)
     print(result.stdout, end='')
 except subprocess.CalledProcessError as error:
-    if error.stdout: print(error.stdout, file=sys.stderr)
-    if error.stderr: print(error.stderr, file=sys.stderr)
+    if error.stdout:
+        print(error.stdout, file=sys.stderr)
+    if error.stderr:
+        print(error.stderr, file=sys.stderr)
     subprocess.run(['docker','logs',name], check=False)
     raise
 finally:

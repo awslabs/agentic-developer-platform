@@ -72,7 +72,7 @@ jobs:
   deploy:
     name: Deploy Services
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 20
     # Manual dispatch always runs; auto (workflow_run) only on a successful build.
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
@@ -127,23 +127,14 @@ jobs:
             exit 1
           fi
 
-      - name: Create namespace
+      - name: Verify existing context storage
         run: |
-          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          echo "Namespace ${{ env.NAMESPACE }} ensured"
-
-      - name: Create StorageClass (ebs-gp3)
-        continue-on-error: true
-        run: |
-          # StorageClass is cluster-scoped; runner role may lack access.
-          # The SC already exists from initial cluster setup — skip gracefully.
-          if ! kubectl get storageclass ebs-gp3 >/dev/null 2>&1; then
-            kubectl apply -f modules/agent-context/kubernetes/storageclass-ebs-gp3.yaml \
-              && echo "Created ebs-gp3 StorageClass" \
-              || echo "WARNING: Cannot create StorageClass (likely RBAC). Assuming it exists."
-          else
-            echo "ebs-gp3 StorageClass already exists"
-          fi
+          # Release authority is confined to the existing namespace. Platform
+          # setup owns Namespace, StorageClass, CSI driver and PersistentVolume.
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/platform-data \
+            -n "$NAMESPACE" --timeout=30s
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/zoekt-index \
+            -n "$NAMESPACE" --timeout=30s
 
       - name: Deploy ConfigMap
         run: |
@@ -339,24 +330,6 @@ jobs:
           EOF
             echo "ServiceAccount ${SERVICE_ACCOUNT} created with IRSA: ${IRSA_ROLE_ARN}"
           fi
-
-      - name: Deploy S3 Mountpoint storage (PV/PVC)
-        run: |
-          cd modules/agent-context
-          source scripts/_common.sh
-          load_config "$(pwd)"
-
-          # Check if Mountpoint CSI driver is installed
-          if kubectl get daemonset s3-csi-node -n kube-system >/dev/null 2>&1; then
-            echo "Mountpoint S3 CSI driver: installed"
-          else
-            echo "WARNING: Mountpoint S3 CSI driver not detected. PV/PVC may not bind."
-          fi
-
-          # Template and apply storage manifest
-          BUCKET_NAME="${S3_FILES_BUCKET}"
-          sed "s/<BUCKET_NAME>/${BUCKET_NAME}/g" manifests/s3-files-storage.yaml | kubectl apply -f -
-          echo "PV/PVC for S3 bucket: ${BUCKET_NAME}"
 
       - name: Deploy Zoekt (code search)
         run: |
