@@ -5,6 +5,7 @@ import {
   type IdentitySource, type OrganizationIdentityHierarchy, type OrganizationServiceIdentity,
 } from '@/services/organizationServiceIdentities';
 
+import { TaskPolicyModal } from './TaskPolicyModal';
 import { ServiceAccountModal } from './ServiceAccountModal';
 
 type SourcePage = { source: IdentitySource; cursor: string | null; error?: string };
@@ -12,6 +13,7 @@ const firstPages = (): SourcePage[] => identitySources.map(source => ({ source, 
 
 /** Mounted with key=orgId: switching organizations immediately discards the old roster. */
 export function ServiceIdentityList({ orgId, canManage = false }: { orgId: string; canManage?: boolean }) {
+  const [taskIdentity, setTaskIdentity] = useState<OrganizationServiceIdentity | null>(null);
   const [editing, setEditing] = useState<OrganizationServiceIdentity | 'new' | null>(null);
   const [items, setItems] = useState<OrganizationServiceIdentity[]>([]);
   const [pages, setPages] = useState(firstPages);
@@ -85,7 +87,7 @@ export function ServiceIdentityList({ orgId, canManage = false }: { orgId: strin
           </div> },
           { key: 'department', header: 'Department', render: department },
           { key: 'team', header: 'Team', render: team },
-          ...(canManage ? [{ key: 'actions', header: 'Actions', render: (row: OrganizationServiceIdentity) => row.source === 'cognito' ? <Button variant="secondary" size="sm" onClick={() => setEditing(row)}>Edit assignment</Button> : <span className="text-xs text-gray-500">Managed through its registration</span> }] : []),
+          ...(canManage ? [{ key: 'actions', header: 'Actions', render: (row: OrganizationServiceIdentity) => <div className="flex flex-wrap gap-2"><Button variant="secondary" size="sm" onClick={() => setTaskIdentity(row)}>Task policy</Button>{row.source === 'cognito' ? <Button variant="secondary" size="sm" onClick={() => setEditing(row)}>Edit assignment</Button> : <span className="text-xs text-gray-500">Managed through its registration</span>}</div> }] : []),
           { key: 'status', header: 'Status', render: row => <Badge variant={row.status === 'active' ? 'success' : 'default'}>{row.status}</Badge> },
         ]} />
       <div className="p-4 flex items-center justify-between gap-3">
@@ -94,6 +96,7 @@ export function ServiceIdentityList({ orgId, canManage = false }: { orgId: strin
           {loading ? 'Loading…' : errors.length ? 'Retry / load more accounts' : 'Load more service accounts'}
         </Button>}
       </div>
+      {taskIdentity && canManage && <TaskPolicyModal key={`${orgId}:${taskIdentity.source}:${taskIdentity.id}`} orgId={orgId} identity={taskIdentity} onClose={() => setTaskIdentity(null)} />}
       {editing && canManage && <ServiceAccountModal orgId={orgId} identity={editing === 'new' ? undefined : editing}
         onSaved={row => { generation.current++; setLoading(false); setSearch(''); setItems(previous => [row, ...previous.filter(item => !(item.source === row.source && item.id === row.id))]); }}
         onClose={needsRefresh => { setEditing(null); if (needsRefresh) void load(firstPages()); }} />}

@@ -15,6 +15,7 @@ locals {
     AGENT_FALLBACK_BUCKET                  = aws_s3_bucket.agent_run_logs.bucket
     ADP_WORK_CLAIMS_ENABLED                = tostring(var.agent_authority_enabled)
     ADP_WORK_CLAIM_PRODUCER_ROLES          = aws_iam_role.lambda_execution.arn
+    ADP_TASK_MAX_USD_PER_TASK              = tostring(var.task_max_usd_per_task)
     ADP_TASK_PERSONA_TOOLS                 = jsonencode(var.task_persona_tools)
     ADP_TASK_API_ADMISSION_ENABLED         = tostring(var.task_api_admission_enabled)
     ADP_TASK_API_HUMAN_ENABLED             = tostring(var.task_api_human_enabled)

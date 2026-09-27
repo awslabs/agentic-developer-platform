@@ -406,6 +406,13 @@
     "classification": "durable-operation"
   },
   {
+    "method": "PUT",
+    "path": "/admin/organizations/{org_id}/task-policies/{canonical_id}",
+    "module": "src.admin.persona_models.task_policy_ui_routes",
+    "endpoint": "save_policy",
+    "classification": "existing-writer"
+  },
+  {
     "method": "DELETE",
     "path": "/admin/organizations/{org_id}/teams/{team_id}",
     "module": "src.admin.routes",

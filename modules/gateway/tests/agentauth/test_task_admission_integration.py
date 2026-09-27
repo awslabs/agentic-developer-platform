@@ -476,3 +476,13 @@ def test_six_hour_policy_freezes_exact_deadline_in_task_and_run_grant(flow):
     assert flow.model_calls[0]["deadline"] == deadline
     grant = flow.store._get_authority("TENANT#tenant-a", f"TASK_RUN#{task['invocation_id']}#GEN#0000000001")
     assert grant["limits"]["deadline_at"] == task["deadline_at"]
+
+
+def test_persona_specific_model_authorization_reaches_model_binding(flow):
+    current = flow.policies.get(tenant_id="tenant-a", canonical_principal_id="svc-principal-1")
+    fields = {key: current[key] for key in ("status", "allowed_personas", "task_scopes", "model_policy_version", "limits")}
+    fields["model_policy_versions"] = {"agent-task-investigator": "7"}
+    flow.policies.put(tenant_id="tenant-a", canonical_principal_id="svc-principal-1", expected_version=1, policy=fields, updated_by="admin")
+    response = submit('{"schema_version":"1.0","persona":"agent-task-investigator","instructions":"inspect"}')
+    assert response["statusCode"] == 202, response
+    assert flow.model_calls[0]["expected_policy_version"] == "7"

@@ -689,3 +689,13 @@ variable "task_persona_tools" {
     error_message = "Task tool grants require at most 64 personas and 64 unique domain.operation names per persona within the 16384-byte policy bound."
   }
 }
+
+variable "task_max_usd_per_task" {
+  type        = number
+  default     = 1
+  description = "Platform ceiling for Task policy enrollment and edits in USD. Does not increase any existing identity or organization budget."
+  validation {
+    condition     = var.task_max_usd_per_task > 0
+    error_message = "Task policy ceiling must be positive."
+  }
+}
