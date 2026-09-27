@@ -20,13 +20,13 @@ digest are separate facts.
 
 from __future__ import annotations
 
-import _release_path  # noqa: F401
-
 import re
 from pathlib import Path
 
+import _release_path  # noqa: F401
 import pytest
 import yaml
+
 from releases.resolve_lock import LockError, load_lock, resolved_digest
 
 LOCK_PATH = Path(__file__).resolve().parents[1] / "releases" / "superplane.lock.yaml"
