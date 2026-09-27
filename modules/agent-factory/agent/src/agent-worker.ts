@@ -3,6 +3,7 @@ import { writeFailureReport } from './failure-report';
 import { reviewCyclePrompt } from './review-cycle-input';
 import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
 import { archiveProtectedGitChanges } from './lib/gitArchiveGateway';
+import { headIsPublished } from './lib/gitPublication';
 import { saveToS3Fallback } from './utils/ghPost';
 import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
@@ -2022,7 +2023,7 @@ async function uploadGitChangesToS3(): Promise<void> {
 
     // Check if there are any changes (committed but not pushed, or uncommitted)
     const status = execSync('git status --porcelain', { cwd: CWD, encoding: 'utf-8' }).trim();
-    const unpushed = execSync('git log --oneline origin/main..HEAD 2>/dev/null || echo ""', { cwd: CWD, encoding: 'utf-8' }).trim();
+    const unpushed = !headIsPublished(CWD);
 
     if (!status && !unpushed) {
       log('INFO', 'No git changes to backup to S3');

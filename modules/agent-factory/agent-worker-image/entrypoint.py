@@ -4289,6 +4289,34 @@ def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
     return ""
 
 
+def _developer_pr_ready_for_review(repo: str, branch: str) -> bool:
+    """Observe an exact published artifact, never substitute for review or CI."""
+    try:
+        number = _find_open_pr(repo, branch)
+        if not number:
+            return False
+        head = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        result = run_cmd(
+            ["gh", "pr", "view", str(number), "--repo", repo, "--json",
+             "state,isDraft,headRefOid,headRefName,isCrossRepository"],
+            cwd=WORK_DIR,
+        )
+        pr = json.loads(result.stdout)
+        if not isinstance(pr, dict):
+            return False
+        return bool(
+            re.fullmatch(r"[0-9a-f]{40}", head)
+            and pr.get("state") == "OPEN"
+            and pr.get("isDraft") is False
+            and pr.get("isCrossRepository") is False
+            and pr.get("headRefName") == branch
+            and pr.get("headRefOid") == head
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        logger.warning("Could not verify a published developer PR for review")
+        return False
+
+
 def _handle_success(
     repo: str,
     issue: int,
@@ -4340,7 +4368,14 @@ def _handle_success(
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 can_finalize = False
                 validation_note = f"Final-commit validation unavailable: {exc}"
-            if has_uncommitted or not can_finalize:
+            # Development delivers an artifact for independent review; it does
+            # not certify acceptance. An exploratory/host-dependent check must
+            # not strand an already published PR before the reviewer can repair
+            # it. Only the exact, clean, published head qualifies for this path.
+            published_review = False
+            if not has_uncommitted and not can_finalize:
+                published_review = _developer_pr_ready_for_review(repo, branch)
+            if has_uncommitted or (not can_finalize and not published_review):
                 if has_uncommitted:
                     run_cmd(["git", "add", "-A"], cwd=WORK_DIR)
                     run_cmd(["git", "commit", "-m", f"WIP: unvalidated agent/{persona} work for #{issue}"], cwd=WORK_DIR)
@@ -4354,6 +4389,12 @@ def _handle_success(
                 _post_comment(repo, issue, message_id, "failed", note, check_run_url)
                 update_invocation_status(message_id, arrived_at, "failed", summary=note)
                 return 1
+            if published_review:
+                validation_note = (
+                    "Development artifact delivered for independent review; local validation "
+                    "is NOT verified. Review/repair and required CI must resolve these gaps "
+                    "before merge. " + validation_note
+                )
             review_note = _join_notes(review_note, validation_note)
 
         if has_uncommitted:

@@ -130,6 +130,7 @@ def test_finalizer_stale_receipt_preserves_committed_work(repo, monkeypatch):
     (repo / "input").write_text("untested final commit")
     commit(repo)
     monkeypatch.setattr(entrypoint, "WORK_DIR", repo)
+    monkeypatch.setattr(entrypoint, "_find_open_pr", lambda *_: "")
     monkeypatch.setattr(entrypoint, "_post_comment", lambda *a: None)
     monkeypatch.setattr(entrypoint, "update_invocation_status", lambda *a, **k: None)
     assert entrypoint._handle_success("o/r", 1, "agent/issue-1", "developer", "run-1", "now") == 1
@@ -137,6 +138,71 @@ def test_finalizer_stale_receipt_preserves_committed_work(repo, monkeypatch):
         validation.git(remote, "show", "agent/issue-1-incomplete-run-1:input")
         == "untested final commit"
     )
+
+
+@pytest.mark.parametrize("condition", ["published", "moved", "draft", "closed", "fork", "wrong_branch", "unavailable"])
+def test_failed_check_on_published_head_reaches_review_without_claiming_validation(repo, monkeypatch, condition):
+    import json
+    import entrypoint
+    from unittest.mock import MagicMock
+
+    remote = repo.parent / (repo.name + "-remote.git")
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    validation.git(repo, "remote", "add", "origin", str(remote))
+    validation.git(repo, "checkout", "-qb", "agent/issue-1")
+    validation.git(repo, "push", "-qu", "origin", "HEAD")
+    validation.run(repo, command("raise SystemExit(1)"))
+    assert not validation.verify(repo)[0]
+    head = validation.git(repo, "rev-parse", "HEAD")
+    pr = dict(state="OPEN", isDraft=False, isCrossRepository=False,
+              headRefOid=head, headRefName="agent/issue-1")
+    if condition == "moved":
+        pr["headRefOid"] = "f" * 40
+    if condition == "draft":
+        pr["isDraft"] = True
+    if condition == "closed":
+        pr["state"] = "CLOSED"
+    if condition == "fork":
+        pr["isCrossRepository"] = True
+    if condition == "wrong_branch":
+        pr["headRefName"] = "other"
+    actual_run = entrypoint.run_cmd
+
+    def run(argv, **kwargs):
+        if argv[:3] == ["gh", "pr", "view"]:
+            if condition == "unavailable":
+                raise subprocess.CalledProcessError(1, argv)
+            return MagicMock(stdout=json.dumps(pr))
+        return actual_run(argv, **kwargs)
+
+    monkeypatch.setattr(entrypoint, "run_cmd", run)
+    monkeypatch.setattr(entrypoint, "WORK_DIR", repo)
+    monkeypatch.setattr(entrypoint, "_find_open_pr", lambda *_: "6598")
+    monkeypatch.setattr(entrypoint.run_report, "assigned_pull_request", lambda *_: None)
+    monkeypatch.setattr(entrypoint, "_read_result_metadata", lambda: None)
+    monkeypatch.setattr(entrypoint, "_ensure_pr_body_marker", lambda *_: None)
+    monkeypatch.setattr(entrypoint, "_register_authored_draft", lambda *_: "")
+    monkeypatch.setattr(entrypoint, "_register_authored_amendment", lambda *_: "")
+    binding = MagicMock(return_value="bound for review")
+    handoff = MagicMock(return_value="review handoff")
+    monkeypatch.setattr(entrypoint, "pr_binding_note", binding)
+    monkeypatch.setattr(entrypoint, "delivery_handoff_note", handoff)
+    monkeypatch.setattr(entrypoint, "pr_handoff_pending", lambda: False)
+    report = MagicMock()
+    monkeypatch.setattr(entrypoint, "_post_comment", report)
+    monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
+    result = entrypoint._handle_success("o/r", 1, "agent/issue-1", "developer", "run-1", "now")
+    assert result == (0 if condition == "published" else 1)
+    assert not validation.verify(repo)[0]  # The failure receipt is never cleared or relabeled.
+    if condition == "published":
+        binding.assert_called_once()
+        handoff.assert_called_once()
+        assert "local validation is NOT verified" in report.call_args.args[4]
+        assert "Missing passing validation" in report.call_args.args[4]
+    else:
+        binding.assert_not_called()
+        handoff.assert_not_called()
+        assert "Incomplete work preserved" in report.call_args.args[4]
 
 
 def test_cli_runs_from_module_and_resets_plan(repo):
