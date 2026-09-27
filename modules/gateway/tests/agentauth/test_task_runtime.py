@@ -50,6 +50,7 @@ def test_bootstrap_from_accepted_task_needs_no_github(runtime):
     service, pod, body, delivery = runtime
     result = service.bootstrap(body=body, pod=pod, delivery=delivery)
     assert result["task_id"] == body["task_id"]
+    assert result["tool_grants"] == service.repository.read_task(body["task_id"]).get("tool_grants", [])
     identity = service.authenticate(credential=result["run_credential"], pod=pod, require_attempt=False)
     assert identity.task_id == body["task_id"]
     assert identity.runtime_attempt_id is None

@@ -169,6 +169,7 @@ class TaskRuntime:
             **({"harness": grant["harness"]} if "harness" in grant else {}),
             "limits": grant["limits"],
             "capabilities": grant["capabilities"],
+            "tool_grants": grant.get("tool_grants", []),
         }
 
     def authenticate(self, *, credential, pod, require_attempt=True, stop_only=False):

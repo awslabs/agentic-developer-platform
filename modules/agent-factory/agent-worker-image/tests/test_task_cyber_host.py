@@ -75,6 +75,8 @@ def test_broker_is_persona_gated_and_cancel_responsive(tmp_path, monkeypatch, as
     monkeypatch.setattr('lib.task_host._REPORT_RETRY_SECONDS', 0.01)
     script = child_script(tmp_path)
     source = script.read_text()
+    if persona == "agent-task-cyber":
+        source = source.replace("assert start['type'] == 'start'", "assert start['type'] == 'start'\nassert start['tool_grants'] == " + repr(bootstrap["tool_grants"]))
     start = source.index('try:\n    socket.socket()')
     end = source.index("task_id = start['task_id']", start)
     if persona != 'agent-task-investigator':

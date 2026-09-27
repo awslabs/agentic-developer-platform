@@ -865,6 +865,7 @@ class TaskHost:
                         "deadline_at": bootstrap["deadline_at"],
                         **({"harness": bootstrap["harness"]} if "harness" in bootstrap else {})} if responses else {}),
                     **({"repository": repository_context} if repository_context is not None else {}),
+                    **({"tool_grants": bootstrap.get("tool_grants", [])} if remote_tools else {}),
                     "instructions": task_input["instructions"],
                     "inputs": task_input.get("inputs", {}),
                     "acceptance_criteria": task_input.get("acceptance_criteria", []),

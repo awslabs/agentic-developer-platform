@@ -31,7 +31,7 @@ test('real SDK accepts a grounded report submitted on the final permitted turn',
 });
 
 test('real SDK accepts bounded screenshot tool evidence', {timeout:45000}, async()=>{
- const start={task_id:'tsk_'+randomUUID(),instructions:'Inspect the screenshot then submit a report.',inputs:{},limits:{max_turns:4,max_output_tokens_per_turn:2000}};
+ const start={task_id:'tsk_'+randomUUID(),tool_grants:['cyber.browser_inspect'],instructions:'Inspect the screenshot then submit a report.',inputs:{},limits:{max_turns:4,max_output_tokens_per_turn:2000}};
  const bridge=new HostBridge(start,()=>{});let calls=0;
  bridge.cyber=async()=>({operation_status:'confirmed',artifact:{artifact_id:'art_image'},result:{image:{media_type:'image/png',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5V8AAAAASUVORK5CYII='}}});
  bridge.model=async request=>{
@@ -49,4 +49,17 @@ test('real SDK repairs malformed report within the reserved turns', {timeout:450
   return {turn_id:randomUUID(),operation_status:'confirmed',content:[{type:'tool_use',id:'toolu_repair'+calls,name:'mcp__cyber__submit_report',input:{summary:'Evidence unavailable',findings:[],uncertainties:calls===1?'["Unavailable"]}\n':['Unavailable']}}],stop_reason:'tool_use',usage:{input_tokens:100,output_tokens:50}};
  };
  const result=await runCyber(start,bridge);assert.deepEqual(result.uncertainties,['Unavailable']);assert.equal(calls,2);
+});
+
+test('SDK recovers from a model naming an ungranted tool without dispatching it', {timeout:45000}, async()=>{
+ const start={task_id:'tsk_'+randomUUID(),instructions:'Inspect if authorized, otherwise report the limitation.',inputs:{url:'https://example.com'},tool_grants:['cyber.browser_start'],limits:{max_turns:4,max_output_tokens_per_turn:2000}};
+ const bridge=new HostBridge(start,()=>{});let calls=0;
+ bridge.cyber=async()=>{assert.fail('ungranted operation reached the host');};
+ bridge.model=async request=>{
+  calls++;
+  assert.ok(!request.tools.some(tool=>tool.name==='mcp__cyber__url_analysis'));
+  if(calls===2) assert.ok(request.messages.some(message => Array.isArray(message.content) && message.content.some(item => item.type === 'tool_result' && item.tool_use_id === 'toolu_permission1' && item.is_error === true)));
+  return {turn_id:randomUUID(),operation_status:'confirmed',content:[{type:'tool_use',id:'toolu_permission'+calls,name:calls===1?'mcp__cyber__url_analysis':'mcp__cyber__submit_report',input:calls===1?{url:'https://example.com'}:{summary:'Live evidence unavailable',findings:[],uncertainties:['Requested operation was not authorized']}}],stop_reason:'tool_use',usage:{input_tokens:100,output_tokens:50}};
+ };
+ const result=await runCyber(start,bridge);assert.equal(calls,2);assert.equal(result.summary,'Live evidence unavailable');
 });

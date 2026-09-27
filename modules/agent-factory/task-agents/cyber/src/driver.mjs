@@ -59,7 +59,10 @@ export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../
   const mutations = new Map();
   const unfinishedJobs = new Set();
   let lastPoll = 0;
-  const handlers = OPERATIONS.map(operation => tool(operation,
+  const grants = bridge.start.tool_grants ?? [];
+  if (!Array.isArray(grants) || grants.some(value => typeof value !== 'string')) throw new ProtocolError('Invalid Task tool grants');
+  const operations = OPERATIONS.filter(operation => grants.includes('cyber.' + operation));
+  const handlers = operations.map(operation => tool(operation,
     `Run the authorized cyber ${operation} operation through the Task host. Only a confirmed receipt with an artifact is citable evidence. Pending job results need paced result polling; never retry an unknown submission.`,
     OPERATION_SCHEMAS[operation], async payload => {
       const key = JSON.stringify([operation, Object.fromEntries(Object.entries(payload).sort(([a], [b]) => a.localeCompare(b)))]);
@@ -123,8 +126,9 @@ import { runTaskSdk } from '../../../../tools/task-sdk/runner.mjs';
 
 export async function runCyber(start, bridge, { sdkQuery = query, proxyFactory = startProxy, toolOptions = {} } = {}) {
   bridge.progress('Starting cyber investigation with host-authorized tools.', 'evidence_inventory');
-  return runTaskSdk(start, bridge, { sdkQuery, proxyFactory, toolNames: TOOL_NAMES, finalReportTool: 'mcp__cyber__submit_report',
-    mcpServers: { cyber: createSdkMcpServer({ name: 'cyber', version: '1.0.0', tools: cyberTools(bridge, toolOptions) }) },
+  const tools = cyberTools(bridge, toolOptions);
+  return runTaskSdk(start, bridge, { sdkQuery, proxyFactory, toolNames: tools.map(value => 'mcp__cyber__' + value.name), finalReportTool: 'mcp__cyber__submit_report',
+    mcpServers: { cyber: createSdkMcpServer({ name: 'cyber', version: '1.0.0', tools }) },
     systemPrompt: 'You are agent-task-cyber, a cyber investigator using the existing seven-stage malware and URL analysis skills. Read the relevant packaged skills with read_skill. ' +
         'This is a Task API invocation, not a GitHub workflow: never post issues/comments, use GitHub identity, call AWS directly, run shell/code, or fetch arbitrary URLs. ' +
         'The only execution methods are the provided Task MCP operations. These replace all legacy skill shell, queue, credential and publication instructions. ' +

@@ -58,7 +58,7 @@ def validate_bootstrap(value: object, assignment) -> dict:
             "model_binding",
             "limits",
         },
-        {"deadline_at", "capabilities", "harness"},
+        {"deadline_at", "capabilities", "harness", "tool_grants"},
     )
     if (
         body["schema_version"] != SCHEMA_VERSION
@@ -145,6 +145,11 @@ def validate_bootstrap(value: object, assignment) -> dict:
         or not 1 <= limits["max_output_tokens_per_turn"] <= 10000
     ):
         raise TaskProtocolError("task limits are invalid")
+    grants = body.get("tool_grants", [])
+    if (not isinstance(grants, list) or len(grants) > 128
+            or any(not isinstance(item, str) or not re.fullmatch(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*", item) for item in grants)
+            or len(set(grants)) != len(grants)):
+        raise TaskProtocolError("task tool grants are invalid")
     capabilities = body.get("capabilities", [])
     if not isinstance(capabilities, list) or any(
         item not in {"input", "cancel"} for item in capabilities

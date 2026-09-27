@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { HostBridge, frame } from '../src/protocol.mjs';
+import { OPERATIONS, HostBridge, frame } from '../src/protocol.mjs';
 import { normalizeRequest, streamedMessage, startProxy } from '../src/model-proxy.mjs';
 import { groundedReport, runCyber, TOOL_NAMES, cyberTools } from '../src/driver.mjs';
-const start = () => ({ task_id: 'tsk_' + randomUUID(), instructions: 'Investigate', inputs: { url: 'https://example.com' }, limits: { max_turns: 4, max_output_tokens_per_turn: 2000 } });
+const start = () => ({ tool_grants: OPERATIONS.map(name => 'cyber.' + name), task_id: 'tsk_' + randomUUID(), instructions: 'Investigate', inputs: { url: 'https://example.com' }, limits: { max_turns: 4, max_output_tokens_per_turn: 2000 } });
 const report = () => ({ summary: 'Evidence insufficient', findings: [], uncertainties: ['No external analysis available'], recommendations: [], evidence_refs: [] });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 test('SDK normalization strips transport/cache metadata and preserves tool semantics', () => {
@@ -50,7 +50,7 @@ test('report does not accept invented provenance or discard unsupported uncertai
 test('driver has exact MCP-only SDK policy and closes session/proxy',async()=>{
   const bridge=new HostBridge(start(),()=>{});let closed=0;let options;
   const result=await runCyber(bridge.start,bridge,{proxyFactory:async()=>({url:'http://127.0.0.1:1',token:'local',close:async()=>closed++}),sdkQuery:args=>{options=args.options;bridge.report=report();return {async *[Symbol.asyncIterator](){yield {type:'result',subtype:'success',is_error:false};},close(){closed++;}};}});
-  assert.equal(result.summary,'Evidence insufficient');assert.equal(closed,2);assert.deepEqual(options.tools,[]);assert.deepEqual(options.settingSources,[]);assert.equal(options.persistSession,false);assert.deepEqual(options.allowedTools,TOOL_NAMES);assert.equal(options.env.AWS_ACCESS_KEY_ID,undefined);assert.notEqual(options.env.HOME,process.env.HOME);assert.equal(options.cwd,options.env.HOME);assert.equal(existsSync(options.env.HOME),false);assert.equal((await options.canUseTool('Bash',{})).behavior,'deny');
+  assert.equal(result.summary,'Evidence insufficient');assert.equal(closed,2);assert.deepEqual(options.tools,[]);assert.deepEqual(options.settingSources,[]);assert.equal(options.persistSession,false);assert.deepEqual([...options.allowedTools].sort(),[...TOOL_NAMES].sort());assert.equal(options.env.AWS_ACCESS_KEY_ID,undefined);assert.notEqual(options.env.HOME,process.env.HOME);assert.equal(options.cwd,options.env.HOME);assert.equal(existsSync(options.env.HOME),false);assert.equal((await options.canUseTool('Bash',{})).behavior,'deny');
 });
 test('skill enum rejects traversal at schema boundary',()=>{
   const tools=cyberTools(new HostBridge(start(),()=>{}));const skill=tools.find(t=>t.name==='read_skill');assert.throws(()=>skill.inputSchema.name.parse('../../secrets'));
@@ -155,4 +155,21 @@ test('oversized tool history compacts previews without changing instructions or 
  assert.match(sdk_request.messages[1].content[0].content[0].text,/context_notice/);
  for(let i=0;i<10;i++) {assert.equal(sdk_request.messages[i+1].content[0].tool_use_id,'tool_'+i);assert.match(JSON.stringify(sdk_request.messages[i+1]),new RegExp('art_'+i));}
  assert.throws(()=>normalizeRequest({messages:[{role:'user',content:'x'.repeat(70000)}]},100),/frame bound/);
+});
+
+test('Task policy filters both MCP handlers and the model catalogue', async () => {
+ const initial = {...start(), tool_grants: ['cyber.browser_start', 'cyber.browser_inspect', 'cyber.browser_close']};
+ const bridge = new HostBridge(initial,()=>{});
+ const names = cyberTools(bridge).map(value=>value.name);
+ assert.ok(names.includes('browser_start'));
+ assert.ok(names.includes('submit_report'));
+ assert.ok(!names.includes('url_analysis'));
+ assert.ok(!names.includes('triage'));
+ assert.deepEqual(cyberTools(new HostBridge({...initial,tool_grants:[]},()=>{})).map(value=>value.name),
+   ['read_skill','progress','request_input','submit_report']);
+ let options;
+ const sdkQuery = args => {options=args.options;return {async *[Symbol.asyncIterator](){bridge.report=report();yield {type:'result',subtype:'success',result:'done'};},close(){}};};
+ await runCyber(initial,bridge,{sdkQuery,proxyFactory:async()=>({url:'http://localhost:1',close:async()=>{}})});
+ assert.ok(options.allowedTools.includes('mcp__cyber__browser_start'));
+ assert.ok(!options.allowedTools.includes('mcp__cyber__url_analysis'));
 });

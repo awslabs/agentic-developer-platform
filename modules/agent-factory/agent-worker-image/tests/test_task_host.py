@@ -33,6 +33,7 @@ def assignment_and_bootstrap():
     assignment = parse_task_envelope(envelope)
     bootstrap = fixture("bootstrap-response.json")
     bootstrap["input"]["artifacts"] = []
+    bootstrap["tool_grants"] = ["cyber.browser_start", "cyber.browser_close"]
     deadline = datetime.now(UTC) + timedelta(minutes=5)
     bootstrap["deadline_at"] = deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
     bootstrap["limits"]["deadline_at"] = bootstrap["deadline_at"]
@@ -265,7 +266,8 @@ def test_progress_and_result_are_durable_before_acknowledgement(
     executable.write_text(executable.read_text().replace(
         "assert start['type'] == 'start'",
         "assert start['type'] == 'start'\n"
-        + "assert start['limits']['deadline_at'] == " + repr(bootstrap["limits"]["deadline_at"]),
+        + "assert start['limits']['deadline_at'] == " + repr(bootstrap["limits"]["deadline_at"])
+        + "\nassert 'tool_grants' not in start",
     ))
     monkeypatch.setattr(
         "lib.task_host.workload_identity",
@@ -1473,3 +1475,12 @@ def test_worker_bootstrap_matches_platform_execution_ceilings(assignment_and_boo
     else:
         with pytest.raises(TaskProtocolError, match="task limits"):
             validate_bootstrap(bootstrap, assignment)
+
+@pytest.mark.parametrize('grants', ['cyber.browser_start', [None], ['cyber.browser_start'] * 2, ['cyber/invalid']])
+def test_bootstrap_refuses_malformed_tool_grants(assignment_and_bootstrap, grants):
+    from lib.task_protocol import TaskProtocolError, validate_bootstrap
+
+    assignment, _, bootstrap = assignment_and_bootstrap
+    bootstrap['tool_grants'] = grants
+    with pytest.raises(TaskProtocolError, match='tool grants'):
+        validate_bootstrap(bootstrap, assignment)
