@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from src.activity.control_service import ControlError, validate_control_destination
 from src.agentauth.bootstrap import BootstrapStore
-from src.agentauth.human_control import require_protected_human_owner
+from src.agentauth.human_control import require_canonical_protected_human_owner
 
 MAX_FRAME_BYTES = 16 * 1024
 MAX_CONNECTIONS = 64
@@ -82,8 +82,7 @@ async def open_explanation_stream(control, run_id: str, *, session, reauthorize,
             return False
         if current != target or control.unavailable_reason(current):
             raise ControlError(409, "run registration changed")
-        await run_in_threadpool(
-            require_protected_human_owner,
+        await require_canonical_protected_human_owner(
             control._authority_store,
             user_id=session.user_id,
             tenant_id=session.tenant_id,

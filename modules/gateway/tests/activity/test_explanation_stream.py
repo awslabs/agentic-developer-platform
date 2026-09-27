@@ -53,7 +53,7 @@ def setup(monkeypatch, source, **changes):
             "AGENT_CONTROL_PORT": "8770",
         },
     )
-    monkeypatch.setattr(stream, "require_protected_human_owner", lambda *a, **kw: None)
+    monkeypatch.setattr(stream, "require_canonical_protected_human_owner", AsyncMock())
     session = SimpleNamespace(user_id="owner", tenant_id="tenant", expires_at=now + timedelta(minutes=5))
     return control, session, client
 
