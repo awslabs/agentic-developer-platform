@@ -30,6 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 from src.admin.persona_models._personas import VALID_PERSONAS
 from src.admin.persona_models.catalogue import (
+    HARNESS_CONTRACT_REVISION,
     PERSONA_ALLOWED_PATTERNS,
     PLATFORM_MODEL_CATALOGUE,
     persona_compatibility_class,
