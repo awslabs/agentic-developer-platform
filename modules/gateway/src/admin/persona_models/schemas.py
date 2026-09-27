@@ -11,8 +11,9 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
+from src.agentauth.task_repository_policy import TaskRepositoryBinding
 from src.shared.models.persona_models import ALIAS_SOURCES
 
 # The registrable alias vocabulary is DERIVED from the model's ALIAS_SOURCES, which
@@ -288,8 +289,16 @@ class TaskPolicyLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_duration_minutes: int = Field(ge=1, le=360, strict=True)
     max_turns: int = Field(ge=1, le=8)
+    codex_max_turns: int | None = Field(default=None, ge=1, le=32)
     max_output_tokens_per_turn: int = Field(ge=1, le=4096)
     max_usd_per_task: Decimal = Field(gt=0, allow_inf_nan=False)
+
+    @model_serializer(mode="wrap")
+    def omit_unused_codex_limit(self, handler):
+        value = handler(self)
+        if self.codex_max_turns is None:
+            value.pop("codex_max_turns", None)
+        return value
 
     @field_validator("max_duration_minutes", mode="before")
     @classmethod
@@ -306,6 +315,7 @@ class TaskPolicyPutRequest(BaseModel):
     status: Literal["active", "disabled"]
     allowed_personas: list[str] = Field(min_length=1, max_length=16)
     allowed_tools: list[str] = Field(default_factory=list, max_length=64)
+    repositories: dict[str, TaskRepositoryBinding] = Field(default_factory=dict, max_length=32)
     task_scopes: list[Literal["submit", "read", "input", "cancel", "artifacts"]] = Field(min_length=1, max_length=5)
     model_policy_version: str = Field(min_length=1, max_length=128)
     model_policy_versions: dict[str, str] = Field(default_factory=dict, max_length=16)
@@ -321,6 +331,7 @@ class TaskPolicyResponse(BaseModel):
     status: Literal["active", "disabled"]
     allowed_personas: list[str]
     allowed_tools: list[str] = Field(default_factory=list)
+    repositories: dict[str, TaskRepositoryBinding] = Field(default_factory=dict)
     task_scopes: list[str]
     model_policy_version: str
     model_policy_versions: dict[str, str] = Field(default_factory=dict)

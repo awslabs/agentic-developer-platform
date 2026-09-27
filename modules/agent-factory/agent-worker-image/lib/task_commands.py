@@ -26,6 +26,8 @@ command is arguments only; the environment is built separately in
 
 from __future__ import annotations
 
+import os
+
 #: Registered persona -> argv. Adding a task agent is one entry here plus the
 #: package and its Dockerfile stage; it never changes the queue contract, the
 #: KEDA resources or the legacy command selection.
@@ -39,6 +41,19 @@ TASK_AGENT_COMMANDS: dict[str, tuple[str, ...]] = {
         "--embedded",
     ),
 }
+
+
+# Packaged candidates require explicit host enablement after qualification.
+# This setting is never inherited by the SDK or accepted from a Task envelope.
+CODEX_TASK_COMMANDS: dict[str, tuple[str, ...]] = {
+    key: ("node", "/app/codex-harness/dist/task-entry.mjs", "--embedded")
+    for key in ("agent-task-gpt-developer", "agent-task-gpt-intent-refinement")
+}
+
+
+def _enabled_codex_command(persona: str):
+    enabled = {value.strip() for value in os.environ.get("ADP_CODEX_TASK_PERSONAS", "").split(",") if value.strip()}
+    return CODEX_TASK_COMMANDS.get(persona) if persona in enabled else None
 
 
 class UnknownTaskPersonaError(Exception):
@@ -56,7 +71,7 @@ def task_agent_command(persona: str) -> list[str]:
     :raises UnknownTaskPersonaError: the persona is not registered. There is no
         default and no fallback to a legacy runtime.
     """
-    command = TASK_AGENT_COMMANDS.get(persona)
+    command = TASK_AGENT_COMMANDS.get(persona) or _enabled_codex_command(persona)
     if command is None:
         raise UnknownTaskPersonaError(f"task persona is not packaged in this image: {persona}")
     return list(command)
@@ -64,4 +79,4 @@ def task_agent_command(persona: str) -> list[str]:
 
 def is_registered_task_persona(persona: str) -> bool:
     """Whether ``persona`` has a registered task executable in this image."""
-    return persona in TASK_AGENT_COMMANDS
+    return persona in TASK_AGENT_COMMANDS or _enabled_codex_command(persona) is not None

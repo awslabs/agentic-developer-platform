@@ -27,15 +27,18 @@ export function decode(line) {
   if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new ProtocolError('process frame exceeds limit');
   const value = JSON.parse(line);
   if (!value || value.protocol_version !== 1 || !UUID.test(value.request_id) || !TASK.test(value.task_id)) throw new ProtocolError('invalid host frame');
-  if (!['start', 'turn', 'cancel', 'model.result', 'cyber.result', 'tool.result', 'report.ack', 'artifact.chunk'].includes(value.type)) throw new ProtocolError('unknown host frame');
-  for (const forbidden of ['run_credential', 'gateway_token', 'aws_access_key_id', 'github_token', 'api_key']) {
+  if (!['start', 'turn', 'cancel', 'control.result', 'completion.result', 'model.result', 'cyber.result', 'tool.result', 'report.ack', 'artifact.chunk'].includes(value.type)) throw new ProtocolError('unknown host frame');
+  for (const forbidden of ['run_credential', 'gateway_token', 'aws_access_key_id', 'github_token', 'api_key', 'owner_token']) {
     if (forbidden in value) throw new ProtocolError('host frame contains authority');
   }
   return value;
 }
 
 export class HostBridge {
-  constructor(start, write) {
+  constructor(start, write, { allowSteering = false, traceContext } = {}) {
+    this.allowSteering = allowSteering;
+    this.traceContext = traceContext;
+    this.steering = [];
     this.start = start;
     this.write = write;
     this.controller = new AbortController();
@@ -51,7 +54,10 @@ export class HostBridge {
     for (const artifact of start.artifacts || []) this.evidence.set(artifact.artifact_id, { ref: artifact.artifact_id, source: 'artifact', artifact_id: artifact.artifact_id });
     this.failure = null;
   }
-  send(type, fields) { this.write(frame(type, this.start.task_id, fields)); }
+  send(type, fields) {
+    const traceparent = this.traceContext?.();
+    this.write(frame(type, this.start.task_id, { ...(traceparent ? { traceparent } : {}), ...fields }));
+  }
   async request(kind, id, fields) {
     if (this.controller.signal.aborted) throw new Cancelled();
     if (this.pending.size >= 8 || this.pending.has(id)) throw new ProtocolError('too many outstanding operations');
@@ -73,7 +79,32 @@ export class HostBridge {
     this.input?.reject(error);
     this.input = null;
   }
+  current() {
+    return this.exclusive(async () => {
+      const request_id = randomUUID();
+      const response = await this.request('control.request', request_id, { request_id });
+      if (response.current !== true) throw new ProtocolError('task authority is no longer current');
+    });
+  }
+  completion() {
+    return this.exclusive(async () => {
+      const request_id = randomUUID();
+      const response = await this.request('completion.request', request_id, { request_id });
+      return response.verified === true;
+    });
+  }
+  takeSteering() { return this.steering.splice(0); }
   model(sdk_request, max_tokens) { return this.exclusive(() => this._model(sdk_request, max_tokens)); }
+  responses(responses_request) {
+    return this.exclusive(async () => {
+      const turn_id = this.nextTurn || randomUUID();
+      this.nextTurn = null;
+      const response = await this.request('model.request', turn_id, { turn_id, responses_request });
+      if (response.operation_status !== 'confirmed') throw new ProtocolError(response.operation_status === 'unknown' ? 'model_outcome_unknown' : 'model request rejected');
+      if (!response.responses_response || typeof response.responses_response !== 'object') throw new ProtocolError('missing confirmed Responses content');
+      return { operationStatus: 'confirmed', turnId: turn_id, response: response.responses_response };
+    });
+  }
   async _model(sdk_request, max_tokens) {
     if ([...this.pending.values()].some(value => value.kind === 'model.request')) throw new ProtocolError('concurrent model operation');
     const turn_id = this.nextTurn || randomUUID();
@@ -89,11 +120,19 @@ export class HostBridge {
     if (!Array.isArray(response.content) || typeof response.stop_reason !== 'string') throw new ProtocolError('missing confirmed model content');
     return { ...response, turn_id };
   }
-  async tool(name, payload) {
+  async tool(name, payload, modelCall) {
     if (!/^[a-z][a-z0-9_]{0,63}\.[a-z][a-z0-9_]{0,63}$/.test(name)) throw new ProtocolError('invalid tool name');
+    let model_call;
+    if (modelCall !== undefined) {
+      if (!modelCall || typeof modelCall !== 'object' || Array.isArray(modelCall) ||
+          Object.keys(modelCall).sort().join(',') !== 'call_id,turn_id' ||
+          !UUID.test(modelCall.turn_id) || typeof modelCall.call_id !== 'string' ||
+          modelCall.call_id.length < 1 || modelCall.call_id.length > 200) throw new ProtocolError('invalid model call');
+      model_call = { ...modelCall };
+    }
     const request_id = randomUUID();
     return this.exclusive(async () => {
-      const response = await this.request('tool.request', request_id, { request_id, tool: name, payload });
+      const response = await this.request('tool.request', request_id, { request_id, tool: name, payload, ...(model_call ? { model_call } : {}) });
       if (response.artifact?.artifact_id && response.operation_status === 'confirmed') {
         const id = response.artifact.artifact_id;
         this.evidence.set(id, { ref: id, source: 'artifact', artifact_id: id });
@@ -131,16 +170,29 @@ export class HostBridge {
         if (this.seenTurns.get(value.turn_id) !== body) throw new ProtocolError('changed replayed input');
         return;
       }
-      if (!this.input) throw new ProtocolError('unsolicited Task turn');
-      this.seenTurns.set(value.turn_id, body);
-      this.nextTurn = value.turn_id;
+      if (!this.input && !this.allowSteering) throw new ProtocolError('unsolicited Task turn');
+      if (this.nextTurn !== null) throw new ProtocolError('previous Task turn has not been consumed');
+      const citations = [];
       const text = value.messages.map(message => {
         if (!UUID.test(message.command_id) || typeof message.text !== 'string') throw new ProtocolError('invalid input message');
         const ref = 'follow_up_input.' + message.command_id;
-        this.evidence.set(ref, { ref, source: 'follow_up_input' });
+        citations.push({ ref, source: 'follow_up_input' });
         return message.text;
       }).join('\n');
-      const input = this.input; this.input = null; input.resolve(text);
+      this.seenTurns.set(value.turn_id, body);
+      this.nextTurn = value.turn_id;
+      for (const citation of citations) this.evidence.set(citation.ref, citation);
+      if (this.input) {
+        const input = this.input; this.input = null; input.resolve(text);
+      } else this.steering.push({ turn_id: value.turn_id, text });
+    } else if (value.type === 'completion.result') {
+      const pending = this.pending.get(value.request_id);
+      if (!pending || pending.kind !== 'completion.request' || typeof value.verified !== 'boolean') throw new ProtocolError('uncorrelated completion receipt');
+      this.pending.delete(value.request_id); pending.resolve(value);
+    } else if (value.type === 'control.result') {
+      const pending = this.pending.get(value.request_id);
+      if (!pending || pending.kind !== 'control.request' || typeof value.current !== 'boolean') throw new ProtocolError('uncorrelated task control');
+      this.pending.delete(value.request_id); pending.resolve(value);
     } else if (value.type === 'model.result' || value.type === 'cyber.result' || value.type === 'tool.result') {
       const id = value.type === 'model.result' ? value.turn_id : value.request_id;
       const pending = this.pending.get(id);

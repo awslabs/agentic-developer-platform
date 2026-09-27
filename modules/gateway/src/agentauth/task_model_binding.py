@@ -1,7 +1,7 @@
-"""Resolve explicit Task Messages selection using live policy and exact evidence.
+"""Resolve explicit Task model selection using live policy and exact evidence.
 
-This is a Messages transport, not a Claude CLI/SDK persona. Its own probe key
-prevents a successful CLI probe from silently certifying a different payload.
+Each Task transport has its own probe key. A successful CLI/reviewer probe
+cannot silently certify a different Task payload.
 """
 
 from __future__ import annotations
@@ -11,13 +11,18 @@ import json
 
 from sqlalchemy import select
 
-from src.admin.persona_models.catalogue import catalogue_lookup
+from src.admin.persona_models.catalogue import catalogue_lookup, persona_compatibility_class
 from src.admin.persona_models.catalogue_service import (
     _model_matches_patterns,
     _model_matches_service_restrictions,
     lookup_evidence,
 )
 from src.agentauth.model_policy import ModelPolicyError, _resolve_active_allowlist_policy
+from src.agentauth.task_responses_contract import TASK_RESPONSES_PROBE_BODY, TASK_RESPONSES_REQUEST_SHAPE  # noqa: F401 -- public probe contract
+from src.agentauth.task_responses_tools_contract import (  # noqa: F401 -- public probe contract
+    TASK_RESPONSES_TOOLS_PROBE_BODY,
+    TASK_RESPONSES_TOOLS_REQUEST_SHAPE,
+)
 from src.budget.pricing_v2_reader import get_rate_state
 from src.proxy.bedrock_routing import bedrock_routing_resolver
 from src.shared.config import get_settings
@@ -35,11 +40,25 @@ TASK_CYBER_PROBE_BODY = TASK_PERSONAS[TASK_CYBER_PERSONA].probe_body
 TASK_CYBER_REQUEST_SHAPE = TASK_PERSONAS[TASK_CYBER_PERSONA].request_shape_sha256
 
 
-async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy_version, include_context=False, persona=TASK_PERSONA):
+async def resolve_task_model(
+    db, *, tenant, principal, deadline, expected_policy_version, include_context=False, persona=TASK_PERSONA, responses_tools=False
+):
+    from src.agentauth.task_responses_contract import TASK_RESPONSES_REVISION, TASK_RESPONSES_TRANSPORT
+
+    responses = persona.startswith("agent-task-") and persona_compatibility_class(persona) == "codex-sdk"
     profile = TASK_PERSONAS.get(persona)
-    if profile is None:
+    if profile is None and not responses:
         raise ModelPolicyError("task_model_transport_unsupported")
-    revision, shape = profile.harness_contract_revision, profile.request_shape_sha256
+    transport = TASK_RESPONSES_TRANSPORT if responses else TASK_TRANSPORT
+    compatibility = "codex-sdk" if responses else TASK_TRANSPORT
+    revision = TASK_RESPONSES_REVISION if responses else profile.harness_contract_revision
+    shape = TASK_RESPONSES_REQUEST_SHAPE if responses else profile.request_shape_sha256
+    if responses_tools:
+        from src.agentauth.task_responses_tools_contract import TASK_RESPONSES_TOOLS_REVISION
+
+        if not responses:
+            raise ModelPolicyError("task_model_transport_unsupported")
+        revision, shape = TASK_RESPONSES_TOOLS_REVISION, TASK_RESPONSES_TOOLS_REQUEST_SHAPE
     from src.tasks.human_authority import require_current_owner
 
     principal_kind, owner_id = await require_current_owner(db, tenant=tenant, principal=principal)
@@ -62,7 +81,11 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
         raise ModelPolicyError("task_model_selection_missing")
     model_id = preference.canonical_model_id
     model = catalogue_lookup(model_id)
-    if model is None or model.lifecycle == "retired" or ".anthropic." not in model_id:
+    from pricing_policy import canonical_billing_model_id
+    from pricing_policy.policy import is_openai_model
+
+    supported = is_openai_model(canonical_billing_model_id(model_id)) if responses else ".anthropic." in model_id
+    if model is None or model.lifecycle == "retired" or not supported:
         raise ModelPolicyError("task_model_transport_unsupported")
     if not _model_matches_patterns(model_id, policy.tenant_patterns) or not _model_matches_service_restrictions(
         model_id, policy.service_restriction_pattern_sets
@@ -81,14 +104,13 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
         account_id=account,
         region=region,
         canonical_model_id=model_id,
-        compatibility_class=TASK_TRANSPORT,
+        compatibility_class=compatibility,
         harness_contract_revision=revision,
         request_shape_sha256=shape,
     )
     if evidence is None or evidence.is_stale or not evidence.is_proven or not evidence.provider_request_id:
         raise ModelPolicyError("task_model_probe_required")
     state = await get_rate_state(db)
-    from pricing_policy import canonical_billing_model_id
     from pricing_policy.policy import geography_from_model_prefix, model_rate_candidates, staleness_reasons
     from pricing_policy.storage import utc_now_iso
 
@@ -97,6 +119,12 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
     # routes must not invalidate this route's evidence. Keep every context tier
     # for the selected route because the task's eventual input size is unknown.
     geography = geography_from_model_prefix(model_id)
+    # Native Responses dispatches bare OpenAI IDs to the selected regional
+    # Mantle endpoint; preserve the same route evidence as its usage capture.
+    if responses and geography is None and model_id.startswith("openai."):
+        geography = "in_region"
+    if geography is not None and region.startswith("us-gov-"):
+        geography = "govcloud"
     rates = tuple(
         row for row in rates if geography is not None and row.geography == geography and row.region == region and row.service_tier == "standard"
     )
@@ -112,7 +140,7 @@ async def resolve_task_model(db, *, tenant, principal, deadline, expected_policy
     ).hexdigest()
     binding = {
         "model_id": model_id,
-        "transport": TASK_TRANSPORT,
+        "transport": transport,
         "model_policy_version": str(preference.revision),
         "request_shape_version": shape,
         "pricing_evidence_version": pricing_version,

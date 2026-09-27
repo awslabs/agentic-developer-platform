@@ -58,7 +58,7 @@ def validate_bootstrap(value: object, assignment) -> dict:
             "model_binding",
             "limits",
         },
-        {"deadline_at", "capabilities"},
+        {"deadline_at", "capabilities", "harness"},
     )
     if (
         body["schema_version"] != SCHEMA_VERSION
@@ -118,10 +118,16 @@ def validate_bootstrap(value: object, assignment) -> dict:
     if (
         not isinstance(model["model_id"], str)
         or not 1 <= len(model["model_id"]) <= 128
-        or model["transport"] != "anthropic_messages"
+        or model["transport"] not in {"anthropic_messages", "openai_responses"}
         or model["invocability_verified"] is not True
     ):
         raise TaskProtocolError("task model binding is not invocable")
+    if model["transport"] == "openai_responses" and "harness" not in body:
+        raise TaskProtocolError("Responses bootstrap requires a frozen harness")
+    if "harness" in body:
+        if model["transport"] != "openai_responses":
+            raise TaskProtocolError("harness metadata requires Responses transport")
+        _exact(body["harness"], {"snapshot", "policy"}, {"tools", "traceparent"})
     limits = _exact(
         body["limits"],
         {"max_turns", "max_output_tokens_per_turn", "max_usd", "deadline_at"},
@@ -134,7 +140,7 @@ def validate_bootstrap(value: object, assignment) -> dict:
     )
     if (
         type(limits["max_turns"]) is not int
-        or not 1 <= limits["max_turns"] <= 8
+        or not 1 <= limits["max_turns"] <= (32 if model["transport"] == "openai_responses" else 8)
         or type(limits["max_output_tokens_per_turn"]) is not int
         or not 1 <= limits["max_output_tokens_per_turn"] <= 4096
     ):
@@ -155,6 +161,10 @@ def validate_child_frame(value: object, task_id: str) -> dict:
         raise TaskProtocolError("task child frame identity mismatch")
     if not _uuid4(value.get("request_id")):
         raise TaskProtocolError("task child request id is invalid")
+    if "traceparent" in value:
+        if not isinstance(value["traceparent"], str) or not re.fullmatch(r"00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]", value["traceparent"]):
+            raise TaskProtocolError("Invalid child trace context")
+        common = common | {"traceparent"}
     frame_type = value.get("type")
     if frame_type == "ready":
         body = _exact(value, common | {"capabilities"})
@@ -177,8 +187,100 @@ def validate_child_frame(value: object, task_id: str) -> dict:
             or any(key in body for key in ("reasoning", "thinking", "percentage"))
         ):
             raise TaskProtocolError("task progress frame is invalid")
+    elif frame_type in {"control.request", "completion.request"}:
+        _exact(value, common)
     elif frame_type == "model.request":
-        if "sdk_request" in value:
+        if "responses_request" in value:
+            body = _exact(value, common | {"turn_id", "responses_request"})
+            response = _exact(body["responses_request"], {"input", "reasoning", "max_output_tokens"}, {"instructions", "tools", "parallel_tool_calls"})
+            if "tools" in response:
+                if response.get("parallel_tool_calls") is not False or not isinstance(response["tools"], list) or len(response["tools"]) != 1:
+                    raise TaskProtocolError("Invalid serial tool declaration")
+                namespace = _exact(response["tools"][0], {"type", "name", "description", "tools"})
+                if (namespace["type"] != "namespace" or namespace["name"] != "mcp__adp"
+                        or namespace["description"] != "Authorized ADP tools." or not isinstance(namespace["tools"], list)
+                        or not 1 <= len(namespace["tools"]) <= 64):
+                    raise TaskProtocolError("Invalid Task tool namespace")
+                names = set()
+                for declaration in namespace["tools"]:
+                    tool = _exact(declaration, {"type", "name", "description", "parameters", "strict"})
+                    if (tool["type"] != "function" or not isinstance(tool["name"], str)
+                            or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", tool["name"]) or tool["name"] in names
+                            or not isinstance(tool["description"], str) or not 1 <= len(tool["description"]) <= 2000
+                            or not isinstance(tool["parameters"], dict) or tool["strict"] is not False):
+                        raise TaskProtocolError("Invalid Task function declaration")
+                    names.add(tool["name"])
+            elif "parallel_tool_calls" in response:
+                raise TaskProtocolError("Missing Task tool namespace")
+            reasoning = _exact(response["reasoning"], {"effort"})
+            if reasoning["effort"] not in {"minimal", "low", "medium", "high", "xhigh"}:
+                raise TaskProtocolError("Responses effort is invalid")
+            maximum = response["max_output_tokens"]
+            if type(maximum) is not int or not 1 <= maximum <= 4096:
+                raise TaskProtocolError("Responses output bound is invalid")
+            if "instructions" in response and (not isinstance(response["instructions"], str) or len(response["instructions"]) > 32000):
+                raise TaskProtocolError("Responses instructions exceed bound")
+            inputs = response["input"]
+            if isinstance(inputs, str):
+                if not 1 <= len(inputs) <= 32000:
+                    raise TaskProtocolError("Responses input exceeds bound")
+            elif isinstance(inputs, list) and 1 <= len(inputs) <= 64:
+                for item in inputs:
+                    if isinstance(item, dict) and item.get("type") in {"function_call", "function_call_output"}:
+                        if "tools" not in response:
+                            raise TaskProtocolError("Executable history requires tool profile")
+                        if item["type"] == "function_call":
+                            call = _exact(item, {"type", "call_id", "namespace", "name", "arguments"}, {"status"})
+                            if (call["namespace"] != "mcp__adp" or call["name"] not in names
+                                    or not isinstance(call["arguments"], str) or not 2 <= len(call["arguments"]) <= 32768
+                                    or call.get("status", "completed") != "completed"):
+                                raise TaskProtocolError("Invalid tool call history")
+                        else:
+                            call = _exact(item, {"type", "call_id", "output"})
+                            if not isinstance(call["output"], list) or len(call["output"]) != 2:
+                                raise TaskProtocolError("Invalid tool result history")
+                            for part in call["output"]:
+                                text = _exact(part, {"type", "text"})
+                                if text["type"] != "input_text" or not isinstance(text["text"], str) or len(text["text"]) > 32768:
+                                    raise TaskProtocolError("Invalid tool result text")
+                        if not isinstance(call["call_id"], str) or not 1 <= len(call["call_id"]) <= 200:
+                            raise TaskProtocolError("Invalid tool call identity")
+                        continue
+                    if isinstance(item, dict) and item.get("type") == "reasoning":
+                        entry = _exact(item, {"type", "encrypted_content", "summary"}, {"status"})
+                        if (not isinstance(entry["encrypted_content"], str)
+                                or not 1 <= len(entry["encrypted_content"]) <= 32768
+                                or entry.get("status", "completed") != "completed"
+                                or not isinstance(entry["summary"], list) or len(entry["summary"]) > 16):
+                            raise TaskProtocolError("Responses reasoning is invalid")
+                        for part in entry["summary"]:
+                            summary = _exact(part, {"type", "text"})
+                            if (summary["type"] != "summary_text" or not isinstance(summary["text"], str)
+                                    or len(summary["text"]) > 32000):
+                                raise TaskProtocolError("Responses summary is invalid")
+                        continue
+                    entry = _exact(item, {"role", "content"}, {"type", "status", "phase"})
+                    if (entry["role"] not in {"system", "developer", "user", "assistant"}
+                            or entry.get("type", "message") != "message"
+                            or entry.get("status", "completed") != "completed"
+                            or ("phase" in entry and entry["phase"] not in {"commentary", "final_answer"})):
+                        raise TaskProtocolError("Responses message is invalid")
+                    content = entry["content"]
+                    if isinstance(content, str):
+                        if len(content) > 32000:
+                            raise TaskProtocolError("Responses text exceeds bound")
+                    elif isinstance(content, list) and len(content) <= 64:
+                        for part in content:
+                            text = _exact(part, {"type", "text"}, {"annotations"})
+                            if (text["type"] not in {"input_text", "output_text"}
+                                    or not isinstance(text["text"], str) or len(text["text"]) > 32000
+                                    or text.get("annotations", []) != []):
+                                raise TaskProtocolError("Responses content is invalid")
+                    else:
+                        raise TaskProtocolError("Responses content is invalid")
+            else:
+                raise TaskProtocolError("Responses input is invalid")
+        elif "sdk_request" in value:
             body = _exact(value, common | {"turn_id", "sdk_request"}, {"max_tokens"})
             sdk = _exact(body["sdk_request"], {"messages"},
                          {"system", "tools", "tool_choice", "stop_sequences"})
@@ -206,11 +308,15 @@ def validate_child_frame(value: object, task_id: str) -> dict:
         ):
             raise TaskProtocolError("task model request is invalid")
     elif frame_type == "tool.request":
-        body = _exact(value, common | {"tool", "payload"})
+        body = _exact(value, common | {"tool", "payload"}, {"model_call"})
         if (not isinstance(body["tool"], str)
                 or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}\.[a-z][a-z0-9_]{0,63}", body["tool"])
                 or not isinstance(body["payload"], dict)):
             raise TaskProtocolError("Invalid generic tool request")
+        if "model_call" in body:
+            call = _exact(body["model_call"], {"turn_id", "call_id"})
+            if not _uuid4(call["turn_id"]) or not isinstance(call["call_id"], str) or not 1 <= len(call["call_id"]) <= 200:
+                raise TaskProtocolError("Invalid Codex tool model binding")
     elif frame_type == "cyber.request":
         body = _exact(value, common | {"operation", "payload"})
         if body["operation"] not in {"triage", "static", "result", "url_analysis", "dynamic", "enrich"} or not isinstance(body["payload"], dict):

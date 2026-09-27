@@ -4,7 +4,7 @@ import profiles from './task-profiles.json';
 function fixture(persona: keyof typeof profiles = 'agent-task-investigator') {
   const profile = profiles[persona];
   const claim = { claimed: true, slot_id: 'slot', lease_token: 'token', model_id: 'model',
-    compatibility_class: 'anthropic_messages', harness_contract_revision: profile.revision,
+    compatibility_class: persona.startsWith('agent-task-gpt-') ? 'codex-sdk' : 'anthropic_messages', harness_contract_revision: profile.revision,
     task_probe_json: profile.body, expected_request_shape_sha256: profile.digest, timeout_seconds: 10 };
   const gateway: any = { claim: jest.fn().mockResolvedValue(claim),
     start: jest.fn().mockResolvedValue({ slot_id: 'slot', model_id: 'model', region: 'us-east-1',
@@ -16,13 +16,18 @@ function fixture(persona: keyof typeof profiles = 'agent-task-investigator') {
 
 it.each(Object.keys(profiles) as (keyof typeof profiles)[])('qualifies exact bounded %s profile only with provider receipt', async persona => {
   const { gateway } = fixture(persona);
-  const body = persona === 'agent-task-investigator' ? { type: 'message', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'OK' }] }
+  const native = persona.startsWith('agent-task-gpt-');
+  const body = native ? { object: 'response', id: 'resp_fixture', status: 'completed', output: persona === 'agent-task-gpt-developer'
+    ? [{ type: 'function_call', namespace: 'mcp__adp', name: 'task_probe', call_id: 'call_fixture', arguments: '{"value":"OK"}' }]
+    : [{ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'OK' }] }] }
+    : persona === 'agent-task-investigator' ? { type: 'message', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'OK' }] }
     : { content: [{ type: 'tool_use', name: 'task_probe', input: { value: 'OK' } }] };
   const call = jest.fn().mockResolvedValue({ status: 200, requestId: 'provider-receipt', body: Buffer.from(JSON.stringify(body)) });
   await runTaskProbe(persona, gateway, call);
   expect(gateway.claim).toHaveBeenCalledWith('scheduled', persona);
   expect(call).toHaveBeenCalledTimes(1);
-  expect(JSON.parse(call.mock.calls[0][1]).max_tokens).toBe(persona === 'agent-task-investigator' ? 16 : 64);
+  const emitted = JSON.parse(call.mock.calls[0][1]);
+  expect(emitted.max_tokens ?? emitted.max_output_tokens).toBe(persona === 'agent-task-investigator' ? 16 : persona === 'agent-task-gpt-developer' ? 128 : 64);
   expect(gateway.complete.mock.calls[0][2]).toMatchObject({ outcome: 'proven', provider_request_id: 'provider-receipt' });
 });
 

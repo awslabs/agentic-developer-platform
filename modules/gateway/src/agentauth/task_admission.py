@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -58,6 +59,13 @@ class TaskAdmission:
             tool_grants = freeze_tools(submit["persona"], policy)
         except TaskToolPolicyError:
             raise TaskAdmissionError("prerequisite_unavailable", 503) from None
+        from src.agentauth.task_repository_policy import TaskRepositoryPolicyError, freeze_repository
+
+        try:
+            repository_binding = freeze_repository(submit.get("inputs", {}), policy)
+        except (TaskRepositoryPolicyError, ValueError, TypeError):
+            raise TaskAdmissionError("disallowed_repository", 403) from None
+
         from src.tasks.repository_authority import CODING_PERSONAS, require_coding_snapshot
 
         digest = payload_digest(submit)
@@ -74,6 +82,10 @@ class TaskAdmission:
             await require_coding_snapshot(caller=caller, submit=submit, policy=policy, db=db)
         now = self.clock()
         deadline = now + timedelta(minutes=int(policy["limits"]["max_duration_minutes"]))
+        from src.admin.persona_models.catalogue import persona_compatibility_class
+
+        tool_profile = bool(tool_grants) and persona_compatibility_class(submit["persona"]) == "codex-sdk"
+
         human_owner = caller.principal_id.startswith("human:")
         binding = await self.model_resolver(
             db,
@@ -81,8 +93,9 @@ class TaskAdmission:
             principal=caller.principal_id,
             deadline=deadline,
             expected_policy_version=policy.get("model_policy_versions", {}).get(submit["persona"], policy["model_policy_version"]),
+            persona=submit["persona"],
+            **({"responses_tools": True} if tool_profile else {}),
             **({"include_context": True} if human_owner else {}),
-            **({"persona": submit["persona"]} if submit["persona"] in {"agent-task-cyber", *CODING_PERSONAS} else {}),
         )
         if human_owner:
             binding, owner_policy, _ = binding
@@ -124,12 +137,33 @@ class TaskAdmission:
         immutable_input.update(input_digest=digest)
         if refs:
             immutable_input["artifacts"] = refs
+        turn_limit = int(policy["limits"]["max_turns"])
+        if binding["transport"] == "openai_responses":
+            turn_limit = int(policy["limits"].get("codex_max_turns", turn_limit))
         limits = {
-            "max_turns": int(policy["limits"]["max_turns"]),
+            "max_turns": turn_limit,
             "max_output_tokens_per_turn": int(policy["limits"]["max_output_tokens_per_turn"]),
             "max_usd": float(policy["limits"]["max_usd_per_task"]),
             "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        from src.agentauth.task_harness import TaskHarnessError, assert_bootstrap_size, freeze_harness
+
+        try:
+            harness = freeze_harness(persona=submit["persona"], model_binding=binding, limits=limits, service_policy=policy, tool_grants=tool_grants)
+            if harness is not None:
+                if json.loads(harness["snapshot"]["definition"])["completionPolicy"] == "validated-change":
+                    from src.agentauth.task_completion_service import required_acceptance
+
+                    try:
+                        required_acceptance((repository_binding or {}).get("binding", {}), submit.get("acceptance_criteria", []))
+                        required = {"repository.read", "repository.write", "repository.commit", "validation.run", "change.create"}
+                        if not required.issubset(tool_grants):
+                            raise TaskStoreError("Developer tools unavailable")
+                    except TaskStoreError:
+                        raise TaskHarnessError("Developer completion prerequisites unavailable") from None
+                assert_bootstrap_size(harness, immutable_input=immutable_input, model_binding=binding, limits=limits)
+        except TaskHarnessError:
+            raise TaskAdmissionError("prerequisite_unavailable", 503) from None
         scope = hashlib.sha256(("task-nonterminal:tenant:" + caller.tenant_id).encode()).hexdigest()
         try:
             await run_in_threadpool(
@@ -162,6 +196,8 @@ class TaskAdmission:
             idempotency_key=idempotency_key,
             persona=submit["persona"],
             tool_grants=tool_grants,
+            repository_binding=repository_binding,
+            harness=harness,
             request_payload=submit,
             deadline_at=deadline,
             grant_reference=assignment["grant_sk"],

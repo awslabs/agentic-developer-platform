@@ -111,7 +111,7 @@ class Result(Closed):
     committed_at: Timestamp
     process_exit_validated: Literal[True]
     artifact_ids: list[ARTIFACT] = Field(default_factory=list, max_length=8)
-    turns_used: int | None = Field(default=None, ge=1, le=8)
+    turns_used: int | None = Field(default=None, ge=1, le=32)
     total_usd: float | None = Field(default=None, ge=0, le=1)
 
 
@@ -278,13 +278,25 @@ async def control(request: Request):
 
 @router.post("/internal/v1/agent/task/finalize", dependencies=[Depends(require_agent_transport)])
 @http.contract_errors
-async def finalize(request: Request):
+async def finalize(request: Request, db: AsyncSession = Depends(get_db)):
     from src.agentauth.task_runtime_routes import authenticate_task_attempt
 
     identity = await authenticate_task_attempt(request)
     body = await parse(request, Finalize, 65536)
     bind(body.attempt, identity)
     repository = get_store().repository
+    if body.outcome == "completed":
+        from src.agentauth.github_operations import OperationRefusedError
+        from src.agentauth.task_completion_service import completion_policy
+        from src.agentauth.task_tool_routes import verify_developer_completion
+        from src.tasks.store import TaskStoreError
+
+        snapshot = await run_in_threadpool(repository.read_task, identity.task_id)
+        if snapshot["state"] not in {"completed", "failed", "cancelled"} and completion_policy(repository, snapshot) == "validated-change":
+            try:
+                await verify_developer_completion(request, identity, db)
+            except (TaskStoreError, OperationRefusedError):
+                raise errors.state_conflict("Developer completion could not be confirmed.") from None
     result = await run_in_threadpool(TaskCommands(repository).finalize, identity, body.model_dump(exclude_unset=True))
     await settle_admission_headroom(repository, identity)
     return http.ok(result, status=200)

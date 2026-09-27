@@ -3,6 +3,49 @@ mock_provider "kubernetes" {}
 mock_provider "helm" {}
 mock_provider "tls" {}
 
+run "codex_validation_is_off_by_default" {
+  command = plan
+  assert {
+    condition     = length(kubernetes_namespace.codex_validation) == 0 && length(kubernetes_service_account.codex_validation_host) == 0
+    error_message = "Validation must not provision resources or grant credentials by default."
+  }
+}
+
+run "codex_validation_uses_a_dedicated_identity" {
+  command = plan
+  variables {
+    codex_kubernetes_validation_enabled = true
+    codex_validation_api_cidrs          = ["10.0.0.20/32"]
+    task_api_worker_enabled             = true
+  }
+  assert {
+    condition = (
+      one(kubernetes_role_binding.codex_validation[0].subject).name == "validation-host" &&
+      one(kubernetes_role_binding.codex_validation[0].subject).namespace == "adp-codex-validation-hosts" &&
+      local.agent_worker_sa_name != "validation-host" &&
+      !strcontains(local.agent_authority_env_block, "ADP_CODEX_VALIDATION_BACKEND")
+    )
+    error_message = "Validation API access must not be assigned to the shared worker fleet."
+  }
+  assert {
+    condition = (
+      kubernetes_namespace.codex_validation[0].metadata[0].labels["pod-security.kubernetes.io/enforce"] == "restricted" &&
+      length(kubernetes_network_policy.codex_validation_deny[0].spec[0].egress) == 0 &&
+      length(kubernetes_network_policy.codex_validation_deny[0].spec[0].ingress) == 0 &&
+      kubernetes_resource_quota.codex_validation[0].spec[0].hard["pods"] == "8"
+    )
+    error_message = "Validation must retain restricted Pods, deny all network traffic and bound resource creation."
+  }
+}
+
+run "codex_validation_refuses_subnet_api_access" {
+  command = plan
+  variables {
+    codex_validation_api_cidrs = ["10.0.0.0/8"]
+  }
+  expect_failures = [var.codex_validation_api_cidrs]
+}
+
 variables {
   # Enabling authority requires an approved immutable worker digest; the variable
   # validation rejects tags, so a plausible digest is supplied rather than "".
@@ -523,4 +566,41 @@ run "mutable_worker_image_is_rejected" {
     agent_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:latest"
   }
   expect_failures = [var.agent_image]
+}
+
+run "validation_service_endpoint_is_opt_in" {
+  command = plan
+  assert {
+    condition     = length(local.codex_validation_service_environment) == 0
+    error_message = "Default workers must not require the validation service."
+  }
+}
+run "validation_service_passes_only_the_api_endpoint" {
+  command = plan
+  variables {
+    codex_validation_service_endpoint = "https://api.example/dev/tools/validation"
+  }
+  assert {
+    condition     = local.codex_validation_service_environment == tomap({ ADP_CODEX_VALIDATION_BACKEND = "service", ADP_CODEX_VALIDATION_SERVICE_ENDPOINT = "https://api.example/dev/tools/validation" })
+    error_message = "Shared workers receive only the service endpoint, never Kubernetes credentials."
+  }
+}
+
+run "codex_dashboards_require_explicit_enablement" {
+  command = plan
+  assert {
+    condition     = length(aws_cloudwatch_dashboard.codex_harness) == 0 && length(aws_cloudwatch_metric_alarm.codex_execution) == 0
+    error_message = "Codex operational telemetry is opt-in."
+  }
+}
+run "codex_alarms_use_bounded_outcome_dimensions" {
+  command = plan
+  variables {
+    enable_agent_otel           = true
+    codex_observability_enabled = true
+  }
+  assert {
+    condition     = length(aws_cloudwatch_dashboard.codex_harness) == 1 && length(aws_cloudwatch_metric_alarm.codex_execution) == 2 && aws_cloudwatch_metric_alarm.codex_execution["unknown_outcome"].dimensions == tomap({ outcome = "unknown" }) && aws_cloudwatch_metric_alarm.codex_execution["unknown_outcome"].threshold == 1
+    error_message = "Unknown outcomes need an alert using a fixed outcome dimension, not Task/user IDs."
+  }
 }

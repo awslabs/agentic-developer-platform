@@ -107,6 +107,7 @@ def _child_environment(workspace: Path, *, sdk: bool = False) -> dict[str, str]:
         "PYTHONUNBUFFERED": "1",
         "ADP_TASK_PROTOCOL_VERSION": str(PROTOCOL_VERSION),
         "ADP_TASK_NETWORK": "host-mediated-sdk" if sdk else "disabled",
+        **({"ADP_CODEX_OTEL_ENDPOINT": os.environ["ADP_CODEX_OTEL_ENDPOINT"]} if sdk and os.environ.get("ADP_CODEX_OTEL_ENDPOINT") else {}),
     }
 
 
@@ -163,6 +164,7 @@ class TaskHost:
         self.work_root = work_root or Path(os.environ.get("ADP_TASK_WORK_ROOT", "/work"))
         self.command_resolver = command_resolver
         self._turn_number = 0
+        self._max_turns = 8
         self._turns: dict[str, dict] = {}
         self._pending_turn_id: str | None = None
         self._report_renderer = None
@@ -252,7 +254,7 @@ class TaskHost:
             or turn.get("turn_id") != request_id
             or type(turn.get("turn_number")) is not int
             or turn["turn_number"] != self._turn_number + 1
-            or not 1 <= turn["turn_number"] <= 8
+            or not 1 <= turn["turn_number"] <= self._max_turns
             or turn.get("transcript_version") != turn["turn_number"] + 1
             or not isinstance(turn.get("command_ids"), list)
         ):
@@ -317,7 +319,11 @@ class TaskHost:
     def _model_request(self, assignment, attempt: dict, frame: dict, max_tokens: int) -> dict:
         if self._pending_turn_id is not None and frame["turn_id"] != self._pending_turn_id:
             raise TaskProtocolError("child model request skipped its assigned input turn")
-        if "sdk_request" in frame:
+        if "responses_request" in frame:
+            request = frame["responses_request"]
+            if request["max_output_tokens"] > max_tokens:
+                raise TaskProtocolError("Responses output bound exceeds grant")
+        elif "sdk_request" in frame:
             request = {**frame["sdk_request"], "max_tokens": frame.get("max_tokens", max_tokens)}
         else:
             messages = frame["messages"]
@@ -343,7 +349,11 @@ class TaskHost:
             "request_digest": _canonical_digest(request),
             **request,
         }
-        if "sdk_request" in frame:
+        if "responses_request" in frame:
+            prepared = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
+                        "turn_id": frame["turn_id"], "request_digest": _canonical_digest(request),
+                        "responses_request": request}
+        elif "sdk_request" in frame:
             prepared = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
                         "turn_id": frame["turn_id"], "request_digest": _canonical_digest(request),
                         "max_tokens": request["max_tokens"], "sdk_request": frame["sdk_request"]}
@@ -352,13 +362,16 @@ class TaskHost:
         if (len(json.dumps(prepared, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES
                 or len(json.dumps(request, ensure_ascii=False).encode("utf-8")) > MAX_FRAME_BYTES):
             raise TaskProtocolError("wrapped model request exceeds 65536-byte bound")
-        turn = self._turn(assignment, attempt, frame["turn_id"], allow_autonomous="sdk_request" in frame)
+        turn = self._turn(assignment, attempt, frame["turn_id"], allow_autonomous="sdk_request" in frame or "responses_request" in frame)
         if turn is None:
             raise TaskProtocolError("child requested a model without a committed turn")
         self._pending_turn_id = None
         return prepared
 
     def _model(self, assignment, attempt: dict, frame: dict, max_tokens: int, *, prepared: dict | None = None) -> dict:
+        if "traceparent" in frame:
+            with self.client.trace_context(frame["traceparent"]):
+                return self._model(assignment, attempt, {k: v for k, v in frame.items() if k != "traceparent"}, max_tokens, prepared=prepared)
         prepared = prepared if prepared is not None else self._model_request(assignment, attempt, frame, max_tokens)
         request_digest = prepared["request_digest"]
         response = self.client.model(prepared)
@@ -388,8 +401,12 @@ class TaskHost:
             raise TaskHostError(
                 "confirmed model receipt has no stored result", code="protocol_violation"
             )
+        if status == "confirmed" and "responses_request" in prepared and (
+                not isinstance(response.get("responses_response"), dict)
+                or response["responses_response"].get("status") != "completed"):
+            raise TaskHostError("confirmed Responses receipt has no complete result", code="protocol_violation")
         if status != "confirmed" and (
-            response.get("content") is not None or response.get("stop_reason") is not None
+            response.get("content") is not None or response.get("stop_reason") is not None or response.get("responses_response") is not None
         ):
             raise TaskHostError(
                 "unconfirmed model receipt exposes result content", code="protocol_violation"
@@ -412,6 +429,7 @@ class TaskHost:
                 else {}
             ),
             **({"usage": response["usage"]} if isinstance(response.get("usage"), dict) else {}),
+            **({"responses_response": response["responses_response"]} if "responses_request" in prepared and status == "confirmed" else {}),
             "content": response.get("content"),
             "stop_reason": response.get("stop_reason"),
             "error_code": (
@@ -420,6 +438,13 @@ class TaskHost:
         }
 
     def _cyber(self, assignment, attempt: dict, frame: dict) -> dict:
+        if "traceparent" in frame:
+            with self.client.trace_context(frame["traceparent"]):
+                return self._cyber(assignment, attempt, {k: v for k, v in frame.items() if k != "traceparent"})
+        if "model_call" in frame:
+            from lib.task_codex_tools import execute_codex_tool
+            return execute_codex_tool(self.client, task_id=assignment.task_id, attempt=attempt, frame=frame,
+                invoke=lambda: self._cyber(assignment, attempt, {key: value for key, value in frame.items() if key != "model_call"}))
         generic = frame["type"] == "tool.request"
         operation = frame["tool"].split(".", 1)[1] if generic else frame["operation"]
         body = {"schema_version": SCHEMA_VERSION, "attempt": attempt,
@@ -731,8 +756,11 @@ class TaskHost:
         finalized = False
         heartbeat_stopped = False
         sdk = False
+        responses = False
+
         remote_tools = False
         cyber_cleanup_confirmed = False
+        repository_context = None
 
         def stop_heartbeat() -> None:
             nonlocal heartbeat_stopped
@@ -752,6 +780,7 @@ class TaskHost:
                 ),
                 assignment,
             )
+            self._max_turns = bootstrap["limits"]["max_turns"]
             runtime_attempt_id = _request_id()
             attempt = self._binding(assignment, runtime_attempt_id)
             self._report_renderer = None
@@ -780,16 +809,34 @@ class TaskHost:
             command = self.command_resolver(bootstrap["persona"])
             remote_tools = bootstrap["persona"] == "agent-task-cyber"
             sdk = bootstrap["persona"] in {"agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"}
+            responses = bootstrap["model_binding"]["transport"] == "openai_responses"
             self.work_root.mkdir(parents=True, exist_ok=True)
             workspace = Path(
                 tempfile.mkdtemp(prefix=f"task-{assignment.invocation_id[:8]}-", dir=self.work_root)
             )
             workspace.chmod(0o700)
+            if responses:
+                from lib.codex_workspace_tools import WORKSPACE_TOOLS
+                admitted = {tool["permission"] for tool in bootstrap["harness"].get("tools", [])}
+                if admitted & WORKSPACE_TOOLS:
+                    from lib.codex_source import provision_workspace
+                    repository = provision_workspace(self.client, attempt=attempt, root=workspace / "repository")
+                    self.client.bind_workspace(attempt=attempt, workspace=repository, tools=admitted)
+                    capabilities = []
+                    if admitted & {"repository.read", "repository.list", "repository.state"}:
+                        capabilities.append("repository.read")
+                    if admitted & {"repository.write", "repository.commit"}:
+                        capabilities.append("repository.write")
+                    if "change.create" in admitted:
+                        capabilities.append("change.create")
+                    repository_context = {"binding": {"provider": repository.provider,
+                        "repositoryId": repository.repository_id, "sourceRevision": repository.source_revision},
+                        "capabilities": capabilities}
             stderr: list[str] = []
             process = subprocess.Popen(
-                command if sdk else _network_wrapped_command(command),
+                command if sdk or responses else _network_wrapped_command(command),
                 cwd=workspace,
-                env=_child_environment(workspace, sdk=sdk),
+                env=_child_environment(workspace, sdk=sdk or responses),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -814,6 +861,10 @@ class TaskHost:
                     "invocation_id": assignment.invocation_id,
                     "generation": assignment.generation,
                     "runtime_attempt_id": runtime_attempt_id,
+                    **({"model_binding": bootstrap["model_binding"], "persona": bootstrap["persona"],
+                        "deadline_at": bootstrap["deadline_at"],
+                        **({"harness": bootstrap["harness"]} if "harness" in bootstrap else {})} if responses else {}),
+                    **({"repository": repository_context} if repository_context is not None else {}),
                     "instructions": task_input["instructions"],
                     "inputs": task_input.get("inputs", {}),
                     "acceptance_criteria": task_input.get("acceptance_criteria", []),
@@ -864,6 +915,8 @@ class TaskHost:
                 nonlocal model_job
                 if model_job is not None or cyber_job is not None:
                     raise TaskProtocolError("task child emitted concurrent operations")
+                if ("responses_request" in model_frame) != responses:
+                    raise TaskProtocolError("model transport does not match bootstrap binding")
                 if "sdk_request" in model_frame and not sdk:
                     raise TaskProtocolError("SDK model transport is not authorized for persona")
                 admission = self._control(assignment, attempt, cursor)
@@ -875,11 +928,11 @@ class TaskHost:
                     "inflight": False, "started": time.monotonic(), "next_poll": 0.0}
                 launch_model_call(model_job)
 
-            def finish_model(model_result: dict) -> None:
+            def finish_model(model_result: dict, *, control: dict | None = None) -> None:
                 nonlocal cancel_started, cancel_command_id
                 # Input arriving during the provider call must reach the
                 # child before it can finish from the returned answer.
-                control = self._control(assignment, attempt, cursor)
+                control = self._control(assignment, attempt, cursor) if control is None else control
                 if control["cancel_requested"] and cancel_started is None:
                     cancel_command_id = control["cancel_command_id"]
                     if not isinstance(cancel_command_id, str):
@@ -1106,6 +1159,36 @@ class TaskHost:
                                     next_report_retry = now + _REPORT_RETRY_SECONDS
                                 else:
                                     acknowledge_report(frame, receipt)
+                        elif frame["type"] == "control.request":
+                            if not responses:
+                                raise TaskProtocolError("child control receipt requires Responses runtime")
+                            current = self._control(assignment, attempt, cursor)
+                            finish_model({
+                                "protocol_version": PROTOCOL_VERSION, "type": "control.result",
+                                "task_id": assignment.task_id, "request_id": frame["request_id"],
+                                "current": current["attempt_valid"] and not current["cancel_requested"],
+                            }, control=current)
+                        elif frame["type"] == "completion.request":
+                            if not responses or cyber_job is not None or model_job is not None or deferred_model is not None:
+                                raise TaskProtocolError("Completion requires an idle Responses runtime")
+                            current = self._control(assignment, attempt, cursor)
+                            if cancel_started is not None or current["cancel_requested"]:
+                                continue
+                            if frame["request_id"] in cyber_ids or len(cyber_ids) >= 128:
+                                raise TaskProtocolError("Completion request identity reused or limit exceeded")
+                            cyber_ids.add(frame["request_id"])
+                            cyber_started = time.monotonic()
+                            cyber_job = queue.Queue(maxsize=1)
+                            def call_completion(job=cyber_job, request=frame):
+                                try:
+                                    with self.client.trace_context(request.get("traceparent")):
+                                        receipt = self.client.repository_completion({"schema_version": "1.0", "attempt": attempt})
+                                    value = {"protocol_version": PROTOCOL_VERSION, "type": "completion.result",
+                                        "task_id": assignment.task_id, "request_id": request["request_id"], "verified": receipt.get("status") == "verified"}
+                                except Exception as exc:
+                                    value = exc
+                                job.put(value)
+                            threading.Thread(target=call_completion, daemon=True, name="task-completion").start()
                         elif frame["type"] == "model.request":
                             if report_outage_started is not None:
                                 if deferred_model is not None or deferred_tool is not None:
@@ -1117,7 +1200,11 @@ class TaskHost:
                                 deliver_model(frame)
 
                         elif frame["type"] in {"cyber.request", "tool.request"}:
-                            if not remote_tools or cyber_job is not None or model_job is not None or deferred_model is not None or deferred_tool is not None:
+                            if "model_call" in frame and not responses:
+                                raise TaskProtocolError("Codex tool claim requires Responses profile")
+                            if responses and (frame["type"] != "tool.request" or "model_call" not in frame):
+                                raise TaskProtocolError("Responses tools require a confirmed model-call binding")
+                            if (not remote_tools and not responses) or cyber_job is not None or model_job is not None or deferred_model is not None or deferred_tool is not None:
                                 raise TaskProtocolError("cyber operation is not admitted")
                             if report_outage_started is not None:
                                 # Progress is asynchronous in the child protocol. Hold one

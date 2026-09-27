@@ -21,3 +21,9 @@ bounded record of tool receipts, and returns `content` bytes and `content_type`.
 It is configured by the operator, never by Task inputs or model output. Domain
 renderers live with their app; generic output storage and authorization remain
 in the Task framework.
+
+The shared IPC bridge also exposes `responses(request)` for the native Codex
+harness. It preserves canonical input-turn correlation and returns only confirmed
+Responses receipts. The Task host gates this form on the bootstrap model
+transport; it cannot be used with a Messages grant. This addition alone does not
+register a Codex task command or change the existing Claude SDK runner.

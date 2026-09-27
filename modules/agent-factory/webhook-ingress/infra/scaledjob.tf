@@ -245,13 +245,17 @@ ${local.agent_worker_pause_annotation}
                   - name: QUEUE_URL
                     value: ${aws_sqs_queue.agent_submit.url}
                   # Persona-name routing keeps Codex on this same queue/image.
+                  - name: ADP_CODEX_TASK_PERSONAS
+                    value: ${jsonencode(join(",", sort(tolist(var.codex_task_personas))))}
+                  - name: ADP_CODEX_OTEL_ENDPOINT
+                    value: ${jsonencode(var.codex_otel_endpoint != "" ? var.codex_otel_endpoint : var.enable_agent_otel ? "http://adot-collector.adp-agents.svc.cluster.local:4318" : "")}
                   - name: CODEX_REVIEWER_APPLY_FIXES
                     value: "${var.codex_reviewer_apply_fixes}"
                   - name: CODEX_REVIEWER_MERGE_ENABLED
                     value: "${var.codex_reviewer_merge_enabled}"
                   - name: CODEX_REVIEWER_MODEL
                     value: "${var.codex_reviewer_model}"
-%{for name, value in local.domain_worker_environment~}
+%{for name, value in merge(local.domain_worker_environment, local.codex_validation_service_environment)~}
                   - name: ${name}
                     value: ${jsonencode(value)}
 %{endfor~}

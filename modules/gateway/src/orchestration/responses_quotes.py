@@ -23,8 +23,8 @@ bound below the true cost would admit an overspend that cannot be undone. A
 model with no published ceiling (the ``gpt-oss`` family publishes none) is a
 named capability block, not an occasion to estimate one.
 
-Scope is the issue's initial positive set: self-contained text with an explicit
-positive output maximum. Server-retained history, hosted tools, media and
+Scope includes self-contained text and inline encrypted reasoning with an
+explicit positive output maximum. Server-retained history, hosted tools, media and
 background execution are refused BEFORE submission with the reason naming what
 is missing; #5227 owns admitting them.
 
@@ -358,18 +358,45 @@ class OpenAIResponsesQuoteAdapter:
         for item in value:
             if not isinstance(item, dict):
                 raise refuse(QuoteReason.MALFORMED_REQUEST, Capability.RESPONSES, "input item must be an object")
-            # The item TYPE alone decides whether this is text this adapter can
-            # bound. A non-message item references output or tool state produced
-            # earlier (function_call, reasoning, item_reference,
-            # file_search_call, ...); its cost profile is not this capability's,
-            # so it is refused by name. Deciding on a `content` key instead would
-            # let any of those kinds in simply by carrying one — a client-supplied
-            # field — which is exactly the pre-submission refusal this capability
-            # owes. #5227 owns admitting these kinds properly.
+            # Dispatch on type, never merely on a client-supplied content key.
+            # Only messages and the closed, identifier-free encrypted reasoning
+            # form below are supported. Tool/server state stays refused.
             kind = item.get("type", "message")
+            if kind == "reasoning" and cls._inline_reasoning(item):
+                # Complete client-carried ciphertext is request-digest bound.
+                # No provider-side response/item lookup is admitted here.
+                continue
             if kind != "message":
                 raise refuse(QuoteReason.STATEFUL_INPUT, Capability.HISTORY, f"input item type {kind!r} cannot be counted locally")
             cls._text_only(item.get("content", ""), exercised)
+
+    @staticmethod
+    def _inline_reasoning(item: dict[str, Any]) -> bool:
+        """Stateless encrypted reasoning, with no server identifier/reference.
+
+        The published full-context ceiling still bounds all rendered input.
+        Ciphertext is part of this request; it names no remotely stored object.
+        This is protocol support, not model/destination invocability evidence.
+        """
+        if set(item) - {"type", "encrypted_content", "summary", "status"}:
+            return False
+        encrypted = item.get("encrypted_content")
+        summary = item.get("summary")
+        return (
+            isinstance(encrypted, str)
+            and 0 < len(encrypted) <= 65536
+            and item.get("status", "completed") == "completed"
+            and isinstance(summary, list)
+            and len(summary) <= 16
+            and all(
+                isinstance(part, dict)
+                and set(part) == {"type", "text"}
+                and part["type"] == "summary_text"
+                and isinstance(part["text"], str)
+                and len(part["text"]) <= 32000
+                for part in summary
+            )
+        )
 
     @classmethod
     def _text_only(cls, content: Any, exercised: set[str] | None = None) -> None:

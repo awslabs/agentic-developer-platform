@@ -166,6 +166,7 @@ class TaskRuntime:
             "deadline_at": task["deadline_at"],
             "input": grant["input"],
             "model_binding": grant["model_binding"],
+            **({"harness": grant["harness"]} if "harness" in grant else {}),
             "limits": grant["limits"],
             "capabilities": grant["capabilities"],
         }

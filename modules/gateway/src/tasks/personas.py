@@ -7,6 +7,9 @@ import json
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from src.agentauth.task_responses_contract import TASK_RESPONSES_PROBE_BODY, TASK_RESPONSES_REVISION
+from src.agentauth.task_responses_tools_contract import TASK_RESPONSES_TOOLS_PROBE_BODY, TASK_RESPONSES_TOOLS_REVISION
+
 
 @dataclass(frozen=True)
 class TaskPersonaProfile:
@@ -50,6 +53,12 @@ def _profile(revision, body):
 
 TASK_PERSONAS = MappingProxyType(
     {
+        "agent-task-gpt-intent-refinement": TaskPersonaProfile(
+            "codex-sdk", TASK_RESPONSES_REVISION, json.dumps(TASK_RESPONSES_PROBE_BODY, sort_keys=True, separators=(",", ":"))
+        ),
+        "agent-task-gpt-developer": TaskPersonaProfile(
+            "codex-sdk", TASK_RESPONSES_TOOLS_REVISION, json.dumps(TASK_RESPONSES_TOOLS_PROBE_BODY, sort_keys=True, separators=(",", ":"))
+        ),
         "agent-task-investigator": _profile("task-messages-v1", _TEXT_PROBE),
         "agent-task-cyber": _profile("task-cyber-sdk-messages-v1", _TOOL_PROBE),
         "agent-task-claude-developer": _profile("task-coding-sdk-messages-v1", _TOOL_PROBE),

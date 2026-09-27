@@ -177,3 +177,24 @@ def test_cleanup_exception_cannot_borrow_another_task_identity(authority):
     authority.task["scope"]["canonical_principal"] = "different-principal"
     with pytest.raises(HTTPException):
         check(authority, "cyber.cancel_jobs", cleanup=True)
+
+
+def test_repository_binding_is_current_protected_authority_not_task_prose(authority):
+    from tests.agentauth.test_task_repository_policy import BINDING
+
+    authority.policy["repositories"] = {"application": deepcopy(BINDING)}
+    authority.grant["repository_binding"] = {"alias": "application", "binding": deepcopy(BINDING)}
+    authority.task["grant_digest"] = _protected_grant_digest(authority.grant)
+    authority.task["input_payload"]["inputs"]["repository"] = "attacker/repo"
+    assert check(authority)["task"]["repository_binding"]["binding"] == BINDING
+    authority.policy["repositories"]["application"]["repository_id"] = "999"
+    with pytest.raises(HTTPException, match="repository authority"):
+        check(authority)
+
+
+def test_repository_grant_tampering_is_refused(authority):
+    from tests.agentauth.test_task_repository_policy import BINDING
+
+    authority.grant["repository_binding"] = {"alias": "application", "binding": deepcopy(BINDING)}
+    with pytest.raises(HTTPException, match="grant refused"):
+        check(authority)

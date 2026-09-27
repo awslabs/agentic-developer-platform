@@ -1,0 +1,59 @@
+{
+  "sdk": "0.155.1",
+  "profile": "sdk-default",
+  "model": "gpt-5-codex",
+  "method": "POST",
+  "path": "/v1/responses",
+  "bytes": 40407,
+  "fields": [
+    "client_metadata",
+    "include",
+    "input",
+    "instructions",
+    "model",
+    "parallel_tool_calls",
+    "prompt_cache_key",
+    "reasoning",
+    "store",
+    "stream",
+    "tool_choice",
+    "tools"
+  ],
+  "stream": true,
+  "inputItems": 3,
+  "tools": [
+    {
+      "type": "function",
+      "name": "exec_command"
+    },
+    {
+      "type": "function",
+      "name": "write_stdin"
+    },
+    {
+      "type": "function",
+      "name": "request_user_input"
+    },
+    {
+      "type": "function",
+      "name": "view_image"
+    },
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1"
+    },
+    {
+      "type": "function",
+      "name": "get_goal"
+    },
+    {
+      "type": "function",
+      "name": "create_goal"
+    },
+    {
+      "type": "function",
+      "name": "update_goal"
+    }
+  ],
+  "fitsCurrentTaskFrame": true
+}

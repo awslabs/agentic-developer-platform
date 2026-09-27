@@ -510,7 +510,8 @@ function requireEnvelope(
  * a returned error object invites a caller to carry on with a partially trusted
  * frame. The contract is explicit that invalid protocol fails the run.
  */
-export function parseHostFrame(line: string): HostFrame {
+export function parseHostFrame(line: string, maxTurns: 8 | 32 = 8): HostFrame {
+  if (maxTurns !== 8 && maxTurns !== 32) throw new ProtocolViolation("Unsupported Task turn profile");
   const bytes = Buffer.byteLength(line, 'utf8');
   if (bytes > MAX_FRAME_BYTES) {
     throw new ProtocolViolation(`host frame of ${bytes} bytes exceeds the ${MAX_FRAME_BYTES}-byte bound`);
@@ -535,9 +536,9 @@ export function parseHostFrame(line: string): HostFrame {
     case 'artifact.chunk':
       return parseArtifactChunkFrame(parsed);
     case 'start':
-      return parseStartFrame(parsed);
+      return parseStartFrame(parsed, maxTurns);
     case 'turn':
-      return parseTurnFrame(parsed);
+      return parseTurnFrame(parsed, maxTurns);
     case 'model.result':
       return parseModelResultFrame(parsed);
     case 'report.ack':
@@ -549,7 +550,7 @@ export function parseHostFrame(line: string): HostFrame {
   }
 }
 
-function parseStartFrame(frame: Record<string, unknown>): WireStartFrame {
+function parseStartFrame(frame: Record<string, unknown>, maxTurns: number): WireStartFrame {
   // requireEnvelope refuses credentials before anything else is read: if a
   // credential is present, nothing about this frame should be processed,
   // including its instructions.
@@ -653,7 +654,7 @@ function parseStartFrame(frame: Record<string, unknown>): WireStartFrame {
       }
     }
     if (limits['max_turns'] !== undefined) {
-      parsedLimits.max_turns = requireInteger(limits, 'max_turns', 'start frame limits', 1, 8);
+      parsedLimits.max_turns = requireInteger(limits, 'max_turns', 'start frame limits', 1, maxTurns);
     }
     if (limits['max_output_tokens_per_turn'] !== undefined) {
       parsedLimits.max_output_tokens_per_turn = requireInteger(
@@ -690,11 +691,11 @@ function parseArtifactChunkFrame(frame: Record<string, unknown>): ArtifactChunkF
   };
 }
 
-function parseTurnFrame(frame: Record<string, unknown>): TurnFrame {
+function parseTurnFrame(frame: Record<string, unknown>, maxTurns: number): TurnFrame {
   requireEnvelope(frame, 'turn');
 
   const turnId = requireString(frame, 'turn_id', 'turn frame', { pattern: UUID4 });
-  const turnNumber = requireInteger(frame, 'turn_number', 'turn frame', 1, 8);
+  const turnNumber = requireInteger(frame, 'turn_number', 'turn frame', 1, maxTurns);
   const messages = frame['messages'];
   if (!Array.isArray(messages) || messages.length < 1) {
     throw new ProtocolViolation('turn frame requires at least one message');

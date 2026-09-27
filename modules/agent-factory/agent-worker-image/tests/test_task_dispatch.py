@@ -288,3 +288,16 @@ def test_task_persona_prefix_excludes_legacy_personas():
 
 def test_discriminator_constant_matches_the_published_envelope(task_envelope):
     assert task_envelope["kind"] == TASK_ENVELOPE_KIND
+
+
+def test_shared_codex_candidates_are_disabled_until_host_enablement(monkeypatch):
+    from lib.task_commands import CODEX_TASK_COMMANDS
+    monkeypatch.delenv("ADP_CODEX_TASK_PERSONAS", raising=False)
+    for persona in CODEX_TASK_COMMANDS:
+        assert not is_registered_task_persona(persona)
+        with pytest.raises(UnknownTaskPersonaError):
+            task_agent_command(persona)
+    monkeypatch.setenv("ADP_CODEX_TASK_PERSONAS", "agent-task-gpt-developer,agent-task-unknown")
+    assert task_agent_command("agent-task-gpt-developer") == ["node", "/app/codex-harness/dist/task-entry.mjs", "--embedded"]
+    assert not is_registered_task_persona("agent-task-unknown")
+    assert not is_registered_task_persona("agent-task-gpt-intent-refinement")

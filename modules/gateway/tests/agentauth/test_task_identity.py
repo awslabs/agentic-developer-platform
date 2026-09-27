@@ -185,7 +185,8 @@ async def test_task_policy_restores_team_routing(identity_db, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["human", "service"])
-async def test_task_usage_event_retains_hierarchy_and_caller_kind(monkeypatch, kind):
+@pytest.mark.parametrize("transport", ["anthropic_messages", "openai_responses"])
+async def test_task_usage_event_retains_hierarchy_and_caller_kind(monkeypatch, kind, transport):
     from src.agentauth import task_model
     from src.chat_logging.service import ChatLoggingService
 
@@ -198,12 +199,16 @@ async def test_task_usage_event_retains_hierarchy_and_caller_kind(monkeypatch, k
     await task_model.write_task_usage_event(
         context=ctx,
         identity=SimpleNamespace(tenant="tenant"),
-        binding={"model_id": "global.anthropic.claude-opus-5"},
+        binding={
+            "model_id": "openai.gpt-6-astra" if transport == "openai_responses" else "global.anthropic.claude-opus-5",
+            "transport": transport,
+        },
         decision=decision,
         usage={"input_tokens": 2, "output_tokens": 3},
         latency_ms=10,
     )
     document = writer.write_log.call_args.kwargs["log_data"]
+    assert document["api_format"] == ("openai" if transport == "openai_responses" else "anthropic")
     assert {key: document[key] for key in ("org_id", "department_id", "team_id", "account_type")} == {
         "org_id": "tenant",
         "department_id": "dept",

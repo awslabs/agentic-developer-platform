@@ -41,3 +41,16 @@ def freeze_tools(persona, policy, env=None):
     if not valid_tools(allowed):
         raise TaskToolPolicyError("task_tool_policy_unavailable")
     return tuple(sorted(set(allowed) & persona_tools(persona, env)))
+
+
+def codex_tool_name(tool):
+    """Stable v1 function name; permissions remain the original gateway names.
+
+    A digest avoids delimiter collisions and the SDK's 64-character name limit.
+    Tool descriptions and schemas come from reviewed implementations, not here.
+    """
+    import hashlib
+
+    if not isinstance(tool, str) or not re.fullmatch(TOOL_PATTERN, tool):
+        raise TaskToolPolicyError("invalid_task_tool_name")
+    return "adp_" + hashlib.sha256(tool.encode()).hexdigest()[:56]

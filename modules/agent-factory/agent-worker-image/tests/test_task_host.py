@@ -1390,6 +1390,48 @@ def test_closed_child_input_does_not_discard_buffered_result(
         assert "artifact" not in events
 
 
+@pytest.mark.parametrize("source_refused", [False, True])
+def test_workspace_is_bound_before_child_start_and_removed_on_startup_failure(tmp_path, monkeypatch, assignment_and_bootstrap, source_refused):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from lib.task_host import TaskHostError
+    from lib.task_run_client import TaskRunClientError
+
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    bootstrap["model_binding"]["transport"] = "openai_responses"
+    bootstrap["harness"] = {"tools": [{"permission": "repository.read"}]}
+    # This isolates startup ordering from the independently tested admission and
+    # bootstrap validators; no model invocation or persona qualification is claimed.
+    monkeypatch.setattr("lib.task_host.validate_bootstrap", lambda value, assignment: value)
+    events = []
+    client = FakeClient(bootstrap, events)
+    client.bind_workspace = Mock()
+    provisioned = []
+
+    def provision(current_client, *, attempt, root):
+        assert current_client is client
+        assert client.attempt_body["runtime_attempt_id"] == attempt["runtime_attempt_id"]
+        root.mkdir()
+        provisioned.append(root)
+        if source_refused:
+            raise TaskRunClientError("source revoked")
+        return SimpleNamespace(root=root, provider="github", repository_id="456", source_revision="b" * 40)
+
+    def launch(*args, **kwargs):
+        assert not source_refused
+        client.bind_workspace.assert_called_once()
+        assert provisioned[0].is_dir()
+        raise TaskHostError("fixture child startup failed")
+
+    monkeypatch.setattr("lib.codex_source.provision_workspace", provision)
+    monkeypatch.setattr("lib.task_host.subprocess.Popen", launch)
+    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda persona: ["fixture-child"])
+    assert host.run(assignment, envelope, heartbeat=FakeHeartbeat(events), acknowledge=lambda: events.append("ack")) == (TASK_EXIT_RETRYABLE if source_refused else TASK_EXIT_FAILED)
+    assert len(provisioned) == 1 and not provisioned[0].exists()
+    if source_refused:
+        client.bind_workspace.assert_not_called()
+
 @pytest.mark.parametrize(
     "status,handoff,usage,code,expected",
     [

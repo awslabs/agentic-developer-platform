@@ -195,6 +195,41 @@ def test_fractional_persisted_duration_cannot_be_truncated_by_admission(store):
         repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)
 
 
+def test_repository_policy_round_trips_through_admin_schema_and_dynamo(store):
+    from src.admin.persona_models.schemas import TaskPolicyPutRequest
+    from tests.agentauth.test_task_repository_policy import BINDING
+
+    repository, _ = store
+    body = TaskPolicyPutRequest.model_validate({"expected_version": 0, **policy(repositories={"application": BINDING})})
+    created = repository.put(
+        tenant_id=TENANT,
+        canonical_principal_id=PRINCIPAL,
+        expected_version=body.expected_version,
+        policy=body.model_dump(exclude={"expected_version"}),
+        updated_by="human-admin-1",
+    )
+    loaded = repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)
+    assert loaded == created
+    from src.agentauth.task_repository_policy import repositories
+
+    response = TaskPolicyResponse.model_validate(loaded)
+    assert repositories({"repositories": {"application": response.repositories["application"].model_dump()}})["application"] == BINDING
+
+
+def test_codex_turn_budget_is_optional_bounded_and_preserves_legacy_limit(store):
+    repository, _ = store
+    value = policy()
+    value["limits"]["codex_max_turns"] = 20
+    created = repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=value, updated_by="human-admin-1")
+    response = TaskPolicyResponse.model_validate(created)
+    assert response.limits.codex_max_turns == 20
+    assert response.limits.max_turns == 8
+    for invalid in (0, 33, True, 1.5):
+        value["limits"]["codex_max_turns"] = invalid
+        with pytest.raises(TaskServicePolicyError):
+            repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=1, policy=value, updated_by="human-admin-1")
+
+
 def test_operator_ceiling_does_not_raise_existing_policy(store, monkeypatch):
     repository, _ = store
     first = repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=policy(), updated_by="admin")

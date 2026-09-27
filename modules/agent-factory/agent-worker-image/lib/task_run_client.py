@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 import json
 import os
@@ -19,9 +21,12 @@ import requests
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from lib.run_identity import CONTROL_ENDPOINT_ENV, WORKLOAD_HEADER, read_workload_token
+from lib.task_errors import TaskRunClientError
 
 CYBER_TOOLS_ENDPOINT_ENV = "ADP_CYBER_TOOLS_ENDPOINT"
 RUN_CREDENTIAL_HEADER = "X-Adp-Run-Credential"
+_TRACEPARENT = ContextVar("adp_task_traceparent", default=None)
+_TRACE_PATTERN = r"00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]"
 _MAX_RESPONSE_BYTES = 1024 * 1024
 _ACTIONS = frozenset(
     {
@@ -32,16 +37,16 @@ _ACTIONS = frozenset(
         "model",
         "cyber",
         "tool-authorize",
+        "repository-source",
+        "repository-publication",
+        "repository-completion",
+        "tool-operation",
         "control",
         "artifact",
         "finalize",
         "settlement",
     }
 )
-
-
-class TaskRunClientError(Exception):
-    """A task-scoped operation was unavailable or refused."""
 
 
 class TaskRunClientUnavailable(TaskRunClientError):
@@ -106,6 +111,14 @@ class TaskRunClient:
             raise TaskRunClientError("task service endpoint unavailable")
         self._cyber_endpoint = os.environ.get(CYBER_TOOLS_ENDPOINT_ENV, "")
         self._local_tools = {}
+        self._workspace_tools = None
+        self._validation_tool = None
+        self._host_validation_executor = None
+        self._validation_attempt = None
+        self._validation_applicable = None
+        self._validation_backend = os.environ.get("ADP_CODEX_VALIDATION_BACKEND", "docker-local")
+        self._publication_tool = None
+        self._traceparent = None
         self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
         self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
         self._base = base
@@ -118,6 +131,7 @@ class TaskRunClient:
         self._credential_expiry = 0.0
         self._deadline = 0.0
         self._stopping = False
+        self.validation_stop_event = threading.Event()
 
     def _cyber_url(self) -> str:
         endpoint = self._cyber_endpoint
@@ -141,6 +155,16 @@ class TaskRunClient:
         if not valid:
             raise TaskRunClientError("cyber tools endpoint unavailable")
         return endpoint
+
+    @contextmanager
+    def trace_context(self, value):
+        if value is not None and (not isinstance(value, str) or not re.fullmatch(_TRACE_PATTERN, value)):
+            raise TaskRunClientError("Invalid host trace context")
+        token = _TRACEPARENT.set(value)
+        try:
+            yield
+        finally:
+            _TRACEPARENT.reset(token)
 
     def _post(
         self,
@@ -166,6 +190,11 @@ class TaskRunClient:
             "Content-Type": "application/json",
             WORKLOAD_HEADER: workload_token or read_workload_token(),
         }
+        parent = _TRACEPARENT.get() or self._traceparent
+        if parent:
+            _, trace_id, span_id, flags = parent.split("-")
+            headers["traceparent"] = parent
+            headers["X-Amzn-Trace-Id"] = f"Root=1-{trace_id[:8]}-{trace_id[8:]};Parent={span_id};Sampled={1 if flags == '01' else 0}"
         if run_bound:
             headers[RUN_CREDENTIAL_HEADER] = self._run_credential or ""
         try:
@@ -238,6 +267,14 @@ class TaskRunClient:
                 raise ValueError("expiry")
         except (KeyError, TypeError, ValueError, AttributeError):
             raise TaskRunClientError("invalid task bootstrap binding or expiry") from None
+        parent = response.get("harness", {}).get("traceparent")
+        if parent is not None and (not isinstance(parent, str) or not re.fullmatch(_TRACE_PATTERN, parent)):
+            raise TaskRunClientError("Invalid bootstrap trace context")
+        validation_applicable = any(tool.get("permission") == "validation.run" for tool in response.get("harness", {}).get("tools", []))
+        if renewal and validation_applicable != self._validation_applicable:
+            raise TaskRunClientError("Validation bootstrap capability changed")
+        self._validation_applicable = validation_applicable
+        self._traceparent = parent
         self._binding, self._deadline = binding, deadline
         self._run_credential, self._credential_expiry = credential, expiry
 
@@ -273,7 +310,13 @@ class TaskRunClient:
             self._bootstrap(self._bootstrap_body, renewal=True)
 
     def attempt(self, body: dict) -> dict:
-        return self._post("attempt", body, run_bound=True)
+        receipt = self._post("attempt", body, run_bound=True)
+        if (receipt.get("schema_version") == "1.0" and receipt.get("operation_status") == "confirmed"
+                and receipt.get("request_id") == body.get("runtime_attempt_id")
+                and all(key in body for key in ["task_id", "invocation_id", "generation", "runtime_attempt_id"])):
+            self._validation_attempt = {"run": {key: body[key] for key in ["task_id", "invocation_id", "generation"]},
+                                        "runtime_attempt_id": body["runtime_attempt_id"]}
+        return receipt
 
     def report(self, body: dict) -> dict:
         return self._post("report", body, run_bound=True)
@@ -284,7 +327,107 @@ class TaskRunClient:
     def model(self, body: dict) -> dict:
         return self._post("model", body, run_bound=True)
 
+    def repository_source(self, body: dict) -> dict:
+        return self._post("repository-source", body, run_bound=True)
+
+    def repository_publication(self, body: dict) -> dict:
+        return self._post("repository-publication", body, run_bound=True)
+
+    def repository_completion(self, body: dict) -> dict:
+        if self._workspace_tools is None or self._publication_tool is None:
+            raise TaskRunClientError("Developer completion workspace unavailable")
+        state = self._workspace_tools.workspace.state()
+        if not state["clean"]:
+            return {"status": "unverified"}
+        result = self._post("repository-completion", body, run_bound=True)
+        if result.get("status") == "unverified":
+            return result
+        if (result.get("status") != "verified" or result.get("local_head") != state["localHead"]
+                or result.get("tree") != state["tree"] or self._workspace_tools.workspace.state() != state):
+            raise TaskRunClientError("Developer completion differs from workspace")
+        return result
+
+    def tool_authorize(self, body: dict) -> dict:
+        return self._post("tool-authorize", body, run_bound=True)
+
+    def tool_operation(self, body: dict) -> dict:
+        # Trusted host only. Owner tokens must not be included in child frames.
+        return self._post("tool-operation", body, run_bound=True)
+
+    def _hosted_validation(self):
+        if self._validation_backend == "docker-local":
+            return None
+        if self._validation_backend == "service":
+            if self._validation_applicable is False:
+                return None
+            if self._validation_attempt is None:
+                raise TaskRunClientError("Validation service attempt unavailable")
+            if self._host_validation_executor is None:
+                from lib.codex_service_validation import ServiceValidationExecutor
+                self._host_validation_executor = ServiceValidationExecutor(client=self, attempt=self._validation_attempt)
+            return self._host_validation_executor
+        if self._validation_backend != "kubernetes" or self._binding is None:
+            raise TaskRunClientError("Host validation backend unavailable")
+        if self._host_validation_executor is None:
+            from lib.codex_kubernetes_validation import from_host_configuration
+            self._host_validation_executor = from_host_configuration(self._binding["task_id"])
+        return self._host_validation_executor
+
+    def bind_workspace(self, *, attempt, workspace, tools):
+        from lib.codex_workspace_tools import WorkspaceTools
+        if self._workspace_tools is not None:
+            raise TaskRunClientError("Task workspace is already bound")
+        workspace_tools = WorkspaceTools(self, attempt=attempt, workspace=workspace, tools=tools)
+        validation_tool = None
+        if "validation.run" in tools:
+            from lib.codex_validation_tool import TaskValidationTool
+            response = self.tool_authorize({"schema_version": "1.0", "attempt": attempt, "tool": "validation.run"})
+            identity = {**attempt["run"], "runtime_attempt_id": attempt["runtime_attempt_id"]}
+            task = response.get("task", {})
+            binding = task.get("repository_binding", {})
+            source = binding.get("binding", {})
+            if (response.get("schema_version") != "1.0"
+                    or any(response.get("identity", {}).get(k) != v for k, v in identity.items())
+                    or "validation.run" not in task.get("tool_grants", [])
+                    or source.get("provider") != workspace.provider
+                    or source.get("repository") != workspace.repository
+                    or source.get("repository_id") != workspace.repository_id):
+                raise TaskRunClientError("Validation workspace authority differs")
+            self._validation_applicable = True
+            self._validation_attempt = copy.deepcopy(attempt)
+            executor = self._hosted_validation()
+            if self._validation_backend == "service":
+                executor.workspace = workspace
+            if executor is not None:
+                # Resolve deployment availability and prior-work cleanup before
+                # starting the SDK, never after model work has already begun.
+                executor._boundary()
+                if self._validation_backend != "service":
+                    executor.recover()
+                if any("@sha256:" not in check.get("image", "") for check in source.get("validation_checks", [])):
+                    raise TaskRunClientError("Hosted validation requires registry-qualified checks")
+            validation_tool = TaskValidationTool(self, {
+                "schema_version": "1.0", "attempt": attempt,
+                "repository_path": str(workspace.root), "repository_binding": binding,
+                "checks": source.get("validation_checks", []),
+            }, executor=executor)
+        publication_tool = None
+        if "change.create" in tools:
+            from lib.codex_publication_tool import PREREQUISITES, TaskPublicationTool
+            if not PREREQUISITES.issubset(tools) or validation_tool is None:
+                raise TaskRunClientError("Publication requires workspace edit, commit and validation tools")
+            publication_tool = TaskPublicationTool(self, attempt=attempt, workspace=workspace, binding=binding)
+        # Bind atomically: a refused validation policy must not leave usable tools.
+        self._workspace_tools, self._validation_tool = workspace_tools, validation_tool
+        self._publication_tool = publication_tool
+
     def tool(self, name: str, body: dict) -> dict:
+        if self._publication_tool is not None and name == "change.create":
+            return self._publication_tool.invoke(body)
+        if self._validation_tool is not None and name == "validation.run":
+            return self._validation_tool.invoke(body)
+        if self._workspace_tools is not None and name in self._workspace_tools.tools:
+            return self._workspace_tools.invoke(name, body)
         # Exact host-configured registry. The child supplies a name, never a URL.
         endpoint = self._tool_routes.get(name)
         if isinstance(endpoint, str) and endpoint.startswith("local:"):
@@ -292,10 +435,12 @@ class TaskRunClient:
             target = endpoint.removeprefix("local:")
             if not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_.]*", target):
                 raise TaskRunClientError("Invalid local tool handler")
-            if target not in self._local_tools:
-                module, factory = target.rsplit(".", 1)
-                self._local_tools[target] = getattr(importlib.import_module(module), factory)(self)
-            return self._local_tools[target].invoke(body)
+            with self._credential_lock:
+                if target not in self._local_tools:
+                    module, factory = target.rsplit(".", 1)
+                    self._local_tools[target] = getattr(importlib.import_module(module), factory)(self)
+                handler = self._local_tools[target]
+            return handler.invoke(body)
         if not isinstance(endpoint, str) or any(c.isspace() for c in endpoint):
             raise TaskRunClientError("Tool is not configured")
         try:
@@ -308,6 +453,20 @@ class TaskRunClient:
             valid = False
         if not valid:
             raise TaskRunClientError("Tool endpoint unavailable")
+        return self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
+
+    def validation_service(self, body: dict) -> dict:
+        endpoint = os.environ.get("ADP_CODEX_VALIDATION_SERVICE_ENDPOINT", "")
+        try:
+            parsed = urlparse(endpoint)
+            valid = (parsed.scheme == "https" and parsed.hostname and not parsed.username
+                     and not parsed.password and parsed.port in (None, 443)
+                     and "?" not in endpoint and "#" not in endpoint
+                     and re.fullmatch(r"(?:/[A-Za-z0-9_-]+)*/tools/validation", parsed.path))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise TaskRunClientError("Validation service endpoint unavailable")
         return self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
 
     def cyber(self, body: dict) -> dict:
@@ -339,15 +498,45 @@ class TaskRunClient:
         if response.get("cancel_requested") is True or response.get("attempt_valid") is False:
             with self._credential_lock:
                 self._stopping = True
+                self.validation_stop_event.set()
         return response
 
     def artifact(self, body: dict) -> dict:
         return self._post("artifact", body, run_bound=True)
 
+    def _validation_stopped(self, *, cancel: bool) -> bool:
+        from lib.codex_validation_tool import TaskValidationTool
+
+        with self._credential_lock:
+            if cancel:
+                self._stopping = True
+                self.validation_stop_event.set()
+            handlers = [self._validation_tool, *self._local_tools.values()]
+        deadline = time.monotonic() + (10 if cancel else 0)
+        local_stopped = all(
+            handler.wait_stopped(max(0, deadline - time.monotonic()))
+            for handler in handlers if isinstance(handler, TaskValidationTool)
+        )
+        if not local_stopped:
+            return False
+        try:
+            # Even a replacement host with no bound workspace must inspect the
+            # persistent inventory before claiming all Task work has stopped.
+            executor = self._hosted_validation()
+            return executor is None or executor.recover()
+        except Exception:
+            return False
+
     def finalize(self, body: dict) -> dict:
+        if not self._validation_stopped(cancel=body.get("outcome") != "completed"):
+            raise TaskRunClientUnavailable("Validation termination is unconfirmed")
         return self._post("finalize", body, run_bound=True)
 
     def settlement(self, body: dict) -> dict:
+        if not self._validation_stopped(cancel=True):
+            body = copy.deepcopy(body)
+            body["stop_evidence"]["child_exit_confirmed"] = False
+            body["stop_evidence"]["workload_terminated"] = False
         token = read_workload_token()
         return self._post(
             "settlement",
@@ -362,3 +551,10 @@ class TaskRunClient:
             self._bootstrap_body = None
             self._binding = None
             self._stopping = True
+            self.validation_stop_event.set()
+            self._workspace_tools = None
+            self._validation_tool = None
+            self._host_validation_executor = None
+            self._publication_tool = None
+            self._traceparent = None
+            self._local_tools.clear()

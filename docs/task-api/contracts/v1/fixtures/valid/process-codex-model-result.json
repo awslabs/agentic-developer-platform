@@ -1,0 +1,41 @@
+{
+  "$fixture": {
+    "description": "Codex Task closed transport fixture; no provider calls or live authority.",
+    "schema": "process-protocol.schema.json#/$defs/host_to_child",
+    "expect": "valid",
+    "owner": "#6195",
+    "criteria": [
+      "T3-AC03"
+    ]
+  },
+  "protocol_version": 1,
+  "request_id": "293041a5-2c6d-4e7f-b081-920314253647",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "type": "model.result",
+  "turn_id": "59f3bda9-b511-4bf3-aad4-d3b71dd7b01b",
+  "operation_status": "confirmed",
+  "content": [],
+  "stop_reason": "completed",
+  "responses_response": {
+    "id": "resp_fixture",
+    "status": "completed",
+    "output": [
+      {
+        "id": "msg_fixture",
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Fixture output."
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 100,
+      "output_tokens": 10
+    }
+  }
+}

@@ -38,7 +38,7 @@ async def test_task_selection_requires_its_exact_transport_evidence(db_session, 
     await db_session.flush()
     chosen = await catalogue.validate_selection(db_session, **kwargs)
     assert chosen.canonical_model_id == DEFAULT_MODEL_ID
-    assert chosen.compatibility_class == "anthropic_messages"
+    assert chosen.compatibility_class == profile.compatibility_class
     assert chosen.harness_contract_revision == profile.harness_contract_revision
     assert persona in service.CONFIGURABLE_PERSONAS
     assert persona_harness_contract_revision(persona) == profile.harness_contract_revision

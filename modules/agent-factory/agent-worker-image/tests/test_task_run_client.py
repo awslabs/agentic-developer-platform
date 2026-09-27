@@ -113,6 +113,23 @@ def test_bootstrap_has_only_workload_proof_run_calls_add_opaque_credential(trans
     assert all(call[2] is False and call[1]["allow_redirects"] is False for call in calls)
 
 
+def test_replacement_host_cannot_finalize_with_unknown_validation_work(transport, monkeypatch):
+    run = client.TaskRunClient()
+    executor = Mock()
+    executor.recover.side_effect = RuntimeError("unknown Pod termination")
+    monkeypatch.setattr(run, "_hosted_validation", lambda: executor)
+    posted = Mock()
+    monkeypatch.setattr(run, "_post", posted)
+    with pytest.raises(client.TaskRunClientUnavailable, match="termination"):
+        run.finalize({"outcome": "completed"})
+    posted.assert_not_called()
+    # No bound workspace or in-memory validation handler on this replacement.
+    run.settlement({"stop_evidence": {"child_exit_confirmed": True, "workload_terminated": True}})
+    assert posted.call_args.args[1]["stop_evidence"] == {
+        "child_exit_confirmed": False, "workload_terminated": False,
+    }
+
+
 @pytest.mark.parametrize(("action", "body", "status", "accepted"), [
     ("artifact", {"content_base64": "eA=="}, 201, True),
     ("artifact", {"operation": "read"}, 200, True),
@@ -231,6 +248,7 @@ def test_control_transient_failure_retries_identical_read_then_preserves_cancel(
     body = {'attempt': {'runtime_attempt_id': 'bound'}, 'last_receipt_cursor': 'cursor'}
     result = run.control(body)
     assert result['cancel_requested'] is cancel and run._stopping is cancel
+    assert run.validation_stop_event.is_set() is cancel
     assert len(requests) == 3 and all(request == requests[0] for request in requests)
     assert requests[0] == ('control', body, {'run_bound': True})
     assert delays == [0.1, 0.2] and sum(delays) < 1
@@ -280,3 +298,54 @@ def test_generic_tool_registry_is_exact_and_host_owned(monkeypatch):
         instance.tool('archive.other', body)
     with pytest.raises(client.TaskRunClientError):
         instance.tool('https://untrusted.example', body)
+
+
+@pytest.mark.parametrize("action", ["repository-publication", "repository-completion"])
+def test_repository_delivery_uses_real_allowlisted_signed_transport(transport, action):
+    calls, proof = transport
+    run = client.TaskRunClient()
+    run._run_credential = "test-run-secret"
+    run._post(action, {"schema_version": "1.0"}, run_bound=True)
+    url, request, trust_env = calls[-1]
+    assert url.endswith("/task/" + action)
+    assert request["headers"]["X-Adp-Run-Credential"] == "test-run-secret"
+    assert request["headers"]["X-Adp-Workload-Token"] == proof
+    assert request["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256 ")
+    assert trust_env is False
+
+
+def test_trace_headers_are_signed_and_context_does_not_leak(transport):
+    calls, _ = transport
+    run = client.TaskRunClient()
+    parent = "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01"
+    with run.trace_context(parent):
+        run.bootstrap({"schema_version": "1.0", "task_id": "task-test", "invocation_id": "invocation-test"})
+    run.attempt({"schema_version": "1.0"})
+    headers = {key.lower(): value for key, value in calls[0][1]["headers"].items()}
+    assert headers["traceparent"] == parent
+    assert headers["x-amzn-trace-id"] == "Root=1-12345678-90abcdef1234567890abcdef;Parent=1234567890abcdef;Sampled=1"
+    assert "traceparent" in headers["authorization"]
+    assert "traceparent" not in {key.lower() for key in calls[1][1]["headers"]}
+    with pytest.raises(client.TaskRunClientError):
+        with run.trace_context("00-" + "0" * 32 + "-1234567890abcdef-01"):
+            pytest.fail("invalid trace accepted")
+
+
+def test_local_cleanup_remains_available_after_stop(transport, monkeypatch):
+    monkeypatch.setenv("ADP_TASK_TOOL_ROUTES", '{"validation.cleanup":"local:fixture.cleanup.create"}')
+    run = client.TaskRunClient()
+    handler = Mock()
+    run._local_tools["fixture.cleanup.create"] = handler
+    run._stopping = True
+    run.validation_stop_event.set()
+    body = {"operation": "cancel_jobs"}
+    assert run.tool("validation.cleanup", body) == handler.invoke.return_value
+    handler.invoke.assert_called_once_with(body)
+
+
+def test_service_backend_does_not_add_dependencies_to_model_only_tasks(transport, monkeypatch):
+    monkeypatch.setenv("ADP_CODEX_VALIDATION_BACKEND", "service")
+    run = client.TaskRunClient()
+    run.bootstrap({"schema_version": "1.0", "task_id": "task-test", "invocation_id": "invocation-test"})
+    assert run._validation_applicable is False
+    assert run._hosted_validation() is None

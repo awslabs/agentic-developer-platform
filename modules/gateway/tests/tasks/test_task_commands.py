@@ -315,6 +315,33 @@ def test_stop_only_revoked_run_terminalizes_without_releasing_model_reservation(
     assert store._get(task_ops_partition(req.task_id), "MODEL#" + turn_id)["reservation_status"] == "reserved"
 
 
+def test_staged_source_is_not_a_model_operation_and_cannot_replace_one(store):
+    req, service = accepted(store)
+    identity = running(store, req)
+    tid = turn(store, req, 1)
+    store._client.put_item(
+        TableName=store.table_name,
+        Item=_serialize({"event_id": task_ops_partition(req.task_id), "arrived_at": "SOURCE#fixture", "record_type": "TASK_SOURCE"}),
+    )
+    with pytest.raises(errors.TaskApiError, match="Every committed turn"):
+        service.finalize(identity, final_body(identity))
+    model(store, req, tid)
+    assert service.finalize(identity, final_body(identity))["status"] == "completed"
+
+
+@pytest.mark.parametrize("status", ["pending", "unknown", "rejected"])
+def test_unconfirmed_tool_receipt_prevents_completion(store, status):
+    req, service = accepted(store)
+    identity = running(store, req)
+    model(store, req, turn(store, req, 1))
+    store._client.put_item(
+        TableName=store.table_name,
+        Item=_serialize({"event_id": task_ops_partition(req.task_id), "arrived_at": "TOOL#fixture", "operation_status": status}),
+    )
+    with pytest.raises(errors.TaskApiError, match="Tool operations"):
+        service.finalize(identity, final_body(identity))
+
+
 @pytest.mark.parametrize("persona", ["agent-task-claude-developer", "agent-task-codex-developer"])
 def test_coding_runtime_refuses_input_without_creating_command_but_allows_cancel(store, persona):
     from src.tasks.records import task_authority_partition, task_policy_sort_key
@@ -335,3 +362,42 @@ def test_coding_runtime_refuses_input_without_creating_command_but_allows_cancel
     result = admit(service, req, kind="cancel", command_id=command_id)
     assert admit(service, req, kind="cancel", command_id=command_id) == result
     assert service.snapshot(req.task_id)["state"] == "cancel_requested"
+
+
+@pytest.mark.parametrize("conflicts", [1, 3])
+def test_cancel_finalization_rechecks_concurrent_receipts(store, monkeypatch, conflicts):
+    req, service = accepted(store)
+    identity = running(store, req)
+    admit(service, req, kind="cancel")
+    body = final_body(identity)
+    body.update(outcome="cancelled", result=None, error={"code": "cancelled_by_client"})
+    transact = store._client.transact_write_items
+    attempts = 0
+
+    def with_receipt_race(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= conflicts:
+            # A previously admitted model receipt settles between snapshot and commit.
+            store._client.update_item(
+                TableName=store.table_name,
+                Key=_serialize({"event_id": task_partition(req.task_id), "arrived_at": META_SORT_KEY}),
+                UpdateExpression="ADD #v :one",
+                ExpressionAttributeNames={"#v": "version"},
+                ExpressionAttributeValues=_serialize({":one": 1}),
+            )
+        return transact(**kwargs)
+
+    monkeypatch.setattr(store._client, "transact_write_items", with_receipt_race)
+    if conflicts == 3:
+        with pytest.raises(errors.TaskApiError, match="changed concurrently"):
+            service.finalize(identity, body)
+        assert attempts == 3
+        assert service.snapshot(req.task_id)["state"] == "cancel_requested"
+        assert not any(row["type"] == "task.cancelled" for row in store.read_events(task_id=req.task_id))
+    else:
+        result = service.finalize(identity, body)
+        assert result["status"] == "cancelled"
+        assert attempts == 2
+        assert service.finalize(identity, body) == result
+        assert len([row for row in store.read_events(task_id=req.task_id) if row["type"] == "task.cancelled"]) == 1

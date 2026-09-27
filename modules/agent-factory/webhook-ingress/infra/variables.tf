@@ -690,6 +690,37 @@ variable "task_persona_tools" {
   }
 }
 
+
+variable "codex_task_personas" {
+  description = "Qualified shared Codex Task personas to enable on workers. Empty keeps candidates disabled; gateway catalogue and policies are required separately."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for persona in var.codex_task_personas : contains(["agent-task-gpt-developer", "agent-task-gpt-intent-refinement"], persona)])
+    error_message = "Only packaged shared Codex Task personas may be enabled."
+  }
+}
+
+variable "codex_otel_endpoint" {
+  description = "Host-owned OTLP HTTP collector override for the shared Codex harness; empty uses the existing ADOT collector when enable_agent_otel is enabled."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.codex_otel_endpoint == "" || can(regex("^https?://[^@?#]+$", var.codex_otel_endpoint))
+    error_message = "Use an HTTP(S) collector base URL without credentials, query or fragment."
+  }
+}
+
+variable "codex_validation_service_endpoint" {
+  description = "Qualified dedicated validation API endpoint for Codex Tasks; empty preserves the current worker backend. Does not enable personas."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.codex_validation_service_endpoint == "" || can(regex("^https://[A-Za-z0-9.-]+(/[A-Za-z0-9_-]+)*/tools/validation$", var.codex_validation_service_endpoint))
+    error_message = "Use an HTTPS validation route without credentials, query, fragment or custom port."
+  }
+}
+
 variable "task_max_usd_per_task" {
   type        = number
   default     = 1

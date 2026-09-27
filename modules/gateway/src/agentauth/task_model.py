@@ -1,4 +1,4 @@
-"""One durable, budgeted Messages invocation per canonical Task turn."""
+"""One durable, budgeted model invocation per canonical Task turn."""
 
 from __future__ import annotations
 
@@ -47,6 +47,7 @@ _RECEIPT_FIELDS = {
     "content",
     "stop_reason",
     "error_code",
+    "responses_response",
 }
 
 
@@ -143,7 +144,7 @@ async def write_task_usage_event(*, context, identity, binding, decision, usage,
         root_human_id="",
         account_type=context.account_type,
         model=binding["model_id"],
-        api_format="anthropic",
+        api_format="openai" if binding["transport"] == "openai_responses" else "anthropic",
         latency_ms=latency_ms,
         scrubbed_request={},
         scrubbed_response={"model": binding["model_id"], "usage": usage},
@@ -173,7 +174,7 @@ class TaskModel:
         db,
         budget=None,
         readiness=resolve_task_model,
-        provider=invoke_task_messages,
+        provider=None,
         enforcement=None,
         usage_writer=None,
         event_writer=write_task_usage_event,
@@ -209,10 +210,26 @@ class TaskModel:
         self.repository.resolve_work(task["dispatch_id"], expected_kind="dispatch")
         return task
 
-    def _claim(self, *, identity, turn_id, digest, model_id):
+    def _claim(self, *, identity, turn_id, digest, model_id, max_turns=None, tool_history=None):
         task = self._current(identity)
-        if not any(turn["turn_id"] == turn_id for turn in TaskTurnStore(self.repository).list_turns(identity.task_id)):
+        if tool_history is not None:
+            from src.agentauth.task_service_policy import TaskServicePolicyStore
+            from src.agentauth.task_tool_receipts import TaskToolReceipts
+            from src.agentauth.task_tool_routes import authorize_tool
+
+            policies = TaskServicePolicyStore(table_name=self.repository.authority_table_name, client=self.repository._client)
+            journal = TaskToolReceipts(
+                self.repository,
+                authorize=lambda current, tool: authorize_tool(self.repository, policies, current, tool),
+                catalogue=tool_history["catalogue"],
+                clock=self.clock,
+            )
+            journal.verify_history(identity=identity, turn_id=turn_id, history=tool_history["history"])
+        turn = next((turn for turn in TaskTurnStore(self.repository).list_turns(identity.task_id) if turn["turn_id"] == turn_id), None)
+        if turn is None:
             raise TaskStoreError("model turn has not been committed")
+        if max_turns is not None and int(turn["turn_number"]) > max_turns:
+            raise TaskStoreError("model turn exceeds frozen persona budget")
         operation = base_item(
             partition=task_ops_partition(identity.task_id), sort_key=model_operation_sort_key(turn_id), record_type="TASK_OPS", scope=task["scope"]
         ) | {
@@ -364,7 +381,14 @@ class TaskModel:
                     raise
         raise TaskStoreError("model receipt persistence unavailable")
 
-    async def execute(self, *, identity, turn_id, request_digest, request, sdk_request=False):
+    async def execute(self, *, identity, turn_id, request_digest, request, sdk_request=False, responses_request=False):
+        if sdk_request and responses_request:
+            raise TaskStoreError("ambiguous model transport")
+        if responses_request:
+            from src.agentauth.task_responses_contract import TaskResponsesRequest
+            from src.agentauth.task_responses_tools_contract import TaskToolsResponsesRequest
+
+            (TaskToolsResponsesRequest if "tools" in request else TaskResponsesRequest).model_validate(request)
         if payload_digest(request) != request_digest:
             raise TaskStoreError("model request digest mismatch")
         task = await run_in_threadpool(self._current, identity)
@@ -380,7 +404,54 @@ class TaskModel:
         grant = await run_in_threadpool(
             self.repository._get_authority, "TENANT#" + identity.tenant, f"TASK_RUN#{identity.invocation_id}#GEN#{identity.generation:010d}"
         )
-        if request["max_tokens"] > int(grant["limits"]["max_output_tokens_per_turn"]):
+        transport = "openai_responses" if responses_request else "anthropic_messages"
+        if grant["model_binding"].get("transport") != transport:
+            raise TaskStoreError("task model transport does not match grant")
+        max_persona_turns = None
+        tool_history = None
+        tool_profile = False
+        if responses_request:
+            from src.admin.persona_models.catalogue import persona_compatibility_class
+
+            if persona_compatibility_class(task["persona"]) != "codex-sdk":
+                raise TaskStoreError("Responses requires an admitted Codex persona")
+            from src.agentauth.task_harness import TaskHarnessError, validate_harness
+
+            try:
+                harness = validate_harness(
+                    grant.get("harness"), persona=task["persona"], model_binding=grant["model_binding"], limits=grant["limits"]
+                )
+            except TaskHarnessError:
+                raise TaskStoreError("Responses harness binding unavailable") from None
+            declared = harness.get("tools", [])
+            tool_profile = bool(declared)
+            if tool_profile != ("tools" in request):
+                raise TaskStoreError("Responses tool profile differs from frozen admission")
+            if declared:
+                expected_namespace = [
+                    {
+                        "type": "namespace",
+                        "name": "mcp__adp",
+                        "description": "Authorized ADP tools.",
+                        "tools": [tool["definition"] for tool in declared],
+                    }
+                ]
+                if request["tools"] != expected_namespace or not {tool["permission"] for tool in declared}.issubset(grant.get("tool_grants", [])):
+                    raise TaskStoreError("Responses tools differ from protected catalogue")
+                tool_history = {
+                    "catalogue": {tool["permission"]: tool["definition"]["name"] for tool in declared},
+                    "history": [item for item in request["input"] if item.get("type") in {"function_call", "function_call_output"}]
+                    if isinstance(request["input"], list)
+                    else [],
+                }
+            frozen_policy = harness["policy"]
+            if request["reasoning"]["effort"] not in frozen_policy["allowedEfforts"]:
+                raise TaskStoreError("Responses effort is not admitted")
+            if int(self.clock().timestamp() * 1000) >= frozen_policy["deadlineMs"]:
+                raise TaskStoreError("Responses persona deadline expired")
+            max_persona_turns = frozen_policy["limits"]["maxTurns"]
+        output_field = "max_output_tokens" if responses_request else "max_tokens"
+        if request[output_field] > int(grant["limits"]["max_output_tokens_per_turn"]):
             raise TaskStoreError("task model output bound exceeded")
         binding, policy, target = await self.readiness(
             self.db,
@@ -390,6 +461,7 @@ class TaskModel:
             expected_policy_version=grant["model_binding"]["model_policy_version"],
             include_context=True,
             persona=task["persona"],
+            **({"responses_tools": True} if tool_profile else {}),
         )
         # Admission records the then-current pricing evidence. A validated
         # pricing refresh may reach gateway processes between admission and a
@@ -408,7 +480,13 @@ class TaskModel:
         ):
             raise TaskStoreError("task model binding changed")
         operation, owned = await run_in_threadpool(
-            self._claim, identity=identity, turn_id=turn_id, digest=request_digest, model_id=binding["model_id"]
+            self._claim,
+            identity=identity,
+            turn_id=turn_id,
+            digest=request_digest,
+            model_id=binding["model_id"],
+            max_turns=max_persona_turns,
+            tool_history=tool_history,
         )
         if not owned:
             return self.receipt(operation)
@@ -419,7 +497,7 @@ class TaskModel:
         context = policy.context
         try:
             quote_body = json.dumps({"model": binding["model_id"], **request}, separators=(",", ":")).encode()
-            quote = await quote_request(quote_body, "/v1/messages")
+            quote = await quote_request(quote_body, "/openai/v1/responses" if responses_request else "/v1/messages")
             budget_target = replace(self.budget._target(scope="task:" + identity.task_id, cap=grant["limits"]["max_usd"]), entity_type="run")
             await self.budget._initialize(budget_target)
             context._budget_enforcement_enabled = True
@@ -435,7 +513,10 @@ class TaskModel:
             await run_in_threadpool(self._current, identity)
             operation = await run_in_threadpool(self._save, operation, authorize_identity=identity, reservation_status="reserved", handoff="prepared")
             sent = True  # Every failure from this point conservatively retains the upper bound.
-            result = await self.provider(self.db, identity=identity, binding=binding, target=target, request=request, operation_id=turn_id)
+            from src.agentauth.task_responses import invoke_task_responses
+
+            provider = self.provider or (invoke_task_responses if responses_request else invoke_task_messages)
+            result = await provider(self.db, identity=identity, binding=binding, target=target, request=request, operation_id=turn_id)
             decision = result["price"]
             measured_cost = Decimal(decision.ledger_cost_usd)
             # Missing pricing facts retain the full upper bound, never a guessed
@@ -453,6 +534,7 @@ class TaskModel:
                 usage=receipt_usage,
                 content=result["content"],
                 stop_reason=result["stop_reason"],
+                **({"responses_response": result["responses_response"]} if responses_request else {}),
                 reservation_status="reserved",
                 pricing_decision=decision.to_dict(),
                 provider_request_id=result["provider_request_id"],

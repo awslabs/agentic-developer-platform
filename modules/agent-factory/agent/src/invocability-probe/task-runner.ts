@@ -1,8 +1,9 @@
-/** Bounded Task Messages qualification. No retries after durable start. */
+/** Bounded Task Messages/Responses qualification. No retries after durable start. */
 import { createHash } from 'node:crypto';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { ProbeGateway, SigV4ProbeGateway, ProbeCompletion, ProbeStart } from './gateway-client';
 import profiles from './task-profiles.json';
+import { invokeTaskResponses, validResponsesProbe } from './task-responses';
 
 type Receipt = { body: Uint8Array; requestId?: string; status?: number };
 type Invoke = (start: ProbeStart, body: string, timeout: number) => Promise<Receipt>;
@@ -18,13 +19,15 @@ const invoke: Invoke = async (start, body, timeout) => {
   } finally { client.destroy(); }
 };
 
-export async function runTaskProbe(persona: string, gateway: ProbeGateway = new SigV4ProbeGateway(), call: Invoke = invoke) {
+export async function runTaskProbe(persona: string, gateway: ProbeGateway = new SigV4ProbeGateway(), call?: Invoke) {
   const profile = profiles[persona as keyof typeof profiles];
   if (!profile) throw new Error('Unknown Task probe persona');
+  const responses = 'transport' in profile && profile.transport === 'openai_responses';
+  const transport = call ?? (responses ? invokeTaskResponses : invoke);
   const claim = await gateway.claim('scheduled', persona);
   if (!claim.claimed) return claim;
   const digest = createHash('sha256').update(profile.body).digest('hex');
-  if (claim.compatibility_class !== 'anthropic_messages' || claim.harness_contract_revision !== profile.revision ||
+  if (claim.compatibility_class !== (responses ? 'codex-sdk' : 'anthropic_messages') || claim.harness_contract_revision !== profile.revision ||
       claim.task_probe_json !== profile.body || claim.expected_request_shape_sha256 !== digest || digest !== profile.digest ||
       !Number.isInteger(claim.timeout_seconds) || claim.timeout_seconds < 1 || claim.timeout_seconds > 300) {
     throw new Error('Task probe claim does not match the local bounded profile');
@@ -42,12 +45,13 @@ export async function runTaskProbe(persona: string, gateway: ProbeGateway = new 
   let completion: ProbeCompletion = { outcome: 'error', request_shape_sha256: digest,
     provider_request_id: null, error_code: 'provider_response_unconfirmed' };
   try {
-    const receipt = await call(start, profile.body, claim.timeout_seconds);
+    const receipt = await transport(start, profile.body, claim.timeout_seconds);
     completion.provider_request_id = receipt.requestId?.trim() || null;
     if (receipt.body.length > 65536) throw new Error('oversize_response');
     const response = JSON.parse(Buffer.from(receipt.body).toString('utf8'));
     const content = Array.isArray(response.content) ? response.content : [];
-    const valid = persona === 'agent-task-investigator'
+    const valid = responses ? validResponsesProbe(response, persona === 'agent-task-gpt-developer')
+      : persona === 'agent-task-investigator'
       ? response.type === 'message' && response.role === 'assistant' && response.stop_reason === 'end_turn' &&
         content.length === 1 && content[0]?.type === 'text' && typeof content[0].text === 'string' &&
         /^OK\.?$/.test(content[0].text.trim())

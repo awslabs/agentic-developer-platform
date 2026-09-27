@@ -52,6 +52,19 @@
 
     "bootstrap_response": {
       "type": "object",
+      "allOf": [
+        {
+          "if": { "required": ["model_binding"], "properties": { "model_binding": { "required": ["transport"], "properties": { "transport": { "const": "openai_responses" } } } } },
+          "then": { "required": ["harness"] }
+        },
+        {
+          "if": { "required": ["harness"] },
+          "then": {
+            "required": ["model_binding", "persona", "deadline_at"],
+            "properties": { "model_binding": { "properties": { "transport": { "const": "openai_responses" } } } }
+          }
+        }
+      ],
       "description": "Task-scoped run credential plus immutable bindings. Existing service principals are denied until an explicit task policy exists.",
       "additionalProperties": false,
       "required": [
@@ -85,6 +98,7 @@
         "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "input": { "$ref": "bootstrap.schema.json#/$defs/immutable_input" },
         "model_binding": { "$ref": "bootstrap.schema.json#/$defs/model_binding" },
+        "harness": { "$ref": "codex-harness.schema.json#" },
         "limits": { "$ref": "bootstrap.schema.json#/$defs/run_limits" },
         "capabilities": {
           "type": "array",
@@ -134,8 +148,8 @@
       "properties": {
         "model_id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "transport": {
-          "const": "anthropic_messages",
-          "description": "The implemented Messages/InvokeModel transport, not an assumed Converse endpoint."
+          "enum": ["anthropic_messages", "openai_responses"],
+          "description": "The admitted Messages or bounded Codex Responses transport; never selected or overridden by the child."
         },
         "model_policy_version": { "type": "string", "minLength": 1, "maxLength": 64 },
         "request_shape_version": { "type": "string", "minLength": 1, "maxLength": 64 },
@@ -153,7 +167,7 @@
       "additionalProperties": false,
       "required": ["max_turns", "max_output_tokens_per_turn", "max_usd", "deadline_at"],
       "properties": {
-        "max_turns": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "max_turns": { "type": "integer", "minimum": 1, "maximum": 32 },
         "max_output_tokens_per_turn": { "type": "integer", "minimum": 1, "maximum": 4096 },
         "max_usd": { "type": "number", "minimum": 0, "maximum": 1 },
         "max_provider_operation_seconds": { "type": "integer", "minimum": 1, "maximum": 120 },

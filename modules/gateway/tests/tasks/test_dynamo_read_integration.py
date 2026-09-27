@@ -285,6 +285,9 @@ async def test_internal_artifact_http_upload_and_input_read(adapter, store, monk
         assert response.status_code == 201, response.text
         assert response.json()["expires_at"] is None
         response = await client.post("/internal/v1/agent/task/artifact", json={**body, "artifact_id": response.json()["artifact_id"]})
+        assert response.status_code == 200
+        assert base64.b64decode(response.json()["content_base64"]) == out
+        response = await client.post("/internal/v1/agent/task/artifact", json={**body, "artifact_id": "art_" + str(uuid.uuid4())})
         assert response.status_code == 404
 
 

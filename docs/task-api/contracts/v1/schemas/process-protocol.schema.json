@@ -26,8 +26,11 @@
     "host_to_child": {
       "description": "Host-to-child frame types: artifact.chunk before start, then start, turn, model.result, report.ack, cancel.",
       "oneOf": [
+        { "$ref": "process-protocol.schema.json#/$defs/tool_result_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/artifact_chunk_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/start_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/control_result_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/completion_result_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/turn_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/model_result_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/report_ack_frame" },
@@ -38,7 +41,10 @@
     "child_to_host": {
       "description": "Child-to-host frame types: ready, progress, model.request, input.required, result, cancelled, error.",
       "oneOf": [
+        { "$ref": "process-protocol.schema.json#/$defs/tool_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/ready_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/control_request_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/completion_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/progress_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/model_request_frame" },
         { "$ref": "process-protocol.schema.json#/$defs/input_required_frame" },
@@ -50,6 +56,20 @@
 
     "start_frame": {
       "type": "object",
+      "allOf": [
+        { "if": { "required": ["repository"] }, "then": { "required": ["harness"] } },
+        {
+          "if": { "required": ["model_binding"], "properties": { "model_binding": { "required": ["transport"], "properties": { "transport": { "const": "openai_responses" } } } } },
+          "then": { "required": ["harness"] }
+        },
+        {
+          "if": { "required": ["harness"] },
+          "then": {
+            "required": ["model_binding", "persona", "deadline_at"],
+            "properties": { "model_binding": { "properties": { "transport": { "const": "openai_responses" } } } }
+          }
+        }
+      ],
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "invocation_id", "generation", "instructions"],
       "properties": {
@@ -60,6 +80,19 @@
         "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
         "generation": { "$ref": "common.schema.json#/$defs/generation" },
         "runtime_attempt_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "harness": { "$ref": "codex-harness.schema.json#" },
+        "repository": {
+          "type": "object", "additionalProperties": false, "required": ["binding", "capabilities"],
+          "description": "Trusted host projection after source provisioning; task inputs cannot supply this authority.",
+          "properties": {
+            "binding": { "type": "object", "additionalProperties": false, "required": ["provider", "repositoryId", "sourceRevision"],
+              "properties": { "provider": { "enum": ["github", "gitlab"] }, "repositoryId": { "type": "string", "pattern": "^[1-9][0-9]*$" }, "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" } } },
+            "capabilities": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "enum": ["repository.read", "repository.write", "change.create"] } }
+          }
+        },
+        "persona": { "type": "string", "pattern": "^agent-task-gpt-[a-z][a-z0-9-]{0,62}$" },
+        "model_binding": { "$ref": "bootstrap.schema.json#/$defs/model_binding" },
+        "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
         "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
         "inputs": { "type": "object" },
         "acceptance_criteria": {
@@ -127,7 +160,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_turns": { "type": "integer", "minimum": 1, "maximum": 8 },
+            "max_turns": { "type": "integer", "minimum": 1, "maximum": 32 },
             "max_output_tokens_per_turn": { "type": "integer", "minimum": 1, "maximum": 4096 },
             "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" }
           }
@@ -219,7 +252,7 @@
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
         "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
         "turn_id": { "$ref": "common.schema.json#/$defs/turn_id" },
-        "turn_number": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "turn_number": { "type": "integer", "minimum": 1, "maximum": 32 },
         "messages": {
           "type": "array",
           "minItems": 1,
@@ -255,6 +288,10 @@
           "description": "Anthropic Messages-format content blocks when confirmed; null otherwise."
         },
         "stop_reason": { "type": ["string", "null"], "maxLength": 64 },
+        "responses_response": { "anyOf": [
+          { "$ref": "codex-responses.schema.json#/$defs/TaskResponsesResult" },
+          { "$ref": "codex-responses-tools.schema.json#/$defs/TaskToolsResponsesResult" }
+        ] },
         "error_code": {
           "type": ["string", "null"],
           "enum": ["model_access_denied", "budget_exceeded", "authority_revoked", "model_outcome_unknown", "deadline_exceeded", null]
@@ -264,7 +301,7 @@
         {
           "description": "An unknown outcome carries no content; the child must not treat it as a usable answer or request an automatic resend.",
           "if": { "properties": { "operation_status": { "const": "unknown" } }, "required": ["operation_status"] },
-          "then": { "properties": { "content": { "type": "null" } } }
+          "then": { "properties": { "content": { "type": "null" } }, "not": { "required": ["responses_response"] } }
         },
         {
           "if": { "properties": { "operation_status": { "const": "confirmed" } }, "required": ["operation_status"] },
@@ -313,6 +350,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "capabilities"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "ready" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -332,6 +370,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "report_id", "message"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "progress" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -351,7 +390,110 @@
       }
     },
 
+    "completion_request_frame": {"type": "object", "additionalProperties": false, "required": ["protocol_version", "request_id", "task_id", "type"], "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },"protocol_version": {"const": 1}, "request_id": {"$ref": "common.schema.json#/$defs/uuid4"}, "task_id": {"$ref": "common.schema.json#/$defs/task_id"}, "type": {"const": "completion.request"}}},
+    "completion_result_frame": {"type": "object", "additionalProperties": false, "required": ["protocol_version", "request_id", "task_id", "type", "verified"], "properties": {"protocol_version": {"const": 1}, "request_id": {"$ref": "common.schema.json#/$defs/uuid4"}, "task_id": {"$ref": "common.schema.json#/$defs/task_id"}, "type": {"const": "completion.result"}, "verified": {"type": "boolean"}}},
+    "control_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type"
+      ],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "control.request"
+        }
+      }
+    },
+    "control_result_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type",
+        "current"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "control.result"
+        },
+        "current": {
+          "type": "boolean"
+        }
+      }
+    },
     "model_request_frame": {
+      "oneOf": [
+        {
+          "$ref": "process-protocol.schema.json#/$defs/messages_request_frame"
+        },
+        {
+          "$ref": "process-protocol.schema.json#/$defs/responses_request_frame"
+        }
+      ]
+    },
+    "responses_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type",
+        "turn_id",
+        "responses_request"
+      ],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "model.request"
+        },
+        "turn_id": {
+          "$ref": "common.schema.json#/$defs/turn_id"
+        },
+        "responses_request": {
+          "oneOf": [
+            { "$ref": "codex-responses.schema.json#/$defs/TaskResponsesRequest" },
+            { "$ref": "codex-responses-tools.schema.json#/$defs/TaskToolsResponsesRequest" }
+          ]
+        }
+      }
+    },
+
+    "messages_request_frame": {
       "type": "object",
       "description": "The child asks the host to perform a model call. The child holds no credential and cannot reach a provider itself.",
       "additionalProperties": false,
@@ -388,6 +530,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "input_request_id", "prompt"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "input.required" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -403,6 +546,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "report"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "result" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -417,6 +561,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "command_id"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "cancelled" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -431,6 +576,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "type", "request_id", "task_id", "code", "message"],
       "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
         "protocol_version": { "const": 1 },
         "type": { "const": "error" },
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
@@ -440,6 +586,161 @@
         },
         "message": { "$ref": "common.schema.json#/$defs/safe_message" }
       }
+    },
+
+    "tool_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "type",
+        "request_id",
+        "task_id",
+        "tool",
+        "payload"
+      ],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "tool.request"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}\\.[a-z][a-z0-9_]{0,63}$"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "model_call": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "turn_id",
+            "call_id"
+          ],
+          "properties": {
+            "turn_id": {
+              "$ref": "common.schema.json#/$defs/uuid4"
+            },
+            "call_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        }
+      },
+      "description": "Generic tool request; Codex tools require a confirmed model_call binding. Host enforces admitted payload schemas and byte bounds. Legacy investigator does not support this frame."
+    },
+
+    "tool_result_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "type",
+        "request_id",
+        "task_id",
+        "tool",
+        "operation_status",
+        "result"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "tool.result"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}\\.[a-z][a-z0-9_]{0,63}$"
+        },
+        "operation_status": {
+          "enum": [
+            "pending",
+            "confirmed",
+            "unknown",
+            "rejected"
+          ]
+        },
+        "result": {
+          "type": "object"
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifact_id",
+            "content_type",
+            "content_sha256",
+            "byte_length"
+          ],
+          "properties": {
+            "artifact_id": {
+              "$ref": "common.schema.json#/$defs/artifact_id"
+            },
+            "content_type": {
+              "const": "application/json"
+            },
+            "content_sha256": {
+              "$ref": "common.schema.json#/$defs/sha256_digest"
+            },
+            "byte_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32768
+            }
+          }
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 32768
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "error_code": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "content"
+            ]
+          },
+          "then": {
+            "required": [
+              "artifact",
+              "is_error"
+            ],
+            "properties": {
+              "operation_status": {
+                "const": "confirmed"
+              }
+            }
+          }
+        }
+      ],
+      "description": "Host-owned tool outcome. Codex confirmed content is canonical JSON bounded to 32768 UTF-8 bytes. Unconfirmed outcomes cannot continue SDK execution; owner tokens never cross IPC."
     }
   }
 }
