@@ -27,7 +27,7 @@ class TestPersonaCatalogue:
     def test_catalogue_has_exactly_20_personas(self):
         """AC-02: all 20 registered keys, including automatic personas."""
         catalogue = build_persona_catalogue()
-        assert len(catalogue) == 20, f"Expected 20 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
+        assert len(catalogue) == 21, f"Expected 21 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
 
     def test_catalogue_keys_match_valid_personas(self):
         """AC-01/AC-02: keys are exactly VALID_PERSONAS, no more, no less."""
@@ -50,7 +50,7 @@ class TestPersonaCatalogue:
         """The native Codex reviewer is never classified as Claude."""
         catalogue = build_persona_catalogue()
         for persona in catalogue:
-            expected = COMPATIBILITY_CLASS_CODEX if persona.key == "agent-codex-reviewer" else COMPATIBILITY_CLASS_CLAUDE
+            expected = COMPATIBILITY_CLASS_CODEX if persona.key in {"agent-codex-reviewer", "agent-codex-developer"} else COMPATIBILITY_CLASS_CLAUDE
             if persona.key in {"agent-task-gpt-developer", "agent-task-gpt-intent-refinement"}:
                 expected = COMPATIBILITY_CLASS_CODEX
             elif persona.key.startswith("agent-task-"):
@@ -75,6 +75,7 @@ class TestPersonaCatalogue:
         """All 20 expected persona keys are present."""
         expected = {
             "agent-codex-reviewer",
+            "agent-codex-developer",
             "aidlc",
             "architect",
             "codex",

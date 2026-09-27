@@ -181,7 +181,7 @@ def test_domain_persona_files_do_not_collide_with_each_other() -> None:
     )
 
 
-def test_only_token_safe_codex_reviewer_extends_another_mention() -> None:
+def test_only_token_safe_codex_personas_extend_another_mention() -> None:
     """Overlapping names stay exceptional and pinned to token-aware routing."""
     mentions = sorted(MENTION_TO_PERSONA)
     overlaps = [
@@ -190,7 +190,10 @@ def test_only_token_safe_codex_reviewer_extends_another_mention() -> None:
         for inner in mentions
         if inner != outer and inner in outer
     ]
-    assert overlaps == [("@agent-codex-reviewer", "@agent-codex")]
+    assert overlaps == [
+        ("@agent-codex-developer", "@agent-codex"),
+        ("@agent-codex-reviewer", "@agent-codex"),
+    ]
     assert MENTION_TO_PERSONA["@agent-codex-reviewer"] == "agent-codex-reviewer"
     assert MENTION_TO_PERSONA["@agent-codex"] == "codex"
 

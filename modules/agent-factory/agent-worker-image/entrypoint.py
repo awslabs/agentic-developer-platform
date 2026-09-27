@@ -190,6 +190,8 @@ def worker_command(persona: str) -> list[str]:
         return ["node", AGENT_BINARY]
     if persona == "agent-codex-reviewer":
         return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
+    if persona == "agent-codex-developer":
+        return ["node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"]
     raise ValueError(f"Codex persona is not packaged yet: {persona}")
 
 

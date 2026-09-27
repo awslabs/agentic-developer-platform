@@ -32,8 +32,7 @@ import { initTokenManager, isTokenManagerInitialized, getToken, getTokenStatus, 
 import { AuthWatchdog } from './lib/authWatchdog';
 import { isBrokerEnabled } from './lib/githubTokenBroker';
 import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
-import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
-import { resolveAgentLogGroup } from './lib/logGroup';
+import { createWorkerActivityLog } from './worker-activity-log';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -221,61 +220,10 @@ const EXIT_RETRYABLE = 75;
 // CloudWatch Logging
 // ============================================================================
 
-const LOG_GROUP = resolveAgentLogGroup();
-const LOG_STREAM = `agent-${AGENT_TYPE}-issue-${ISSUE_NUMBER}-${Date.now()}`;
-const cwClient = new CloudWatchLogsClient({ region: AWS_REGION, credentials: workerAwsCredentials() });
-let cwBuffer: { timestamp: number; message: string }[] = [];
-let cwInitialized = false;
-
-async function initCloudWatch(): Promise<void> {
-  try {
-    await cwClient.send(new CreateLogStreamCommand({
-      logGroupName: LOG_GROUP,
-      logStreamName: LOG_STREAM,
-    }));
-    cwInitialized = true;
-    log('INFO', `CloudWatch logging initialized for @agent-${AGENT_TYPE}`);
-  } catch (err: unknown) {
-    if ((err as { name?: string }).name !== 'ResourceAlreadyExistsException') {
-      console.warn('CloudWatch init failed:', (err as Error).message);
-    } else {
-      cwInitialized = true;
-    }
-  }
-}
-
-function log(level: string, message: string, context?: Record<string, unknown>): void {
-  const entry = {
-    level,
-    message,
-    issueNumber: ISSUE_NUMBER,
-    agentType: AGENT_TYPE,
-    ...context,
-    timestamp: new Date().toISOString(),
-  };
-  const line = JSON.stringify(entry);
-
-  const emoji = level === 'ERROR' ? '❌' : level === 'WARN' ? '⚠️' : '→';
-  console.log(`${emoji} [${AGENT_TYPE}] ${message}`);
-
-  if (cwInitialized) {
-    cwBuffer.push({ timestamp: Date.now(), message: line });
-  }
-}
-
-async function flushCloudWatch(): Promise<void> {
-  if (!cwInitialized || cwBuffer.length === 0) return;
-  const events = cwBuffer.splice(0, cwBuffer.length);
-  try {
-    await cwClient.send(new PutLogEventsCommand({
-      logGroupName: LOG_GROUP,
-      logStreamName: LOG_STREAM,
-      logEvents: events,
-    }));
-  } catch (err) {
-    console.warn('CloudWatch flush failed:', (err as Error).message);
-  }
-}
+const activityLog = createWorkerActivityLog(AGENT_TYPE, ISSUE_NUMBER);
+const initCloudWatch = activityLog.start;
+const log = activityLog.log;
+const flushCloudWatch = activityLog.flush;
 
 const cwFlushTimer = setInterval(flushCloudWatch, 5000);
 

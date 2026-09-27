@@ -137,6 +137,26 @@ def snapshot(**changes) -> ModelPolicySnapshot:
     return ModelPolicySnapshot(**values)
 
 
+@pytest.mark.parametrize(
+    "persona,model,compatibility,revision",
+    [
+        ("developer", SONNET, "claude-agent-sdk", "0.3.283"),
+        ("agent-codex-developer", "openai.gpt-6-sol", "codex-sdk", "0.155.1"),
+        ("agent-codex-reviewer", "openai.gpt-6-sol", "codex-sdk", "0.155.1"),
+    ],
+)
+def test_published_contract_resolves_the_personas_native_model(persona, model, compatibility, revision):
+    contracts, _ = model_policy_module._contract_maps()
+    frozen = snapshot(
+        persona_contracts=contracts,
+        mappings={persona: model},
+        class_defaults={compatibility: {"model_id": None, "posture": "enforcing", "posture_revision": 1}},
+    )
+    decision = resolve_decision(frozen, invocation_id="run-native", persona=persona, now=NOW)
+    assert decision.resolved_model_id == model
+    assert decision.harness_contract_revision == revision
+
+
 def live_snapshot(**changes) -> ModelPolicySnapshot:
     """A `snapshot()` whose validity window is relative to the real clock.
 

@@ -116,3 +116,46 @@ An interrupted SDK response stream may resume once on its existing thread and
 working tree, within the original configured deadline. Missing terminal events
 cannot count as success. Provider safety refusals, authorization failures,
 invalid verdicts and expired deadlines do not trigger transport recovery.
+
+## Codex developer
+
+`agent-codex-developer` runs the official Codex SDK using the same checkout,
+branch, shell tools, GitHub credential renewal and model proxy as the existing
+worker. Mention `@agent-codex-developer` after deploying the updated worker and
+persona registry and selecting a compatible model. It implements the issue,
+runs tests locally, commits, pushes, and opens a ready PR. The adapter verifies
+that the open PR contains the final local commit and substantive changes.
+It does not depend on the Task API validation service. The embedded entrypoint
+requires scoped GitHub token mode; mediated GitHub tool support is not yet wired.
+
+For a standalone run using your existing `gh` authentication:
+
+```bash
+npm ci
+npm run build
+# Set OPENAI_BASE_URL and OPENAI_API_KEY for your authorized model endpoint.
+# For ADP use https://YOUR_GATEWAY/api/openai/v1 and your access token.
+CODEX_DEVELOPER_MODEL=openai.gpt-6-sol node dist/developer-entry.js \
+  --repo owner/repository --issue 123 --workspace /tmp/new-developer-checkout
+```
+
+The workspace must be a new path; the runner clones the repository there.
+Use `--base branch-name` to develop against a specific base branch. Run the
+standalone command inside an environment where the agent is authorized to use
+the available shell credentials. It has full shell and network access, matching
+the worker's execution model. The default model turn deadline is 30 minutes.
+
+### Hosted progress reporting
+
+The embedded Codex developer consumes SDK events as they arrive and forwards
+intentional explanations and command/file activity to the same reporting
+components as the Claude developer. It posts and edits a live comment on the
+tagged issue, streams the GitHub check run, saves the final transcript and SDK
+session ID for the worker, and serves the authenticated Agent Activity explanation
+stream. Completion includes the verified PR URL; failures publish a failure report.
+Reasoning items and raw tool output are not published.
+
+Agent Activity records come from the normal webhook invocation and worker
+lifecycle. A standalone run does not create those records and is not a hosted
+reporting qualification. The native adapter currently exposes the explanation
+stream without advertising Claude-specific pause/resume/steer support.

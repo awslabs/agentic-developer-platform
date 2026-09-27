@@ -163,6 +163,14 @@ class TestPersonaRuntimeRouting:
             "--embedded",
         ]
 
+    def test_codex_developer_uses_native_sdk(self):
+        from entrypoint import persona_runtime, worker_command
+
+        assert persona_runtime("agent-codex-developer") == "codex"
+        assert worker_command("agent-codex-developer") == [
+            "node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"
+        ]
+
     def test_future_codex_personas_are_explicitly_fail_closed(self):
         from entrypoint import persona_runtime, worker_command
 

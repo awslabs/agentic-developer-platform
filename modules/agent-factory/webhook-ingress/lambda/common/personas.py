@@ -61,6 +61,7 @@ MENTION_TO_PERSONA: dict[str, str] = {
     # to automatic eligible-PR events. Keep this before @agent-codex and use
     # token-aware parsing so the older supervisor name cannot shadow it.
     "@agent-codex-reviewer": "agent-codex-reviewer",
+    "@agent-codex-developer": "agent-codex-developer",
     # Issue #2706: codex supervisor persona. Mention-triggered only (the
     # platform standard); intentionally NOT in LABEL_TO_PERSONA. Placed last so
     # it cannot shadow an earlier persona under the first-match dict-order
@@ -81,6 +82,7 @@ VALID_PERSONAS: set[str] = (
 # silently classified as whichever harness the gateway happens to know best.
 PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
     "agent-codex-reviewer": "codex-sdk",
+    "agent-codex-developer": "codex-sdk",
     "aidlc": "claude-agent-sdk",
     "architect": "claude-agent-sdk",
     "codex": "claude-agent-sdk",

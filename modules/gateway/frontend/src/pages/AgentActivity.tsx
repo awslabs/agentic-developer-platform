@@ -371,6 +371,7 @@ const CHANNEL_OPTIONS = [
 const PERSONA_OPTIONS = [
   { value: '', label: 'All personas' },
   { value: 'developer', label: 'Developer' },
+  { value: 'agent-codex-developer', label: 'Codex Developer' },
   { value: 'architect', label: 'Architect' },
   { value: 'reviewer', label: 'Reviewer' },
   { value: 'ops', label: 'Ops' },

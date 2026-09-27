@@ -46,6 +46,8 @@ export interface CheckRunStreamerConfig {
   issueNumber: number;
   /** Model identifier string. */
   model: string;
+  /** Native runtimes may report metered cost outside this streamer. */
+  costLabel?: string;
   /** Optional logger function (defaults to console.warn). */
   log?: (msg: string) => void;
   /**
@@ -288,9 +290,9 @@ export class CheckRunStreamer {
     const turnLabel = status === 'running'
       ? `${this.turns.length} / running`
       : `${this.turns.length} / done`;
-    const costLabel = this.codexCostUsd > 0
+    const costLabel = this.cfg.costLabel ?? (this.codexCostUsd > 0
       ? `$${this.totalCostUsd.toFixed(4)} (Claude) + ~$${this.codexCostUsd.toFixed(4)} (Codex est.)`
-      : `$${this.totalCostUsd.toFixed(4)}`;
+      : `$${this.totalCostUsd.toFixed(4)}`);
 
     const headerLines = [
       `## Agent: ${this.cfg.persona} · issue #${this.cfg.issueNumber}`,
@@ -366,6 +368,7 @@ export class CheckRunStreamer {
 
   private _previewInput(toolName: string, input: Record<string, unknown>): string {
     switch (toolName) {
+      case 'Codex':
       case 'Bash': {
         const cmd = (input.command as string) ?? '';
         return cmd.slice(0, 120) + (cmd.length > 120 ? '…' : '');
@@ -581,6 +584,7 @@ export class CheckRunStreamer {
   }
 
   private async _doPatch(title: string, summary: string, text: string): Promise<void> {
+    if (this.cfg.checkRunId <= 0) return; // Archive even when bootstrap could not create a check run.
     const url = `https://api.github.com/repos/${this.cfg.repo}/check-runs/${this.cfg.checkRunId}`;
     // Clamp to GitHub's hard limit just in case
     const safeText = text.length > 65535 ? text.slice(0, 65535) : text;
