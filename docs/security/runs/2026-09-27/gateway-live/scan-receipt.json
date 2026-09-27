@@ -1,0 +1,16 @@
+{
+  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:23db69c8109c3e521ad8e1fda347ba7c3eb1e510c6f2b23044658206fc994900",
+  "docker_root_descriptor": "sha256:23db69c8109c3e521ad8e1fda347ba7c3eb1e510c6f2b23044658206fc994900",
+  "config_digest": "sha256:41020caec92828177761e7495c9ad747ecbdc816672e42002de9c7d8751e8f8c",
+  "time": "2026-09-27T10:09:18.387447+00:00",
+  "packages": 164,
+  "native_counts": {
+    "High": 50,
+    "Medium": 54,
+    "Negligible": 44,
+    "Low": 9
+  },
+  "sbom_sha256": "c9853ce5b0c2dea3bb4898cee8d4a3ab4a75b12dd0885bdca61ccaf7b4861c1d",
+  "grype_sha256": "6866057bb09a54ff2cb6242d9feb5138f94de0f8da5f1537032440955f948b23",
+  "archive_sha256": "bedcc1d95a0e4693b41b266e223f0c8604b70464da0e15a70056ed138cadc5c6"
+}
