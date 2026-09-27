@@ -43,6 +43,12 @@ on partial results, preserving retries, failure destinations and alerts.
 The completion message explicitly reports degraded operation. Re-enable daily
 updates without pretending missing prices are fresh, then track source recovery.
 
+For the reviewed dev account only, the `adp-gateway-deploy-dev` environment
+variable `ADP_KNOWN_PRICING_GAP=claude-widget-2026-09-24` lets automatic gateway
+releases finish when the partial result has 264 retained variants confined to
+the seven known Claude model IDs. A changed count or model list, failed source fetch, or
+zero fresh prices still blocks finalization and leaves the schedule disabled.
+
 ## Remaining unpublished prices
 
 AWS lists GPT-6 Sol/Luna as available models, but the model-card pricing URLs

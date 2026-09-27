@@ -83,7 +83,7 @@ source_access:
 # so treat them as a contract.
 images:
   skypilot-api: sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7
-  superplane-controller: sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed
+  superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
   superplane-api: sha256:f1897a677fa7a5e21b7a1aa8c0ab6a2a03b37b66a98443a06b200d72f4a9b259
   superplane-executor: sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891
 
@@ -102,9 +102,9 @@ image_sources:
     ecr_repository: adp-superplane-controller
     source_path: src/superplane-controller
     build_workflow: .github/workflows/superplane-controller-build.yml
-    tag: 060a3c2764a408b6c3207db8795e0c8159ef28ea
-    resolved_by: ECR digest read-back, 2026-09-25; S01-image-evidence.json
-    selected_because: S01 reviewed controller advisory remediation and runtime validation
+    tag: security27-de59fd318
+    resolved_by: ECR digest read-back, 2026-09-27; wave1-publication.json
+    selected_because: x/net CVE-2026-46600 fix and unused curl/zlib removal; zero Critical/High candidate matches
   superplane-api:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-api

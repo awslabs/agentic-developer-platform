@@ -161,14 +161,13 @@ async def revalidate_command(runtime, body, *, context):
         if proof.tenant_id != target.tenant_id:
             raise ValueError
         if proof.authority_kind == "human_session":
-            from src.agentauth.human_control import require_live_human_membership, require_protected_human_owner
+            from src.agentauth.human_control import require_canonical_protected_human_owner, require_live_human_membership
             from src.shared.database import get_session_factory
 
             # The signature attests a JWT session valid through proof.exp. Do
             # not cache that decision: ownership and membership may have changed
             # since acceptance, and the target worker cannot assert either.
-            await run_in_threadpool(
-                require_protected_human_owner,
+            await require_canonical_protected_human_owner(
                 runtime.store,
                 user_id=proof.principal,
                 tenant_id=proof.tenant_id,

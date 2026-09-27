@@ -42,6 +42,10 @@ DOCKERFILE = CONTROLLER / "Dockerfile"
 
 # Removed by S01. Each entry is a package whose presence reintroduces named advisories.
 REMOVED_PACKAGES = {
+    "curl": (
+        "retains zlib CVE-2026-85091; the static controller starts no subprocess "
+        "and the existing e2e diagnostics use BusyBox wget"
+    ),
     "helm": (
         "CVE-2025-53547, plus GHSA-v778-237x-gjrc / GHSA-hcg3-q754-cr77 "
         "(golang.org/x/crypto) and GHSA-v23v-6jw2-98fq (github.com/docker/docker) "

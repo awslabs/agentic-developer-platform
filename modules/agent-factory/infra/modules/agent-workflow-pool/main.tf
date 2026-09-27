@@ -12,7 +12,7 @@ resource "helm_release" "agent_workflow" {
   namespace  = var.runner_namespace
   repository = "oci://ghcr.io/actions/actions-runner-controller-charts"
   chart      = "gha-runner-scale-set"
-  version    = "0.13.1"
+  version    = "0.14.2"
   values = [yamlencode({
     controllerServiceAccount = { namespace = var.controller_namespace, name = var.controller_service_account }
     githubConfigUrl          = var.github_repo != "" ? "https://github.com/${var.github_org}/${var.github_repo}" : "https://github.com/${var.github_org}"

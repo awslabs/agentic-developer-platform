@@ -615,7 +615,7 @@ class ControlService:
         """Forward one human command with its exact signed bytes and target."""
         from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore
         from src.agentauth.envelope import EnvelopeError, sign_envelope
-        from src.agentauth.human_control import require_protected_human_owner
+        from src.agentauth.human_control import require_canonical_protected_human_owner
         from src.agentauth.store import AuthorityStoreError
 
         command_id = validate_command_body(action, request_body)
@@ -631,8 +631,7 @@ class ControlService:
                 self._authority_store = BootstrapStore(
                     table_name=table_name, dynamodb_client=boto3.client("dynamodb", region_name=config.get("AWS_REGION", "us-east-1"))
                 )
-            await run_in_threadpool(
-                require_protected_human_owner,
+            await require_canonical_protected_human_owner(
                 self._authority_store,
                 user_id=session.user_id,
                 tenant_id=session.tenant_id,

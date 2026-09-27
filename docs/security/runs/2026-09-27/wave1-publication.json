@@ -1,0 +1,26 @@
+[
+  {
+    "component": "monitor",
+    "source_commit": "de59fd318",
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor@sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9",
+    "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-platform-monitor:security27-de59fd318",
+    "matches_local_root": true,
+    "deployed": false
+  },
+  {
+    "component": "controller",
+    "source_commit": "de59fd318",
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a",
+    "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller:security27-de59fd318",
+    "matches_local_root": true,
+    "deployed": false
+  },
+  {
+    "component": "context-mcp",
+    "source_commit": "de59fd318",
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:1bc2c110f13d75cec6e2be4f4c498b955c169d55781378d086b9d5738778955c",
+    "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp:security27-de59fd318",
+    "matches_local_root": true,
+    "deployed": false
+  }
+]

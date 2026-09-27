@@ -1152,14 +1152,21 @@ jobs:
       - name: Verify release pricing and enable the schedule
         env:
           PRICING_RELEASE_TAG: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_KNOWN_PRICING_GAP: ${{ vars.ADP_KNOWN_PRICING_GAP || '' }}
         run: |
           set -euo pipefail
           command -v kubectl >/dev/null
           aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
           PRICING_RELEASE_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_TAG}"
+          PRICING_RECOVERY_ARGS=()
+          case "$ADP_KNOWN_PRICING_GAP" in
+            "") ;;
+            claude-widget-2026-09-24) PRICING_RECOVERY_ARGS=(--allow-known-claude-gap) ;;
+            *) echo "::error::Unrecognized pricing source gap"; exit 1 ;;
+          esac
           python3 modules/gateway/scripts/pricing-rollout.py finalize \
             --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" \
-            --expected-image "$PRICING_RELEASE_IMAGE"
+            --expected-image "$PRICING_RELEASE_IMAGE" "${PRICING_RECOVERY_ARGS[@]}"
           # First rollout requires reviewed budget-lambda infra. If this gate
           # fails, apply that reviewed plan, then dispatch pricing-finalize.yml
           # at this release ref. The schedule stays disabled on failure.
