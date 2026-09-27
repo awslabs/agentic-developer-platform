@@ -23,7 +23,7 @@ def main():
         def log_message(self, *args):
             pass
 
-        def do_GET(self):
+        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler interface
             assert self.path == "/2018-06-01/runtime/invocation/next"
             body = b'{"security_test":true}'
             self.send_response(200)
@@ -39,7 +39,7 @@ def main():
             self.end_headers()
             self.wfile.write(body)
 
-        def do_POST(self):
+        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler interface
             seen.put((self.path, self.rfile.read(int(self.headers["Content-Length"]))))
             self.send_response(202)
             self.send_header("Content-Length", "0")
