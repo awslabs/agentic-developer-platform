@@ -122,8 +122,8 @@ async def test_saving_and_catalogue_do_not_need_daily_paid_probes(mapped, select
     assert denied.reason == "not_permitted"
 
 
-@pytest.mark.parametrize("flag,value", [("PERSONA_MODEL_MAPPING_ENABLED", "false"), ("AGENT_AUTHORITY_ENABLED", "true")])
-async def test_disabled_or_protected_path_is_unchanged(mapped, monkeypatch, flag, value):
+@pytest.mark.parametrize("flag,value", [("PERSONA_MODEL_MAPPING_ENABLED", "false")])
+async def test_disabled_path_is_unchanged(mapped, monkeypatch, flag, value):
     monkeypatch.setenv(flag, value)
     original = envelope()
     assert await dispatch_selection.apply_dispatch_selection(mapped, original) is original
@@ -154,3 +154,10 @@ async def test_producer_endpoint_binds_entire_request_and_rejects_unauthenticate
         assert proof.call_args.kwargs["allowed_roles"] == {"arn:aws:iam::123456789012:role/ingress"}
         extra = await client.post("/internal/v1/agent/persona-model/resolve", json={**body, "allowed_models": ["*"]})
         assert extra.status_code == 422
+
+
+async def test_protected_dispatch_preserves_authorized_saved_selection(mapped, monkeypatch):
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    selected = await dispatch_selection.apply_dispatch_selection(mapped, envelope())
+    assert selected["model_resolved"] == HAIKU
+    assert selected["model_selection"]["principal_id"] == "human-root"
