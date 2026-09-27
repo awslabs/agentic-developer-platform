@@ -5,13 +5,13 @@ FROM public.ecr.aws/docker/library/python:3.13-slim
 WORKDIR /app
 
 # Install system dependencies + Debian security patches (#6122)
-RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
-    curl \
+RUN apt-get update && apt-get -y upgrade \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Download Amazon RDS/Neptune CA bundle for TLS verification (#2224)
-RUN curl -fsSL -o /etc/ssl/certs/rds-global-bundle.pem \
-        https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+# Neither the server nor personal-context code invokes curl. Use the shipped
+# Python TLS client for setup and health checks instead of retaining libcurl.
+RUN python -c "from pathlib import Path; from urllib.request import urlopen; Path('/etc/ssl/certs/rds-global-bundle.pem').write_bytes(urlopen('https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem', timeout=30).read())" \
     && test -s /etc/ssl/certs/rds-global-bundle.pem
 
 # Install Python dependencies
@@ -43,7 +43,7 @@ USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:5100/health || exit 1
+    CMD python -c "from urllib.request import urlopen; urlopen('http://localhost:5100/health', timeout=5).close()" || exit 1
 
 # Run the server
 CMD ["uvicorn", "door.server:app", "--host", "0.0.0.0", "--port", "5100"]
