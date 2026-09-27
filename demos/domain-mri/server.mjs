@@ -2,7 +2,7 @@ import http from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { isIP } from "node:net";
 const exec = promisify(execFile),
@@ -51,22 +51,7 @@ export async function createDemo({
   stateFile = process.env.MRI_STATE_FILE ||
     "/tmp/adp-domain-mri-demo-state.json",
   fetcher = fetch,
-  publicOrigin = process.env.MRI_PUBLIC_ORIGIN,
-  accessKey = process.env.MRI_DEMO_ACCESS_KEY,
 } = {}) {
-  const publicURL = publicOrigin ? new URL(publicOrigin) : null;
-  if (
-    publicURL &&
-    (publicURL.protocol !== "https:" || !/^[a-f0-9]{64}$/.test(accessKey || ""))
-  )
-    throw Error(
-      "Public demo requires an HTTPS origin and a random 64-character access key.",
-    );
-  const authorized = (value) =>
-    typeof value === "string" &&
-    /^[a-f0-9]{64}$/.test(value) &&
-    value.length === accessKey?.length &&
-    timingSafeEqual(Buffer.from(value), Buffer.from(accessKey));
   const api =
     process.env.MRI_TASK_API_URL ||
     "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev";
@@ -183,41 +168,15 @@ export async function createDemo({
     res.setHeader("Referrer-Policy", "no-referrer");
     try {
       const u = new URL(req.url, "http://localhost");
-      const localHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(
-        req.headers.host || "",
-      );
-      if (!localHost && req.headers.host !== publicURL?.host)
-        return json(res, 403, { error: "Use the supplied demo link." });
-      if (publicURL) {
-        if (
-          req.method === "GET" &&
-          u.pathname === "/" &&
-          authorized(u.searchParams.get("demo_key"))
-        ) {
-          res.writeHead(303, {
-            Location: "/",
-            "Set-Cookie": `mri_demo=${accessKey}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400`,
-            "Cache-Control": "no-store",
-          });
-          res.end();
-          return;
-        }
-        const cookie = (req.headers.cookie || "")
-          .split(";")
-          .map((x) => x.trim())
-          .find((x) => x.startsWith("mri_demo="))
-          ?.slice(9);
-        if (!authorized(cookie))
-          return json(res, 403, {
-            error:
-              "Open the complete demo link supplied to you to start this session.",
-          });
-      }
+      if (
+        req.headers.host &&
+        !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(req.headers.host)
+      )
+        return json(res, 403, { error: "Use localhost to open this demo." });
       if (
         req.method === "POST" &&
         req.headers.origin &&
-        req.headers.origin !==
-          (publicURL?.origin || `http://${req.headers.host}`)
+        req.headers.origin !== `http://${req.headers.host}`
       )
         return json(res, 403, {
           error: "Use the demo page to submit investigations.",

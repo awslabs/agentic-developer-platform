@@ -12,7 +12,7 @@ Requires Node 22+ and, for live investigations, an AWS CLI session that can read
 
 The defaults target the existing dev deployment and `sophos-labs-hierarchy-opus5-check`, whose Cyber model is Opus 5. Live submissions incur normal Task/model costs. To use another deployment, configure `MRI_TASK_API_URL`, `MRI_TOKEN_URL`, `MRI_CLIENT_ID`, `MRI_USER_POOL_ID`, and `AWS_REGION`; update the UI's model label if its saved mapping differs. `PORT` defaults to 4318. `MRI_STATE_FILE` defaults to `/tmp/adp-domain-mri-demo-state.json` and stores submission IDs and Task snapshots, never credentials. Keep that file across restarts to retain recovery and duplicate-submission protection.
 
-The server binds only to `127.0.0.1`. For a demo from another computer, forward the port:
+The server binds only to `127.0.0.1` for local development. Do not expose the EC2 host through public listeners, public EC2 URLs, or third-party tunnels. A hosted demo must use the existing ADP application domain and its deployment boundary. For private development access from another computer, forward the port:
 
 ```bash
 ssh -L 4318:127.0.0.1:4318 ubuntu@YOUR_DEV_BOX
@@ -30,22 +30,3 @@ npm test
 ```
 
 Tests cover domain validation, uncertain submission recovery without duplicate Tasks, active-run exclusion, cross-origin submission refusal, and report integrity checks. The recorded sample is a prior investigation, not a current safety guarantee.
-
-## Direct HTTPS demo access
-
-For a temporary remote demo, forward an HTTPS tunnel to the loopback server and
-set `MRI_PUBLIC_ORIGIN` to that exact HTTPS origin. Also set
-`MRI_DEMO_ACCESS_KEY` to 32 cryptographically random bytes encoded as 64 hex
-characters. The server refuses public mode without both settings.
-
-Share `https://YOUR_DEMO_HOST/?demo_key=YOUR_GENERATED_KEY` privately with demo
-attendees. Opening it creates a Secure, HttpOnly, SameSite cookie and redirects
-to `/`, removing the key from the address bar. Static files and every API route
-require that session; there is no login form. The link grants use of this demo,
-including billable live submissions. Rotate the key to revoke access.
-
-The tunnel process and server must both remain running. Free tunnels can expire
-or change their hostname; share the tested current link, not `localhost` or an
-old tunnel address. For Pinggy's free service, attendees click **Enter site**
-once before the demo opens; the tunnel expires after 60 minutes. This is a
-temporary presentation endpoint, not a permanent platform deployment.
