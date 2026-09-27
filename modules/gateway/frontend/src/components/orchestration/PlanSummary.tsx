@@ -187,7 +187,7 @@ export function PlanSummary({ stories, waves, gates, evaluations, evaluationStor
                 the rounding the cost model avoids. */}
             <span className="text-gray-500 dark:text-gray-400">Limits: </span>
             up to ${policy.limits.max_spend_usd} total · {policy.limits.max_concurrent_actions} at a time ·{' '}
-            {policy.limits.max_attempts_per_node} {policy.limits.max_attempts_per_node === 1 ? 'attempt' : 'attempts'} per step
+            {policy.limits.max_attempts_per_node} {policy.limits.max_attempts_per_node === 1 ? 'attempt' : 'attempts'} per stage
           </p>
         </div>
       )}

@@ -46,6 +46,7 @@ from .flow_execution import flow_is_paused
 from .models import ClaimState, OrchestrationAction, OrchestrationExecution, OrchestrationWorkClaim
 from .notify import Notification, NotificationError, notify
 from .policy_admission import load_in_force_policy
+from .stage_attempts import stage_attempts
 from .work_claims import OwnerKind
 
 logger = get_logger(__name__)
@@ -510,13 +511,16 @@ async def verify_live_authority(
                 progressed_at=record.progressed_at,
                 detail="the in-force policy does not permit this effect autonomously",
             )
-        if record.attempts >= effective_policy.limits.max_attempts_per_node:
+        used = await stage_attempts(
+            session, org_id=record.org_id, node_id=record.node_id, action=effect.action, exclude_operation_key=effect.intent.operation_key
+        )
+        if used >= effective_policy.limits.max_attempts_per_node:
             return BlockRecord(
                 code=BlockCode.ATTEMPTS_EXHAUSTED,
                 owner="plan-owner",
-                required_input="authorized recovery after the accepted per-node attempt limit",
+                required_input="authorized recovery after the accepted stage attempt limit",
                 progressed_at=record.progressed_at,
-                detail="the in-force policy attempt allowance is exhausted",
+                detail=f"the {effect.action.value} stage attempt allowance is exhausted",
             )
 
         claim = (
@@ -1062,6 +1066,7 @@ async def _process_one(
 
     effect = decision.effect
     assert effect is not None
+    effect = replace(effect, intent=replace(effect.intent, detail={**effect.intent.detail, "attempt_stage": effect.action.value}))
     # Observation, evidence and completion above continue while paused. Only
     # new effects wait; neither attempts nor an existing block are cleared.
     async with factory() as session:
@@ -1101,7 +1106,11 @@ async def _process_one(
 
     # The runner ceiling applies even when a flow has a larger approved retry
     # allowance. Reconciliation above can still record work already completed.
-    if initial.attempts >= config.max_attempts:
+    async with factory() as session:
+        used = await stage_attempts(
+            session, org_id=initial.org_id, node_id=initial.node_id, action=effect.action, exclude_operation_key=effect.intent.operation_key
+        )
+    if used >= config.max_attempts:
         await _notify_block(
             factory,
             record=initial,
@@ -1110,7 +1119,7 @@ async def _process_one(
                 owner="platform-operator",
                 required_input="authorized recovery decision",
                 progressed_at=initial.progressed_at,
-                detail=f"engine continuation attempt limit exhausted ({initial.attempts}/{config.max_attempts})",
+                detail=f"{effect.action.value} stage attempt limit exhausted ({used}/{config.max_attempts})",
             ),
             now=now,
             config=config,
@@ -1149,7 +1158,7 @@ async def _process_one(
     # expiry, permission and the work claim — is still re-read live from the database,
     # and the expiry is compared against a live clock reading rather than the loop-top
     # capture, so authority withdrawn by the passage of time is caught here too.
-    authority_block = await authority_verifier(factory, replace(prepared.record, attempts=initial.attempts), effect, clock.now())
+    authority_block = await authority_verifier(factory, prepared.record, effect, clock.now())
     if authority_block is not None:
         await _notify_block(
             factory,

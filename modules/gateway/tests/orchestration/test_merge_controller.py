@@ -601,6 +601,21 @@ async def test_last_remaining_attempt_is_usable_but_never_reset(merge, attempts,
     async with merge.factory() as db:
         execution = await db.get(OrchestrationExecution, merge.execution.id)
         execution.attempts = attempts
+        from src.orchestration.models import OrchestrationAction
+
+        for index in range(attempts):
+            db.add(
+                OrchestrationAction(
+                    org_id=execution.org_id,
+                    execution_id=execution.id,
+                    operation_key=f"historical-merge:{index}",
+                    kind="historical_effect",
+                    status="failed",
+                    attempt=index + 1,
+                    detail={"attempt_stage": "merge"},
+                    created_at=datetime.now(UTC),
+                )
+            )
         await db.commit()
     result = await tick(merge)
     assert len(merge.mutations) == int(allowed), result

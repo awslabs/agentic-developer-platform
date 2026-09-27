@@ -1782,6 +1782,7 @@ class ExecutionSummaryResponse(BaseModel):
     status: str
     revision: int
     attempts: int
+    stage_attempts: dict[str, int] = Field(default_factory=dict)
     next_check_at: str | None
     deadline_at: str | None
     progressed_at: str | None
@@ -1909,6 +1910,7 @@ async def get_flow_execution(
                 status=execution.status.value,
                 revision=execution.revision,
                 attempts=execution.attempts,
+                stage_attempts=execution.stage_attempts,
                 next_check_at=_iso(execution.next_check_at),
                 deadline_at=_iso(execution.deadline_at),
                 progressed_at=_iso(execution.progressed_at),

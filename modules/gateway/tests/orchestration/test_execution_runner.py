@@ -1167,7 +1167,10 @@ async def test_effect_authority_is_rechecked_against_live_policy_and_claim(sessi
     assert denied is not None
     assert denied.code is BlockCode.AUTHORITY_UNVERIFIABLE
 
-    exhausted = await verify_live_authority(session_factory, replace(execution, attempts=3), permitted, NOW)
+    async with session_factory() as session:
+        await seed_stage_attempts(session, execution, Action.DEVELOP, 3)
+        await session.commit()
+    exhausted = await verify_live_authority(session_factory, execution, permitted, NOW)
     assert exhausted is not None
     assert exhausted.code is BlockCode.ATTEMPTS_EXHAUSTED
 
@@ -1175,7 +1178,7 @@ async def test_effect_authority_is_rechecked_against_live_policy_and_claim(sessi
         claim = await session.get(OrchestrationWorkClaim, CLAIM)
         claim.state = ClaimState.RELEASED.value
         await session.commit()
-    withdrawn = await verify_live_authority(session_factory, execution, permitted, NOW)
+    withdrawn = await verify_live_authority(session_factory, execution, EffectRequest(ActionIntent("repair:first", "repair"), Action.REPAIR), NOW)
     assert withdrawn is not None
     assert withdrawn.code is BlockCode.OWNERSHIP_LOST
 
@@ -1837,6 +1840,7 @@ async def test_resume_does_not_reset_exhausted_attempts(session_factory, executi
     async with session_factory() as session:
         await session.execute(update(OrchestrationFlow).values(execution_paused=True))
         await session.execute(update(OrchestrationExecution).values(attempts=3))
+        await seed_stage_attempts(session, execution, Action.DEVELOP, 3)
         await session.commit()
     handler = SyntheticHandler(decision=_effect_decision())
     clock = FrozenClock()
@@ -1870,3 +1874,43 @@ async def test_completed_work_reconciles_while_flow_is_paused(session_factory, e
     row, actions = await _row_state(session_factory)
     assert report.errors == 0 and row.status == "concluded"
     assert row.attempts == 0 and actions == [] and handler.perform_count == 0
+
+
+async def seed_stage_attempts(session, execution, action, count):
+    for index in range(count):
+        session.add(
+            OrchestrationAction(
+                org_id=execution.org_id,
+                execution_id=execution.id,
+                operation_key=f"history:{action.value}:{index}",
+                kind="historical_effect",
+                status="failed",
+                attempt=index + 1,
+                detail={"attempt_stage": action.value},
+                created_at=NOW,
+            )
+        )
+    await session.flush()
+
+
+async def test_exhausted_stage_does_not_consume_another_stage(session_factory, execution):
+    from src.orchestration.stage_attempts import stage_attempts
+
+    async with session_factory() as session:
+        await seed_stage_attempts(session, execution, Action.DEVELOP, 3)
+        await seed_stage_attempts(session, execution, Action.REVIEW, 3)
+        await session.commit()
+        assert await stage_attempts(session, org_id=ORG, node_id=execution.node_id, action=Action.REVIEW) == 3
+        assert await stage_attempts(session, org_id=ORG, node_id=execution.node_id, action=Action.MERGE) == 0
+    # The default plan permits repair; development exhaustion cannot block it.
+    repair = EffectRequest(ActionIntent("repair:first", "repair"), Action.REPAIR)
+    assert await verify_live_authority(session_factory, execution, repair, NOW) is None
+    handler = SyntheticHandler(decision=HandlerDecision(DecisionKind.EFFECT, effect=repair), effect_result=EffectResult(EffectOutcome.SUCCEEDED))
+    result = await run_execution_runner(
+        session_factory,
+        handlers={ExecutionPhase.ADMITTED: handler},
+        config=_config(max_attempts=1),
+        clock=FrozenClock(),
+        authority_verifier=verify_live_authority,
+    )
+    assert result.effects_succeeded == 1

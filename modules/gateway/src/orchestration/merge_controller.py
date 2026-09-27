@@ -484,8 +484,7 @@ class MergeServices:
                     current = await self.provider.read(current_binding)
                     if not self.matches(expected, current_binding, current) or current.base_sha != expected["base_sha"]:
                         raise CycleBlockedError("merge_revision_changed")
-                    reserved_context = replace(context, execution=replace(context.execution, attempts=max(0, context.execution.attempts - 1)))
-                    eligibility, review = await self.eligibility(session, reserved_context, current_node, current_binding, current_run, current)
+                    eligibility, review = await self.eligibility(session, context, current_node, current_binding, current_run, current)
                     if not eligibility.eligible:
                         raise CycleBlockedError("merge_eligibility_withdrawn", BlockCode.AUTHORITY_UNVERIFIABLE)
                     fresh = self.snapshot(current_binding, current, eligibility, review, expected["sequence"])

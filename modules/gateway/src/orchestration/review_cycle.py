@@ -251,6 +251,8 @@ class ReviewCycleHandler:
                         review_artifact=review.artifact_ref,
                         author_run_id=latest.detail["author_run_id"],
                     )
+            if snapshot["next_action"] == Action.REPAIR.value:
+                snapshot["remaining_attempts"] = facts.get("remaining_repair_attempts", facts["remaining_attempts"])
             await services.recheck(session, context, node, binding, facts)
             readiness = getattr(services, "dispatch_readiness", None)
             if readiness is not None:

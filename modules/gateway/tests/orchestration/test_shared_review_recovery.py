@@ -292,9 +292,16 @@ async def test_failed_reviewer_recovers_without_waiting_for_outer_node_stall(rec
         latest = await db.get(OrchestrationRunReport, claim.active_run_id)
         latest.terminal_receipt = {"outcome": "failed"}
         await db.commit()
-    # The developer and both reviewers exhaust the same original allowance.
+    # The third review is still allowed: development spent a different stage.
+    assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 1
+    assert (await protocol.tick(ctx)).effects_succeeded == 1
+    assert len(ctx.calls) == 3
+    _, claim, _, _ = await protocol.state(ctx)
+    async with ctx.factory() as db:
+        latest = await db.get(OrchestrationRunReport, claim.active_run_id)
+        latest.terminal_receipt = {"outcome": "failed"}
+        await db.commit()
     assert await recover_stalled_stories(ctx.factory, resolver=recovery.resolver) == 0
-    assert len(ctx.calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -359,7 +366,22 @@ async def test_automatic_recovery_preserves_holds(recovery, reason):
             from sqlalchemy import select
 
             execution = await db.scalar(select(OrchestrationExecution).where(OrchestrationExecution.node_id == ctx.node.id))
+            from src.orchestration.models import OrchestrationAction
+
             execution.attempts = 8
+            for index in range(7):
+                db.add(
+                    OrchestrationAction(
+                        org_id=ctx.node.org_id,
+                        execution_id=execution.id,
+                        operation_key=f"prior-review:{index}",
+                        kind="review_cycle_dispatch",
+                        status="failed",
+                        attempt=index + 2,
+                        detail={"action": "review"},
+                        created_at=datetime.now(UTC),
+                    )
+                )
         if reason == "explicit_blocker":
             (await db.get(OrchestrationRunReport, recovery.run)).review_receipt = {"recorded": True}
         await db.commit()

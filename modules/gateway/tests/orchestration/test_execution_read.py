@@ -893,7 +893,7 @@ async def test_the_action_cap_is_enforced_in_sql_not_after_the_fetch(session, ap
 
     @event.listens_for(session.bind.sync_engine, "before_cursor_execute")
     def _capture(_conn, _cursor, statement, params, _context, _executemany):
-        if "orchestration_actions" in statement.lower():
+        if "orchestration_actions" in statement.lower() and "GROUP BY" not in statement:
             captured.append((statement, params))
 
     try:
@@ -1042,9 +1042,9 @@ async def test_actions_for_a_page_are_fetched_in_one_grouped_query(session, app_
 
     assert len(view.executions) == 6
     assert all(execution.actions for execution in view.executions)
-    # One count, one page of executions, one grouped action fetch. Six executions
-    # must not mean six action queries.
-    assert len(statements) == 3, statements
+    # Count, execution page, bounded actions, grouped stage counts, and node counters.
+    # Six executions must not mean six action queries.
+    assert len(statements) == 5, statements
 
 
 # ---------------------------------------------------------------------------
@@ -1383,3 +1383,17 @@ async def seed_action(
     session.add(row)
     await session.flush()
     return row
+
+
+async def test_stage_counts_include_history_outside_the_execution_page(session, app_with_router):
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, node_ref="stage-story")
+    node.attempts = 3
+    old = await seed_execution(session, flow, node, cycle=1, status=ExecutionStatus.CONCLUDED)
+    current = await seed_execution(session, flow, node, cycle=3)
+    for execution, key in [(old, "old-review"), (current, "current-review")]:
+        action = await seed_action(session, execution, operation_key=key, kind="review_cycle_dispatch", status=ActionStatus.FAILED)
+        action.detail = {"action": "review"}
+    await session.commit()
+    body = client_for(app_with_router).get(route(flow.id), params={"limit": 1, "offset": 1}).json()
+    assert body["executions"][0]["stage_attempts"] == {"develop": 3, "review": 2}

@@ -693,6 +693,7 @@ export interface ExecutionSummary {
    * *progress* must not carry it. The authorizing plan is on the plans route.
    */
   attempts: number;
+  stage_attempts?: Record<string, number>;
   next_check_at: string | null;
   deadline_at: string | null;
   progressed_at: string | null;

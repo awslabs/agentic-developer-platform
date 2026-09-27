@@ -307,7 +307,7 @@ async def review(ctx, *, approve=False, findings=None, publication=False):
 async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     ctx = cycle
     result = await tick(ctx)
-    assert result.effects_succeeded == 1, result
+    assert result.effects_succeeded == 1, (result, (await state(ctx))[0].block_detail)
     first = ctx.calls[-1]
     assert first["persona"] == "agent-codex-reviewer"
     assert first["review_expect"]["author_run_id"] == ctx.root
@@ -534,7 +534,7 @@ async def test_policy_developer_cannot_dispatch_competing_review(cycle):
     assert AgentAction.MONITOR in grant.delegable_actions
 
 
-async def test_repair_does_not_restart_attempt_allowance(cycle):
+async def test_repair_has_separate_allowance_and_review_retains_its_history(cycle):
     async with cycle.factory() as db:
         plan = await db.get(OrchestrationAcceptedPlan, cycle.plan.id)
         document = json.loads(json.dumps(plan.plan_document))
@@ -547,10 +547,14 @@ async def test_repair_does_not_restart_attempt_allowance(cycle):
     await cycle.finish(cycle.calls[-1]["message_id"])
     cycle.head = "b" * 40
     result = await tick(cycle)
-    assert result.blocked == 1, result
+    assert result.effects_succeeded == 1, result
     execution, claim, node, actions = await state(cycle)
-    assert execution.block_detail == "continuation_attempts_exhausted"
-    assert len(cycle.calls) == 2 and len(actions) == 2
+    from src.orchestration.stage_attempts import stage_attempts
+
+    async with cycle.factory() as db:
+        assert await stage_attempts(db, org_id=ORG, node_id=node.id, action=Action.REVIEW) == 2
+        assert await stage_attempts(db, org_id=ORG, node_id=node.id, action=Action.REPAIR) == 1
+    assert len(cycle.calls) == 3 and len(actions) == 3
     assert claim.generation == 5 and node.attempts == 1
 
 
@@ -600,3 +604,18 @@ async def test_paused_reviewer_waits_and_resume_dispatches_once(cycle):
     report = await tick(cycle)
     assert report.effects_succeeded == 1
     assert len(cycle.calls) == 1
+
+
+async def test_final_developer_attempt_still_admits_first_review(cycle):
+    # Development has spent its only attempt; review has spent none.
+    async with cycle.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, cycle.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = 1
+        plan.plan_document = document
+        await db.commit()
+    result = await tick(cycle)
+    assert result.effects_succeeded == 1, result
+    execution, _, node, actions = await state(cycle)
+    assert node.attempts == 1 and execution.attempts == 1
+    assert len(actions) == 1 and actions[0].detail["action"] == "review"

@@ -26,6 +26,7 @@ from .models import (
     OrchestrationWorkClaim,
 )
 from .policy_admission import SpendObservation, load_in_force_policy, resolve_authorization_context
+from .stage_attempts import stage_attempts
 
 CODE_ACTIONS = frozenset({Action.DEVELOP, Action.REPAIR, Action.REVIEW, Action.MERGE})
 
@@ -284,8 +285,7 @@ async def authorize_shared_action(session, context, node, binding, run_id, actio
         provider_repository_id=binding.provider_repository_id,
         expected_invocation_id=run_id,
     )
-    # Count the initial attempt and subsequent durable invocations together.
-    used = node.attempts + context.execution.attempts - 1
+    used = await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action) - 1
     auth = replace(
         auth,
         observed_attempts=max(0, used),
@@ -442,7 +442,15 @@ async def authorize_shared_model(session, assignment):
         _refuse("active_claim_changed", BlockCode.OWNERSHIP_LOST)
     auth = replace(
         auth,
-        observed_attempts=max(0, node.attempts + (execution.attempts if execution else 0) - 1),
+        observed_attempts=max(
+            0,
+            (
+                node.attempts
+                if action is Action.DEVELOP or (assignment.persona == "developer" and not assignment.dispatch_metadata.get("review_cycle_input"))
+                else await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action)
+            )
+            - 1,
+        ),
         observed_concurrency=await _active_count(
             session, org_id=node.org_id, flow_id=node.flow_id, exclude_run_id=assignment.run_id, initial_runs=marker.get("initial_runs")
         ),

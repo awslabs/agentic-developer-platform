@@ -386,7 +386,8 @@ class PolicyLimits(BaseModel):
     # descendant. NOT per run and NOT per child — see `flow_budget_binding` for why
     # the allowance has to be shared to mean anything.
     max_spend_usd: Decimal = Field(gt=0, le=Decimal("100000"))
-    # Attempts for any single node, which is what bounds a repair loop.
+    # Attempts per stage of a node (develop/review/repair/merge/deploy/evaluate).
+    # Keep the wire name for compatibility with existing accepted plans.
     max_attempts_per_node: int = Field(gt=0, le=100)
     # Simultaneous admitted actions under this policy, which is what bounds fan-out.
     max_concurrent_actions: int = Field(gt=0, le=100)
@@ -1073,7 +1074,7 @@ class AuthorizationContext:
     # The reconciliation path restores headroom by supplying a real number, not by
     # defaulting this one.
     observed_spend_usd: Decimal | None = None
-    # Attempts already made on this node, and actions currently admitted under this
+    # Attempts already made in the current node stage, and actions admitted under this
     # policy. Ints rather than optionals: both are counted from engine-owned rows
     # (`OrchestrationNode.attempts`, the admitted-action count), so a caller that
     # cannot read them cannot construct a context at all.
@@ -1375,7 +1376,7 @@ def authorize_action(
         # recovery — it is not self-clearing, and nothing here resets the count.
         return Decision.block(
             DenyReason.ATTEMPT_LIMIT_EXCEEDED,
-            f"this node has reached the {policy.limits.max_attempts_per_node} attempt(s) this policy authorizes; an authorized recovery is required",
+            f"this stage has reached the {policy.limits.max_attempts_per_node} attempt(s) this policy authorizes; an authorized recovery is required",
         )
 
     if context.observed_concurrency >= policy.limits.max_concurrent_actions:

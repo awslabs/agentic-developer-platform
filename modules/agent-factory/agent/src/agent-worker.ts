@@ -1185,7 +1185,19 @@ Before editing or creating any code file, read and internalize \`docs/agent-codi
 
 Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
-## Pre-submit checks (MANDATORY before requesting review)
+${AGENT_TYPE === 'developer' ? `## Developer delivery and review handoff
+
+Implement the agreed story, including its integration, focused regression tests
+and documentation. Use targeted checks during development where they help solve
+the task; do not run every test in a touched module by default.
+Commit and push the implementation, then open or reuse its ready PR. Do not create
+a draft PR. Disclose checks passed, failed or not run and any incomplete evidence.
+Once that PR is open, stop developer work and return the PR link immediately.
+Do not run further tests, lint, validation-receipt verification, CI polling or
+repair loops after publication. An existing ready PR for the delivered story goes
+directly to handoff. Codex owns review, additional validation, repairs and merge.
+The engine records the PR handoff; development does not declare the story closed.
+` : `## Pre-submit checks (MANDATORY before requesting review)
 
 Do not create draft PRs, even if older task text requests one. Complete the agreed implementation, integration, tests and documentation, then run the linters and tests for the module(s) you touched before opening a ready PR or requesting review. Incomplete branch checkpoints may be pushed with check status disclosed; share commit links and continue working. Reuse any existing PR, marking an existing draft ready only after the same completion checks. Required CI still gates merge.
 
@@ -1241,7 +1253,8 @@ coverage for the reviewer; it does not introduce a new automated acceptance gate
 
 After committing, before pushing, run \`git diff HEAD~1 --stat\` and confirm the files you expected to change are the only ones that changed. If the linter reformatted a file you didn't mean to touch, that's a surgical-changes violation — revert it.
 
-Failing to run these checks is a process bug. PRs that land with lint/test failures traceable to the PR's own changes will be reverted.
+Failing to run these checks is a process bug. PRs that land with lint/test failures traceable to the PR's own changes will be reverted.`}
+
 
 ${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
 

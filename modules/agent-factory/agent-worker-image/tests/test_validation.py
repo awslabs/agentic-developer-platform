@@ -191,14 +191,18 @@ def test_failed_check_on_published_head_reaches_review_without_claiming_validati
     report = MagicMock()
     monkeypatch.setattr(entrypoint, "_post_comment", report)
     monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
+    verification = MagicMock(wraps=validation.verify)
+    monkeypatch.setattr(validation, "verify", verification)
     result = entrypoint._handle_success("o/r", 1, "agent/issue-1", "developer", "run-1", "now")
+    if condition == "published":
+        verification.assert_not_called()
     assert result == (0 if condition == "published" else 1)
     assert not validation.verify(repo)[0]  # The failure receipt is never cleared or relabeled.
     if condition == "published":
         binding.assert_called_once()
         handoff.assert_called_once()
         assert "local validation is NOT verified" in report.call_args.args[4]
-        assert "Missing passing validation" in report.call_args.args[4]
+        assert "Local validation receipts left for Codex review" in report.call_args.args[4]
     else:
         binding.assert_not_called()
         handoff.assert_not_called()

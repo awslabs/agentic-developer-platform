@@ -35,6 +35,7 @@ from .models import (
     OrchestrationWorkClaim,
 )
 from .pr_bindings import binding_scope_matches, binding_snapshot
+from .stage_attempts import stage_attempts
 from .state import ActorKind
 from .work_claims import ClaimBinding, ClaimOwner, OwnerKind, bind_run, claim_work
 
@@ -386,12 +387,12 @@ async def preview_continuation(session, *, flow_id, actor, request, resolver, re
                 {"node_id": node.id, "code": "repository_not_permitted", "detail": "The accepted policy must include the bound repository."}
             )
             continue
-        if node.attempts >= policy.limits.max_attempts_per_node:
+        if await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=Action.REVIEW) >= policy.limits.max_attempts_per_node:
             blockers.append(
                 {
                     "node_id": node.id,
                     "code": "attempt_limit_exceeded",
-                    "detail": "The total attempt ceiling must include previously consumed attempts.",
+                    "detail": "The review-stage attempt ceiling must include previous review attempts.",
                 }
             )
             continue

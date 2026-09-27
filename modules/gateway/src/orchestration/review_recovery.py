@@ -25,6 +25,7 @@ from .review_cycle import CycleBlockedError
 from .run_reports import OrchestrationRunReport
 from .shared_cycle import shared_marker, validate_current_report_assignment
 from .shared_policy import authorize_shared_action, shared_inputs
+from .stage_attempts import stage_attempts
 
 KIND = "review_recovery_requested"
 CONTRACT = "shared-review-recovery/v1"
@@ -362,7 +363,8 @@ async def recovery_snapshot(session, context, node, binding, services, dispatche
     return {
         "active_run_id": active,
         "head_sha": head,
-        "remaining_attempts": inputs.policy.limits.max_attempts_per_node - node.attempts - context.execution.attempts,
+        "remaining_attempts": inputs.policy.limits.max_attempts_per_node
+        - await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=Action.REVIEW),
         "remaining_spend_usd": str(inputs.policy.limits.max_spend_usd - meter.total_usd)
         if inputs.policy._budget_enforcement_enabled and meter
         else None,
@@ -544,7 +546,7 @@ async def require_autonomous_recovery(session, node, report, execution, inputs):
         raise CycleBlockedError("not_an_engine_stall")
     if execution.pending_action_key:
         raise CycleBlockedError("pending_effect_requires_reconciliation")
-    if node.attempts + execution.attempts >= inputs.policy.limits.max_attempts_per_node:
+    if await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=Action.REVIEW) >= inputs.policy.limits.max_attempts_per_node:
         raise CycleBlockedError("continuation_attempts_exhausted")
     if not inputs.policy.permits(Action.REVIEW):
         raise CycleBlockedError("review_not_authorized")

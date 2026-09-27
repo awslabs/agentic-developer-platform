@@ -388,3 +388,12 @@ describe('evaluation correction progress', () => {
     expect(summary).not.toHaveTextContent('Required criteria passed');
   });
 });
+
+
+it('shows separate development, review and merge attempt counts', () => {
+  renderPanel({ execution: execution({ attempts: 8, stage_attempts: { develop: 3, review: 2, merge: 1 } }) });
+  expect(screen.getByText('develop attempts:').parentElement).toHaveTextContent('3');
+  expect(screen.getByText('review attempts:').parentElement).toHaveTextContent('2');
+  expect(screen.getByText('merge attempts:').parentElement).toHaveTextContent('1');
+  expect(screen.queryByText('Total continuation attempts:')).not.toBeInTheDocument();
+});

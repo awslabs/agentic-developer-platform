@@ -201,7 +201,7 @@ describe('the limits', () => {
     );
 
     expect(screen.getByTestId('policy-limits')).toHaveTextContent('4 at a time');
-    expect(screen.getByTestId('policy-limits')).toHaveTextContent('3 attempts per step');
+    expect(screen.getByTestId('policy-limits')).toHaveTextContent('3 attempts per stage');
   });
 
   it('never renders an "unlimited" reading, because the schema cannot express one', () => {

@@ -77,6 +77,7 @@ from .models import (
     OrchestrationNode,
     OrchestrationWorkClaim,
 )
+from .stage_attempts import stage_attempts
 from .state import NodeState
 
 logger = logging.getLogger(__name__)
@@ -662,7 +663,8 @@ async def authorize_node_dispatch(
         work_claim_issue=work_claim_issue,
     )
     if continuing_node:
-        context = replace(context, observed_attempts=max(0, node.attempts - 1), observed_concurrency=max(0, context.observed_concurrency - 1))
+        used = await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action)
+        context = replace(context, observed_attempts=max(0, used - 1), observed_concurrency=max(0, context.observed_concurrency - 1))
 
     resource = ResourceRef(
         repository_id=target_repository,

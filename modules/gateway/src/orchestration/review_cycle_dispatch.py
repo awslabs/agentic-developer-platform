@@ -34,6 +34,7 @@ from .policy_admission import SpendObservation, authorize_node_dispatch, load_in
 from .pr_bindings import active_binding_for_node, binding_scope_matches
 from .review_cycle import DISPATCH_KIND, CycleBlockedError, CycleObservation
 from .run_store import EngineRunStore
+from .stage_attempts import stage_attempts
 
 ACTOR = "system:review-cycle"
 
@@ -221,9 +222,8 @@ class ReviewCycleServices:
             provider_repository_id=binding.provider_repository_id,
             expected_invocation_id=run_id,
         )
-        # The initial development attempt and every durable continuation consume
-        # one shared allowance. A fresh invocation never restarts this counter.
-        used = node.attempts + context.execution.attempts - 1
+        # Reauthorization of an admitted stage does not spend another attempt.
+        used = await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action) - 1
         auth = replace(auth, observed_attempts=max(0, used), observed_concurrency=max(0, auth.observed_concurrency - 1))
         started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)
         if started is None or (datetime.now(UTC) - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
@@ -299,7 +299,10 @@ class ReviewCycleServices:
             "remaining_spend_usd": str(inputs.policy.limits.max_spend_usd - meter.total_usd)
             if inputs.policy._budget_enforcement_enabled and meter
             else None,
-            "remaining_attempts": inputs.policy.limits.max_attempts_per_node - node.attempts - context.execution.attempts,
+            "remaining_attempts": inputs.policy.limits.max_attempts_per_node
+            - await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=Action.REVIEW),
+            "remaining_repair_attempts": inputs.policy.limits.max_attempts_per_node
+            - await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=Action.REPAIR),
         }
 
     async def recheck(self, session, context, node, binding, facts):

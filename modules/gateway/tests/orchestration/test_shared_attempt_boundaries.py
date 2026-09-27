@@ -91,7 +91,7 @@ async def model_call(ctx, credential, monkeypatch):
 
 
 @pytest.mark.parametrize("limit", [1, 2])
-async def test_initial_developer_and_review_use_one_shared_attempt_allowance(shared, monkeypatch, limit):  # noqa: F811
+async def test_initial_developer_and_review_have_independent_stage_allowances(shared, monkeypatch, limit):  # noqa: F811
     ctx = shared
     await set_attempt_limit(ctx, limit)
     async with ctx.factory() as db:
@@ -124,21 +124,19 @@ async def test_initial_developer_and_review_use_one_shared_attempt_allowance(sha
     await ctx.finish(ctx.root)
     result = await protocol.tick(ctx)
     execution, _, node, actions = await protocol.state(ctx)
-    if limit == 1:
-        assert result.effects_succeeded == 0 and ctx.calls == [] and actions == []
-        assert execution.status == "blocked" and execution.block_code == "attempts_exhausted"
-        assert execution.attempts == 0 and node.attempts == 1
-    else:
-        assert result.effects_succeeded == 1 and len(ctx.calls) == 1
-        assert execution.attempts == 1 and node.attempts == 1
-        reviewer = ctx.calls[0]
-        assert reviewer["persona"] == "agent-codex-reviewer"
-        await model_call(ctx, reviewer["run_report"]["credential"], monkeypatch)
-        await protocol.review(ctx, findings=[{"finding_id": "F1", "summary": "Repair", "evidence_refs": []}])
-        result = await protocol.tick(ctx)
-        assert result.effects_succeeded == 0 and len(ctx.calls) == 1
-        execution, _, _, actions = await protocol.state(ctx)
-        assert execution.status == "blocked" and execution.attempts == 1 and len(actions) == 1
+    assert result.effects_succeeded == 1 and len(ctx.calls) == 1
+    assert execution.attempts == 1 and node.attempts == 1
+    reviewer = ctx.calls[0]
+    assert reviewer["persona"] == "agent-codex-reviewer"
+    # The final allowed review can still authenticate its model requests.
+    await model_call(ctx, reviewer["run_report"]["credential"], monkeypatch)
+    await protocol.review(ctx, findings=[{"finding_id": "F1", "summary": "Repair", "evidence_refs": []}])
+    result = await protocol.tick(ctx)
+    assert result.effects_succeeded == 0 and len(ctx.calls) == 1
+    execution, _, _, actions = await protocol.state(ctx)
+    # An explicit reviewer blocker is not a request to run the same review again.
+    assert execution.status == "blocked" and execution.attempts == 1 and len(actions) == 1
+    assert execution.block_detail == "reviewer_delivery_blocked"
 
 
 async def test_different_story_admissions_serialize_before_worker_count(shared, monkeypatch):  # noqa: F811
@@ -244,6 +242,21 @@ async def test_runner_ceiling_stops_retries_despite_approved_increase_and_preser
         plan.plan_hash = digest(plan.plan_document)
         execution = await db.get(OrchestrationExecution, ctx.execution.id)
         execution.attempts = used
+        from src.orchestration.models import OrchestrationAction
+
+        for index in range(used):
+            db.add(
+                OrchestrationAction(
+                    org_id=execution.org_id,
+                    execution_id=execution.id,
+                    operation_key=f"historical-review:{index}",
+                    kind="historical_effect",
+                    status="failed",
+                    attempt=index + 1,
+                    detail={"attempt_stage": "review"},
+                    created_at=datetime.now(UTC),
+                )
+            )
         execution.next_check_at = datetime.now(UTC) - timedelta(seconds=1)
         await db.flush()
         if approved:

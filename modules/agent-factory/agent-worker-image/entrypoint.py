@@ -4351,6 +4351,7 @@ def _handle_success(
 
             validation_note = "No validation receipts recorded; final-commit checks are unverified."
             can_finalize = not has_uncommitted
+            published_review = False
             # Older/non-code runs can have no manifest. Report missing evidence;
             # do not invent checks or infer semantic acceptance from a receipt.
             try:
@@ -4359,6 +4360,10 @@ def _handle_success(
                           else git_path / "adp-validation")
                 manifest = folder / "commands.json"
                 if manifest.exists():
+                    published_review = not has_uncommitted and _developer_pr_ready_for_review(repo, branch)
+                    if published_review:
+                        validation_note = "Local validation receipts left for Codex review."
+                if manifest.exists() and not published_review:
                     # The SDK tool shell and Python supervisor have different
                     # environments. Inspect the latest actual test evidence here;
                     # the CLI owns environment matching and cache reuse.
@@ -4372,9 +4377,6 @@ def _handle_success(
             # not certify acceptance. An exploratory/host-dependent check must
             # not strand an already published PR before the reviewer can repair
             # it. Only the exact, clean, published head qualifies for this path.
-            published_review = False
-            if not has_uncommitted and not can_finalize:
-                published_review = _developer_pr_ready_for_review(repo, branch)
             if has_uncommitted or (not can_finalize and not published_review):
                 if has_uncommitted:
                     run_cmd(["git", "add", "-A"], cwd=WORK_DIR)

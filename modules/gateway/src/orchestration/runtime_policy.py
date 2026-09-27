@@ -21,6 +21,7 @@ from .dispatch import graph_address
 from .execution_policy import Action, CredentialScope, Decision, DenyReason, ExecutionPolicy, ResourceRef, authorize_action
 from .models import DecisionKind, NodeKind, OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .policy_admission import AdmissionInputs, SpendObservation, load_in_force_policy, resolve_authorization_context
+from .stage_attempts import stage_attempts
 from .state import NodeState
 
 
@@ -335,7 +336,15 @@ async def authorize_worker_credential(
         now=now,
         grant_revoked=not grant.is_live(now),
         # Revalidating an admitted action does not consume another slot/attempt.
-        observed_attempts=max(0, node.attempts - 1),
+        observed_attempts=max(
+            0,
+            (
+                await stage_attempts(session, org_id=node.org_id, node_id=node.id, action=action)
+                if execution.get("orchestration_continuation_receipt")
+                else node.attempts
+            )
+            - 1,
+        ),
         observed_concurrency=max(0, context.observed_concurrency - 1),
     )
     decision = authorize_action(

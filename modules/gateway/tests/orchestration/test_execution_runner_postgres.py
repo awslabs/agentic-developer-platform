@@ -326,3 +326,43 @@ async def test_pause_wins_race_after_observation_without_spending_attempt(pg_ses
         row = await session.get(OrchestrationExecution, execution.id)
         assert row.attempts == 0 and row.pending_action_key is None
         assert await session.scalar(select(func.count()).select_from(OrchestrationAction)) == 0
+
+
+async def test_stage_history_survives_cycles_and_distinguishes_reserved_replay(pg_session_factory, execution):
+    from src.orchestration.stage_attempts import stage_attempts, stage_counts
+
+    async with pg_session_factory() as db:
+        older = OrchestrationExecution(
+            org_id=ORG,
+            flow_id=execution.flow_id,
+            node_id=execution.node_id,
+            cycle=2,
+            phase="awaiting_review",
+            status="concluded",
+            revision=1,
+            accepted_plan_version=1,
+            claim_id=CLAIM,
+            claim_generation=1,
+            attempts=2,
+        )
+        db.add(older)
+        await db.flush()
+        for key, owner, kind, status, detail in [
+            ("old-review", older.id, "review_cycle_dispatch", "failed", {"action": "review"}),
+            ("old-repair", older.id, "review_cycle_dispatch", "succeeded", {"action": "repair"}),
+            ("current-review", execution.id, "review_cycle_dispatch", "prepared", {"action": "review"}),
+            ("receipt", execution.id, "review_evidence", "succeeded", {}),
+            ("merge", execution.id, "merge_pull_request", "unknown", {}),
+        ]:
+            db.add(
+                OrchestrationAction(
+                    org_id=ORG, execution_id=owner, operation_key=key, kind=kind, status=status, attempt=1, detail=detail, created_at=NOW
+                )
+            )
+        await db.commit()
+        args = dict(org_id=ORG, node_id=execution.node_id, action=Action.REVIEW)
+        assert await stage_attempts(db, **args) == 2
+        assert await stage_attempts(db, **args, exclude_operation_key="current-review") == 1
+        assert await stage_attempts(db, **args, exclude_operation_key="old-review") == 2
+        assert await stage_counts(db, org_id=ORG, node_ids=[execution.node_id]) == {execution.node_id: {"review": 2, "repair": 1, "merge": 1}}
+        assert await stage_attempts(db, org_id="other-tenant", node_id=execution.node_id, action=Action.REVIEW) == 0

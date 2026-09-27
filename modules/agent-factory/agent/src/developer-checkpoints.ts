@@ -31,8 +31,8 @@ Example of the supporting checkpoint detail, after explaining the task and
 approach: "On agent/issue-N, I will first publish the change that saves an account
 connection, then the checks that the same user can list and remove it. I will
 checkpoint about every 15 minutes at safe boundaries and before long validation,
-share commit links, and open a ready PR after completing the assignment and
-pre-submit checks."
+share commit links, and open a ready PR after implementing the assignment.
+Once the PR is open, return immediately for Codex review."
 
 - Push the first coherent change, then checkpoint at meaningful milestones and
   about every 15 minutes at a safe tool boundary while changes accumulate. Push
@@ -50,9 +50,10 @@ pre-submit checks."
   passed/failed/not run in a concise progress update on the designated issue.
 - Do not create draft PRs, including when older issue text asks for one. Share
   branch/commit links while work is in progress. Open a ready PR only after the
-  agreed implementation, integration, tests and documentation are complete and
-  pre-submit checks pass, with any verified pre-existing failures documented.
-  Reuse an existing PR; if it is a draft, mark it ready only at that same point.
+  agreed implementation, integration, tests and documentation are implemented.
+  Disclose checks passed, failed or not run. Reuse an existing PR; mark it ready
+  when implementation is delivered. Once the PR is open, return immediately for
+  Codex review; do not run more checks, poll CI or start another repair loop.
   A checkpoint does not mark the story done, dispatch review/evaluation, advance
   a wave, merge, or bypass AI-DLC approvals. Continue the assignment after pushing;
   if blocked, report the blocker and remaining work without declaring completion.
@@ -80,8 +81,8 @@ function checkpointReminder(agentType: string): HookCallback {
           'publish a coherent checkpoint at the next safe boundary, following the branch ' +
           'checkpoint strategy in your plan. Inspect and selectively stage the diff; verify ' +
           'the remote commit, then report the link, remaining work and check status. ' +
-          'Share branch/commit links; do not create a PR until implementation and ' +
-          'pre-submit checks are complete. Continue the assignment after the checkpoint. If there is no new ' +
+          'Share branch/commit links until implementation is delivered. Once the ready PR is open, ' +
+          'return immediately for Codex review without more checks or CI polling. If there is no new ' +
           'work, a writer is still active, or publication is blocked, report that instead. ' +
           'This reminder neither verifies a push nor authorizes implementation, review, ' +
           'wave advancement or any action past an approval gate.',

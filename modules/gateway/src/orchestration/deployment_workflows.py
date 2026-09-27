@@ -177,10 +177,7 @@ class WorkflowServices:
                 )
                 physical = PhysicalTarget(**{**data["target"], "evidence": TargetEvidence(**data["target"]["evidence"])})
                 return data, binding, workflow, WorkflowDefinition(**data["definition"]), physical, outstanding
-            effective = (
-                replace(context, execution=replace(context.execution, attempts=max(0, context.execution.attempts - 1))) if reserved else context
-            )
-            facts = await self.authority.authority_context(session, effective, node, binding, run_id, Action.DEPLOY, delivery=True)
+            facts = await self.authority.authority_context(session, context, node, binding, run_id, Action.DEPLOY, delivery=True)
             policy, principal, auth = facts[2].policy, facts[3], facts[-1]
             from .runtime_policy import flow_started_at
 

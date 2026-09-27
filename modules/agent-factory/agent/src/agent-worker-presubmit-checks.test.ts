@@ -33,20 +33,13 @@ describe('agent-worker pre-submit checks contract', () => {
     expect(source).toContain("Don't clean up unrelated debt in the same PR");
   });
 
-  it('appears in the shared scaffolding, not inside per-agent-type conditionals', () => {
-    const presubmitIndex = source.indexOf('## Pre-submit checks (MANDATORY before requesting review)');
-    expect(presubmitIndex).toBeGreaterThan(-1);
-
-    // Must appear after the shared Step 3 section
-    const step3Execute = source.indexOf('### Step 3: Execute Your Plan');
-    expect(step3Execute).toBeGreaterThan(-1);
-    expect(presubmitIndex).toBeGreaterThan(step3Execute);
-
-    // Must appear BEFORE the first per-agent AGENT_TYPE conditional
-    const instructionsStart = source.indexOf('## Instructions');
-    expect(instructionsStart).toBeGreaterThan(-1);
-    const firstConditional = source.indexOf("AGENT_TYPE === '", instructionsStart);
-    expect(firstConditional).toBeGreaterThan(-1);
-    expect(presubmitIndex).toBeLessThan(firstConditional);
+  it('gives developers a direct PR handoff while retaining review validation guidance', () => {
+    const start = source.indexOf("${AGENT_TYPE === 'developer' ? `## Developer delivery");
+    const end = source.indexOf('## Pre-submit checks (MANDATORY before requesting review)', start);
+    const developerGuidance = source.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(developerGuidance).toContain('Once that PR is open, stop developer work');
+    expect(developerGuidance).toContain('Codex owns review, additional validation, repairs and merge');
+    expect(developerGuidance).not.toContain('adp-validate verify');
   });
 });
