@@ -108,6 +108,9 @@ def test_observed_exit_and_cleanup_precede_success(execution):
     spec = pod["spec"]
     assert spec["automountServiceAccountToken"] is False
     assert spec["hostNetwork"] is False and spec["hostPID"] is False and spec["hostIPC"] is False
+    assert spec["nodeSelector"] == {"adp.dev/validation-isolation": "v1"}
+    assert spec["tolerations"] == [{"key": "adp.dev/validation", "operator": "Equal",
+                                    "value": "only", "effect": "NoSchedule"}]
     assert spec["restartPolicy"] == "Never"
     assert len(spec["containers"]) == 1
     container = spec["containers"][0]

@@ -1,5 +1,15 @@
 # Kubernetes validation qualification
 
+Live dev qualification on 27 September 2026 now establishes a dedicated Auto
+Mode NodeClass with `podPidsLimit: 128` and strict network policy. The standalone
+owner is `modules/tools/validation/isolation-infra`; webhook-owned validation
+provisioning remains disabled. Receipts in `evidence-20260927/` record actual
+network/process/credential/root isolation and source, failure, timeout and
+cancellation execution with observed termination and cleanup. The promoted node
+is individually UID-bound; replacement nodes receive no qualification label.
+The dedicated service is deployed with capability disabled. These operator
+probes do not establish authenticated Task authority or Task-to-PR completion.
+
 The shared source exporter now has local Docker and Kubernetes executors.
 Kubernetes checks require a registry-qualified `repository@sha256:digest`,
 frozen in the existing repository policy. The model still supplies only the
