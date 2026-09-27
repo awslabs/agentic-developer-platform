@@ -149,9 +149,9 @@ class Permission(StrEnum):
     """What a caller may do inside one workspace.
 
     Deliberately coarse. These are *domain* permissions, and they are separate
-    from ADP's role names on purpose (see :data:`ADP_ROLE_PERMISSIONS`): the two
-    products do not share a role vocabulary and assuming they did is how a role
-    rename upstream silently widens access here.
+    from ADP's role names on purpose. The unused candidate presets in
+    :data:`ADP_ROLE_PERMISSIONS` are not ADP platform or membership roles;
+    interpreting an upstream role rename as domain authority widens access.
     """
 
     READ = "workspace:read"
@@ -199,11 +199,10 @@ def expand_permissions(granted: Iterable[Permission]) -> frozenset[Permission]:
     return frozenset(result)
 
 
-# ADP role name -> domain permissions. The mapping is explicit and total: a role
-# absent from this table grants nothing, so an unrecognized or renamed role is a
-# denial rather than a default. R6's design note is specific that ADP roles map
-# to domain permissions "without assuming the products' role names match" — hence
-# a table rather than passing the role string through.
+# Candidate domain presets from #5044. These names are NOT ADP platform or
+# membership roles, and no production authorization path calls this helper.
+# An explicit, live, typed workspace grant remains required for every operation.
+# Do not apply this mapping to arbitrary JWT role strings.
 ADP_ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
     "workspace_viewer": frozenset({Permission.READ}),
     "workspace_operator": frozenset({Permission.SPEND}),
@@ -215,11 +214,10 @@ ADP_ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
 
 
 def permissions_for_adp_role(role: str) -> frozenset[Permission]:
-    """Translate one ADP role name into domain permissions.
+    """Describe one candidate domain preset; never authorize a token with it.
 
-    An unknown role yields the empty set. This is the fail-closed direction: a
-    role that ADP adds, or renames, is unprivileged here until someone decides
-    what it means, rather than inheriting whatever the name resembles.
+    An unknown name yields the empty set. The caller must still hold a live
+    workspace grant; this compatibility helper is not a grant assignment path.
     """
     return expand_permissions(ADP_ROLE_PERMISSIONS.get(role, frozenset()))
 

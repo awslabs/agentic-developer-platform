@@ -8,6 +8,7 @@ Versioned contracts for the Superplane domain app under EPIC #4910.
 | U7 (#5047) | R7 | Connections and bindings: `CONNECTION-CONTRACT.md` |
 | U11 (#5049) | R15 | Durable handles, reconciliation and provider-truth reporting |
 | w6-01 (#5524) | Wave 6 | Production ports, admission ordering, startup composition: `INTEGRATION-CONTRACT.md` (+ `REQUIREMENTS-MATRIX.md`) |
+| Permissions (#6484) | Role/scope contract | `action-permissions-v1.json`, `access-cases-v1.json`, `PERMISSIONS-DECISIONS.md`; checked against mounted routes in `src/superplane-api/tests/test_permission_contract.py` |
 
 Everything below the layout section describes the observation contracts unless it
 says otherwise; the connection contract's rules live in `CONNECTION-CONTRACT.md`,
