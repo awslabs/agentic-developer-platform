@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Domain MRI · See beneath the surface</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Domain MRI home"
+        ><span class="brandmark">◉</span> DOMAIN<span>MRI</span></a
+      >
+      <div class="top-right">
+        <span class="system-dot"></span> Investigation studio
+        <span class="demo-tag">DEMO</span>
+      </div>
+    </header>
+    <main>
+      <section class="intro">
+        <div class="eyebrow">DOMAIN INTELLIGENCE / LIVE INVESTIGATIONS</div>
+        <h1>See beneath<br />the <em>surface.</em></h1>
+        <p>
+          From a domain to a defensible assessment.<br />Follow the evidence as
+          your investigation unfolds.
+        </p>
+      </section>
+      <section class="console" aria-label="Investigation workspace">
+        <div class="input-panel">
+          <div class="panel-label">
+            <span>01 / INVESTIGATE A DOMAIN</span
+            ><span class="model-pill">✧ Opus 5</span>
+          </div>
+          <form id="domain-form">
+            <label class="sr-only" for="domain">Domain to investigate</label>
+            <div class="domain-field">
+              <span aria-hidden="true">◎</span
+              ><input
+                id="domain"
+                name="domain"
+                placeholder="example.com"
+                autocomplete="off"
+                spellcheck="false"
+                required
+                value="malware.wicar.org"
+              /><button id="submit" type="submit">
+                Investigate <span>↗</span>
+              </button>
+            </div>
+          </form>
+          <div class="input-bottom">
+            <span>Isolated browsing · Historical evidence · Cited findings</span
+            ><button class="text-button" id="replay">
+              Watch recorded demo <span>→</span>
+            </button>
+          </div>
+          <p id="error" class="error" role="alert" hidden></p>
+        </div>
+        <div class="workspace">
+          <section class="activity-panel">
+            <div class="section-head">
+              <div>
+                <span class="eyebrow">THE INVESTIGATION</span>
+                <h2 id="activity-title">Ready when you are.</h2>
+              </div>
+              <span id="connection" class="connection">STANDBY</span>
+            </div>
+            <div id="empty" class="empty">
+              <div class="radar" aria-hidden="true">
+                <div class="radar-ring"></div>
+                <svg viewBox="0 0 200 200">
+                  <path d="M10 100h42l14-28 18 56 18-80 20 102 15-50h53" /></svg
+                ><span class="radar-dot"></span>
+              </div>
+              <h3>Every domain has a story.</h3>
+              <p>
+                Investigate its live behavior, look back through the archives,
+                and connect the evidence.
+              </p>
+              <div class="empty-steps">
+                <span>01 <b>Observe</b></span
+                ><span>02 <b>Corroborate</b></span
+                ><span>03 <b>Assess</b></span>
+              </div>
+            </div>
+            <ol
+              id="timeline"
+              class="timeline"
+              aria-label="Investigation activity"
+              aria-live="polite"
+              aria-relevant="additions"
+              hidden
+            ></ol>
+            <div id="working" class="working" hidden>
+              <span class="dots"><i></i><i></i><i></i></span
+              ><span id="working-text">Waiting for the next observation</span>
+            </div>
+          </section>
+          <aside class="case-panel">
+            <div class="case-top">
+              <span class="eyebrow">CASE OVERVIEW</span
+              ><span id="state" class="status-badge">NOT STARTED</span>
+            </div>
+            <div class="subject-icon">◎</div>
+            <h2 id="subject">Your next investigation</h2>
+            <p id="case-note">One domain. Multiple perspectives.</p>
+            <dl>
+              <div>
+                <dt>Investigator</dt>
+                <dd>Claude Opus 5</dd>
+              </div>
+              <div>
+                <dt>Execution</dt>
+                <dd id="execution">Live investigation</dd>
+              </div>
+              <div>
+                <dt>Elapsed</dt>
+                <dd id="elapsed">—</dd>
+              </div>
+              <div>
+                <dt>Observations</dt>
+                <dd id="count">—</dd>
+              </div>
+            </dl>
+            <div class="sources">
+              <h3>Evidence sources</h3>
+              <div>
+                <span>◷</span>
+                <section>
+                  <b>Common Crawl</b
+                  ><small>Historical captures & context</small>
+                </section>
+              </div>
+              <div>
+                <span>◎</span>
+                <section>
+                  <b>Isolated browser</b
+                  ><small>Page, screenshot & network</small>
+                </section>
+              </div>
+              <div>
+                <span>▤</span>
+                <section>
+                  <b>Assessment</b
+                  ><small>Findings, citations & limitations</small>
+                </section>
+              </div>
+            </div>
+            <div id="case-id" class="case-id" hidden></div>
+            <button id="cancel" class="text-button" hidden>
+              Stop investigation
+            </button>
+            <div class="case-foot">
+              <span class="system-dot"></span> Evidence first. Uncertainty
+              included.
+            </div>
+          </aside>
+        </div>
+      </section>
+      <section id="result" class="result" hidden>
+        <div class="result-heading">
+          <div>
+            <div class="eyebrow">02 / THE ASSESSMENT</div>
+            <h2>Your report is ready.</h2>
+            <p id="result-note">
+              A standalone report with evidence, citations and coverage limits.
+            </p>
+          </div>
+          <div class="report-actions">
+            <a id="download" class="download" download>Download report ↓</a
+            ><a
+              id="open-report"
+              class="text-button"
+              target="_blank"
+              rel="noopener"
+              >Open full report ↗</a
+            >
+          </div>
+        </div>
+        <div id="summary" class="summary"></div>
+        <details open>
+          <summary>Read the full investigation</summary>
+          <iframe
+            id="report"
+            title="Domain investigation report"
+            sandbox=""
+            loading="lazy"
+          ></iframe>
+        </details>
+      </section>
+      <footer>
+        <span>DOMAIN MRI <b> / </b> Powered by ADP</span
+        ><span>Observe. Understand. Decide.</span>
+      </footer>
+    </main>
+  </body>
+</html>
