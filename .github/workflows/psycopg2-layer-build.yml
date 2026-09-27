@@ -79,7 +79,7 @@ jobs:
 
       - name: Verify artifact exists
         run: |
-          aws s3 ls "s3://${STATE_BUCKET}/lambda-layers/psycopg2-py312.zip" --region "${AWS_REGION}"
+          aws s3api head-object --bucket "$STATE_BUCKET" --key "lambda-layers/psycopg2-py312.zip" --region "$AWS_REGION" --query ContentLength --output text
 
       - name: Summary
         run: |
