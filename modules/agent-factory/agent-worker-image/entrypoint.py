@@ -2954,6 +2954,8 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     )
     try:
         run_options = {"cwd": WORK_DIR, "env": agent_env}
+        if persona == "developer" and envelope.get("pr_binding_required") is True:
+            agent_env["ADP_REQUIRE_IMPLEMENTATION_PROGRESS"] = "true"
         if is_codex_review:
             run_options.update({"input": raw_message, "text": True, "capture_output": True})
         from lib.agent_process import run_agent

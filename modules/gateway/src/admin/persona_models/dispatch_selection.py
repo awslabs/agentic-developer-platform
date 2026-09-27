@@ -60,7 +60,7 @@ async def select_for_dispatch(db, *, org_id: str, user_id: str, persona: str, di
 
 async def apply_dispatch_selection(db, envelope: dict) -> dict:
     """For in-process trusted producers, select before the envelope is sealed."""
-    if not mapping_enabled() or os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
+    if not mapping_enabled():
         return envelope
     correlation = envelope.get("correlation") or {}
     if correlation.get("is_human_rooted") is not True:
