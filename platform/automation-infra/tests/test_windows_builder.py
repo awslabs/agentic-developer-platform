@@ -53,3 +53,27 @@ def test_terminated_builder_fails_without_waiting_for_image_deadline(tmp_path):
     assert result.returncode == 1
     assert "terminated before publishing its image" in result.stdout
     assert not slept.exists()
+
+
+@pytest.mark.parametrize("build_exit", [0, 17])
+def test_userdata_reports_real_pipeline_exit(tmp_path, build_exit):
+    source = (ROOT / "modules/domain-apps/cyber/image-builder/builder-host.tf").read_text()
+    script = source.split('    bash "$WORKDIR/build-pipeline.sh"', 1)[1].split("  USERDATA", 1)[0]
+    script = 'bash "$WORKDIR/build-pipeline.sh"' + script
+    script = script.replace("$${PIPESTATUS[0]}", "${PIPESTATUS[0]}")
+    script = script.replace("/var/log/build-pipeline.log", str(tmp_path / "build.log"))
+    (tmp_path / "build-pipeline.sh").write_text(f"echo build-result\nexit {build_exit}\n")
+    aws = tmp_path / "aws"
+    aws.write_text('#!/bin/sh\ncat > "$FAILURE_LOG"\n')
+    aws.chmod(0o755)
+    failure = tmp_path / "failure"
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env=dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", WORKDIR=str(tmp_path),
+                 FAILURE_LOG=str(failure), ASSETS_BUCKET="test-assets", AWS_REGION="us-east-1", BUILD_DATE="2026-09-27"),
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == build_exit
+    assert failure.exists() is (build_exit != 0)
+    if failure.exists():
+        assert "build-result" in failure.read_text()

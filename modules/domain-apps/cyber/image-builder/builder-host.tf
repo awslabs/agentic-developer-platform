@@ -207,6 +207,8 @@ resource "aws_instance" "builder" {
         cloud-image-utils \
         genisoimage \
         awscli \
+        curl \
+        unzip \
         jq \
         cpu-checker && break
       echo "apt-get failed (attempt $attempt/5), cleaning and retrying in 30s..."
@@ -223,7 +225,7 @@ resource "aws_instance" "builder" {
 
     # Verify critical packages
     MISSING=""
-    for pkg in qemu-utils libvirt-daemon-system genisoimage jq; do
+    for pkg in qemu-utils libvirt-daemon-system genisoimage jq awscli curl unzip; do
       dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"
     done
     # Need at least qemu-system-x86 OR qemu-kvm
@@ -273,7 +275,7 @@ resource "aws_instance" "builder" {
     chmod +x "$WORKDIR/build-pipeline.sh"
     echo "=== Running build-pipeline.sh ==="
     bash "$WORKDIR/build-pipeline.sh" 2>&1 | tee /var/log/build-pipeline.log
-    BUILD_EXIT=$?
+    BUILD_EXIT=$${PIPESTATUS[0]}
 
     if [ $BUILD_EXIT -ne 0 ]; then
       echo "ERROR: build-pipeline.sh exited with code $BUILD_EXIT"
@@ -282,6 +284,7 @@ resource "aws_instance" "builder" {
     fi
 
     echo "=== Image Builder user-data complete at $(date -u), exit=$BUILD_EXIT ==="
+    exit "$BUILD_EXIT"
   USERDATA
   )
 
