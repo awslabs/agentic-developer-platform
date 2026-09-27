@@ -37,7 +37,9 @@ resource "aws_eks_access_policy_association" "skypilot_deployment" {
   count         = var.enable_skypilot_deployment ? 1 : 0
   cluster_name  = var.cluster_name
   principal_arn = aws_eks_access_entry.skypilot_deployment[0].principal_arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy"
+  # The Namespace manifest also owns this namespace's pod-security labels.
+  # Keep the association namespace-scoped while permitting that object update.
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
   access_scope {
     type       = "namespace"
     namespaces = ["skypilot"]

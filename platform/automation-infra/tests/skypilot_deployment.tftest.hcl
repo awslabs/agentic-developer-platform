@@ -30,6 +30,10 @@ run "skypilot_release_is_bounded" {
     error_message = "SkyPilot release must not administer the control plane or cluster."
   }
   assert {
+    condition     = aws_eks_access_policy_association.skypilot_deployment[0].policy_arn == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+    error_message = "The namespace-scoped association must permit its own Namespace security labels."
+  }
+  assert {
     condition     = jsondecode(aws_iam_role.skypilot_deployment[0].assume_role_policy).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"] == "repo:aws-e/adp:environment:adp-skypilot-deploy-test"
     error_message = "Only the dedicated protected environment can obtain the role."
   }
