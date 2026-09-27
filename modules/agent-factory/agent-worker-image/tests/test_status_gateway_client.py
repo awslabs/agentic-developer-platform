@@ -670,3 +670,34 @@ def test_review_upload_shared_report_transport_checks_exact_byte_receipt(monkeyp
     monkeypatch.setattr(run_report, "request", lambda *args: {"key": key, "sha256": "wrong", "recorded": True})
     with pytest.raises(StatusGatewayError, match="receipt"):
         status_gateway_client.upload_review_result(data)
+
+@pytest.mark.parametrize('status', ['complete', 'failed', 'aborted'])
+def test_terminal_status_retries_transient_failure_with_identical_report(monkeypatch, status):
+    calls = []
+    def post(path, payload):
+        calls.append((path, dict(payload)))
+        if len(calls) < 3:
+            raise StatusGatewayError('service unavailable', retryable=True)
+        return {}
+    monkeypatch.setattr(status_gateway_client, '_post', post)
+    monkeypatch.setattr(status_gateway_client.time, 'sleep', lambda _: None)
+    status_gateway_client.record_status(status, {'summary': 'Recorded outcome'})
+    assert len(calls) == 3
+    assert all(call == calls[0] for call in calls)
+
+
+def test_terminal_status_does_not_retry_permanent_refusal(monkeypatch):
+    post = MagicMock(side_effect=StatusGatewayError('refused'))
+    monkeypatch.setattr(status_gateway_client, '_post', post)
+    with pytest.raises(StatusGatewayError):
+        status_gateway_client.record_status('complete', {})
+    assert post.call_count == 1
+
+
+def test_terminal_status_reports_exhausted_retries(monkeypatch):
+    post = MagicMock(side_effect=StatusGatewayError('unavailable', retryable=True))
+    monkeypatch.setattr(status_gateway_client, '_post', post)
+    monkeypatch.setattr(status_gateway_client.time, 'sleep', lambda _: None)
+    with pytest.raises(StatusGatewayError):
+        status_gateway_client.record_status('failed', {})
+    assert post.call_count == 6

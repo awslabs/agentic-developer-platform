@@ -461,3 +461,34 @@ class TestAnAbortedRunRefusesProtectedRedelivery:
         register(ctx)
 
         assert self._rebind(ctx, uid="pod-a").workload_binding == "pod-a"
+
+
+def test_engine_continuation_completes_without_dispatch_reservation(registered_context):
+    ctx = registered_context
+    register(ctx)
+    ctx.ddb.update_item(
+        TableName='authority',
+        Key={'pk': {'S': 'TENANT#tenant'}, 'sk': {'S': 'EXEC#run-a'}},
+        UpdateExpression='SET parent_grant_id = :parent, orchestration_continuation_receipt = :receipt',
+        ExpressionAttributeValues={':parent': {'S': 'parent-grant'}, ':receipt': {'S': 'review-cycle-decision'}},
+    )
+    report(ctx)
+    report(ctx)
+    assert event(ctx)['status'] == {'S': 'complete'}
+    assert 'control_token' not in event(ctx)
+    assert ctx.store._read('TENANT#tenant', 'EXEC#run-a')['status'] == {'S': 'completed'}
+    assert ctx.store._read('TENANT#tenant', 'RESV#parent-grant') is None
+
+
+def test_incomplete_agent_dispatch_reservation_still_refused(registered_context):
+    ctx = registered_context
+    register(ctx)
+    ctx.ddb.update_item(
+        TableName='authority',
+        Key={'pk': {'S': 'TENANT#tenant'}, 'sk': {'S': 'EXEC#run-a'}},
+        UpdateExpression='SET parent_grant_id = :parent',
+        ExpressionAttributeValues={':parent': {'S': 'parent-grant'}},
+    )
+    with pytest.raises(AuthorityStoreError, match='reservation metadata'):
+        report(ctx)
+    assert ctx.store._read('TENANT#tenant', 'EXEC#run-a')['status'] == {'S': 'active'}
