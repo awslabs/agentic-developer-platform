@@ -82,27 +82,40 @@ def test_duplicate_named_checks_are_rejected():
         freeze_repository({"repository_binding": "application"}, {"repositories": {"application": {**BINDING, "validation_checks": [check, check]}}})
 
 
-@pytest.mark.parametrize("image", [
-    "registry.example/checks@sha256:" + "a" * 64,
-    "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp/checks@sha256:" + "b" * 64,
-])
+@pytest.mark.parametrize(
+    "image",
+    [
+        "registry.example/checks@sha256:" + "a" * 64,
+        "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp/checks@sha256:" + "b" * 64,
+    ],
+)
 def test_registry_digest_checks_are_frozen_without_rewriting_identity(image):
     check = {"name": "unit", "image": image, "argv": ["/checks/unit"]}
-    frozen = freeze_repository({"repository_binding": "application"}, {
-        "repositories": {"application": {**BINDING, "validation_checks": [check]}},
-    })
+    frozen = freeze_repository(
+        {"repository_binding": "application"},
+        {
+            "repositories": {"application": {**BINDING, "validation_checks": [check]}},
+        },
+    )
     assert frozen["binding"]["validation_checks"][0]["image"] == image
 
 
-@pytest.mark.parametrize("image", [
-    "registry.example/checks:latest", "registry.example/checks:tag@sha256:" + "a" * 64,
-    "https://registry.example/checks@sha256:" + "a" * 64,
-    "user:password@registry.example/checks@sha256:" + "a" * 64,
-    "registry.example/../checks@sha256:" + "a" * 64,
-])
+@pytest.mark.parametrize(
+    "image",
+    [
+        "registry.example/checks:latest",
+        "registry.example/checks:tag@sha256:" + "a" * 64,
+        "https://registry.example/checks@sha256:" + "a" * 64,
+        "user:password@registry.example/checks@sha256:" + "a" * 64,
+        "registry.example/../checks@sha256:" + "a" * 64,
+    ],
+)
 def test_mutable_or_credential_bearing_check_images_are_refused(image):
     check = {"name": "unit", "image": image, "argv": ["/checks/unit"]}
     with pytest.raises(ValueError):
-        freeze_repository({"repository_binding": "application"}, {
-            "repositories": {"application": {**BINDING, "validation_checks": [check]}},
-        })
+        freeze_repository(
+            {"repository_binding": "application"},
+            {
+                "repositories": {"application": {**BINDING, "validation_checks": [check]}},
+            },
+        )
