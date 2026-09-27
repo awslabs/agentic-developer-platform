@@ -664,6 +664,8 @@ jobs:
           trap 'rm -f "$RENDERED_DEPLOYMENT"' EXIT
           EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          RELEASE_IMAGE=$(python3 platform/scripts/resolve-ecr-image.py \
+            "${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}")
 
           get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
 
@@ -736,15 +738,14 @@ jobs:
           # A bounded lock/index failure leaves the previous release serving.
           python3 modules/gateway/scripts/migrate-before-rollout.py \
             --manifest "$RENDERED_DEPLOYMENT" \
-            --image "${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}" \
+            --image "$RELEASE_IMAGE" \
             --namespace "${{ env.NAMESPACE }}"
-          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}|g" \
+          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${RELEASE_IMAGE}|g" \
             "$RENDERED_DEPLOYMENT" | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
-          # Stamp the image tag for this build. The manifest has a generic
-          # placeholder; this line pins to the commit SHA for audit.
+          # Keep the workload pinned to the same immutable image used by migrations.
           kubectl set image deployment/bedrockgateway \
-            bedrockgateway=${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6} \
+            "bedrockgateway=${RELEASE_IMAGE}" \
             -n ${{ env.NAMESPACE }}
 
           # HPA may add replicas during rollout, and each replacement needs its
