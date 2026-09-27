@@ -92,14 +92,21 @@ def test_empty_or_invalid_existing_value_requires_operator_repair(commands, valu
     assert len(calls) == 1
 
 
-def test_deployment_paths_use_the_same_nonrotating_bootstrap():
+def test_operator_deployment_bootstraps_and_ci_only_reads_signing_secrets():
     root = SCRIPT.parents[3]
-    for path in [root / ".github/workflows/gateway-deploy.yml", root / "platform/scripts/deploy-all.sh"]:
-        source = path.read_text()
-        assignment = source.split("MAGIC_LINK_SECRET=$(", 1)[1].split("\n\n", 1)[0]
-        assert "ensure-signing-secret.py" in assignment
-        assert '--region "$AWS_REGION"' in assignment
-        assert "put-secret-value" not in assignment
+    operator = (root / "platform/scripts/deploy-all.sh").read_text()
+    assignment = operator.split("MAGIC_LINK_SECRET=$(", 1)[1].split(")", 1)[0]
+    assert "ensure-signing-secret.py" in assignment
+    assert '--region "$AWS_REGION"' in assignment
+    assert "put-secret-value" not in assignment
+
+    workflow = (root / ".github/workflows/gateway-deploy.yml").read_text()
+    for variable in ("TOKEN_SECRET", "INTERNAL_API_KEY", "MAGIC_LINK_SECRET"):
+        retrieval = workflow.split(f"{variable}=$(", 1)[1].split(")", 1)[0]
+        assert "aws secretsmanager get-secret-value" in retrieval
+        assert "--query SecretString --output text" in retrieval
+    for mutation in ("create-secret", "put-secret-value", "update-secret", "ensure-signing-secret.py"):
+        assert mutation not in workflow
 
 
 @pytest.mark.parametrize("error", [subprocess.TimeoutExpired("aws", 60), OSError("command unavailable")])

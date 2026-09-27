@@ -104,7 +104,7 @@ env:
 jobs:
   migrate:
     if: github.ref == 'refs/heads/main'
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       contents: read
       id-token: write

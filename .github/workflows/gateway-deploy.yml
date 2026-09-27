@@ -164,7 +164,7 @@ jobs:
   deploy-backend:
     name: Build and Deploy Backend
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
     if: github.ref == 'refs/heads/main' && (needs.changes.outputs.backend == 'true')
     outputs:
@@ -313,7 +313,7 @@ jobs:
           # namespaced edit access only and must never create or patch namespaces.
           # Fresh-account deployments create the namespace in deploy-all.sh before
           # this workflow can run.
-          if ! kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1; then
+          if ! kubectl get serviceaccount default -n "${NAMESPACE}" >/dev/null 2>&1; then
             echo "::error::Namespace ${NAMESPACE} is missing. Run the platform deployment prerequisite first."
             exit 1
           fi
@@ -591,54 +591,35 @@ jobs:
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---
-          # Generate the token secret in Secrets Manager if it doesn't exist yet.
+          # Stable signing material is provisioned by the operator. A release
+          # may read it but must never create or rotate it.
           SM_SECRET_NAME="adp/${ENVIRONMENT}/gateway/token-secret-key"
           TOKEN_SECRET=$(aws secretsmanager get-secret-value \
             --secret-id "$SM_SECRET_NAME" \
-            --query SecretString --output text 2>/dev/null || echo "")
-          if [ -z "$TOKEN_SECRET" ] || [ "$TOKEN_SECRET" = "None" ]; then
-            TOKEN_SECRET=$(openssl rand -hex 32)
-            aws secretsmanager create-secret \
-              --name "$SM_SECRET_NAME" \
-              --secret-string "$TOKEN_SECRET" \
-              --description "JWT token signing key for Bedrock Gateway" \
-              --region "${AWS_REGION}" 2>/dev/null || \
-            aws secretsmanager put-secret-value \
-              --secret-id "$SM_SECRET_NAME" \
-              --secret-string "$TOKEN_SECRET" \
-              --region "${AWS_REGION}"
-          fi
+            --query SecretString --output text)
+          test -n "$TOKEN_SECRET" && test "$TOKEN_SECRET" != None
 
-          # Generate the internal API key for /internal/v1/* shared-secret fallback.
+          # Read the internal API key for /internal/v1/* shared-secret fallback.
           # TEMPORARY — auth_deps.py:43 prefers IRSA via API GW. This fallback path
           # is what unblocks Phase 1 apply of EPIC #1107 and is removed by Phase 3
           # (#1110) once both clients use SigV4.
           INTERNAL_API_SM_NAME="adp/${ENVIRONMENT}/gateway/internal-api-key"
           INTERNAL_API_KEY=$(aws secretsmanager get-secret-value \
             --secret-id "$INTERNAL_API_SM_NAME" \
-            --query SecretString --output text 2>/dev/null || echo "")
-          if [ -z "$INTERNAL_API_KEY" ] || [ "$INTERNAL_API_KEY" = "None" ]; then
-            INTERNAL_API_KEY=$(openssl rand -hex 32)
-            aws secretsmanager create-secret \
-              --name "$INTERNAL_API_SM_NAME" \
-              --secret-string "$INTERNAL_API_KEY" \
-              --description "Shared secret for /internal/v1/* fallback auth (temporary; removed in EPIC #1107 Phase 3)" \
-              --region "${AWS_REGION}" 2>/dev/null || \
-            aws secretsmanager put-secret-value \
-              --secret-id "$INTERNAL_API_SM_NAME" \
-              --secret-string "$INTERNAL_API_KEY" \
-              --region "${AWS_REGION}"
-          fi
+            --query SecretString --output text)
+          test -n "$INTERNAL_API_KEY" && test "$INTERNAL_API_KEY" != None
 
           # Issue #5656 (A05): dedicated signing key for single-use identity-linking
           # ("magic link") tokens. src/shared/config.py no longer falls back to the
           # session-signing key, so this must exist for those endpoints to work —
           # and because it is separate, it can be replaced without signing every
-          # user out. Generate-if-absent, same pattern as the keys above; never
-          # echoed. Rotation: docs/runbooks/gateway-secret-rotation.md
+          # user out. The operator provisions it; this release only reads it.
+          # Rotation: docs/runbooks/gateway-secret-rotation.md
           MAGIC_LINK_SM_NAME="adp/${ENVIRONMENT}/gateway/magic-link-secret"
-          MAGIC_LINK_SECRET=$(python3 modules/gateway/scripts/ensure-signing-secret.py \
-            --name "$MAGIC_LINK_SM_NAME" --region "$AWS_REGION")
+          MAGIC_LINK_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id "$MAGIC_LINK_SM_NAME" \
+            --query SecretString --output text)
+          test -n "$MAGIC_LINK_SECRET" && test "$MAGIC_LINK_SECRET" != None
 
           APIGW_PROVENANCE_SECRET=$(aws ssm get-parameter \
             --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
@@ -954,7 +935,7 @@ jobs:
   deploy-frontend:
     name: Build and Deploy Frontend
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-frontend-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, deploy-backend]
     # Backend job is optional — run the frontend even when backend is skipped.
     # `always()` lets us bypass the default "cancelled if any dependency was
@@ -987,7 +968,7 @@ jobs:
       - name: Establish trusted deployment identity
         uses: ./.github/actions/trusted-deployment
         with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          role_arn: ${{ vars.ADP_FRONTEND_DEPLOY_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
@@ -1134,7 +1115,7 @@ jobs:
     needs: [deploy-backend, run-migrations]
     if: github.ref == 'refs/heads/main' && (needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success')
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
     permissions:
       contents: read
       pull-requests: read
