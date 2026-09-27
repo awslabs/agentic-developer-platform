@@ -492,7 +492,7 @@ def test_acceptance_rejects_unverified_model_or_relaxed_run_limits(store):
                 }
             )
         )
-    relaxed = _request(run_limits={"max_turns": 9, "max_output_tokens_per_turn": 4096, "max_usd": 1, "deadline_at": "2026-09-24T13:00:00Z"})
+    relaxed = _request(run_limits={"max_turns": 1001, "max_output_tokens_per_turn": 4096, "max_usd": 1, "deadline_at": "2026-09-24T13:00:00Z"})
     with pytest.raises(TaskStoreError, match="max_turns"):
         store.accept(relaxed)
 
@@ -3041,3 +3041,16 @@ def test_failed_runtime_attempt_binding_leaves_no_history(store):
     key = run_sort_key(invocation_id=request.invocation_id, generation=1) + "#ATTEMPT#" + attempt
     assert store._get(task_run_partition(request.task_id), key) is None
     assert store.read_task(request.task_id).get("runtime_attempt_id") is None
+
+
+def test_acceptance_and_turn_reader_support_platform_execution_ceilings(store):
+    from src.agentauth.task_turns import task_turn_limit
+
+    deadline = NOW + timedelta(hours=6)
+    request = _request(deadline_at=deadline, run_limits={
+        "max_turns": 1000, "max_output_tokens_per_turn": 10000, "max_usd": 1000,
+        "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+    accepted = store.accept(request)
+    assert accepted.state is TaskState.ACCEPTED
+    assert task_turn_limit(store, request.task_id) == 1000

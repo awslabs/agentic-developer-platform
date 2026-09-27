@@ -128,7 +128,7 @@
       "additionalProperties": false,
       "properties": {
         "maxTurns": {
-          "maximum": 100,
+          "maximum": 1000,
           "minimum": 1,
           "title": "Maxturns",
           "type": "integer"

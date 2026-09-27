@@ -288,9 +288,9 @@ class AliasResponse(BaseModel):
 class TaskPolicyLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_duration_minutes: int = Field(ge=1, le=360, strict=True)
-    max_turns: int = Field(ge=1, le=8)
-    codex_max_turns: int | None = Field(default=None, ge=1, le=32)
-    max_output_tokens_per_turn: int = Field(ge=1, le=4096)
+    max_turns: int = Field(ge=1, le=1000)
+    codex_max_turns: int | None = Field(default=None, ge=1, le=1000)
+    max_output_tokens_per_turn: int = Field(ge=1, le=10000)
     max_usd_per_task: Decimal = Field(gt=0, allow_inf_nan=False)
 
     @model_serializer(mode="wrap")

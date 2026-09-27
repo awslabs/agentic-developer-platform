@@ -52,7 +52,7 @@ class Closed(BaseModel):
 
 
 class Limits(Closed):
-    maxTurns: Annotated[int, Field(ge=1, le=100)]
+    maxTurns: Annotated[int, Field(ge=1, le=1000)]
     maxContextBytes: Annotated[int, Field(ge=1024, le=262144)]
     maxDurationMs: Annotated[int, Field(ge=1000, le=21600000)]
 

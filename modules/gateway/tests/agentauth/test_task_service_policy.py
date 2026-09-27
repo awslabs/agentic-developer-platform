@@ -108,7 +108,7 @@ def test_stale_expected_version_cannot_overwrite_current_policy(store):
         policy(
             limits={
                 "max_duration_minutes": 30,
-                "max_turns": 9,
+                "max_turns": 1001,
                 "max_output_tokens_per_turn": 4096,
                 "max_usd_per_task": Decimal("1"),
             }
@@ -224,7 +224,7 @@ def test_codex_turn_budget_is_optional_bounded_and_preserves_legacy_limit(store)
     response = TaskPolicyResponse.model_validate(created)
     assert response.limits.codex_max_turns == 20
     assert response.limits.max_turns == 8
-    for invalid in (0, 33, True, 1.5):
+    for invalid in (0, 1001, True, 1.5):
         value["limits"]["codex_max_turns"] = invalid
         with pytest.raises(TaskServicePolicyError):
             repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=1, policy=value, updated_by="human-admin-1")
@@ -263,3 +263,14 @@ def test_nonfinite_policy_never_reaches_dynamo(store, value):
             policy=policy(limits={**policy()["limits"], "max_usd_per_task": value}),
             updated_by="admin",
         )
+
+
+@pytest.mark.parametrize("field,ceiling", [("max_turns", 1000), ("max_duration_minutes", 360), ("max_output_tokens_per_turn", 10000)])
+def test_execution_ceiling_is_accepted_and_excess_rejected(store, field, ceiling):
+    repository, _ = store
+    value = policy(limits={**policy()["limits"], field: ceiling})
+    result = repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=value, updated_by="admin")
+    assert getattr(TaskPolicyResponse.model_validate(result).limits, field) == ceiling
+    value["limits"][field] = ceiling + 1
+    with pytest.raises(TaskServicePolicyError, match="invalid_policy"):
+        repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=1, policy=value, updated_by="admin")

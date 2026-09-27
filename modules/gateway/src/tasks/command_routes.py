@@ -111,7 +111,7 @@ class Result(Closed):
     committed_at: Timestamp
     process_exit_validated: Literal[True]
     artifact_ids: list[ARTIFACT] = Field(default_factory=list, max_length=8)
-    turns_used: int | None = Field(default=None, ge=1, le=32)
+    turns_used: int | None = Field(default=None, ge=1, le=1000)
     total_usd: float | None = Field(default=None, ge=0, le=1)
 
 

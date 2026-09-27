@@ -92,7 +92,7 @@ class TaskToolsResponsesRequest(ClosedModel):
     input: str | list[ResponsesMessage | ResponsesReasoningInput | TaskFunctionCall | TaskFunctionResult] = Field(min_length=1, max_length=32000)
     instructions: str | None = Field(default=None, max_length=32000)
     reasoning: ResponsesReasoning
-    max_output_tokens: int = Field(strict=True, ge=1, le=4096)
+    max_output_tokens: int = Field(strict=True, ge=1, le=10000)
     tools: list[TaskNamespace] = Field(min_length=1, max_length=1)
     parallel_tool_calls: Literal[False]
 

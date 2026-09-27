@@ -3705,10 +3705,12 @@ def _validate_run_bindings(request: AcceptanceRequest) -> None:
     }
     if not isinstance(limits, dict) or not required_limits.issubset(limits) or not set(limits).issubset(allowed_limits):
         raise TaskStoreError("run limits do not match the closed v1 schema")
+    from src.agentauth.task_service_policy import MAX_OUTPUT_TOKENS, MAX_TURNS, platform_max_usd
+
     bounded = {
-        "max_turns": (1, 32 if request.harness is not None and model["transport"] == "openai_responses" else 8),
-        "max_output_tokens_per_turn": (1, 4_096),
-        "max_usd": (0, 1),
+        "max_turns": (1, MAX_TURNS),
+        "max_output_tokens_per_turn": (1, MAX_OUTPUT_TOKENS),
+        "max_usd": (0, platform_max_usd()),
         "max_provider_operation_seconds": (1, 120),
         "max_events": (1, 10_000),
         "max_result_artifact_bytes": (1, 1_048_576),

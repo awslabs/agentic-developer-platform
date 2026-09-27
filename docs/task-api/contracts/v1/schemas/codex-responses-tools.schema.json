@@ -712,7 +712,7 @@
           "$ref": "#/$defs/ResponsesReasoning"
         },
         "max_output_tokens": {
-          "maximum": 4096,
+          "maximum": 10000,
           "minimum": 1,
           "title": "Max Output Tokens",
           "type": "integer"

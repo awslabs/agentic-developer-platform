@@ -152,7 +152,7 @@ async def service_view(canonical_id: str, current_user: User, db: DB, store: Sto
 
 @router.get("/task-reservation-preview")
 async def reservation_preview(
-    current_user: User, model: Annotated[str, Query(min_length=1, max_length=255)], max_output_tokens: Annotated[int, Query(ge=1, le=4096)] = 4096
+    current_user: User, model: Annotated[str, Query(min_length=1, max_length=255)], max_output_tokens: Annotated[int, Query(ge=1, le=10000)] = 4096
 ):
     # Authenticated, pure local quote: no model invocation, reservation or user-selected URL.
     request = QuoteRequest(

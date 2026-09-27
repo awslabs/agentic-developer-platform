@@ -23,7 +23,7 @@
           "const": true,
           "description": "LC-05: completion requires a validated process exit as well as a committed result. Fixed true on a completed result."
         },
-        "turns_used": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "turns_used": { "type": "integer", "minimum": 1, "maximum": 1000 },
         "total_usd": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
       }
     },

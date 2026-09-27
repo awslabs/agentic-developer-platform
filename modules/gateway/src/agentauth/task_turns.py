@@ -17,7 +17,9 @@ def task_turn_limit(repository, task_id):
     grant = repository._get_authority("TENANT#" + task["scope"]["tenant"], f"TASK_RUN#{task['invocation_id']}#GEN#{int(task['generation']):010d}")
     if not grant:
         raise TaskStoreError("Task turn grant unavailable")
-    ceiling = 32 if grant.get("harness") and grant.get("model_binding", {}).get("transport") == "openai_responses" else 8
+    from src.agentauth.task_service_policy import MAX_TURNS
+
+    ceiling = MAX_TURNS
     maximum = int(grant.get("limits", {}).get("max_turns", 0))
     if not 1 <= maximum <= ceiling:
         raise TaskStoreError("Task turn limit invalid")

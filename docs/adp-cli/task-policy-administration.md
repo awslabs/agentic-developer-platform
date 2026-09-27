@@ -27,3 +27,5 @@ Saving a Task policy does not add OAuth scopes to a Cognito client, register ali
 Task enrollment authorizes explicit model-selection revisions. Changing a selection can make that authorization stale even when the budget is sufficient. The editor displays the current model and warns about a stale revision. The administrator can explicitly check **Authorize the displayed model selections for enabled personas when saving** to renew authorization. A concurrent model change still fails closed at admission and requires reloading and renewed authorization.
 
 New policies may carry `model_policy_versions`, a persona-to-revision map, allowing different Task personas to have independent authorized selections. Existing policies retain their legacy `model_policy_version` fallback. This change does not weaken the binding of running Tasks to their admitted model revision.
+
+Platform execution ceilings are 1,000 model turns, 360 minutes (6 hours), and 10,000 output tokens per model turn. Existing policies retain their configured limits; persona execution limits and model capabilities can impose lower bounds.

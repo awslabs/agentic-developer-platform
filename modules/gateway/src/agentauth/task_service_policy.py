@@ -17,8 +17,8 @@ _DESERIALIZER = TypeDeserializer()
 AUTHORITY_TABLE_ENV = "AGENT_AUTHORITY_TABLE"
 TASK_SCOPES = {"submit", "read", "input", "cancel", "artifacts"}
 MAX_DURATION_MINUTES = 360
-MAX_TURNS = 8
-MAX_OUTPUT_TOKENS = 4096
+MAX_TURNS = 1000
+MAX_OUTPUT_TOKENS = 10000
 DEFAULT_MAX_USD = Decimal("1000")
 PLATFORM_CAP_ENV = "ADP_TASK_MAX_USD_PER_TASK"
 
@@ -208,7 +208,12 @@ def _validate_policy(policy: dict) -> None:
     if not isinstance(limits, dict) or set(limits) - {"codex_max_turns"} != required_limits:
         raise TaskServicePolicyError("invalid_policy")
     codex_turns = limits.get("codex_max_turns", 8)
-    if isinstance(codex_turns, bool) or not isinstance(codex_turns, int | Decimal) or not 1 <= codex_turns <= 32 or int(codex_turns) != codex_turns:
+    if (
+        isinstance(codex_turns, bool)
+        or not isinstance(codex_turns, int | Decimal)
+        or not 1 <= codex_turns <= MAX_TURNS
+        or int(codex_turns) != codex_turns
+    ):
         raise TaskServicePolicyError("invalid_policy")
     if not _valid_duration(limits["max_duration_minutes"]):
         raise TaskServicePolicyError("invalid_policy")

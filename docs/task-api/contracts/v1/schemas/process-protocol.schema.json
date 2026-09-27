@@ -160,8 +160,8 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_turns": { "type": "integer", "minimum": 1, "maximum": 32 },
-            "max_output_tokens_per_turn": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "max_turns": { "type": "integer", "minimum": 1, "maximum": 1000 },
+            "max_output_tokens_per_turn": { "type": "integer", "minimum": 1, "maximum": 10000 },
             "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" }
           }
         }
@@ -252,7 +252,7 @@
         "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
         "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
         "turn_id": { "$ref": "common.schema.json#/$defs/turn_id" },
-        "turn_number": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "turn_number": { "type": "integer", "minimum": 1, "maximum": 1000 },
         "messages": {
           "type": "array",
           "minItems": 1,
@@ -509,7 +509,7 @@
           "minItems": 1,
           "description": "Anthropic Messages-format request content."
         },
-        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 10000 },
         "system": { "type": "string", "maxLength": 16000 }
       },
       "not": {

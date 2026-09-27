@@ -316,7 +316,7 @@ class ModelBody(BaseModel):
     turn_id: str = Field(pattern=UUID4)
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     messages: list[ModelMessage] | None = Field(default=None, min_length=1, max_length=32)
-    max_tokens: int | None = Field(default=None, ge=1, le=4096, strict=True)
+    max_tokens: int | None = Field(default=None, ge=1, le=10000, strict=True)
     system: str | None = Field(default=None, max_length=16000)
     sdk_request: SdkRequest | None = None
     responses_request: TaskResponsesRequest | TaskToolsResponsesRequest | None = None
