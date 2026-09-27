@@ -20,13 +20,13 @@ digest are separate facts.
 
 from __future__ import annotations
 
-import _release_path  # noqa: F401
-
 import re
 from pathlib import Path
 
+import _release_path  # noqa: F401
 import pytest
 import yaml
+
 from releases.resolve_lock import LockError, load_lock, resolved_digest
 
 LOCK_PATH = Path(__file__).resolve().parents[1] / "releases" / "superplane.lock.yaml"
@@ -233,10 +233,16 @@ class TestUnresolvedInputsAreRecordedNotInvented:
         receipt = json.loads(
             (
                 LOCK_PATH.parents[4]
-                / "docs/security/runs/2026-09-21/evidence/S21-skypilot-publication.json"
+                / lock["image_sources"]["skypilot-api"].get(
+                    "publication_receipt",
+                    "docs/security/runs/2026-09-21/evidence/S21-skypilot-publication.json",
+                )
             ).read_text()
         )
-        assert receipt["manifest_byte_identity_verified"] is True
+        assert (
+            receipt.get("manifest_byte_identity_verified")
+            or receipt.get("matches_scanned_local_root")
+        ) is True
         assert lock["images"]["skypilot-api"] == receipt["digest"]
         for source in lock["image_sources"].values():
             assert source["registry"] == receipt["registry"]

@@ -467,5 +467,103 @@
       "status": "disputed_not_applicable",
       "reason": "An NVD CPE match against the interpreter binary, not a package advisory. CPython's maintainers state this is neither a vulnerability nor a bug: email.utils.parseaddr is a documented Legacy API and the RecursionError is the email package's intended size-limit behaviour. It also carries no fix version, so no image upgrade can clear it \u2014 the interpreter is still 3.10.19 in every 0.12.x candidate. Independently not applicable here: parseaddr appears nowhere in the skypilot 0.12.x wheel, so the cited API is not called by the code this deployment runs."
     }
+  ],
+  "observations": [
+    {
+      "observed_in_digest": "sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
+      "observed_in_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
+      "config_digest": "sha256:0e793e95f3596810fea1b42efa56b3bfad61fed5072964fa679fa3e8e8a537c1",
+      "scan_receipt": {
+        "image": "security27/skypilot:final",
+        "docker_root_descriptor": "sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
+        "config_digest": "sha256:0e793e95f3596810fea1b42efa56b3bfad61fed5072964fa679fa3e8e8a537c1",
+        "time": "2026-09-27T08:41:49.008105+00:00",
+        "packages": 2797,
+        "native_counts": {
+          "Negligible": 689,
+          "High": 184,
+          "Medium": 158,
+          "Critical": 32,
+          "Low": 28
+        },
+        "sbom_sha256": "da30ef541e2ceb5ef14a0c845cc3deeece611f9d436b3ef05a6e790ced57fd17",
+        "grype_sha256": "8384117c99801cadcbc516f7d0f187830f20dcf90c2007289da6b28d52e318f4",
+        "archive_sha256": "5f2f2ebc2334237d83ee1a41a5dc91b8c52f826e0c83474b8ecf22d9381f51c8"
+      },
+      "findings": [
+        {
+          "advisory": "GHSA-58pv-8j8x-9vj2",
+          "package": "jaraco-context",
+          "version": "6.1.0",
+          "locations": [
+            "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/jaraco_context-6.1.0.dist-info/METADATA",
+            "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/jaraco_context-6.1.0.dist-info/RECORD",
+            "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/jaraco_context-6.1.0.dist-info/top_level.txt"
+          ],
+          "bundled": true,
+          "scanner_match": false,
+          "status": "not-reported-by-current-raw-scan",
+          "bundled_in": {
+            "name": "setuptools",
+            "version": "81.0.0"
+          }
+        },
+        {
+          "advisory": "GHSA-8rrh-rw8j-w5fx",
+          "package": "wheel",
+          "version": "0.46.3",
+          "locations": [
+            "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/wheel-0.46.3.dist-info/METADATA",
+            "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/wheel-0.46.3.dist-info/RECORD"
+          ],
+          "bundled": true,
+          "scanner_match": false,
+          "status": "not-reported-by-current-raw-scan",
+          "bundled_in": {
+            "name": "setuptools",
+            "version": "81.0.0"
+          }
+        },
+        {
+          "advisory": "GHSA-72hv-8253-57qq",
+          "package": "jackson-core",
+          "version": "2.18.6",
+          "locations": [
+            "/usr/local/lib/python3.10/site-packages/ray/jars/ray_dist.jar"
+          ],
+          "bundled": true,
+          "scanner_match": false,
+          "status": "not-reported-by-current-raw-scan",
+          "bundled_in": {
+            "name": "ray",
+            "version": "2.56.0"
+          }
+        },
+        {
+          "advisory": "GHSA-r6ph-v2qm-q3c2",
+          "package": "cryptography",
+          "version": "46.0.5",
+          "locations": [
+            "/usr/local/lib/python3.10/site-packages/cryptography-46.0.5.dist-info/METADATA",
+            "/usr/local/lib/python3.10/site-packages/cryptography-46.0.5.dist-info/RECORD"
+          ],
+          "bundled": false,
+          "scanner_match": false,
+          "status": "not-reported-by-current-raw-scan"
+        },
+        {
+          "advisory": "CVE-2023-36632",
+          "package": "python",
+          "version": "3.10.21",
+          "locations": [
+            "/usr/local/bin/python3.10",
+            "/usr/local/lib/libpython3.10.so.1.0"
+          ],
+          "bundled": false,
+          "scanner_match": true,
+          "status": "scanner-match-retained-pending-review"
+        }
+      ]
+    }
   ]
 }

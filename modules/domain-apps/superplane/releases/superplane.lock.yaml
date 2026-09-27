@@ -82,7 +82,7 @@ source_access:
 # Digest-addressed and verifiable. Keys are referenced by name from the deploy side (U3),
 # so treat them as a contract.
 images:
-  skypilot-api: sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec
+  skypilot-api: sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7
   superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
   superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
   superplane-executor: sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891
@@ -92,9 +92,10 @@ image_sources:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-skypilot
     ecr_repository: adp-superplane-skypilot
-    tag: s03-f8d893cf
-    resolved_by: ECR manifest read-back with byte-identical SHA-256 verification, 2026-09-25
-    selected_because: S03 derived SkyPilot 0.12.3 image with verified setuptools 81.0.0 vendored dependency remediation
+    tag: security27-3717936b4
+    resolved_by: ECR root digest read-back, 2026-09-27; skypilot-publication.json
+    publication_receipt: docs/security/runs/2026-09-27/skypilot-publication.json
+    selected_because: S03 base plus OS, Python 3.10.21, kubectl and compatible provider dependency security fixes
   superplane-controller:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-controller
