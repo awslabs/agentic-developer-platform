@@ -39,3 +39,9 @@ is verified. An explicit frozen model can be resolved without a historical class
 default that did not yet exist; absent historical posture remains null evidence.
 The snapshot and its digest remain immutable, no default model is substituted,
 and the current model-permission and invocability checks still apply.
+
+Before sealing a new continuation, the ordinary agent launch configuration loader
+also resolves the initiating user's saved reviewer model. The engine provides
+only user and persona identity. This keeps report-only launches consistent with
+individual runs; a configuration lookup failure never falls back silently to the
+worker default. Replaying a committed dispatch keeps its original sealed envelope.

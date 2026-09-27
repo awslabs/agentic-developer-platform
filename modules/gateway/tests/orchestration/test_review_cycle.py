@@ -188,6 +188,8 @@ async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
     monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
     monkeypatch.setattr("src.orchestration.review_cycle_dispatch.resolve_root_user_entity_id", AsyncMock(return_value="human"))
     monkeypatch.setattr("src.orchestration.review_cycle_dispatch.resolve_user_entity_id", AsyncMock(return_value="sub"))
+    ctx.launch = AsyncMock(return_value={"model_resolved": "openai.gpt-6-sol"})
+    monkeypatch.setattr("src.orchestration.review_cycle_dispatch.resolve_launch_configuration", ctx.launch)
     monkeypatch.setattr("src.orchestration.runtime_policy.flow_started_at", AsyncMock(return_value=now))
 
     async def meter(**kwargs):
@@ -333,6 +335,8 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     assert result.effects_succeeded == 1, (result, (await state(ctx))[0].block_detail)
     first = ctx.calls[-1]
     assert first["persona"] == "agent-codex-reviewer"
+    assert first["model_resolved"] == "openai.gpt-6-sol"
+    assert ctx.launch.await_args.kwargs == {"org_id": ORG, "user_id": "human", "persona": "agent-codex-reviewer"}
     assert first["review_expect"]["author_run_id"] == ctx.root
     await review(ctx, findings=[{"finding_id": "F1", "summary": "Repair the failing boundary", "evidence_refs": []}])
     result = await tick(ctx)
@@ -361,6 +365,7 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     assert claim.generation == 5 and claim.state == "held"
     assert len(actions) == 3 and execution.attempts == 3
     assert len(ctx.calls) == 3
+    assert all(call["model_resolved"] == "openai.gpt-6-sol" for call in ctx.calls)
     async with ctx.factory() as db:
         assert await current_author_run(db, node=node, default=ctx.root) == repair["message_id"]
         binding = await db.get(OrchestrationPullRequestBinding, ctx.binding.id)

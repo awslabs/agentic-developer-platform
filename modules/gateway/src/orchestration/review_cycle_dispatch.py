@@ -21,6 +21,7 @@ from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.bootstrap_failure import is_bootstrap_failure
 from src.agentauth.engine import get_engine_authority_writer, validate_engine_authority
 from src.agentauth.grants import AgentAction, DelegatedGrant, TargetRelationship
+from src.agentauth.launch_configuration import resolve_launch_configuration
 from src.shared.identity.resolver import resolve_root_user_entity_id, resolve_user_entity_id
 
 from .dispatch import graph_address
@@ -487,6 +488,10 @@ class ReviewCycleServices:
                 user_id=principal,
                 cognito_sub=cognito_sub,
             )
+            try:
+                envelope.update(await resolve_launch_configuration(session, org_id=node.org_id, user_id=principal, persona=persona))
+            except Exception:
+                raise CycleBlockedError("persona_model_selection_unavailable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
             envelope.update(message_id=run_id, arrived_at=detail["arrived_at"], work_claim_required=True)
             envelope["source_ref"]["provider_repository_id"] = binding.provider_repository_id
             envelope["intent"]["trigger"] = "engine_review_cycle"
