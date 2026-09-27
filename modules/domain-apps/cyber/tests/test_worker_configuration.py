@@ -16,6 +16,16 @@ TERRAFORM = shutil.which("terraform")
     TERRAFORM is None, reason="Terraform is required to render its template"
 )
 @pytest.mark.parametrize(
+    "validation_environment",
+    [
+        {},
+        {
+            "ADP_CODEX_VALIDATION_BACKEND": "service",
+            "ADP_CODEX_VALIDATION_SERVICE_ENDPOINT": "https://fixture.example/tools/validation",
+        },
+    ],
+)
+@pytest.mark.parametrize(
     "environment",
     [
         {},
@@ -23,18 +33,20 @@ TERRAFORM = shutil.which("terraform")
         {"A": "line one\nline two", "B": "true"},
     ],
 )
-def test_worker_environment_renders_as_yaml(tmp_path, environment):
+def test_worker_environment_renders_as_yaml(tmp_path, environment, validation_environment):
     source = (
         ROOT / "modules/agent-factory/webhook-ingress/infra/scaledjob.tf"
     ).read_text()
     directive = re.search(
-        r"%\{\s*for name, value in local.domain_worker_environment", source
+        r"%\{\s*for name, value in [^\n]*local.domain_worker_environment", source
     )
     assert directive is not None
     start = directive.start()
     end = source.index("                  # Issue #4184:", start)
     fragment = source[start:end].replace(
         "local.domain_worker_environment", "environment"
+    ).replace(
+        "local.codex_validation_service_environment", "validation_environment"
     )
     fragment = fragment.replace("${var.environment}", "dev").replace(
         "${local.account_id}", "123456789012"
@@ -46,6 +58,8 @@ def test_worker_environment_renders_as_yaml(tmp_path, environment):
     expression = (
         'jsonencode(yamldecode(templatefile("env.tftpl", {environment='
         + json.dumps(environment)
+        + ",validation_environment="
+        + json.dumps(validation_environment)
         + "})))\n"
     )
     result = subprocess.run(
@@ -63,4 +77,6 @@ def test_worker_environment_renders_as_yaml(tmp_path, environment):
         "name": "AGENT_RUN_LOGS_BUCKET",
         "value": "adp-dev-agent-run-logs-123456789012",
     }
-    assert {row["name"]: row["value"] for row in rendered[1:-1]} == environment
+    assert {row["name"]: row["value"] for row in rendered[1:-1]} == {
+        **environment, **validation_environment
+    }
