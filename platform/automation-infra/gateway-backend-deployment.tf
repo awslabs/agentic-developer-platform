@@ -18,6 +18,11 @@ data "aws_secretsmanager_secret" "gateway_backend" {
   name = "adp/${var.environment}/gateway/${each.key}"
 }
 
+data "aws_kms_key" "gateway_backend_secrets" {
+  count  = var.enable_gateway_backend_deployment ? 1 : 0
+  key_id = "alias/aws/secretsmanager"
+}
+
 locals {
   gateway_backend_account = data.aws_caller_identity.current.account_id
   gateway_backend_cluster = "arn:aws:eks:${var.aws_region}:${local.gateway_backend_account}:cluster/${var.cluster_name}"
@@ -33,6 +38,11 @@ locals {
     "arn:aws:lambda:${var.aws_region}:${local.gateway_backend_account}:function:${name}:$LATEST",
   ]])
   gateway_backend_secret_arns = [for secret in data.aws_secretsmanager_secret.gateway_backend : secret.arn]
+  gateway_backend_kms_key     = var.enable_gateway_backend_deployment ? data.aws_kms_key.gateway_backend_secrets[0].arn : ""
+  gateway_backend_kms_condition = { StringEquals = {
+    "kms:ViaService"                  = "secretsmanager.${var.aws_region}.amazonaws.com"
+    "kms:EncryptionContext:SecretARN" = local.gateway_backend_secret_arns
+  } }
   gateway_backend_api_id = var.enable_gateway_backend_deployment ? try(
     regex("^https://([a-z0-9]+)\\.execute-api\\.", nonsensitive(data.aws_ssm_parameter.gateway_backend_api_url[0].value))[0],
     "",
@@ -77,7 +87,10 @@ resource "aws_iam_policy" "gateway_backend_ceiling" {
   description = "Finite API ceiling for the gateway backend publisher"
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Sid = "AllowDeclaredAPIs", Effect = "Allow", Action = local.gateway_backend_actions, Resource = "*" },
-    { Sid = "DenyOtherAPIs", Effect = "Deny", NotAction = local.gateway_backend_actions, Resource = "*" },
+    { Sid = "DenyOtherAPIs", Effect = "Deny", NotAction = concat(local.gateway_backend_actions, ["kms:Decrypt"]), Resource = "*" },
+    # The AWS-managed Secrets Manager key is shared across the account. Limit
+    # decrypt to this key, this service, and the three stable gateway secrets.
+    { Sid = "AllowGatewaySecretDecrypt", Effect = "Allow", Action = "kms:Decrypt", Resource = local.gateway_backend_kms_key, Condition = local.gateway_backend_kms_condition },
     { Sid = "DenyOtherSecrets", Effect = "Deny", Action = "secretsmanager:GetSecretValue", NotResource = local.gateway_backend_secret_arns },
     { Sid = "DenyOtherExecutables", Effect = "Deny", Action = ["lambda:UpdateFunctionCode", "lambda:InvokeFunction"], NotResource = local.gateway_backend_lambdas },
     { Sid = "DenyOtherBuilds", Effect = "Deny", Action = "codebuild:StartBuild", NotResource = local.gateway_backend_project },
@@ -130,6 +143,7 @@ resource "aws_iam_role_policy" "gateway_backend" {
     { Effect = "Allow", Action = "ssm:GetParameter", Resource = local.gateway_backend_ssm_read },
     { Effect = "Allow", Action = "ssm:PutParameter", Resource = local.gateway_backend_ssm_write },
     { Effect = "Allow", Action = "secretsmanager:GetSecretValue", Resource = local.gateway_backend_secret_arns },
+    { Effect = "Allow", Action = "kms:Decrypt", Resource = local.gateway_backend_kms_key, Condition = local.gateway_backend_kms_condition },
     { Effect = "Allow", Action = "s3:PutObject", Resource = concat(
       ["arn:aws:s3:::adp-terraform-state-${local.gateway_backend_account}/codebuild/src/${var.name_prefix}-gateway-build/*"],
       local.gateway_backend_cfn_objects,

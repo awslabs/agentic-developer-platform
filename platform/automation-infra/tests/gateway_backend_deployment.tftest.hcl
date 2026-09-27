@@ -10,6 +10,9 @@ mock_provider "aws" {
   mock_data "aws_secretsmanager_secret" {
     defaults = { arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/test/gateway/mock-AbCd12" }
   }
+  mock_data "aws_kms_key" {
+    defaults = { arn = "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012" }
+  }
   mock_resource "aws_iam_role" { defaults = { arn = "arn:aws:iam::123456789012:role/test" } }
   mock_resource "aws_iam_policy" { defaults = { arn = "arn:aws:iam::123456789012:policy/test" } }
 }
@@ -84,5 +87,15 @@ run "gateway_backend_profile_is_bounded" {
       !contains(local.gateway_backend_lambdas, "arn:aws:lambda:us-east-1:123456789012:function:bedrockgw-test-pricing-refresh:*")
     )
     error_message = "Gateway Lambda code updates require exact $LATEST resource ARNs."
+  }
+  assert {
+    condition = (
+      contains(jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement[1].NotAction, "kms:Decrypt") &&
+      one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "AllowGatewaySecretDecrypt"]).Resource == "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012" &&
+      one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "AllowGatewaySecretDecrypt"]).Condition.StringEquals["kms:ViaService"] == "secretsmanager.us-east-1.amazonaws.com" &&
+      toset(one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "AllowGatewaySecretDecrypt"]).Condition.StringEquals["kms:EncryptionContext:SecretARN"]) == toset(local.gateway_backend_secret_arns) &&
+      contains([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : s.Action if s.Effect == "Allow"], "kms:Decrypt")
+    )
+    error_message = "Gateway secret decryption must use the exact Secrets Manager key and secret encryption context."
   }
 }
