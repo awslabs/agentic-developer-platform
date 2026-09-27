@@ -16,6 +16,10 @@ spec:
     type: Recreate
   template:
     metadata:
+      # These services do not run a JVM; omit the unused Java agent and JARs.
+      annotations:
+        cloudwatch.aws.amazon.com/auto-annotate-java: "false"
+        instrumentation.opentelemetry.io/inject-java: "false"
       labels:
         app: deepwiki
         app.kubernetes.io/name: deepwiki

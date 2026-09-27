@@ -359,7 +359,7 @@ variable "enable_agent_otel" {
 variable "otel_collector_image" {
   description = "ADOT Collector container image. Use the AWS-maintained public ECR image."
   type        = string
-  default     = "public.ecr.aws/aws-observability/aws-otel-collector:v0.40.0"
+  default     = "public.ecr.aws/aws-observability/aws-otel-collector@sha256:7968fb60db6a2390a47ba6a2df029745638486e285c9b2487da1b722d0855a3e"
 }
 
 variable "otel_collector_log_group" {

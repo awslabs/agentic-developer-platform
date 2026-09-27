@@ -795,9 +795,10 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_observability" {
 }
 
 resource "aws_eks_addon" "cloudwatch_observability" {
-  count        = var.enable_container_insights ? 1 : 0
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "amazon-cloudwatch-observability"
+  count         = var.enable_container_insights ? 1 : 0
+  cluster_name  = aws_eks_cluster.main.name
+  addon_name    = "amazon-cloudwatch-observability"
+  addon_version = "v6.7.0-eksbuild.1"
 
   service_account_role_arn = aws_iam_role.cloudwatch_observability[0].arn
 
