@@ -86,3 +86,11 @@ Unit/service tests use Moto; real Kubernetes and SDK qualification remains
 separate. Local delivery substitutes HTTP/IAM and Lambda scheduling and therefore
 does not prove deployed IAM, gateway registration, EKS access or production Task
 admission. No production deployment or persona rollout is implied by these tests.
+
+For an existing Auto Mode cluster, `isolation-infra/` provides a standalone
+namespace and node-pool owner. Keep webhook validation provisioning disabled
+when using it. Operator scripts `qualify-isolation.py` and
+`qualify-executor.py` retain live isolation and execution/termination evidence;
+the latter uses operator IAM and is not an authenticated Task admission test.
+The qualification check image includes a detached `/opt/adp-checks/branch-slug`
+entrypoint whose assertions cannot be edited with repository source.
