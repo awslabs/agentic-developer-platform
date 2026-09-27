@@ -51,6 +51,11 @@ on:
         required: false
         default: true
         type: boolean
+      image_only:
+        description: 'Update only the existing SkyPilot container to the reviewed release-lock image'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: superplane-k8s-deploy-${{ inputs.environment }}
@@ -372,6 +377,7 @@ jobs:
             --environment "$SP_ENVIRONMENT"
 
       - name: Server-side dry run
+        if: inputs.image_only != true
         # Always runs, including before a real apply: it is the only check that the rendered
         # objects are valid against the cluster's actual schemas and admission controllers.
         run: |
@@ -382,13 +388,27 @@ jobs:
           done
 
       - name: Apply
-        if: inputs.dry_run == false
+        if: inputs.dry_run == false && inputs.image_only != true
         run: |
           set -euo pipefail
           for f in /tmp/rendered/*; do
             echo "=== Applying $(basename "$f") ==="
             kubectl apply -f "$f"
           done
+
+      - name: Update existing SkyPilot image
+        if: inputs.image_only == true
+        env:
+          SP_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+          SP_IMAGE: ${{ steps.config.outputs.skypilot_image }}
+          SP_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(--namespace "$SP_NAMESPACE" --image "$SP_IMAGE")
+          python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py "${args[@]}" --dry-run
+          if [ "$SP_DRY_RUN" = false ]; then
+            python3 modules/domain-apps/superplane/infra/scripts/update_skypilot_image.py "${args[@]}"
+          fi
 
       - name: Summary
         if: always()
