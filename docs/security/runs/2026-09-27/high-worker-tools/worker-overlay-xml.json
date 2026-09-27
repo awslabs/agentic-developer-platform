@@ -1,0 +1,1 @@
+{"expat": "2.8.5", "awscli_valid_xml": "passed", "awscli_malformed_xml_rejected": "passed", "network": "local HTTP fixture only", "maximum_fixture_bytes": 256}

@@ -1,0 +1,11 @@
+{
+  "base": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:5fe1725eeb8a5f6ac4956a46d533d65c39c4c2c83903225fecd248864fbf4a12",
+  "candidate": "security27-high/worker-tools:complete",
+  "config_digest": "sha256:1249e15d999e681fc954cc6f890873401845859458a88777ed196281ab7d91a5",
+  "base_layers_preserved": true,
+  "configuration_identical": true,
+  "app_files_identical": true,
+  "app_file_count": 22762,
+  "app_hash_inventory_sha256": "80e9bcb54f53381d2357e0e6d1148a2c7e42a1dfbe4a5507b6653d218d981cfd",
+  "docker_root_descriptor": "sha256:cfbe0b18dcc3e055738f52ef1004624aefe62cc165bef444b7edc933992ef89a"
+}
