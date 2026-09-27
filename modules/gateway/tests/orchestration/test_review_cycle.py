@@ -188,6 +188,8 @@ async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
     monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
     monkeypatch.setattr("src.orchestration.review_cycle_dispatch.resolve_root_user_entity_id", AsyncMock(return_value="human"))
     monkeypatch.setattr("src.orchestration.review_cycle_dispatch.resolve_user_entity_id", AsyncMock(return_value="sub"))
+    ctx.launch = AsyncMock(return_value={"model_resolved": "openai.gpt-6-sol"})
+    monkeypatch.setattr("src.orchestration.review_cycle_dispatch.resolve_launch_configuration", ctx.launch)
     monkeypatch.setattr("src.orchestration.runtime_policy.flow_started_at", AsyncMock(return_value=now))
 
     async def meter(**kwargs):
@@ -306,10 +308,35 @@ async def review(ctx, *, approve=False, findings=None, publication=False):
 
 async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     ctx = cycle
+    from src.agentauth.model_policy import _persist_snapshot
+    from tests.agentauth.test_model_policy import live_snapshot
+
+    parent_snapshot = live_snapshot(tenant_id=ORG, correlation_id=ctx.flow.id, root_invocation_id=ctx.root)
+    # The developer has already completed; seed the immutable snapshot it would
+    # have received during its normal pending admission.
+    parent = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{ctx.root}")
+    parent["status"] = {"S": "pending"}
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=parent)
+    expected_digest = await _persist_snapshot(store=ctx.store, invocation_id=ctx.root, tenant_id=ORG, snapshot=parent_snapshot)
+    await ctx.finish(ctx.root)
+    original_send = ctx.service.queue.send_message
+
+    def assert_snapshot_before_send(**kwargs):
+        envelope = json.loads(kwargs["MessageBody"])
+        child = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{envelope['message_id']}")
+        assert child["status"] == {"S": "pending"}
+        assert child["model_policy_snapshot_digest"] == {"S": expected_digest}
+        assert child["model_policy_root_invocation_id"] == {"S": ctx.root}
+        assert child["model_policy_correlation_id"] == {"S": ctx.flow.id}
+        return original_send(**kwargs)
+
+    ctx.service.queue.send_message = assert_snapshot_before_send
     result = await tick(ctx)
     assert result.effects_succeeded == 1, (result, (await state(ctx))[0].block_detail)
     first = ctx.calls[-1]
     assert first["persona"] == "agent-codex-reviewer"
+    assert first["model_resolved"] == "openai.gpt-6-sol"
+    assert ctx.launch.await_args.kwargs == {"org_id": ORG, "user_id": "human", "persona": "agent-codex-reviewer"}
     assert first["review_expect"]["author_run_id"] == ctx.root
     await review(ctx, findings=[{"finding_id": "F1", "summary": "Repair the failing boundary", "evidence_refs": []}])
     result = await tick(ctx)
@@ -338,6 +365,7 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     assert claim.generation == 5 and claim.state == "held"
     assert len(actions) == 3 and execution.attempts == 3
     assert len(ctx.calls) == 3
+    assert all(call["model_resolved"] == "openai.gpt-6-sol" for call in ctx.calls)
     async with ctx.factory() as db:
         assert await current_author_run(db, node=node, default=ctx.root) == repair["message_id"]
         binding = await db.get(OrchestrationPullRequestBinding, ctx.binding.id)
@@ -619,3 +647,82 @@ async def test_final_developer_attempt_still_admits_first_review(cycle):
     execution, _, node, actions = await state(cycle)
     assert node.attempts == 1 and execution.attempts == 1
     assert len(actions) == 1 and actions[0].detail["action"] == "review"
+
+
+@pytest.mark.parametrize("allowance", [1, 2])
+async def test_missing_snapshot_startup_failure_retries_without_resetting_history(cycle, allowance):
+    from src.agentauth.bootstrap_failure import is_bootstrap_failure, record_refusal
+    from src.agentauth.model_policy import _persist_snapshot
+    from tests.agentauth.test_model_policy import live_snapshot
+
+    ctx = cycle
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = allowance
+        plan.plan_document = document
+        await db.commit()
+    parent = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{ctx.root}")
+    parent["status"] = {"S": "pending"}
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=parent)
+    digest = await _persist_snapshot(
+        store=ctx.store,
+        invocation_id=ctx.root,
+        tenant_id=ORG,
+        snapshot=live_snapshot(tenant_id=ORG, correlation_id=ctx.flow.id, root_invocation_id=ctx.root),
+    )
+    await ctx.finish(ctx.root)
+    assert (await tick(ctx)).effects_succeeded == 1
+    failed_run = ctx.calls[-1]["message_id"]
+    raw = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")
+    # Reproduce the already-deployed producer's missing snapshot and initial pod
+    # bind. No credential or control registration was delivered to this worker.
+    raw.pop("model_policy_snapshot")
+    raw.pop("model_policy_snapshot_digest")
+    raw.update(status={"S": "active"}, workload_binding={"S": "failed-bootstrap-pod"})
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=raw)
+    record = ctx.store.authority.load_execution(invocation_id=failed_run, tenant_id=ORG)
+    record_refusal(ctx.store, record=record, request_id="gateway-refusal-request", events_table="cycle-events")
+    record_refusal(ctx.store, record=record, request_id="gateway-refusal-request", events_table="cycle-events")
+    failed = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")
+    assert is_bootstrap_failure(failed)
+    assert failed["terminal_outcome"] == {"S": "failed"}
+    result = await tick(ctx)
+    if allowance == 1:
+        execution, claim, node, actions = await state(ctx)
+        assert result.effects_succeeded == 0 and len(ctx.calls) == 1
+        assert len(actions) == 1 and node.attempts == 1
+        assert claim.active_run_id == failed_run and claim.generation == 5
+        assert execution.block_code == "attempts_exhausted"
+        return
+    assert result.effects_succeeded == 1, (result, (await state(ctx))[0].block_detail)
+    retry = ctx.calls[-1]
+    assert retry["message_id"] != failed_run
+    assert retry["review_expect"]["author_run_id"] == ctx.root
+    child = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{retry['message_id']}")
+    assert child["model_policy_snapshot_digest"] == {"S": digest}
+    execution, claim, node, actions = await state(ctx)
+    assert node.attempts == 1 and claim.generation == 5
+    assert len(actions) == 2 and execution.attempts == 2
+    assert actions[-1].detail["bootstrap_retry_of"] == failed_run
+    assert claim.active_run_id == retry["message_id"]
+    await review(ctx, approve=True)
+    await tick(ctx)
+    assert (await state(ctx))[0].phase == "merge_ready"
+
+
+async def test_issued_bootstrap_authority_cannot_be_reclassified_as_startup_failure(cycle):
+    from src.agentauth.bootstrap_failure import record_issuance, record_refusal
+    from src.agentauth.store import AuthorityStoreError
+
+    ctx = cycle
+    assert (await tick(ctx)).effects_succeeded == 1
+    run = ctx.calls[-1]["message_id"]
+    raw = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{run}")
+    raw.update(status={"S": "active"}, workload_binding={"S": "live-worker"})
+    ctx.store.client.put_item(TableName=ctx.store.table, Item=raw)
+    record = ctx.store.authority.load_execution(invocation_id=run, tenant_id=ORG)
+    record_issuance(ctx.store, record=record)
+    with pytest.raises(AuthorityStoreError):
+        record_refusal(ctx.store, record=record, request_id="late-failure", events_table="cycle-events")
+    assert ctx.store._read(f"TENANT#{ORG}", f"EXEC#{run}")["status"] == {"S": "active"}

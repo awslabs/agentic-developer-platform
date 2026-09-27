@@ -34,6 +34,7 @@ from src.admin.persona_models.catalogue import (
     PERSONA_ALLOWED_PATTERNS,
     PLATFORM_MODEL_CATALOGUE,
     persona_compatibility_class,
+    persona_harness_contract_revision,
 )
 from src.admin.persona_models.catalogue_schemas import SelectionRejection
 from src.admin.persona_models.catalogue_service import validate_selection
@@ -375,6 +376,7 @@ def resolve_decision(
     persona: str,
     direct_override: str | None = None,
     direct_requested: str | None = None,
+    live: LivePosture | None = None,
     now: datetime | None = None,
 ) -> ModelPolicyDecision:
     """Resolve one hop from gateway-owned, frozen policy facts.
@@ -401,16 +403,29 @@ def resolve_decision(
     harness_revision = contract.get("harness_contract_revision", "")
     if not compatibility_class or not harness_revision:
         raise ModelPolicyError("persona_incompatible")
+    if live is not None and (live.compatibility_class != compatibility_class or persona_compatibility_class(persona) != compatibility_class):
+        raise ModelPolicyError("persona_incompatible")
+    # Older root snapshots incorrectly stamped Claude's SDK revision onto the
+    # native Codex class. Translate only that known producer defect, using the
+    # registered Codex contract and a verified live class. The selected model
+    # and the original snapshot/digest remain unchanged.
+    if live is not None and compatibility_class == "codex-sdk" and harness_revision == HARNESS_CONTRACT_REVISION:
+        harness_revision = persona_harness_contract_revision(persona)
     class_policy = snapshot.class_defaults.get(compatibility_class)
-    if not isinstance(class_policy, dict):
-        raise ModelPolicyError("class_default_unavailable")
-    try:
-        snapshot_posture = coerce_posture(class_policy.get("posture"))
-        snapshot_posture_revision = coerce_posture_revision(class_policy.get("posture_revision"))
-    except RuntimePostureError as exc:
-        # An unreadable snapshot posture is still a refusal: it means the frozen
-        # facts are malformed, which is not a posture and must not be guessed at.
-        raise ModelPolicyError(exc.reason) from None
+    if class_policy is None and live is not None and (direct_override or snapshot.mappings.get(persona)):
+        # The class may have been provisioned after the root snapshot. An
+        # explicit frozen model needs no default, and posture is already read
+        # live. Preserve absent historical evidence as absent, not invented.
+        class_policy = {}
+        snapshot_posture = snapshot_posture_revision = None
+    else:
+        if not isinstance(class_policy, dict):
+            raise ModelPolicyError("class_default_unavailable")
+        try:
+            snapshot_posture = coerce_posture(class_policy.get("posture"))
+            snapshot_posture_revision = coerce_posture_revision(class_policy.get("posture_revision"))
+        except RuntimePostureError as exc:
+            raise ModelPolicyError(exc.reason) from None
 
     # An explicit directive that edge validation could not resolve is a
     # proposed refusal, not permission to silently continue down the ladder.
@@ -453,8 +468,8 @@ def resolve_decision(
         # The snapshot's posture, pending the per-hop live read.  ``posture_source``
         # stays None so an unverified decision is distinguishable from a verified
         # one by inspection rather than by trust.
-        runtime_posture=snapshot_posture,
-        posture_revision=snapshot_posture_revision,
+        runtime_posture=snapshot_posture if snapshot_posture is not None else live.posture,
+        posture_revision=snapshot_posture_revision if snapshot_posture_revision is not None else live.posture_revision,
         policy_revision=snapshot.policy_revision,
         catalogue_revision=snapshot.catalogue_revision,
         snapshot_allowlist_policy_revision=snapshot.allowlist_policy_revision,
@@ -879,7 +894,7 @@ def _contract_maps() -> tuple[dict[str, dict[str, str]], str]:
         if compatibility_class:
             contracts[persona] = {
                 "compatibility_class": compatibility_class,
-                "harness_contract_revision": HARNESS_CONTRACT_REVISION,
+                "harness_contract_revision": persona_harness_contract_revision(persona),
             }
     catalogue_value = [
         {
@@ -1310,6 +1325,20 @@ async def ensure_snapshot_for_admission(
         parent_execution = await run_in_threadpool(store._read, f"TENANT#{tenant_id}", f"EXEC#{parent}")
         if not parent_execution:
             raise ModelPolicyError("parent_snapshot_missing")
+        # A recorded initial bootstrap failure never received model authority.
+        # Recovery inherits the same immutable ancestor settings, without
+        # manufacturing a snapshot on the failed run or selecting a new model.
+        from src.agentauth.bootstrap_failure import is_bootstrap_failure
+
+        ancestors = {invocation_id, parent}
+        while is_bootstrap_failure(parent_execution) and "model_policy_snapshot" not in parent_execution:
+            parent = parent_execution.get("parent_principal", {}).get("S", "").rsplit("#", 1)[0]
+            if not parent or parent in ancestors or len(ancestors) > 8:
+                raise ModelPolicyError("parent_snapshot_missing")
+            ancestors.add(parent)
+            parent_execution = await run_in_threadpool(store._read, f"TENANT#{tenant_id}", f"EXEC#{parent}")
+            if not parent_execution:
+                raise ModelPolicyError("parent_snapshot_missing")
         snapshot = _parse_execution_snapshot(parent_execution, tenant_id=tenant_id)
         child_flow = execution.get("flow_id", {}).get("S")
         if child_flow and snapshot.correlation_id != child_flow:
@@ -1437,7 +1466,7 @@ def _unavailable(
     return response
 
 
-def _resolve_execution_decision(*, raw_execution: dict, record) -> tuple[ModelPolicySnapshot, ModelPolicyDecision]:
+def _resolve_execution_decision(*, raw_execution: dict, record, live: LivePosture | None = None) -> tuple[ModelPolicySnapshot, ModelPolicyDecision]:
     snapshot = _parse_execution_snapshot(raw_execution, tenant_id=record.tenant_id)
     decision = resolve_decision(
         snapshot,
@@ -1445,6 +1474,7 @@ def _resolve_execution_decision(*, raw_execution: dict, record) -> tuple[ModelPo
         persona=raw_execution.get("persona", {}).get("S", ""),
         direct_override=raw_execution.get("direct_model_override", {}).get("S") or None,
         direct_requested=raw_execution.get("direct_model_requested", {}).get("S") or None,
+        live=live,
     )
     return snapshot, decision
 
@@ -1538,6 +1568,7 @@ async def bootstrap_model_policy_live(
         snapshot, decision = _resolve_execution_decision(
             raw_execution=raw_execution,
             record=record,
+            live=live,
         )
         decision = await validate_live_decision(
             session,

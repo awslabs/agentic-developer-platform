@@ -628,3 +628,23 @@ class TestAbortedRunsAreReportedOnlyAfterTheyStop:
         assert report.aborts_repaired == 0
         assert report.released == 1
         assert (await session.get(OrchestrationWorkClaim, receipt["claim_id"])).state == ClaimState.RELEASED.value
+
+
+async def test_review_startup_failure_keeps_claim_for_stage_retry(session):
+    from src.agentauth.bootstrap_failure import REASON
+
+    receipt = await start(session)
+    store = SimpleNamespace(
+        _read=Mock(
+            return_value={
+                "tenant_id": {"S": "org-alpha"},
+                "status": {"S": "completed"},
+                "terminal_outcome": {"S": "failed"},
+                "bootstrap_failure_reason": {"S": REASON},
+                "bootstrap_failure_request_id": {"S": "refused-request"},
+                "orchestration_continuation_receipt": {"S": "dispatch-receipt"},
+            }
+        )
+    )
+    assert (await recover_exited_claims(session, store=store, workloads=None)).released == 0
+    assert (await session.get(OrchestrationWorkClaim, receipt["claim_id"])).state == ClaimState.HELD.value

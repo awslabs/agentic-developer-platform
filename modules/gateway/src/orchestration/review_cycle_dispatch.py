@@ -18,8 +18,10 @@ from boto3.dynamodb.types import TypeSerializer
 from sqlalchemy import select
 
 from src.agentauth.bootstrap import BootstrapRefusedError
+from src.agentauth.bootstrap_failure import is_bootstrap_failure
 from src.agentauth.engine import get_engine_authority_writer, validate_engine_authority
 from src.agentauth.grants import AgentAction, DelegatedGrant, TargetRelationship
+from src.agentauth.launch_configuration import resolve_launch_configuration
 from src.shared.identity.resolver import resolve_root_user_entity_id, resolve_user_entity_id
 
 from .dispatch import graph_address
@@ -290,11 +292,15 @@ class ReviewCycleServices:
         active = continuation_run_id(dispatches[-1].operation_key) if dispatches else attempt_run_id(node.id, node.attempts)
         raw, grant, inputs, _, meter = await self.authorize(session, context, node, binding, active, Action.REVIEW)
         status = raw.get("status", {}).get("S")
-        if status in {"cancelled", "revoked"} or (status == "completed" and raw.get("terminal_outcome") != {"S": "complete"}):
+        bootstrap_failed = bool(dispatches) and is_bootstrap_failure(raw)
+        if status in {"cancelled", "revoked"} or (
+            status == "completed" and raw.get("terminal_outcome") != {"S": "complete"} and not bootstrap_failed
+        ):
             raise CycleBlockedError("worker_failed_or_halted", BlockCode.HUMAN_INPUT_REQUIRED)
         return {
             "active_run_id": active,
             "worker_complete": status == "completed",
+            "bootstrap_retry_of": active if bootstrap_failed else None,
             "head_sha": await self.head(binding),
             "remaining_spend_usd": str(inputs.policy.limits.max_spend_usd - meter.total_usd)
             if inputs.policy._budget_enforcement_enabled and meter
@@ -377,6 +383,14 @@ class ReviewCycleServices:
                 await self.authorize(session, context, node, binding, envelope["message_id"], effect.action, reserve=True)
                 if await self.head(binding) != effect.intent.detail["head_sha"]:
                     raise CycleBlockedError("head_changed_before_dispatch")
+                # Continuations transfer an existing claim rather than calling
+                # admit_pending. Attach the parent's immutable model settings
+                # here, while the protected child is still pending and before
+                # a queued worker can bind it active. Use the same preparation
+                # path as ordinary dispatch; runtime posture remains authoritative.
+                from src.agentauth.model_policy import ensure_snapshot_report_only
+
+                await ensure_snapshot_report_only(session, store=self.writer.store, invocation_id=envelope["message_id"])
             cfg = self.config or DispatchPassConfig.from_env()
             queue = self.queue or _get_sqs_client(cfg.aws_region)
             await asyncio.to_thread(
@@ -452,7 +466,8 @@ class ReviewCycleServices:
             raw, parent, inputs, principal, _ = await self.authorize(
                 session, context, node, binding, detail["active_run_id"], effect.action, reserve=True
             )
-            if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
+            bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_bootstrap_failure(raw)
+            if not bootstrap_retry and (raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}):
                 raise CycleBlockedError("previous_worker_not_completed")
             if await self.head(binding) != detail["head_sha"]:
                 raise CycleBlockedError("head_changed_before_dispatch")
@@ -473,6 +488,10 @@ class ReviewCycleServices:
                 user_id=principal,
                 cognito_sub=cognito_sub,
             )
+            try:
+                envelope.update(await resolve_launch_configuration(session, org_id=node.org_id, user_id=principal, persona=persona))
+            except Exception:
+                raise CycleBlockedError("persona_model_selection_unavailable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
             envelope.update(message_id=run_id, arrived_at=detail["arrived_at"], work_claim_required=True)
             envelope["source_ref"]["provider_repository_id"] = binding.provider_repository_id
             envelope["intent"]["trigger"] = "engine_review_cycle"
