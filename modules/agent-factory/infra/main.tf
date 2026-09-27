@@ -180,6 +180,9 @@ module "arc_runner" {
   # Custom ADP runner image with CLI tools pre-baked (aws, kubectl, terraform,
   # helm, gh, docker, kaniko). Empty string = chart default.
   runner_image = local.runner_image
+  # The maintained rebuild fixes Go advisories still present in upstream0.14.2.
+  # Publish the verified artifact to this account before applying this release.
+  controller_image = var.arc_controller_image != "" ? var.arc_controller_image : "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/adp-arc-controller@sha256:3a1961b09a0275363be9c4c6398a4c970d2ba0781dd252750384899814aa8a3d"
 
   depends_on = [module.runner_iam]
 }

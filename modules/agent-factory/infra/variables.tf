@@ -71,9 +71,9 @@ variable "runner_image_repo" {
 }
 
 variable "runner_image_tag" {
-  description = "Tag for the ARC runner image. Used when runner_image is empty."
+  description = "Tag or tag@sha256 digest for the ARC runner image. Used when runner_image is empty."
   type        = string
-  default     = "latest"
+  default     = "security27-489f17109@sha256:a5f75c5914fd6bc7ba81d6436609ead349628df43dc9d0b24ad35f5759ed568c"
 }
 
 variable "enable_public_cfn_bucket" {
@@ -154,4 +154,15 @@ variable "gateway_intake_managed_policy" {
   description = "Use an identically scoped managed intake policy when gateway inline-policy quota is exhausted."
   type        = bool
   default     = false
+}
+
+variable "arc_controller_image" {
+  description = "Digest-pinned maintained ARC controller image override. Empty selects the verified security candidate in this account's adp-arc-controller repository; publish it before applying Helm."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.arc_controller_image == "" || can(regex("^[^@]+@sha256:[a-f0-9]{64}$", var.arc_controller_image))
+    error_message = "ARC controller images must use an immutable SHA256 digest."
+  }
 }

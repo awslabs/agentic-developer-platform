@@ -37,6 +37,10 @@ RUN apk add --no-cache ca-certificates tzdata
 # can verify it without resolving /etc/passwd, matching the controller and
 # other Superplane images.
 RUN adduser -D -u 65532 monitor
+# The static monitor needs no runtime package manager. Alpine's apk libraries
+# otherwise retain zlib 1.3.2 (CVE-2026-85091) despite no application dependency.
+# Keep the trust store, timezone data and non-root identity installed above.
+RUN apk del --purge apk-tools libapk zlib
 USER 65532:65532
 
 COPY --from=builder /superplane-platform-monitor /usr/local/bin/superplane-platform-monitor

@@ -28,11 +28,15 @@ resource "helm_release" "arc_controller" {
   namespace  = kubernetes_namespace.arc_system.metadata[0].name
   repository = "oci://ghcr.io/actions/actions-runner-controller-charts"
   chart      = "gha-runner-scale-set-controller"
-  version    = "0.13.1"
+  version    = "0.14.2"
 
   values = [
     yamlencode({
       replicaCount = 1
+      image = {
+        repository = split("@", var.controller_image)[0]
+        tag        = "0.14.2@${split("@", var.controller_image)[1]}"
+      }
     })
   ]
 }
@@ -69,7 +73,7 @@ resource "helm_release" "arc_runner_set" {
   namespace  = kubernetes_namespace.arc_runners.metadata[0].name
   repository = "oci://ghcr.io/actions/actions-runner-controller-charts"
   chart      = "gha-runner-scale-set"
-  version    = "0.13.1"
+  version    = "0.14.2"
 
   values = [
     yamlencode({
