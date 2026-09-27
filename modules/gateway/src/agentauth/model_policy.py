@@ -1310,6 +1310,20 @@ async def ensure_snapshot_for_admission(
         parent_execution = await run_in_threadpool(store._read, f"TENANT#{tenant_id}", f"EXEC#{parent}")
         if not parent_execution:
             raise ModelPolicyError("parent_snapshot_missing")
+        # A recorded initial bootstrap failure never received model authority.
+        # Recovery inherits the same immutable ancestor settings, without
+        # manufacturing a snapshot on the failed run or selecting a new model.
+        from src.agentauth.bootstrap_failure import is_bootstrap_failure
+
+        ancestors = {invocation_id, parent}
+        while is_bootstrap_failure(parent_execution) and "model_policy_snapshot" not in parent_execution:
+            parent = parent_execution.get("parent_principal", {}).get("S", "").rsplit("#", 1)[0]
+            if not parent or parent in ancestors or len(ancestors) > 8:
+                raise ModelPolicyError("parent_snapshot_missing")
+            ancestors.add(parent)
+            parent_execution = await run_in_threadpool(store._read, f"TENANT#{tenant_id}", f"EXEC#{parent}")
+            if not parent_execution:
+                raise ModelPolicyError("parent_snapshot_missing")
         snapshot = _parse_execution_snapshot(parent_execution, tenant_id=tenant_id)
         child_flow = execution.get("flow_id", {}).get("S")
         if child_flow and snapshot.correlation_id != child_flow:

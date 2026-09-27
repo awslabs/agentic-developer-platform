@@ -741,3 +741,33 @@ def test_recorded_user_cannot_replace_the_signed_grant_human(broker_harness, sto
     response = client.post("/internal/v1/credential-assume-role", json={"invocation_id": "run-a", "user_id": "foreign-human"}, headers=headers)
     assert response.status_code == 404
     assert effects == []
+
+
+def test_initial_review_snapshot_refusal_is_durable_and_never_issues_credentials(store, kubernetes, monkeypatch):
+    from src.agentauth.bootstrap_failure import is_bootstrap_failure
+
+    envelope, _ = provision(store)
+    raw = store._read("TENANT#tenant", "EXEC#run-a")
+    raw["orchestration_continuation_receipt"] = {"S": "committed-review-dispatch"}
+    store.client.put_item(TableName=store.table, Item=raw)
+    table = "bootstrap-events"
+    store.client.create_table(
+        TableName=table,
+        BillingMode="PAY_PER_REQUEST",
+        KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+        AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+    )
+    key = {"event_id": {"S": "run-a"}, "arrived_at": {"S": envelope["arrived_at"]}}
+    store.client.put_item(TableName=table, Item={**key, "tenant_id": {"S": "tenant"}, "status": {"S": "queued"}})
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", table)
+    client, _ = http_client(store, kubernetes, monkeypatch, posture="enforcing")
+    body = {"invocation_id": "run-a", "envelope_digest": envelope_digest(envelope), "model_policy_contract": 1}
+    headers = {"X-Caller-Identity": "registered-worker-transport", WORKLOAD_HEADER: "pod-token"}
+    response = client.post("/internal/v1/agent/bootstrap", json=body, headers=headers)
+    assert response.status_code == 409
+    assert "credential" not in response.json()
+    assert is_bootstrap_failure(store._read("TENANT#tenant", "EXEC#run-a"))
+    event = store.client.get_item(TableName=table, Key=key)["Item"]
+    assert event["status"] == {"S": "failed"}
+    assert "snapshot missing" in event["error_message"]["S"]
+    assert client.post("/internal/v1/agent/bootstrap", json=body, headers=headers).status_code == 404

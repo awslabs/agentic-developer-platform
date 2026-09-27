@@ -12,6 +12,7 @@ import logging
 import os
 from datetime import UTC, datetime
 from functools import lru_cache, partial
+from uuid import uuid4
 
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -466,11 +467,27 @@ async def bootstrap(
             grant=grant,
             env=runtime.env,
         )
-        _refuse_unconsumable_model_policy(
-            model_policy,
-            client_contract=client_contract,
-            invocation_id=record.invocation_id,
-        )
+        from src.agentauth.bootstrap_failure import record_issuance, record_refusal
+
+        try:
+            _refuse_unconsumable_model_policy(
+                model_policy,
+                client_contract=client_contract,
+                invocation_id=record.invocation_id,
+            )
+        except HTTPException:
+            if model_policy.get("reason") == "snapshot_missing" and model_policy.get("posture") == "enforcing":
+                raw = await run_in_threadpool(runtime.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
+                if (raw or {}).get("orchestration_continuation_receipt") and "bootstrap_authority_issued_at" not in raw:
+                    await run_in_threadpool(
+                        record_refusal,
+                        runtime.store,
+                        record=record,
+                        request_id=getattr(request.state, "request_id", None) or str(uuid4()),
+                        events_table=os.environ.get("WEBHOOK_EVENTS_TABLE", ""),
+                    )
+            raise
+        await run_in_threadpool(record_issuance, runtime.store, record=record)
         result["model_policy"] = model_policy
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except WorkClaimError as exc:
