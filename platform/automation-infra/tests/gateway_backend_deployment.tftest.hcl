@@ -41,6 +41,10 @@ run "gateway_backend_profile_is_bounded" {
     target = data.aws_ssm_parameter.gateway_backend_api_url[0]
     values = { value = "https://abc123def4.execute-api.us-east-1.amazonaws.com/test" }
   }
+  override_data {
+    target = data.aws_kms_key.gateway_backend_lambda[0]
+    values = { arn = "arn:aws:kms:us-east-1:123456789012:key/87654321-4321-4321-4321-210987654321" }
+  }
   assert {
     condition = jsondecode(aws_iam_role.gateway_backend[0].assume_role_policy).Statement[0].Condition.StringEquals == {
       "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
@@ -97,5 +101,13 @@ run "gateway_backend_profile_is_bounded" {
       contains([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : s.Action if s.Effect == "Allow"], "kms:Decrypt")
     )
     error_message = "Gateway secret decryption must use the exact Secrets Manager key and secret encryption context."
+  }
+  assert {
+    condition = (
+      contains(jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement[1].NotAction, "kms:DescribeKey") &&
+      one([for s in jsondecode(aws_iam_policy.gateway_backend_ceiling[0].policy).Statement : s if try(s.Sid, "") == "AllowLambdaKeyDescription"]).Resource == "arn:aws:kms:us-east-1:123456789012:key/87654321-4321-4321-4321-210987654321" &&
+      contains([for s in jsondecode(aws_iam_role_policy.gateway_backend[0].policy).Statement : s.Resource if s.Action == "kms:DescribeKey"], "arn:aws:kms:us-east-1:123456789012:key/87654321-4321-4321-4321-210987654321")
+    )
+    error_message = "Updating the orchestration image may describe only the AWS-managed Lambda key."
   }
 }
