@@ -34,24 +34,49 @@ export async function getFlowGraph(flowId: string): Promise<FlowGraph> {
 /**
  * Approve a gate: `awaiting_gate -> passed` (issue #4213, AC-5).
  *
- * The body carries only an optional reason. It deliberately cannot carry
+ * The body carries an optional reason and the reviewed revision hash. It deliberately cannot carry
  * `actor_kind` — attribution is derived server-side from the authenticated
  * session, and the request model forbids extra fields, so a body asserting
  * `actor_kind` is a 422 rather than a silently-honoured claim.
  */
-export async function approveGate(gateId: string, reason?: string): Promise<GateDecisionResult> {
+export async function approveGate(gateId: string, reason?: string, expectedPlanHash?: string): Promise<GateDecisionResult> {
   return apiClient.post<GateDecisionResult>(
     `/orchestration/gates/${encodeURIComponent(gateId)}/approve`,
-    { reason: reason ?? null }
+    { reason: reason ?? null, ...(expectedPlanHash ? { expected_plan_hash: expectedPlanHash } : {}) }
   );
 }
 
 /** Reject a gate: `awaiting_gate -> rejected_at_gate` (AC-6). */
-export async function rejectGate(gateId: string, reason?: string): Promise<GateDecisionResult> {
+export async function rejectGate(gateId: string, reason?: string, expectedPlanHash?: string): Promise<GateDecisionResult> {
   return apiClient.post<GateDecisionResult>(
     `/orchestration/gates/${encodeURIComponent(gateId)}/reject`,
-    { reason: reason ?? null }
+    { reason: reason ?? null, ...(expectedPlanHash ? { expected_plan_hash: expectedPlanHash } : {}) }
   );
+}
+
+export interface GatePlanPreview {
+  version: number;
+  plan_hash: string;
+  superseded_at: string | null;
+  plan_document: {
+    title: string;
+    nodes: { address: string; title: string; kind: string }[];
+    proposed_execution_policy?: Record<string, unknown>;
+    execution_policy?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+}
+
+export async function getGatePlanPreview(flowId: string): Promise<GatePlanPreview> {
+  const plans = await apiClient.get<GatePlanPreview[]>(`/orchestration/flows/${encodeURIComponent(flowId)}/plans`);
+  const current = Array.isArray(plans) ? plans.filter(plan => plan?.superseded_at === null) : [];
+  if (current.length !== 1 || !/^[a-f0-9]{64}$/.test(current[0].plan_hash)
+      || !Array.isArray(current[0].plan_document?.nodes)
+      || !current[0].plan_document.nodes.every(node => node && typeof node.address === 'string'
+        && typeof node.title === 'string' && typeof node.kind === 'string')) {
+    throw new Error('The current plan revision could not be verified. Reload its preview before deciding.');
+  }
+  return current[0];
 }
 
 /**

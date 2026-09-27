@@ -8,9 +8,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@/services/api', () => ({ apiClient: { get: vi.fn() } }));
+vi.mock('@/services/api', () => ({ apiClient: { get: vi.fn(), post: vi.fn() } }));
 
-import { getFlowGraph } from '@/services/orchestration';
+import { getFlowGraph, getGatePlanPreview, approveGate, rejectGate } from '@/services/orchestration';
 import { apiClient } from '@/services/api';
 
 const mockGet = apiClient.get as ReturnType<typeof vi.fn>;
@@ -42,4 +42,25 @@ describe('getFlowGraph', () => {
 
     await expect(getFlowGraph('flow-1')).resolves.toBe(payload);
   });
+});
+
+
+describe('gate revision contract', () => {
+  const plan = {version: 1, plan_hash: 'a'.repeat(64), superseded_at: null,
+    plan_document: {title: 'Repair', nodes: [{address: 'f/e/w/g', title: 'Gate', kind: 'gate'}]}};
+  it.each([approveGate, rejectGate])('sends the reviewed hash without actor fields', async decide => {
+    await decide('gate-1', 'Reviewed', plan.plan_hash);
+    expect(apiClient.post).toHaveBeenCalledWith(expect.stringMatching(/gates\/gate-1\/(approve|reject)$/),
+      {reason: 'Reviewed', expected_plan_hash: plan.plan_hash});
+  });
+  it('selects the current revision rather than a superseded plan', async () => {
+    mockGet.mockResolvedValue([{...plan, superseded_at: '2026-09-27'}, plan]);
+    await expect(getGatePlanPreview('flow-1')).resolves.toEqual(plan);
+    expect(mockGet).toHaveBeenCalledWith('/orchestration/flows/flow-1/plans');
+  });
+  it.each([[], [plan, plan], [{...plan, plan_hash: ''}], [{...plan, plan_document: {nodes: [null]}}]])(
+    'refuses missing, ambiguous or malformed revisions: %j', async plans => {
+      mockGet.mockResolvedValue(plans);
+      await expect(getGatePlanPreview('flow-1')).rejects.toThrow('could not be verified');
+    });
 });

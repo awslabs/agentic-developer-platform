@@ -32,6 +32,7 @@ vi.mock('@/services/orchestration', () => ({
   approveGate: vi.fn(),
   rejectGate: vi.fn(),
   resumeNode: vi.fn(),
+  getGatePlanPreview: vi.fn(),
 }));
 
 vi.mock('@/hooks/usePermissions', () => ({

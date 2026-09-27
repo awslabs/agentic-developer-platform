@@ -27,6 +27,7 @@ vi.mock('@/services/orchestration', () => ({
   approveGate: vi.fn(),
   rejectGate: vi.fn(),
   resumeNode: vi.fn(),
+  getGatePlanPreview: vi.fn(),
   // Issue #5145: the page now also reads the delivery ledger. Stubbed here (and
   // left unresolved) so this suite keeps asserting the graph exactly as it does
   // today — the ledger panel has its own suite in `GraphViewExecution.test.tsx`.
