@@ -399,8 +399,11 @@ jobs:
             # The upstream default does not support our nonroot, read-only
             # manifest. Deploy the hardened project build by immutable digest.
             DEEPWIKI_REPO="adp-${ENVIRONMENT}-agent-context-deepwiki"
+            # CodeBuild publishes latest only for the final runtime. The repo
+            # also contains newer intermediate build-input images with no CMD.
             DEEPWIKI_DIGEST=$(aws ecr describe-images --repository-name "$DEEPWIKI_REPO" \
-              --region "$AWS_REGION" --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageDigest' \
+              --image-ids imageTag=latest \
+              --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' \
               --output text)
             if [[ ! "$DEEPWIKI_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
               echo "::error::No built DeepWiki image found. Run Agent Context Images Build first."
