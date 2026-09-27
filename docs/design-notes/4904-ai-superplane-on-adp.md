@@ -1,7 +1,8 @@
 # AI Superplane on ADP: overarching integration design
 
 Status: reviewer-agreed architecture; product-owner decisions pending.
-Updated: 2026-09-10 following architectural review.
+Updated: 2026-09-27 with the permissions design in sections 4.1–4.6; other
+architecture and historical implementation observations retain their review dates.
 Tracking: [EPIC #4904](https://github.com/aws-e/adp/issues/4904).
 Review baseline: [agreed design snapshot](https://github.com/aws-e/adp/issues/4904#issuecomment-5621154807).
 
@@ -17,6 +18,7 @@ Reading guide: start with [the proposal](#1-the-proposal-in-plain-terms) and
 [architecture](#2-architecture-and-responsibility-boundaries). Implementation
 details are grouped into [databases](#5-database-and-record-ownership),
 [neocloud vault](#6-neocloud-vault-extend-adp-do-not-create-a-second-vault),
+[permissions](#41-permissions-outcome-and-implementation-status),
 [APIs](#7-api-contracts), [CLI](#10-cli-and-agent-tools), and
 [rollout](#12-migration-and-rollout). The final sections identify gaps, tests
 and proposed child stories.
@@ -206,9 +208,211 @@ Required rules:
    constraints and expiry. Changes outside approved bounds require fresh
    authorization. Agents cannot approve their own changes.
 
-Retain explicit domain permissions such as developer, workspace-admin and
-org-admin, mapped from ADP roles and workspace membership. Do not assume role
-names in the two products have identical meaning.
+Use explicit scoped domain permissions. Display roles such as developer,
+workspace-admin and org-admin are not permission identifiers or verified ADP
+role names. Sections 4.1–4.6 define the permissions design and separate current
+implementation from the remaining role-integration work.
+
+### 4.1 Permissions outcome and implementation status
+
+A user must be able to answer: “What can I do in this organization and workspace,
+who granted that access, and why is an action unavailable?” An authorized
+administrator must be able to assign and revoke access. UI, CLI, API and agent
+tools must consume the same server-enforced policy.
+
+Delivery is tracked by [permissions epic #6483](https://github.com/aws-e/adp/issues/6483),
+a native child of [integration epic #4910](https://github.com/aws-e/adp/issues/4910).
+This section extends the identity boundaries in the maintained
+[domain design, section 2.2](../../modules/domain-apps/superplane/DESIGN.md#22-tenant-user-and-principal-alignment).
+It does not declare that the permissions epic is implemented.
+
+The source review at `5476e3b14` establishes these foundations:
+
+| Area | Implemented foundation | Remaining delivery |
+|---|---|---|
+| Workspace policy | Five permissions, explicit implications, server-held scoped grants and an API endpoint inventory. | Complete mapping from authoritative ADP roles and current membership to effective domain access. |
+| Role translation | `ADP_ROLE_PERMISSIONS` and `permissions_for_adp_role()` define a table and helper. | No production caller applying that helper was found. Its `workspace_*` names are not established ADP role integration. |
+| Initial administrator | Installation verifies the human's current selected-org `org_admin` membership and records organization authority; workspace bootstrap also records an initial workspace administrator grant. | General assignment, membership-change synchronization and revocation are separate from bootstrap. Resume must not restore revoked grants. |
+| Identity and sharing | Explicit organization bindings, typed principals and scoped grant foundations exist. | Current membership/delegation integration remains in #6127; complete shared-cluster isolation remains in #6048. |
+| User experience | Existing workspace/workload surfaces can consume capabilities. | Complete access-management and effective-permission workflows, plus composed live acceptance. |
+
+Source references: [policy](../../modules/domain-apps/superplane/auth/superplane_auth/policy.py),
+[served endpoint inventory](../../modules/domain-apps/superplane/src/superplane-api/app/endpoint_inventory.py),
+[authorization](../../modules/domain-apps/superplane/src/superplane-api/app/auth.py),
+and [installation bootstrap](../../modules/domain-apps/superplane/src/superplane-api/app/installation_bootstrap.py).
+These are reviewable implementation references, not evidence of an installed
+release or completed security acceptance. Earlier implementation observations
+elsewhere in this document retain their original review dates.
+
+### 4.2 Permission vocabulary and resource scopes
+
+Permissions belong to a resource scope, not to a display role or cloud account.
+For workspace grants the exact vocabulary is:
+
+| Permission | User-facing authority | Examples and limits |
+|---|---|---|
+| `workspace:read` | Inspect authorized work | Workspace details, nodes, events, costs, workload status and results. Does not mint cluster credentials or authorize spending. |
+| `workspace:spend` | Commit workload budget | Submit batch jobs, create/delete deployments and change workspace quota where inventoried. Still requires applicable budget, approval and operation admission checks. |
+| `workspace:provision` | Manage workspace infrastructure and cluster access | Retire/delete a workspace, request kubeconfig and invoke the currently inventoried workload cancellation routes. Organization-scoped creation/adoption needs organization authority as well. |
+| `workspace:renew_credential` | Manage provider credential bindings | Register, validate, rotate or disable workspace provider connections. This permission does not make secret values generally readable. |
+| `workspace:administer` | Manage workspace authorization | Change authorization records through an authorized administration path; includes the four permissions above. It does not make the holder a cluster or platform administrator. |
+
+Every non-read permission implies read. Spend and provision do not imply each
+other; neither independently grants credential renewal. An unrecognized role or
+stored permission contributes no authority. Route-specific checks remain
+necessary: deleting a deployment currently requires spend, while explicit
+cancellation requires provision. The reviewed function matrix must enumerate
+these differences rather than infer permissions from HTTP verbs or UI labels.
+
+Organization authority (`organization:read`, `organization:administer`) is
+separate from workspace grants. The endpoint inventory also records the action
+required by each organization-scoped route; the organization authorization path
+must resolve that requirement explicitly. A workspace grant cannot be treated as
+an organization-wide grant. Conversely, organization administration does not
+implicitly permit spending, kubeconfig access or credential rotation in every
+existing workspace. Initial workspace creation may use the documented narrow
+organization-administration path; an existing or revoked workspace grant must
+never be bypassed as “first workspace” onboarding.
+
+Cluster **use**, **administration** and **observation** are separate authorities
+owned by the sharing contract in #6048. Workspace membership in a cluster is an
+infrastructure relation, not a user grant. A user may administer workspace A
+without administering its shared cluster or reading workspace B. GPU allocation
+ownership remains allocation → workspace → exactly one bound data-plane cluster.
+Platform management-cluster eligibility requires separate platform authorization;
+no domain role creates that eligibility.
+
+### 4.3 ADP roles and domain access presets
+
+ADP owns identities, actual role assignments and organization membership.
+Superplane owns scoped domain grants and their interpretation. Do not introduce
+another identity directory or treat similarly named roles as equivalent.
+
+| ADP identity or role context | Superplane interpretation |
+|---|---|
+| `platform_admin` / platform administrator | Platform administration is not an implicit grant over customer workspaces, provider credentials or GPUs. Any domain access must follow the reviewed explicit authorization path. |
+| Current selected-org `org_admin` | Eligible for the existing administrator bootstrap path. Ongoing organization authority and access assignment must follow explicit grants and the approved delegation rules, not automatic ownership of every workspace. |
+| Other organization members | Organization membership alone grants no workspace access. Resolve effective access from approved role mapping and explicit scoped grants. |
+| One human belonging to multiple organizations | Only the verified selected organization applies. Never union memberships or permissions across tenants. |
+| Service/agent principal | Requires its own scoped grant and operation/run delegation. It does not inherit the initiating human's role or become a human approver. |
+| Unknown role or ambiguous identity mapping | Deny the authority that cannot be established; do not guess from email, display name, team name or cloud account. |
+
+The existing helper contains the following **candidate domain access presets**.
+This documents its current contents, not a decision to add these roles to ADP:
+
+| Name currently in helper | Expanded workspace permissions |
+|---|---|
+| `workspace_viewer` | read |
+| `workspace_operator` | read, spend |
+| `workspace_provisioner` | read, provision, renew_credential |
+| `workspace_owner` | read, spend, provision, renew_credential, administer |
+
+[P1 #6484](https://github.com/aws-e/adp/issues/6484) must inventory actual ADP role
+sources and decide whether these names become supported domain presets or are
+replaced by a mapping from canonical ADP roles. Its versioned function matrix
+must specify every supported action, route/tool, resource scope, required grant,
+additional admission conditions and evidence owner. It must also settle who may
+assign each privilege, last-administrator recovery and the revocation bound.
+Until those decisions and production integration land, do not present this table
+as working ADP RBAC or automatically create these roles during platform deployment.
+
+### 4.4 Effective access, assignment and revocation
+
+The target authorization path is:
+
+1. Verify the access credential and principal type. Resolve the immutable ADP
+   subject, current selected-org membership and explicit domain organization
+   binding; a local user projection is not membership evidence.
+2. Resolve the requested organization, workspace, cluster and operation from
+   trusted records. Load current grants and expand only documented implications.
+3. Check the action's exact scope and permission. For service calls, also check
+   the bounded run/operation delegation. For mutations, separately check current
+   approval, budget, placement, credential binding and execution fencing.
+4. Revalidate at admission, credential renewal/delivery and execution boundaries.
+   A preview, cached capability list or earlier approval is not durable authority.
+5. Record a scoped allow/deny decision with a useful reason and correlation to
+   the actor, run and operation, without tokens or secret material.
+
+Administration APIs must check the administrator's current authority at commit,
+limit assignments to the reviewed delegable scope and prevent cross-org grants
+and unauthorized self-escalation. Concurrent changes and retries need explicit
+conflict/idempotency behavior. Persist actor, target, scope, before/after access,
+reason, timestamp and correlation in access-controlled audit records. Users must
+be able to inspect their effective access and grant provenance without seeing
+another tenant's assignments.
+
+Revoked grants take precedence over onboarding fallbacks. Membership removal,
+disabled principals and role changes must invalidate authority within the bound
+specified by P1, including caches and restarted services. Revocation blocks
+subsequent admissions and renewals; it is not a claim that already-issued cloud
+credentials disappear immediately or that admitted workloads have been cancelled.
+Use existing governed cancellation and recovery authority for those cases, retain
+ownership evidence, and never resurrect revoked access during rollback or resume.
+
+### 4.5 Agent tools, human approval and executor authority
+
+Ordinary ADP agent workers do not have a platform-account provisioning role.
+They request Superplane operations through maintained tools. Dedicated governed
+executors perform resource mutations using scoped, operation-bound credentials;
+a domain permission must not be implemented by granting broad cloud IAM to the
+reasoning worker or allowing generated infrastructure/direct allocator bypasses.
+
+A delegation binds initiating human provenance, service/run identity, organization,
+workspace, permitted actions, operation and lifetime. Effective execution requires
+both the current scoped grant and valid delegation; an agent cannot widen either
+through retries, provider substitution or switching workspaces.
+
+Approval request, human decision and execution are three distinct actions. The
+approval endpoints' coarse read gate does not make every reader an approver:
+the approval service also validates the selected distinct human and current
+eligibility. Approval binds the exact plan/scope/generation, budget and expiry;
+it cannot be replayed for another requester or operation, and it does not supply
+missing execution permission. Reuse shared approval, admission, fencing and
+credential-delivery contracts instead of creating a second approval engine.
+
+### 4.6 User experience, delivery and acceptance
+
+UI, CLI and tool discovery consume server-derived capabilities. Show the selected
+organization/workspace, effective access and readable reasons for unavailable
+actions. Refresh after access changes or tenant switches. A disabled button is
+not enforcement: direct API requests and stale clients must receive the same
+authorization decision. Administrators use the supported access workflow;
+ordinary users see only access information they are authorized to inspect.
+
+Superplane remains optional. Domain roles, services, migrations and infrastructure
+must not become prerequisites for ordinary ADP login, deployment, navigation or
+agent use when Superplane is absent or disabled. Keep domain policy in the app;
+necessary shared interfaces require separately scoped review by their owners.
+
+| Story | Deliverable | Order / existing ownership |
+|---|---|---|
+| [#6484](https://github.com/aws-e/adp/issues/6484) | Approved ADP role/function/scope contract | First; coordinate identity #6127 and sharing #6048. |
+| [#6485](https://github.com/aws-e/adp/issues/6485) | Production role-to-access integration | After #6484; consume #6127 identity/current-membership implementation. |
+| [#6486](https://github.com/aws-e/adp/issues/6486) | Safe assignment, revocation and audit | After #6485; consume cluster authority interfaces from #6048. |
+| [#6487](https://github.com/aws-e/adp/issues/6487) | Effective access and administration workflows | After #6486; coordinate existing UI/CLI/tool owners. |
+| [#6488](https://github.com/aws-e/adp/issues/6488) | Bounded agent delegation and approval integration | After #6485; may overlap #6486/#6487; reuse #5526/#5527/#5528. |
+| [#6489](https://github.com/aws-e/adp/issues/6489) | Live permission matrix acceptance | After all five and required identity/sharing/composition/security prerequisites. |
+
+Existing stories retain their ownership and acceptance: #6127 owns identity and
+current grants, #6048 shared-cluster enforcement, and #5535 production composition.
+The missing policy evidence under #5044 and enforcement/credential repairs under
+#5055/#5386 and #5046/#5462 are not waived by this new epic.
+
+Remote contract/integration tests must demonstrate permitted operations as well
+as denials: distinct read/spend/provision/credential/admin access; tenant switching;
+same-org disjoint grants; human/service substitution; stale approvals; revocation
+between stages; concurrent assignment; restart/upgrade preservation; and direct
+endpoint bypass attempts. Use real composed authorization/database paths with
+provider fixtures, without spending as part of default tests.
+
+Live acceptance requires an explicitly authorized target and pinned release,
+actual ADP human/service identities, two organizations and disjoint/shared
+workspaces. Record the expected-versus-observed function matrix across supported
+UI/CLI/API/tools, sanitized audit/operation evidence, absence of unauthorized
+side effects, and provider costs/cleanup where applicable. Demonstrate ordinary
+ADP flows with Superplane absent or disabled. A code merge or mock-only result
+does not establish this outcome. #6483 progresses Planned → Building → Ready for
+live test → Live accepted; #6414 retains its separate review and trigger hold.
 
 ### Shared HITL approval contract
 
