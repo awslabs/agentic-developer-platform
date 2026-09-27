@@ -1,0 +1,27 @@
+{
+  "source": "node-fixed",
+  "image": "security27/deepwiki:node-fixed",
+  "checks": [
+    {
+      "check": "tar",
+      "exit_code": 0,
+      "log": "/workspaces/projects/security27/deepwiki-node-fixe-tar-installed-path.log"
+    },
+    {
+      "check": "runtime",
+      "exit_code": 0,
+      "log": "/workspaces/projects/security27/deepwiki-node-fixe-runtime-installed-path.log"
+    },
+    {
+      "check": "stdlib",
+      "exit_code": 0,
+      "log": "/workspaces/projects/security27/deepwiki-node-fixe-stdlib-installed-path.log"
+    },
+    {
+      "check": "node-hostname",
+      "exit_code": 0,
+      "log": "/workspaces/projects/security27/deepwiki-node-fixe-node-hostname-installed-path.log"
+    }
+  ],
+  "live_acceptance": false
+}
