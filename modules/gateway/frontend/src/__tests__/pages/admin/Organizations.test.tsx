@@ -18,6 +18,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import Organizations from '@/pages/admin/Organizations';
 
+vi.mock('@/components/org/ServiceIdentityList', () => ({
+  ServiceIdentityList: ({ orgId }: { orgId: string }) => <div data-testid="service-identities" data-org-id={orgId}>Service accounts</div>,
+}));
+
 vi.mock('@/services/admin', () => ({
   getOrganizations: vi.fn(),
   createOrganizationCanonical: vi.fn(),
@@ -353,6 +357,13 @@ describe('Organizations admin panel', () => {
   });
 
   describe('organization list', () => {
+    it('places service accounts in the selected organization structure', async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await openSophos(user);
+      expect(screen.getByTestId('service-identities')).toHaveAttribute('data-org-id', 'sophos');
+    });
+
     it('lists organizations with their immutable identifiers', async () => {
       renderPanel();
 

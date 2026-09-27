@@ -148,6 +148,22 @@ const modelCatalogue: ModelCatalogue = {
   ],
 };
 
+function modelPicker(row: HTMLElement): HTMLSelectElement {
+  return within(row).getByRole('combobox', { name: /Model for/ }) as HTMLSelectElement;
+}
+
+function chooseModel(row: HTMLElement): void {
+  fireEvent.change(modelPicker(row), { target: { value: 'model-certified' } });
+}
+
+function accountPicker(): HTMLSelectElement {
+  return screen.getByRole('combobox', { name: 'Settings for' }) as HTMLSelectElement;
+}
+
+function chooseAccount(value = 'service-1'): void {
+  fireEvent.change(accountPicker(), { target: { value } });
+}
+
 const noPrincipals: ManageableServicePrincipals = { principals: [] };
 const managedPrincipal = {
   canonical_service_principal_id: 'service-1',
@@ -204,6 +220,35 @@ describe('Agent Models page — issue #5422', () => {
     expect(screen.getByText('Retired')).toBeInTheDocument();
   });
 
+  it('allows a saved mapping to be reset when model choices fail to load', async () => {
+    const pending = deferred<PreferenceDetail>();
+    vi.mocked(selfApi.resetPreference).mockReturnValueOnce(pending.promise);
+    vi.mocked(selfApi.getPreferences).mockResolvedValue({
+      ...preferences,
+      entries: [{
+        ...preferences.entries[0],
+        saved_model_id: 'model-certified',
+        effective_model_id: 'model-certified',
+        source: 'principal-mapping',
+        status: 'configured',
+        revision: 7,
+      }],
+    });
+    vi.mocked(selfApi.getModelCatalogue).mockRejectedValue(new Error('offline'));
+    render(<AgentModels />);
+
+    const row = await screen.findByTestId('persona-row-brand-new-persona');
+    const reload = within(row).getByRole('button', { name: 'Reload models' });
+    fireEvent.click(within(row).getByRole('button', { name: 'Use default' }));
+    await waitFor(() => expect(selfApi.resetPreference).toHaveBeenCalledWith('brand-new-persona', 7));
+    expect(reload).toBeDisabled();
+    await act(async () => {
+      pending.resolve(detail());
+      await pending.promise;
+    });
+    expect(reload).toBeEnabled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(selfApi.getManageableServicePrincipals).mockResolvedValue(noPrincipals);
@@ -247,7 +292,7 @@ describe('Agent Models page — issue #5422', () => {
 
     expect(await screen.findByText('Brand New Persona')).toBeInTheDocument();
     expect(screen.getByText('Proves personas are server-driven.')).toBeInTheDocument();
-    expect(screen.queryByRole('group', { name: 'Settings for' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Settings for' })).not.toBeInTheDocument();
     expect(screen.getByTestId('not-configurable-pt-superpower')).toHaveTextContent('Model selection is not available for this persona');
     expect(selfApi.getPreferences).toHaveBeenCalledWith(expect.any(AbortSignal));
     expect(selfApi.getPreferences).toHaveBeenCalledTimes(1);
@@ -407,7 +452,7 @@ describe('Agent Models page — issue #5422', () => {
 
     expect(await screen.findByText('Brand New Persona')).toBeInTheDocument();
     await waitFor(() => expect(selfApi.getManageableServicePrincipals).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole('group', { name: 'Settings for' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Settings for' })).not.toBeInTheDocument();
     expect(screen.queryByText(/Managed service accounts could not be loaded/)).not.toBeInTheDocument();
   });
 
@@ -418,9 +463,9 @@ describe('Agent Models page — issue #5422', () => {
     expect(within(row).getByText('Not ready')).toBeInTheDocument();
     expect(within(row).getByText('This model is not ready to use yet.')).toBeInTheDocument();
     expect(within(row).getByText('Not permitted by your organization.')).toBeInTheDocument();
-    expect(within(row).getByRole('radio', { name: /Sonnet 4.6/ })).toBeDisabled();
-    expect(within(row).getByRole('radio', { name: /Opus 4.6/ })).toBeDisabled();
-    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeEnabled();
+    expect(within(row).getByRole('option', { name: /Sonnet 4.6/ })).toBeDisabled();
+    expect(within(row).getByRole('option', { name: /Opus 4.6/ })).toBeDisabled();
+    expect(within(row).getByRole('option', { name: /Haiku 4.5/ })).toBeEnabled();
   });
 
   it('never labels a retired effective model with fresh evidence as verified', async () => {
@@ -543,10 +588,10 @@ describe('Agent Models page — issue #5422', () => {
     const user = userEvent.setup();
     render(<AgentModels />);
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    await user.click(within(row).getByRole('radio', { name: /Haiku 4.5/ }));
-    await waitFor(() => expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked());
-    await waitFor(() => expect(within(row).getByRole('button', { name: 'Save' })).toBeEnabled());
-    await user.click(within(row).getByRole('button', { name: 'Save' }));
+    await user.selectOptions(modelPicker(row), 'model-certified');
+    await waitFor(() => expect(modelPicker(row)).toHaveValue('model-certified'));
+    await waitFor(() => expect(within(row).getByRole('button', { name: 'Save model' })).toBeEnabled());
+    await user.click(within(row).getByRole('button', { name: 'Save model' }));
 
     await waitFor(() => expect(selfApi.setPreference).toHaveBeenCalledWith(
       'brand-new-persona',
@@ -554,17 +599,17 @@ describe('Agent Models page — issue #5422', () => {
       undefined,
     ));
     expect(await within(row).findByText('Your choice')).toBeInTheDocument();
-    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
+    expect(modelPicker(row)).toHaveValue('model-certified');
 
-    await user.click(within(row).getByRole('button', { name: 'Reset' }));
+    await user.click(within(row).getByRole('button', { name: 'Use default' }));
     await waitFor(() => expect(selfApi.resetPreference).toHaveBeenCalledWith(
       'brand-new-persona',
       1,
     ));
     expect(await within(row).findByText('Default for this persona (not ready)')).toBeInTheDocument();
     expect(screen.queryByText(/platform default/i)).not.toBeInTheDocument();
-    expect(within(row).getByRole('button', { name: 'Reset' })).toBeDisabled();
-    await user.click(within(row).getByRole('button', { name: 'Reset' }));
+    expect(within(row).getByRole('button', { name: 'Use default' })).toBeDisabled();
+    await user.click(within(row).getByRole('button', { name: 'Use default' }));
     expect(selfApi.resetPreference).toHaveBeenCalledTimes(1);
   });
 
@@ -584,20 +629,17 @@ describe('Agent Models page — issue #5422', () => {
     render(<AgentModels />);
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    const selfScope = await screen.findByRole('radio', { name: 'My own agents' });
-    const serviceScope = await screen.findByRole('radio', { name: /Nightly triage/ });
-    fireEvent.click(within(row).getByRole('radio', { name: /Haiku 4.5/ }));
-    fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+    const account = await screen.findByRole('combobox', { name: 'Settings for' });
+    chooseModel(row);
+    fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
 
     await waitFor(() => expect(selfApi.setPreference).toHaveBeenCalledTimes(1));
-    expect(selfScope).toBeDisabled();
-    expect(serviceScope).toBeDisabled();
+    expect(account).toBeDisabled();
     expect(within(row).getByText('Default for this persona (not ready)')).toBeInTheDocument();
 
     pending.resolve(detail());
     expect(await within(row).findByText('Your choice')).toBeInTheDocument();
-    await waitFor(() => expect(selfScope).toBeEnabled());
-    expect(serviceScope).toBeEnabled();
+    await waitFor(() => expect(account).toBeEnabled());
   });
 
   it('sends the displayed reset revision, locks scope, and renders a stale conflict without mutation', async () => {
@@ -630,16 +672,14 @@ describe('Agent Models page — issue #5422', () => {
     render(<AgentModels />);
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    const selfScope = await screen.findByRole('radio', { name: 'My own agents' });
-    const serviceScope = await screen.findByRole('radio', { name: /Nightly triage/ });
-    fireEvent.click(within(row).getByRole('button', { name: 'Reset' }));
+    const account = await screen.findByRole('combobox', { name: 'Settings for' });
+    fireEvent.click(within(row).getByRole('button', { name: 'Use default' }));
 
     await waitFor(() => expect(selfApi.resetPreference).toHaveBeenCalledWith(
       'brand-new-persona',
       7,
     ));
-    expect(selfScope).toBeDisabled();
-    expect(serviceScope).toBeDisabled();
+    expect(account).toBeDisabled();
     expect(within(row).getByText('Your choice')).toBeInTheDocument();
 
     pending.reject({
@@ -651,10 +691,9 @@ describe('Agent Models page — issue #5422', () => {
     });
     expect(await within(row).findByText(/changed elsewhere/)).toBeInTheDocument();
     expect(within(row).getByText('Your choice')).toBeInTheDocument();
-    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
+    expect(modelPicker(row)).toHaveValue('model-certified');
     expect(within(row).queryByText(/Nothing was changed/)).not.toBeInTheDocument();
-    await waitFor(() => expect(selfScope).toBeEnabled());
-    expect(serviceScope).toBeEnabled();
+    await waitFor(() => expect(account).toBeEnabled());
   });
 
   it('uses only a server-returned opaque ID for managed-service requests via admin module', async () => {
@@ -672,8 +711,8 @@ describe('Agent Models page — issue #5422', () => {
 
     await screen.findByText('Brand New Persona');
     vi.mocked(adminApi.getModelCatalogue).mockClear();
-    const managed = await screen.findByRole('radio', { name: /Nightly triage \(Acme\)/ });
-    fireEvent.click(managed);
+    await screen.findByRole('combobox', { name: 'Settings for' });
+    chooseAccount('opaque/service:id');
     await waitFor(() => expect(adminApi.getPreferences).toHaveBeenCalledWith(
       'opaque/service:id',
       expect.any(AbortSignal),
@@ -688,8 +727,8 @@ describe('Agent Models page — issue #5422', () => {
     expect(await screen.findByText(/Changes below apply to Nightly triage in Acme/)).toBeInTheDocument();
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    fireEvent.click(within(row).getByRole('radio', { name: /Haiku 4.5/ }));
-    fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+    chooseModel(row);
+    fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
     await waitFor(() => expect(adminApi.setPreference).toHaveBeenCalledWith(
       'opaque/service:id',
       'brand-new-persona',
@@ -711,16 +750,16 @@ describe('Agent Models page — issue #5422', () => {
     render(<AgentModels />);
 
     const selfRow = await screen.findByTestId('persona-row-brand-new-persona');
-    const selfChoice = within(selfRow).getByRole('radio', { name: /Haiku 4.5/ });
-    fireEvent.click(selfChoice);
-    expect(selfChoice).toBeChecked();
-    expect(within(selfRow).getByRole('button', { name: 'Save' })).toBeEnabled();
+    const selfChoice = modelPicker(selfRow);
+    chooseModel(selfRow);
+    expect(selfChoice).toHaveValue('model-certified');
+    expect(within(selfRow).getByRole('button', { name: 'Save model' })).toBeEnabled();
 
-    fireEvent.click(await screen.findByRole('radio', { name: /Nightly triage/ }));
+    await screen.findByRole('combobox', { name: 'Settings for' });
+    chooseAccount();
     const managedRow = await screen.findByTestId('persona-row-brand-new-persona');
-    const managedChoices = within(managedRow).getAllByRole('radio');
-    expect(managedChoices.every((choice) => !(choice as HTMLInputElement).checked)).toBe(true);
-    const managedSave = within(managedRow).getByRole('button', { name: 'Save' });
+    expect(modelPicker(managedRow)).toHaveValue('');
+    const managedSave = within(managedRow).getByRole('button', { name: 'Save model' });
     expect(managedSave).toBeDisabled();
     fireEvent.click(managedSave);
     expect(selfApi.setPreference).not.toHaveBeenCalled();
@@ -758,18 +797,18 @@ describe('Agent Models page — issue #5422', () => {
     });
     render(<AgentModels />);
 
-    const managed = await screen.findByRole('radio', { name: /Nightly triage/ });
-    fireEvent.click(managed);
+    await screen.findByRole('combobox', { name: 'Settings for' });
+    chooseAccount();
     const row = await screen.findByTestId('persona-row-brand-new-persona');
     expect(await within(row).findByText('Your choice')).toBeInTheDocument();
-    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
+    expect(modelPicker(row)).toHaveValue('model-certified');
 
     await act(async () => {
       staleSelfPreferences.resolve(preferences);
       await staleSelfPreferences.promise;
     });
     expect(within(row).getByText('Your choice')).toBeInTheDocument();
-    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
+    expect(modelPicker(row)).toHaveValue('model-certified');
   });
 
   it('does not replace known state after a refusal and offers an explicit conflict reload', async () => {
@@ -807,19 +846,17 @@ describe('Agent Models page — issue #5422', () => {
       });
     render(<AgentModels />);
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    const choice = within(row).getByRole('radio', { name: /Haiku 4.5/ });
-
-    fireEvent.click(choice);
-    fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+    chooseModel(row);
+    fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
     expect(await within(row).findByText(/This model is currently unavailable/)).toBeInTheDocument();
     expect(within(row).getByText('Default for this persona (not ready)')).toBeInTheDocument();
 
-    fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
     expect(await within(row).findByText(/changed elsewhere/)).toBeInTheDocument();
     fireEvent.click(within(row).getByRole('button', { name: 'Reload current value' }));
     await waitFor(() => expect(selfApi.getPreferences).toHaveBeenCalledTimes(2));
 
-    fireEvent.click(screen.getByRole('radio', { name: /Nightly triage/ }));
+    chooseAccount();
     const managedRow = await screen.findByTestId('persona-row-brand-new-persona');
     expect(await within(managedRow).findByText('Your choice')).toBeInTheDocument();
     await act(async () => {
@@ -827,7 +864,7 @@ describe('Agent Models page — issue #5422', () => {
       await staleReload.promise;
     });
     expect(within(managedRow).getByText('Your choice')).toBeInTheDocument();
-    expect(within(managedRow).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
+    expect(modelPicker(managedRow)).toHaveValue('model-certified');
   });
 
   it('fences an imperative retry so it cannot overwrite a newer principal scope', async () => {
@@ -863,7 +900,7 @@ describe('Agent Models page — issue #5422', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(selfApi.getPreferences).toHaveBeenCalledTimes(2));
-    fireEvent.click(screen.getByRole('radio', { name: /Nightly triage/ }));
+    chooseAccount();
     const managedRow = await screen.findByTestId('persona-row-brand-new-persona');
     expect(await within(managedRow).findByText('Your choice')).toBeInTheDocument();
 
@@ -872,7 +909,7 @@ describe('Agent Models page — issue #5422', () => {
       await staleRetry.promise;
     });
     expect(within(managedRow).getByText('Your choice')).toBeInTheDocument();
-    expect(within(managedRow).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
+    expect(modelPicker(managedRow)).toHaveValue('model-certified');
   });
 
   it('keeps stale models unavailable without exposing expiry dates', async () => {
@@ -970,26 +1007,26 @@ describe('Agent Models page — issue #5422', () => {
     const first = await screen.findByTestId('persona-row-brand-new-persona');
     const second = await screen.findByTestId('persona-row-reviewer');
 
-    fireEvent.click(within(first).getByRole('radio', { name: /Haiku 4.5/ }));
-    fireEvent.click(within(first).getByRole('button', { name: 'Save' }));
+    chooseModel(first);
+    fireEvent.click(within(first).getByRole('button', { name: 'Save model' }));
     expect(await within(first).findByText('Your choice')).toBeInTheDocument();
 
-    fireEvent.click(within(second).getByRole('radio', { name: /Haiku 4.5/ }));
-    fireEvent.click(within(second).getByRole('button', { name: 'Save' }));
+    chooseModel(second);
+    fireEvent.click(within(second).getByRole('button', { name: 'Save model' }));
     expect(await within(second).findByText(/Your organization does not allow this model/)).toBeInTheDocument();
     expect(within(first).getByText('Your choice')).toBeInTheDocument();
     expect(screen.queryByText(/all rows saved/i)).not.toBeInTheDocument();
   });
 
-  // AC-10 — keyboard operability. Real browser accessibility and narrow-width layout
-  // remain PMM-09 work; these assert only what a component test can establish.
-  describe('AC-10 keyboard operability', () => {
-    it('reaches and operates the model choice and Save by keyboard alone', async () => {
+  // Native select keyboard behavior is verified by browsers; jsdom only checks
+  // focusability, selection, disabled options, and accessible names.
+  describe('picker accessibility', () => {
+    it('focuses and operates the model picker and Save', async () => {
       const user = userEvent.setup();
       render(<AgentModels />);
       const row = await screen.findByTestId('persona-row-brand-new-persona');
 
-      const selectable = within(row).getByRole('radio', { name: /Haiku 4.5/ });
+      const selectable = modelPicker(row);
       // Tab until focus lands on the selectable model choice, proving it is reachable
       // without a pointer rather than assuming a tab order.
       let guard = 0;
@@ -999,11 +1036,10 @@ describe('Agent Models page — issue #5422', () => {
       }
       expect(selectable).toHaveFocus();
 
-      // Space selects the focused radio.
-      await user.keyboard(' ');
-      expect(selectable).toBeChecked();
+      await user.selectOptions(selectable, 'model-certified');
+      expect(selectable).toHaveValue('model-certified');
 
-      const save = within(row).getByRole('button', { name: 'Save' });
+      const save = within(row).getByRole('button', { name: 'Save model' });
       expect(save).toBeEnabled();
       save.focus();
       await user.keyboard('{Enter}');
@@ -1020,9 +1056,8 @@ describe('Agent Models page — issue #5422', () => {
       render(<AgentModels />);
       const row = await screen.findByTestId('persona-row-brand-new-persona');
 
-      // A disabled radio is not focusable, so a keyboard user cannot select a model
-      // the server refused — the same guarantee the pointer path has.
-      const disallowed = within(row).getByRole('radio', { name: /Opus 4.6/ });
+      // A disabled option cannot become the picker's value.
+      const disallowed = within(row).getByRole('option', { name: /Opus 4.6/ });
       expect(disallowed).toBeDisabled();
       disallowed.focus();
       expect(disallowed).not.toHaveFocus();
@@ -1035,13 +1070,12 @@ describe('Agent Models page — issue #5422', () => {
       render(<AgentModels />);
       await screen.findByTestId('persona-row-brand-new-persona');
 
-      // Each radio group must be announced with which persona it configures, otherwise
-      // a screen-reader user cannot tell the identical model lists apart.
-      expect(screen.getByRole('radiogroup', { name: 'Model for Brand New Persona' })).toBeInTheDocument();
-      expect(screen.getByRole('group', { name: 'Settings for' })).toBeInTheDocument();
+      // Each picker names the persona or account it configures.
+      expect(screen.getByRole('combobox', { name: 'Model for Brand New Persona' })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: 'Settings for' })).toBeInTheDocument();
     });
 
-    it('switches configuration scope by keyboard and reports the target account', async () => {
+    it('switches configuration scope and reports the target account', async () => {
       const user = userEvent.setup();
       vi.mocked(selfApi.getManageableServicePrincipals).mockResolvedValue({
         principals: [managedPrincipal],
@@ -1049,10 +1083,10 @@ describe('Agent Models page — issue #5422', () => {
       render(<AgentModels />);
       await screen.findByTestId('persona-row-brand-new-persona');
 
-      const managedScope = screen.getByRole('radio', { name: /Nightly triage/ });
-      managedScope.focus();
-      expect(managedScope).toHaveFocus();
-      await user.keyboard(' ');
+      const account = accountPicker();
+      account.focus();
+      expect(account).toHaveFocus();
+      await user.selectOptions(account, 'service-1');
 
       // The account and its tenant must be named before any save commits (AC-06).
       expect(await screen.findByText(/Changes below apply to Nightly triage in Acme/)).toBeInTheDocument();
@@ -1069,8 +1103,8 @@ describe('Agent Models page — issue #5422', () => {
       render(<AgentModels />);
       const row = await screen.findByTestId('persona-row-brand-new-persona');
 
-      fireEvent.click(within(row).getByRole('radio', { name: /Haiku 4.5/ }));
-      fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+      chooseModel(row);
+      fireEvent.click(within(row).getByRole('button', { name: 'Save model' }));
 
       // role="alert" is what makes the failure reach a screen reader rather than being
       // visible-only; the reason must be stated, not a generic failure.

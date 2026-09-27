@@ -104,8 +104,8 @@ class TestTheMaintainedTreeIsTheOnlyWritableOne:
     def test_the_lock_points_only_at_the_maintained_tree(self, lock: dict) -> None:
         assert lock["maintained_source"]["root"] == "modules/domain-apps/superplane/src"
         for component, entry in (lock["pending_images"] or {}).items():
-            if component == "superplane-executor":
-                # This ADP-native service is not a transferred upstream component.
+            if component in {"superplane-executor", "superplane-paid-worker"}:
+                # These ADP-native targets share the maintained executor Dockerfile.
                 assert entry["source_path"] == "executor"
                 assert (MODULE_ROOT / "executor" / "Dockerfile").is_file()
                 continue

@@ -905,8 +905,8 @@ class TestTheAbortReachesTheEndOfTheRun:
 
         reports = []
         monkeypatch.setattr(run_report, "enabled", lambda: False)
-        monkeypatch.setattr(run_report, "terminal", lambda outcome: reports.append(outcome))
-        monkeypatch.setattr(run_report, "spool_undelivered_failure", lambda: None)
+        monkeypatch.setattr(run_report, "terminal", lambda outcome, **kwargs: reports.append(outcome))
+        monkeypatch.setattr(run_report, "spool_undelivered_failure", lambda **kwargs: None)
         monkeypatch.setattr(run_report, "begin_delivery", lambda: None)
         monkeypatch.setattr(run_report, "configure", lambda envelope: None)
 
@@ -1359,3 +1359,10 @@ class TestTheUnprotectedAbortIsNotReportedAsClean:
             calls = []
             self._main_tail(monkeypatch, persisted=persisted, ack=ack, calls=calls, repair=True)
             assert "plain_delete" not in calls
+
+
+@pytest.fixture(autouse=True)
+def stub_agent_runtime(monkeypatch):
+    # These bootstrap tests stub execution; deadline/process-group tests run real children.
+    import subprocess
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))

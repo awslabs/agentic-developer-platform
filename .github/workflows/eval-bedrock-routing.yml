@@ -90,7 +90,7 @@ permissions:
 jobs:
   lint:
     name: Lint eval scripts
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
 
@@ -151,9 +151,7 @@ jobs:
     # must never run from an untrusted PR.
     if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
     needs: [lint]
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 45
 

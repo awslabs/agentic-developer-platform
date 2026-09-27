@@ -150,9 +150,10 @@ class DeploymentPreview:
     request: OperationRequest
     deployment_request: dict
     deployment_target: dict
+    cleanup_snapshot: dict | None = None
 
     def public(self, workspace_id):
-        return {
+        result = {
             "deployment_id": self.deployment_id,
             "request_id": self.request.idempotency_key,
             "revision": payload_digest(self.request),
@@ -165,6 +166,9 @@ class DeploymentPreview:
                 "parameters": dict(self.request.parameters),
             },
         }
+        if self.cleanup_snapshot is not None:
+            result["cleanup_snapshot"] = self.cleanup_snapshot
+        return result
 
 
 def build_deployment_preview(
@@ -383,6 +387,10 @@ def validate_request(request, target, *, org_id, workspace_id):
 
     if PARAMETER in request.parameters:
         fields = fields | {PARAMETER}
+    from .cleanup_graph import PARAMETER as CLEANUP_GRAPH
+
+    if request.action == "teardown" and CLEANUP_GRAPH in request.parameters:
+        fields = fields | {CLEANUP_GRAPH}
     if set(request.parameters) != fields:
         raise OperationRefused(
             "controller deployment request has unsupported parameters"
@@ -399,7 +407,9 @@ def validate_request(request, target, *, org_id, workspace_id):
     )
 
 
-def teardown_request(source, *, org_id, workspace_id, request_id, source_operation_id):
+def teardown_request(
+    source, *, org_id, workspace_id, request_id, source_operation_id, cleanup_graph=None
+):
     """Preserve the original paid allocation and exact workload/provider target."""
     if (
         source.action != "provision"
@@ -413,6 +423,13 @@ def teardown_request(source, *, org_id, workspace_id, request_id, source_operati
     parameters["execution_steps"] = execution_steps(
         org_id, workspace_id, parameters["allocation_id"], "teardown"
     )
+    if cleanup_graph is not None:
+        from .cleanup_graph import PARAMETER, canonical, read, steps
+
+        value = read(canonical(cleanup_graph))
+        target = json.loads(parameters["execution_steps"])[0]["target"]
+        parameters[PARAMETER] = canonical(value)
+        parameters["execution_steps"] = steps(value, target)
     return OperationRequest(
         action="teardown",
         idempotency_key=str(uuid.UUID(str(request_id))),

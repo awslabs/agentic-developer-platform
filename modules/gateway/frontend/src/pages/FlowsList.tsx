@@ -312,7 +312,7 @@ function DesignStrip({ history }: { history: DesignHistory | null }) {
  */
 function FlowCard({ flow }: { flow: FlowSummary }) {
   return (
-    <li className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+    <li className="blueprint-flow-card overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
       <Link
         to={`/flows/${flow.id}`}
         data-testid={`flow-card-${flow.id}`}
@@ -456,7 +456,7 @@ export function FlowsList() {
   const filtered = hasActiveFilters(filters);
 
   return (
-    <div className="space-y-4 p-6">
+    <div className="space-y-4">
       <header className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

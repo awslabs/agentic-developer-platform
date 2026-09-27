@@ -338,7 +338,7 @@ function publishToken(next: TokenInfo): void {
 }
 
 /** Use the same manager from posting helpers and the proactive refresh timer. */
-export async function getRuntimeGitHubToken(): Promise<string> {
+export async function getRuntimeGitHubToken(force = false): Promise<string> {
   if (process.env.ADP_TOKEN_MODE === 'pat') {
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     if (!token) throw new Error('PAT credential unavailable; reconnect the GitHub credential');
@@ -361,7 +361,7 @@ export async function getRuntimeGitHubToken(): Promise<string> {
     });
     adoptBootstrapToken();
   }
-  return getToken();
+  return force ? forceRefresh() : getToken();
 }
 
 /** Unknown bootstrap expiry triggers a mint; it never becomes a guessed hour. */

@@ -12,7 +12,6 @@ on:
       - 'modules/harness/jobs/harness_jobs/identity.py'
       - 'modules/gateway/scripts/stage-contracts.sh'
       - 'modules/gateway/k8s/**'
-      - 'modules/gateway/frontend/**'
       - 'modules/gateway/alembic/versions/**'
       - 'modules/gateway/lambda/budget-usage-tracker/**'
       - 'modules/gateway/lambda/pricing-refresh/**'
@@ -85,8 +84,8 @@ env:
   EKS_CLUSTER: adp-dev-eks-cluster
 jobs:
   # Detect which parts of the gateway changed so we can skip the unrelated
-  # build/deploy job on frontend-only or backend-only pushes. workflow_dispatch
-  # always runs both (so humans can force a full redeploy).
+  # build/deploy job on backend-only pushes. Frontend pushes use the dedicated
+  # gateway-frontend-deploy.yml publisher; workflow_dispatch still runs both.
   changes:
     name: Detect changes
     runs-on: arc-runner-org
@@ -963,6 +962,7 @@ jobs:
     if: |
       github.ref == 'refs/heads/main' && (
       always() &&
+      github.event_name == 'workflow_dispatch' &&
       needs.changes.outputs.frontend == 'true' &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
       )

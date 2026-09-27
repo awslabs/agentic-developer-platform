@@ -514,6 +514,10 @@ async def require_autonomous_recovery(session, node, report, execution, inputs):
     """Recover engine stalls and failed reviewer processes, never their verdicts."""
     from .flow_execution import flow_is_paused
 
+    failure = (report.terminal_receipt or {}).get("failure") or {}
+    if failure.get("category") in {"policy", "provider_refusal", "contract", "cancelled"}:
+        raise CycleBlockedError("review_failure_requires_operator_action")
+
     failed_reviewer = (
         node.state in {"running", "awaiting_merge"}
         and (report.terminal_receipt or {}).get("outcome") == "failed"

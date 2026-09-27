@@ -14,9 +14,11 @@ gh run list --workflow nightly-cli-regression.yml --limit 5
 gh run view RUN_ID
 ```
 
-The parent first verifies the AWS account and reads the deployed gateway's
+The parent first obtains the protected dev environment’s explicit evaluation
+OIDC role, verifies the AWS account and reads the deployed gateway’s
 revision from the existing deployment evidence. The EC2 child resolves its own
-revision immediately before building its run config: dev can advance during the
+revision after obtaining its explicit OIDC credentials and immediately before
+building its run config: dev can advance during the
 onboarding and budget suites. EC2 preflight still checks that exact revision and
 the independently derived served CLI hashes. Recovery uses the same resolved pin.
 Both revisions appear in the combined summary; a deployment change between suites
@@ -25,8 +27,8 @@ that current `main` has already been deployed.
 
 The parent forwards optional non-secret `fixtures_json` unchanged to the existing
 CLI Uplift child, which applies its strict fixture validator. Manual dispatch
-accepts the same JSON object as standalone evaluation and defaults to `{}`.
-Scheduled runs use repository variable `CLI_UPLIFT_NIGHTLY_FIXTURES_JSON` when set,
+accepts the same JSON object as standalone evaluation and defaults to empty input.
+Both default manual dispatches and scheduled runs use repository variable `CLI_UPLIFT_NIGHTLY_FIXTURES_JSON` when set,
 otherwise `{}`. A supplied dispatch value takes precedence; explicit `{}` selects
 no optional fixtures. Empty input falls back to the repository variable.
 

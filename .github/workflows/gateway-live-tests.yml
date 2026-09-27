@@ -16,7 +16,7 @@ jobs:
   live:
     if: github.ref == 'refs/heads/main'
     environment: adp-checks-dev
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     permissions:
       contents: read
       id-token: write

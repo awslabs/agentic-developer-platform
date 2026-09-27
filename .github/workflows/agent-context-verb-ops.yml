@@ -45,9 +45,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     timeout-minutes: 60
     env:
       NS: agent-context

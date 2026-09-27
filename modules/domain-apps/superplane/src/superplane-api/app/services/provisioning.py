@@ -347,7 +347,7 @@ async def _start(
     """Open an authorized operation, or raise. Shared by both verbs."""
     from app.operation_activation import require_admission_enabled
 
-    require_admission_enabled()
+    require_admission_enabled(lifecycle="runtime_config_sha256" in parameters)
     if action not in PROVISIONING_ACTIONS:
         raise ProvisioningRefused(f"unknown provisioning action: {action!r}")
     _check_parameters(parameters)

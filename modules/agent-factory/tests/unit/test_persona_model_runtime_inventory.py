@@ -114,8 +114,8 @@ def test_all_nine_arc_workflows_preflight_and_enable_the_per_launch_guard():
     for path in workflows:
         text = (ROOT / path).read_text()
         if path == ".github/workflows/agent-developer.yml" and "id-token: write" not in text:
-            # S14 uses the dedicated runner identity rather than workflow OIDC.
-            assert "runs-on: arc-runner-agent" in text
+            # The shared pool must still satisfy the explicit agent identity guard.
+            assert "runs-on: arc-runner-org" in text
             assert "Verify dedicated developer identity" in text
             assert "EXPECTED_AGENT_ROLE_ARN: ${{ vars.ADP_AGENT_WORKFLOW_ROLE_ARN }}" in text
             assert text.index("Verify dedicated developer identity") < text.index("Get App Credentials")

@@ -370,3 +370,28 @@ async def test_worker_cannot_start_after_governed_authority_expires(reports, mon
     assert response.status_code == 409 and response.json()["detail"] == "policy_expired"
     readback = await reports.client.get(URL, headers=reports.headers)
     assert readback.json()["worker_receipt"] is None and readback.json()["block_code"] == "policy_expired"
+
+
+async def test_terminal_failure_diagnostics_are_bounded_and_immutable(reports):
+    r = reports
+    failure = {"category": "authentication", "exit_code": 1}
+    payload = {"outcome": "failed", "failure": failure}
+    first = await r.client.post(URL + "/terminal", headers=r.headers, json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["terminal_receipt"]["failure"] == failure
+    retry = await r.client.post(URL + "/terminal", headers=r.headers, json=payload)
+    assert retry.json()["terminal_receipt"] == first.json()["terminal_receipt"]
+    conflict = await r.client.post(
+        URL + "/terminal", headers=r.headers, json={"outcome": "failed", "failure": {"category": "unknown", "exit_code": 1}}
+    )
+    assert conflict.status_code == 409
+    malformed = await r.client.post(URL + "/terminal", headers=r.headers, json={"outcome": "failed", "failure": {**failure, "raw_token": "secret"}})
+    assert malformed.status_code == 422
+
+
+async def test_success_cannot_carry_failure_metadata(reports):
+    result = await reports.client.post(
+        URL + "/terminal", headers=reports.headers, json={"outcome": "complete", "failure": {"category": "unknown", "exit_code": 0}}
+    )
+    assert result.status_code == 409
+    assert result.json()["detail"] == "failure_requires_failed_outcome"

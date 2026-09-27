@@ -62,7 +62,9 @@ async def resolve_task_model(
     from src.tasks.human_authority import require_current_owner
 
     principal_kind, owner_id = await require_current_owner(db, tenant=tenant, principal=principal)
-    policy = await _resolve_active_allowlist_policy(db, tenant_id=tenant, principal_kind=principal_kind, principal_id=owner_id, expires_at=deadline)
+    policy = await _resolve_active_allowlist_policy(
+        db, tenant_id=tenant, principal_kind=principal_kind, principal_id=owner_id, expires_at=deadline, require_hierarchy=True
+    )
     if (principal_kind == "service_account" and policy.principal_status != "active") or policy.service_policy_unavailable_reason:
         raise ModelPolicyError("task_model_policy_unavailable")
     preference = await db.scalar(
@@ -109,10 +111,23 @@ async def resolve_task_model(
     if evidence is None or evidence.is_stale or not evidence.is_proven or not evidence.provider_request_id:
         raise ModelPolicyError("task_model_probe_required")
     state = await get_rate_state(db)
-    from pricing_policy.policy import model_rate_candidates, staleness_reasons
+    from pricing_policy.policy import geography_from_model_prefix, model_rate_candidates, staleness_reasons
     from pricing_policy.storage import utc_now_iso
 
     rates = model_rate_candidates(state.rows, canonical_billing_model_id(model_id), served_service_tier="standard")
+    # Profile geography and endpoint are known before invocation. Unrelated
+    # routes must not invalidate this route's evidence. Keep every context tier
+    # for the selected route because the task's eventual input size is unknown.
+    geography = geography_from_model_prefix(model_id)
+    # Native Responses dispatches bare OpenAI IDs to the selected regional
+    # Mantle endpoint; preserve the same route evidence as its usage capture.
+    if responses and geography is None and model_id.startswith("openai."):
+        geography = "in_region"
+    if geography is not None and region.startswith("us-gov-"):
+        geography = "govcloud"
+    rates = tuple(
+        row for row in rates if geography is not None and row.geography == geography and row.region == region and row.service_tier == "standard"
+    )
     if (
         not state.from_database
         or state.reasons

@@ -423,3 +423,47 @@ async def test_stale_model_authority_cannot_spend(shared, model_assignment, chan
     await shared.session.flush()
     with pytest.raises((CycleBlockedError, RunReportError)):
         await shared_policy.authorize_shared_model(shared.session, model_assignment)
+
+
+async def test_initial_dispatch_uses_accepted_shared_mode_with_both_transports_enabled(shared, monkeypatch):
+    from src.orchestration.dispatch_pass import _shared_continuation
+
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setenv("ADP_SHARED_RUN_REPORTING_ENABLED", "true")
+    assert await _shared_continuation(shared.session, shared.node)
+
+
+@pytest.mark.parametrize("flag", ["ADP_SHARED_WORKER_CONTINUATION_ENABLED", "ADP_SHARED_RUN_REPORTING_ENABLED"])
+async def test_disabled_shared_transport_refuses_initial_dispatch_instead_of_switching_mode(shared, monkeypatch, flag):
+    from src.orchestration.dispatch_pass import _AdmissionRefusedError, _shared_continuation
+
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setenv("ADP_SHARED_RUN_REPORTING_ENABLED", "true")
+    monkeypatch.setenv(flag, "false")
+    with pytest.raises(_AdmissionRefusedError):
+        await _shared_continuation(shared.session, shared.node)
+
+
+async def test_committed_shared_outbox_is_not_provisioned_as_protected(shared, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from src.orchestration.dispatch_pass import DispatchPassReport, prepare_pending, publish_pending
+    from tests.orchestration.test_dispatch_pass import FakeSQS, _config
+
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    envelope = {
+        "message_id": "shared-run",
+        "execution_continuation": {"execution_id": "accepted-execution"},
+        "run_report": {"credential": "test-dispatch-credential"},
+    }
+    pending = SimpleNamespace(envelope=envelope, org_id=shared.node.org_id, node_id=shared.node.id, group_id="group", deduplication_id="shared-run")
+    report = DispatchPassReport(pending=[pending])
+    writer = Mock()
+    writer.provision.side_effect = AssertionError("Shared assignment must not create protected credentials")
+    monkeypatch.setattr("src.agentauth.engine.get_engine_authority_writer", lambda: writer)
+    await prepare_pending(shared.session, report, writer=writer)
+    sqs = FakeSQS()
+    publish_pending(report, _config(), client=sqs, run_store=Mock())
+    assert sqs.envelope() == envelope
+    writer.provision.assert_not_called()

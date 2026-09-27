@@ -75,7 +75,7 @@ def secret_metadata(installer, cluster, name):
         raise Refusal("Secret metadata projection was unavailable") from None
 
 
-def snapshot(installer):
+def snapshot(installer, *, allow_missing=False):
     env = installer.env
     adapters = env["api_adapters"]
     transport = adapters["vault"]["transport"]
@@ -106,11 +106,45 @@ def snapshot(installer):
         installer.aws("eks", "describe-cluster", "--name", env["cluster"])
     )["cluster"]
     metadata = secret_metadata(installer, cluster, ref["name"])
-    producer = adapters["dispatcher"]
+    return {
+        "environment_sha256": digest(env),
+        "release_id": installer.release,
+        "secret": {
+            "namespace": env["namespace"],
+            **ref,
+            "uid": metadata["uid"],
+            "resource_version": metadata["resourceVersion"],
+        },
+        "service": {
+            "uid": service["metadata"]["uid"],
+            "resource_version": service["metadata"]["resourceVersion"],
+        },
+        **role_identity(installer, cluster, allow_missing=allow_missing),
+        "cluster_arn": cluster["arn"],
+        "oidc": cluster["identity"]["oidc"]["issuer"],
+    }
+
+
+def role_identity(installer, cluster, *, allow_missing=False):
+    env = installer.env
+    producer = env["api_adapters"]["dispatcher"]
     role_name = producer["role_arn"].rsplit("/", 1)[1]
-    role = installer.json(installer.aws("iam", "get-role", "--role-name", role_name))[
-        "Role"
-    ]
+    result = installer.aws(
+        "iam", "get-role", "--role-name", role_name, allow_failure=True
+    )
+    if result.returncode:
+        from .producer_role import expected_arn
+
+        require(
+            allow_missing
+            and env.get("api_producer_role")
+            and producer["role_arn"] == expected_arn(env)
+            and "An error occurred (NoSuchEntity) when calling the GetRole operation"
+            in result.stderr,
+            "Cannot establish exact API producer role identity",
+        )
+        return {"role_arn": producer["role_arn"], "role_missing": True}
+    role = installer.json(result)["Role"]
     policies = []
     for name in installer.json(
         installer.aws("iam", "list-role-policies", "--role-name", role_name)
@@ -164,18 +198,6 @@ def snapshot(installer):
         )["PolicyVersion"]["Document"]
     verify_role(env, role, policies, cluster["identity"]["oidc"]["issuer"])
     return {
-        "environment_sha256": digest(env),
-        "release_id": installer.release,
-        "secret": {
-            "namespace": env["namespace"],
-            **ref,
-            "uid": metadata["uid"],
-            "resource_version": metadata["resourceVersion"],
-        },
-        "service": {
-            "uid": service["metadata"]["uid"],
-            "resource_version": service["metadata"]["resourceVersion"],
-        },
         "role_arn": role["Arn"],
         "role_id": role["RoleId"],
         "role_policy_sha256": digest(
@@ -186,8 +208,6 @@ def snapshot(installer):
                 "boundary_document": boundary,
             }
         ),
-        "cluster_arn": cluster["arn"],
-        "oidc": cluster["identity"]["oidc"]["issuer"],
     }
 
 
@@ -339,6 +359,9 @@ def verify(installer, token):
 
 
 def activate(installer):
+    from .paid_worker import require_activation_available
+
+    require_activation_available(installer.env)
     stage = installer.receipt.get("adapter_stage", {})
     require(
         stage.get("state") == "verified-disabled"

@@ -887,7 +887,7 @@ async def _dispatch_one_unclaimed(
     selection = None
     from src.admin.persona_models.dispatch_selection import mapping_enabled, select_for_dispatch
 
-    if mapping_enabled() and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+    if mapping_enabled() and (os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true" or await _shared_continuation(session, node)):
         try:
             selection = await select_for_dispatch(
                 session,
@@ -1115,7 +1115,7 @@ async def _dispatch_one_unclaimed(
     # been verified. The assignment commits atomically with this exact dispatch.
     from .report_dispatch import reporting_enabled
 
-    if binding_required and reporting_enabled() and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+    if binding_required and reporting_enabled() and (shared_continuation or os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true"):
         from .run_reports import prepare_run_report
 
         await prepare_run_report(session, envelope)
@@ -1347,19 +1347,37 @@ class _AdmissionRefusedError(Exception):
 
 
 async def _shared_continuation(session, node) -> bool:
-    if (
-        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
-        or os.environ.get("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false").lower() != "true"
-    ):
-        return False
+    from .models import OrchestrationAcceptedPlan
     from .review_cycle import CycleBlockedError
     from .shared_policy import shared_inputs
 
-    try:
-        await shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
-        return True
-    except CycleBlockedError:
+    plan = await session.scalar(
+        select(OrchestrationAcceptedPlan).where(
+            OrchestrationAcceptedPlan.org_id == node.org_id,
+            OrchestrationAcceptedPlan.flow_id == node.flow_id,
+            OrchestrationAcceptedPlan.superseded_at.is_(None),
+        )
+    )
+    if plan is None or (plan.plan_document or {}).get("execution_continuation") is None:
         return False
+    try:
+        # Accepted mode wins even when protected authority is enabled globally.
+        # An invalid/disabled shared contract is a refusal, never a fallback.
+        await shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
+        from .report_dispatch import reporting_enabled
+
+        if not reporting_enabled():
+            raise CycleBlockedError("shared_run_reporting_disabled")
+        return True
+    except CycleBlockedError as exc:
+        raise _AdmissionRefusedError(
+            _admission_refused(
+                "authority_unverifiable",
+                owner="platform-operator",
+                required_input="restore the accepted shared continuation transport or explicitly amend the plan",
+                detail=exc.reason,
+            )
+        ) from None
 
 
 async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None:
@@ -1687,6 +1705,9 @@ async def prepare_pending(
 
     prepared: list[PendingPublish] = []
     for pending in report.pending:
+        if pending.envelope.get("execution_continuation") and pending.envelope.get("run_report"):
+            prepared.append(pending)
+            continue
         invocation_id = pending.invocation_id()
         try:
             # Blocking DynamoDB writes: off the event loop so a slow round trip
@@ -1760,7 +1781,8 @@ def publish_pending(
 
     for pending in report.pending:
         envelope = pending.envelope
-        protected = os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+        shared = bool(envelope.get("execution_continuation") and envelope.get("run_report"))
+        protected = not shared and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
         if protected:
             try:
                 from src.agentauth.engine import get_engine_authority_writer

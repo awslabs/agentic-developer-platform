@@ -63,9 +63,7 @@ jobs:
       contents: read
       actions: read
       id-token: write
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     timeout-minutes: 30
     env:
       AWS_REGION: us-east-1

@@ -130,7 +130,7 @@ export default function Login() {
   }
 
   return (
-    <div className="max-w-md mx-auto">
+    <div className="blueprint-login">
       <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-6">
         Sign In
       </h2>

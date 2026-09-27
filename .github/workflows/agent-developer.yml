@@ -35,7 +35,7 @@ concurrency:
 jobs:
   work:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-developer'
-    runs-on: arc-runner-agent
+    runs-on: arc-runner-org
     permissions:
       contents: write
       issues: write

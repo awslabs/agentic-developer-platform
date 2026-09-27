@@ -60,6 +60,18 @@ value; the dedicated dispatcher policy includes readonly history access. Inspect
 versioned `dispatch/<dispatch-id>/child.json` and local dispatcher log. Stopping
 local polling does not stop or clean the cloud build.
 
+The wrapper forces `AWS_MAX_ATTEMPTS=1` and `AWS_RETRY_MODE=standard` for the
+shared-CLI subprocess, overriding inherited retry settings. The installed AWS CLI
+2.37.0 CodeBuild service model has no `idempotencyToken` trait on the StartBuild
+token member. In the matching
+[model](https://github.com/aws/aws-cli/blob/2.37.0/awscli/botocore/model.py#L619)
+and [handler](https://github.com/aws/aws-cli/blob/2.37.0/awscli/botocore/handlers.py#L222),
+only trait-marked members receive an automatic token; the
+[standard retry implementation](https://github.com/aws/aws-cli/blob/2.37.0/awscli/botocore/retries/standard.py#L44)
+otherwise defaults to three attempts and includes transient connection/server errors.
+One attempt prevents that client retry from repeating an uncertain StartBuild.
+The shared script still polls build status; it never starts a replacement build.
+
 Before any helper launch, the producer publishes `receipts/<CodeBuild UUID>/native-start.json`
 with original native build/account/region identity. If that upload fails, it refuses
 to launch. This survives a killed CodeBuild worker that cannot execute finalization.

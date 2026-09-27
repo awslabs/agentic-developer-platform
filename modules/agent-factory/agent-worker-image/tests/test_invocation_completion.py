@@ -258,7 +258,7 @@ def worker(delivery, monkeypatch, tmp_path):
         return 0 if success else exit_codes[-1]
 
     monkeypatch.setattr(entrypoint, "_handle_success", lambda *args, **kwargs: terminal(True))
-    monkeypatch.setattr(entrypoint, "_handle_failure", lambda *args: terminal(False))
+    monkeypatch.setattr(entrypoint, "_handle_failure", lambda *args, **kwargs: terminal(False))
     return client, envelope, executions, exit_codes, acknowledgements, merged
 
 
@@ -640,3 +640,10 @@ def test_abort_between_the_two_checks_defers_rather_than_claiming_the_row(delive
     assert "delivery_completed" not in row(client, envelope)
     # The redelivery this defers to now reads the abort and refuses the work.
     assert completion.is_delivery_completed(envelope) is True
+
+
+@pytest.fixture(autouse=True)
+def stub_agent_runtime(monkeypatch):
+    # These bootstrap tests stub execution; deadline/process-group tests run real children.
+    import subprocess
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))

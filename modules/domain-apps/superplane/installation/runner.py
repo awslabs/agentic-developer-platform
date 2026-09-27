@@ -208,6 +208,10 @@ class Installer:
         )
 
     def plan(self):
+        if self.env.get("paid_worker"):
+            from .paid_worker import preparation_report
+
+            self.receipt["paid_worker"] = preparation_report(self.env, self.lock)
         self.write_manifests()
         if self.control_plane_only:
             self.receipt["actions"] = [
@@ -1192,6 +1196,7 @@ class Installer:
             "database_secret_name": self.env["secrets"]["database"],
             "jwt_secret_name": self.env["secrets"]["observation"],
             "cors_allowed_origins": [self.env["origin"]],
+            "api_producer_role": self.env.get("api_producer_role"),
             # workspace_cluster_context is deferred in control-plane-only mode;
             # the Terraform module must treat an absent/null value as no-op.
             "workspace_cluster_context": ""
@@ -1271,10 +1276,20 @@ class Installer:
                 "management_dns_configuration"
             ),
         }
+        from .producer_role import inspect_plan
+
+        inspect_plan(self, plan)
+        if self.env.get("api_producer_role"):
+            binding["api_producer_role_preflight"] = self.receipt[
+                "api_producer_role_preflight"
+            ]
         self.receipt["plan_sha256"] = digest(binding)
         self.save()
 
     def preflight(self):
+        from .paid_worker import require_activation_available
+
+        require_activation_available(self.env)
         # workspace() checks workspace CRDs, namespace existence and controller
         # credential scope.  These are deferred in control-plane-only mode because
         # the workspace cluster does not yet exist at this stage.
@@ -1282,6 +1297,8 @@ class Installer:
         if not self.control_plane_only:
             stages.append("workspace")
         stages.extend(["database", "gateway"])
+        if self.env.get("api_producer_role"):
+            stages.append("api_producer_role_preflight")
         if self.env.get("api_adapters"):
             stages.append("api_adapter_prerequisites")
         stages.append("terraform")
@@ -1293,7 +1310,14 @@ class Installer:
     def api_adapter_prerequisites(self):
         from .adapter_staging import snapshot
 
-        self.receipt["api_adapter_prerequisites"] = snapshot(self)
+        self.receipt["api_adapter_prerequisites"] = snapshot(
+            self, allow_missing=bool(self.env.get("api_producer_role"))
+        )
+
+    def api_producer_role_preflight(self):
+        from .producer_role import preflight
+
+        self.receipt["api_producer_role_preflight"] = preflight(self)
 
     def read_s3_json(self, key):
         with tempfile.TemporaryDirectory(dir=self.directory) as directory:
@@ -2452,6 +2476,12 @@ class Installer:
                         timeout=self.env["timeout_seconds"],
                     ),
                 )
+                if self.env.get("api_producer_role"):
+                    from .producer_role import verify_applied
+
+                    self.phase(
+                        "api-producer-role-verified", lambda: verify_applied(self)
+                    )
                 self.phase("foundations", self.foundations)
                 self.phase("migration", self.migrate)
                 self.phase("bootstrap", lambda: self.bootstrap(token))

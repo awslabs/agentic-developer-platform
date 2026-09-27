@@ -824,3 +824,10 @@ def test_worker_passes_envelope_dispatch_context_to_fresh_sdk_telemetry(
     launched = _run_worker(envelope, monkeypatch, tmp_path)
     assert launched["ADP_DISPATCH_CHANNEL"] == envelope["channel"]
     assert launched["ADP_DISPATCH_TRIGGER"] == envelope["intent"]["trigger"]
+
+
+@pytest.fixture(autouse=True)
+def stub_agent_runtime(monkeypatch):
+    # These bootstrap tests stub execution; deadline/process-group tests run real children.
+    import subprocess
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))

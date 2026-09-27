@@ -147,8 +147,8 @@ def request(path: str = "", body: dict | None = None, *, timeout: int = 15) -> d
     return result
 
 
-def terminal(outcome: str) -> dict:
-    result = request("/terminal", {"outcome": outcome})
+def terminal(outcome: str, *, failure: dict | None = None) -> dict:
+    result = request("/terminal", {"outcome": outcome, **({"failure": failure} if failure is not None else {})})
     receipt = result.get("terminal_receipt") or {}
     if (
         receipt.get("outcome") != outcome
@@ -203,13 +203,19 @@ def read_spool() -> dict | None:
     ):
         raise RunReportError("report_spool_scope_mismatch", retryable=False)
     if body["phase"] == "failed" and (
-        set(body) != {"contract_version", "run_id", "attempt", "repo", "phase", "candidate_pr", "ownership_nonce"}
+        set(body) - {"failure"} != {"contract_version", "run_id", "attempt", "repo", "phase", "candidate_pr", "ownership_nonce"}
         or body.get("candidate_pr") is not None
         or not isinstance(body.get("ownership_nonce"), str)
         or len(body["ownership_nonce"]) != 32
         or any(char not in "0123456789abcdef" for char in body["ownership_nonce"])
     ):
         raise RunReportError("report_spool_scope_mismatch", retryable=False)
+    if "failure" in body:
+        failure = body["failure"]
+        if (not isinstance(failure, dict) or set(failure) != {"category", "exit_code"}
+                or failure.get("category") not in {"unknown", "cancelled", "deadline", "signal", "policy", "provider_refusal", "authentication", "transport", "stale_head", "git_validation", "inspection", "contract"}
+                or type(failure.get("exit_code")) is not int or not -255 <= failure["exit_code"] <= 255):
+            raise RunReportError("report_spool_scope_mismatch", retryable=False)
     return body
 
 
@@ -240,13 +246,15 @@ def can_retry_start(spool: dict, snapshot: dict) -> bool:
     )
 
 
-def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = False, review_content: str | None = None) -> None:
+def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = False, review_content: str | None = None, failure: dict | None = None) -> None:
     bucket, key = _spool_location()
     body = _spool_document(phase, candidate)
     if phase in {"failed", "review"}:
         body["ownership_nonce"] = _assignment["ownership_nonce"]
     if phase == "review":
         body["review_content"] = review_content
+    if failure is not None:
+        body["failure"] = failure
     options = {"IfNoneMatch": "*"} if create else {}
     try:
         _spool_client().put_object(
@@ -291,7 +299,7 @@ def begin_delivery() -> None:
         raise RunReportError("delivery_start_unacknowledged")
 
 
-def spool_undelivered_failure() -> None:
+def spool_undelivered_failure(*, failure: dict | None = None) -> None:
     """Keep a failed owner's report retryable without starting another worker.
 
     Delivered PR candidates retain their existing handoff recovery. Only the
@@ -313,7 +321,7 @@ def spool_undelivered_failure() -> None:
         return
     if spool != _spool_document("executing"):
         raise RunReportError("delivery_recovery_required", retryable=False)
-    _write_spool("failed")
+    _write_spool("failed", failure=failure)
 
 
 def spool_candidate(candidate: dict) -> None:

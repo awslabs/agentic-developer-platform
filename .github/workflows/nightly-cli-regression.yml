@@ -18,7 +18,7 @@ on:
         description: 'Optional non-secret existing fixture JSON for the EC2 child; validated by CLI Uplift'
         required: false
         type: string
-        default: '{}'
+        default: ''
   pull_request:
     branches: [main]
     paths:
@@ -44,7 +44,7 @@ concurrency:
 jobs:
   guards:
     name: Regression orchestration guards
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -61,7 +61,11 @@ jobs:
     name: Resolve the deployed dev revision
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: guards
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: arc-runner-org
     timeout-minutes: 10
     outputs:
       revision: ${{ steps.snapshot.outputs.revision }}
@@ -71,6 +75,36 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install boto3
+      - name: Require an explicit OIDC role (fail closed)
+        # The bounded runtime ceiling denies the sts:AssumeRole that role-chaining
+        # needs. Require the reviewed OIDC identity; refuse to proceed without it
+        # so a misconfigured environment fails loudly rather than falling back to
+        # ambient runner authority.
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, scoped role)
+        # Short-lived assumed-role session via GitHub OIDC only. No role
+        # chaining, no ambient runner authority, no static keys, no hardcoded
+        # fallback ARN. The fail-closed guard above ensures the secret is set.
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          # OIDC identifies the run directly; no shared-runner role assumption.
+          role-skip-session-tagging: true
+          role-duration-seconds: 900
+          role-session-name: cli-nightly-snapshot-${{ github.run_id }}
+
       - name: Snapshot deployment identity (read only)
         id: snapshot
         run: python -m tests.e2e.cli_regression.prepare
@@ -119,7 +153,7 @@ jobs:
     name: Nightly regression result
     if: ${{ always() && github.event_name != 'pull_request' }}
     needs: [guards, prepare, onboarding, budgets, ec2]
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7

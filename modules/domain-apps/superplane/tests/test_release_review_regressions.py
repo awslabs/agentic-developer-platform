@@ -90,6 +90,7 @@ def test_build_inputs_cannot_inject_workflow_environment(revision):
         ("superplane-controller", "controller"),
         ("superplane-platform-monitor", "monitor"),
         ("superplane-executor", "executor"),
+        ("superplane-paid-worker", "paid-worker"),
     ],
 )
 @pytest.mark.parametrize(
@@ -111,10 +112,11 @@ def test_buildspec_runs_only_the_selected_domain_build(
     account as a side effect of finding out it was misconfigured.
     """
     spec_path = RELEASE / "buildspecs" / (short + ".yml")
-    workflow = (
-        ROOT / ".github/workflows" / ("superplane-" + short + "-build.yml")
-    ).read_text()
-    assert str(spec_path) in workflow
+    if component != "superplane-paid-worker":
+        workflow = (
+            ROOT / ".github/workflows" / ("superplane-" + short + "-build.yml")
+        ).read_text()
+        assert str(spec_path) in workflow
     spec = yaml.safe_load((ROOT / spec_path).read_text())
     command = spec["phases"]["build"]["commands"][0]
     script = tmp_path / RELEASE / "build-image.sh"
@@ -123,7 +125,9 @@ def test_buildspec_runs_only_the_selected_domain_build(
     # The maintained tree, laid out exactly as the transfer placed it: the build context is
     # <module root>/src/<component>, a sibling of releases/ rather than a directory under it.
     source_path = (
-        "executor" if component == "superplane-executor" else "src/" + component
+        "executor"
+        if component in {"superplane-executor", "superplane-paid-worker"}
+        else "src/" + component
     )
     context = script.parent.parent / source_path
     context.mkdir(parents=True)
@@ -182,7 +186,7 @@ def test_buildspec_runs_only_the_selected_domain_build(
         # The ADP commit, which is what identifies the built image after the transfer.
         "IMAGE_TAG": adp_commit,
     }
-    if component == "superplane-executor":
+    if component in {"superplane-executor", "superplane-paid-worker"}:
         env["PYTHON_IMAGE"] = "python:3.12-slim@sha256:" + "d" * 64
     if bad_input == "repository":
         env["ECR_REPO"] = "adp-gateway"
@@ -257,12 +261,18 @@ def test_buildspec_runs_only_the_selected_domain_build(
             + source_path
             in calls
         )
-        if component == "superplane-executor":
+        if component in {"superplane-executor", "superplane-paid-worker"}:
             build_call = next(
                 line for line in calls.splitlines() if "docker build " in line
             )
-            assert "--target controller-service" in build_call
-            assert "--target paid-worker" not in build_call
+            target = (
+                "paid-worker"
+                if component == "superplane-paid-worker"
+                else "controller-service"
+            )
+            assert "--target " + target in build_call
+            other = "controller-service" if target == "paid-worker" else "paid-worker"
+            assert "--target " + other not in build_call
             assert "--build-arg PYTHON_IMAGE=" + env["PYTHON_IMAGE"] in build_call
             assert build_call.endswith(" ."), (
                 "executor needs the repository build context"

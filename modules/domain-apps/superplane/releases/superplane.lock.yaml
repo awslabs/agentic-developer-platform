@@ -46,6 +46,7 @@ maintained_source:
     superplane-controller: src/superplane-controller
     superplane-platform-monitor: src/superplane-platform-monitor
     superplane-executor: executor
+    superplane-paid-worker: executor
 
 # ── How the pinned source is obtained ────────────────────────────────────────────────
 #
@@ -127,6 +128,16 @@ image_sources:
 
 # A real digest is required before promotion; scanner coverage still includes this target.
 pending_images:
+  superplane-paid-worker:
+    source_path: executor
+    ecr_repository: adp-superplane-paid-worker
+    build_entrypoint: modules/domain-apps/superplane/releases/build_paid_worker.py
+    buildspec: modules/domain-apps/superplane/releases/buildspecs/paid-worker.yml
+    project_manifest: modules/domain-apps/superplane/infra/paid-worker-project.json
+    origin:
+      repository: https://github.com/aws-e/adp
+      revision: 4db8393379573b9f4f977d444ade4adbfde86bcb
+    blocked_by: source-owned project enrollment, separately approved infrastructure and remote build/image acceptance not yet recorded
   superplane-platform-monitor:
     source_path: src/superplane-platform-monitor
     ecr_repository: adp-superplane-platform-monitor
@@ -257,12 +268,12 @@ schema:
     # Explicit cluster scope children preserve maintained organization grant authority.
     # #5927 adds the original-instance native command journal.
     # #5928 records cleanup ownership and exact pre-POST workload specifications.
-    version_files: 55
+    version_files: 56
     # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
     # Empty since the repair; kept as a key so the contract test that derives this from the
     # tree keeps asserting it stays empty rather than skipping a missing field.
     duplicate_revision_ids: {}
-    head: 041_controller_workload_submissions
+    head: 042_controller_cleanup_snapshots
     base: 001_initial
   compatible_with: null
   blocked_by:

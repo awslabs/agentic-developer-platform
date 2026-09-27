@@ -130,6 +130,7 @@ async def native_command(pool, postgres_server):
         {"Key": "superplane-workspace", "Value": lease.workspace_id},
     ]
     plan = SimpleNamespace(
+        cleanup_graph=None,
         node_bootstrap={
             "version": 1,
             "runtime_manifest": runtime,

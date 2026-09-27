@@ -1,3 +1,4 @@
+import { writeFailureReport } from './failure-report';
 import { reviewCyclePrompt } from './review-cycle-input';
 import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
 import { archiveProtectedGitChanges } from './lib/gitArchiveGateway';
@@ -2557,6 +2558,7 @@ Working on this task...`);
 
   } catch (error) {
     const err = error as Error;
+    writeFailureReport(error);
     if (isControlCancellation(error)) {
       agentAborted = true;
       log('INFO', 'Operator abort requested; supervisor will finalize the run');
@@ -2705,6 +2707,7 @@ Please check the workflow logs for details.`);
 }
 
 main().catch((err) => {
+  writeFailureReport(err);
   console.error('Fatal error in main:', err);
   process.exit(1);
 });

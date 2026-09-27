@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     superplane_operation_gateway_region: str = ""
     # Omission preserves existing operation hosts; staged installs set false.
     superplane_operation_dispatch_enabled: bool = True
+    # Deployment selection, never supplied by an admission request.
+    superplane_paid_worker_mode: Literal["legacy", "native-controller"] = "legacy"
 
     @field_validator("superplane_operation_dispatch_enabled", mode="before")
     @classmethod

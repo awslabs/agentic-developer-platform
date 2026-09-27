@@ -1,3 +1,12 @@
+> **Runner routing — 26 September 2026:** Per owner instruction, every project
+> GitHub Actions job now selects the existing `arc-runner-org` pool literally,
+> including deployment/build jobs and agent workflows. `ARC_RUNNER_LABEL` does
+> not override workflow placement. Dedicated runner-group installation steps
+> below describe the earlier isolation design and are not prerequisites for
+> scheduling these workflows. Protected environments, source verification,
+> OIDC exchanges, and identity checks still apply. Selecting a runner does not
+> grant its jobs deployment or agent permissions.
+
 # Trusted automation cutover (#5674)
 
 This state separates reviewed infrastructure and publishing workflows from
@@ -150,6 +159,28 @@ to repair a failed deployment; use the retained operator/trusted identity. Stop
 cutover if any existing operational workflow has not been moved to an appropriate
 reviewed identity. Security scans remain on demand and need their existing scoped
 scan identity preserved; never give scanning jobs the deployment identity.
+
+## Frontend publishing while the full cutover is pending
+
+`gateway-frontend-deploy.yml` publishes frontend-only changes through a separate
+OIDC role. `frontend-publishing.tf` grants access only to the existing gateway
+frontend bucket, its CloudFront distribution, and the exact SSM parameters used
+by the build. It does not grant IAM, EKS, CodeBuild, or backend deployment access.
+The regular Gateway Deploy workflow still owns backend and manual full releases.
+
+The operator provisions this role in the independent automation state after
+reviewing the plan, using the existing state inputs and targeting only
+`aws_iam_role.frontend_deployment` and
+`aws_iam_role_policy.frontend_deployment` while the broader cutover remains
+incomplete. Create `adp-frontend-deploy-<environment>` with an exact main-only
+branch policy and admin bypass disabled. This private repository's current GitHub
+plan does not support required environment reviewers, so do not use this
+frontend-only environment for the broader trusted deployment role. Set its
+`ADP_FRONTEND_DEPLOY_ROLE_ARN` from Terraform's
+`frontend_deployment_role_arn` output and `ADP_DEPLOY_REGION` to the deployed
+region. Verify by dispatching Gateway Frontend Deploy from `main` and checking
+the published HTML and completed CloudFront invalidation. Do not put this role
+in the build environment or use it for Gateway Deploy's backend job.
 
 ## Local validation
 

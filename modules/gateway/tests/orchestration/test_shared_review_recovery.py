@@ -297,7 +297,22 @@ async def test_failed_reviewer_recovers_without_waiting_for_outer_node_stall(rec
     assert len(ctx.calls) == 2
 
 
-@pytest.mark.parametrize("hold", ["live", "cancelled", "complete", "missing_terminal", "verdict", "paused", "developer", "wrong_trigger"])
+@pytest.mark.parametrize(
+    "hold",
+    [
+        "live",
+        "cancelled",
+        "complete",
+        "missing_terminal",
+        "verdict",
+        "paused",
+        "developer",
+        "wrong_trigger",
+        "policy",
+        "provider_refusal",
+        "contract",
+    ],
+)
 async def test_failed_reviewer_recovery_preserves_failure_and_authority_boundaries(recovery, hold):
     from src.orchestration.models import OrchestrationFlow
     from src.orchestration.review_recovery import recover_stalled_stories
@@ -306,6 +321,8 @@ async def test_failed_reviewer_recovery_preserves_failure_and_authority_boundari
     async with ctx.factory() as db:
         row = await db.get(OrchestrationRunReport, recovery.run)
         row.terminal_receipt = {"outcome": "complete" if hold == "complete" else "failed"}
+        if hold in {"policy", "provider_refusal", "contract"}:
+            row.terminal_receipt = {"outcome": "failed", "failure": {"category": hold, "exit_code": 1}}
         if hold == "missing_terminal":
             row.terminal_receipt = None
         if hold == "verdict":

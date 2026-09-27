@@ -11,9 +11,7 @@ concurrency:
 jobs:
   deploy-code:
     if: github.ref == 'refs/heads/main' && github.run_attempt == 1
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-webhook-code-dev
     timeout-minutes: 30
     env:

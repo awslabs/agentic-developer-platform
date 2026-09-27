@@ -1,4 +1,5 @@
 import { TaskActivity } from '@/components/activity/TaskActivity';
+import './AgentActivity.css';
 /**
  * Agent Activity page — paginated list of agent invocations.
  *
@@ -74,7 +75,8 @@ function StatusBadge({ status, skipReason }: { status: InvocationStatus; skipRea
   const reasonText = isNonRunStatus(status) ? skipReasonLabel(skipReason) : null;
   return (
     <span
-      className={`inline-flex items-center gap-1 font-medium text-sm ${config.colorClass}`}
+      className={`activity-status-badge inline-flex items-center gap-1 font-medium text-sm ${config.colorClass}`}
+      data-status={status}
       title={reasonText ? `${config.label}: ${reasonText}` : undefined}
     >
       <span aria-hidden="true">{config.glyph}</span>
@@ -106,7 +108,8 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
   return (
     <div className="flex flex-col gap-1">
       <span
-        className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${config.colorClass}`}
+        className={`activity-trigger-badge inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${config.colorClass}`}
+        data-trigger-kind={triggerKind}
         data-testid={`trigger-badge-${triggerKind}`}
       >
         <span aria-hidden="true">{config.icon}</span>
@@ -151,14 +154,13 @@ interface ChainRowProps {
 
 function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick, liveStreamEnabled }: ChainRowProps) {
   const { root } = chain;
-  const statusConfig = describeStatus(root.status);
   const isSingleton = chain.descendant_count === 0;
 
   return (
-    <div className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+    <div className="activity-chain-row border-b border-gray-200 dark:border-gray-700 last:border-b-0">
       {/* Chain row header */}
       <div
-        className="flex items-center gap-3 px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
+        className="activity-chain-main flex items-center gap-3 px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
         onClick={() => {
           if (isSingleton) {
             onDetailClick(root);
@@ -209,10 +211,7 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
         </span>
 
         {/* Status */}
-        <span className={`flex-shrink-0 ${statusConfig.colorClass}`}>
-          <span className="text-sm font-medium">{statusConfig.glyph}</span>
-          <span className="text-xs ml-1">{statusConfig.label}</span>
-        </span>
+        <StatusBadge status={root.status} skipReason={root.skip_reason} />
 
         {/* Chain total cost */}
         <div className="flex-shrink-0 text-right min-w-[60px]">
@@ -326,6 +325,7 @@ function SourceLink({ item }: { item: InvocationItem }) {
         href={item.source_url}
         target="_blank"
         rel="noopener noreferrer"
+        title={label}
         className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm hover:underline"
       >
         {label} ↗
@@ -812,9 +812,9 @@ export default function AgentActivity() {
   }, [resetPagination]);
 
   return (
-    <div className="space-y-6">
+    <div className="blueprint-activity space-y-4">
       {/* Header + view toggle */}
-      <div className="flex items-center justify-between">
+      <div className="activity-header flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
             Agent Activity
@@ -833,13 +833,13 @@ export default function AgentActivity() {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="activity-header-actions flex items-center gap-3">
           {/* Issue #4022: freshness caption — makes the 30 s poll visible */}
           <LastUpdated dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
 
           {/* Issue #1662: Group-by toggle (by run / by chain) */}
           {viewMode === 'mine' && (
-            <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="Group by">
+            <div className="activity-segmented flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="Group by">
               <button
                 role="tab"
                 aria-selected={groupBy === 'chain'}
@@ -868,7 +868,7 @@ export default function AgentActivity() {
           )}
 
           {isAdmin && (
-            <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist">
+            <div className="activity-segmented flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="View scope">
               <button
                 role="tab"
                 aria-selected={viewMode === 'mine'}
@@ -901,8 +901,8 @@ export default function AgentActivity() {
       {viewMode === 'mine' && <TaskActivity onOpen={setDetailItem} />}
 
       {/* Filters */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="blueprint-card activity-filters bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+        <div className="activity-filter-grid grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Status
@@ -978,7 +978,7 @@ export default function AgentActivity() {
           </div>
         </div>
         {/* Issue #1658: Show all events toggle */}
-        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+        <div className="activity-all-events mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
           <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
             <input
               type="checkbox"
@@ -1075,7 +1075,7 @@ export default function AgentActivity() {
 
       {/* Table / Chain list */}
       {!error && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+        <div className="blueprint-card activity-results bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
           {isLoading ? (
             <TableSkeleton rows={10} />
           ) : isChainView && chainData && chainData.chains.length > 0 ? (
@@ -1114,7 +1114,7 @@ export default function AgentActivity() {
               </div>
 
               {/* Pagination */}
-              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
+              <div className="activity-pagination px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
                 <div className="text-sm text-gray-500 dark:text-gray-400">
                   Page {pageNumber}
                 </div>
@@ -1152,7 +1152,7 @@ export default function AgentActivity() {
               ) : (
               /* Table layout for wide viewports (>=1024px) */
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <table className="activity-table min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                   <thead className="bg-gray-50 dark:bg-gray-900">
                     <tr>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1211,11 +1211,11 @@ export default function AgentActivity() {
                             onViewChain={(cid) => handleViewChain(cid, item.invocation_id)}
                           />
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td className="activity-source px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           <span className="capitalize">{item.channel}</span>
                           {item.persona && (
-                            <span className="ml-2 text-xs text-gray-400 dark:text-gray-500">
-                              ({item.persona})
+                            <span className="activity-source-persona text-xs text-gray-400 dark:text-gray-500">
+                              {item.persona}
                             </span>
                           )}
                         </td>
@@ -1281,7 +1281,7 @@ export default function AgentActivity() {
               )}
 
               {/* Pagination */}
-              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
+              <div className="activity-pagination px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
                 <div className="text-sm text-gray-500 dark:text-gray-400">
                   Page {pageNumber}
                 </div>

@@ -52,9 +52,7 @@ jobs:
 
   deploy-lambdas:
     name: Deploy Ingest + Response Lambdas (Terraform)
-    runs-on:
-      group: adp-deployment
-      labels: arc-runner-deployment
+    runs-on: arc-runner-org
     environment: adp-deploy-dev
     needs: changes
     if: github.ref == 'refs/heads/main' && (needs.changes.outputs.lambdas == 'true')

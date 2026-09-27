@@ -465,3 +465,60 @@ test("stalled checkpoint review uses the latest story and preserves the saved co
   assert.ok(prompts[0]?.includes("do not restart from main"));
   assert.equal(await f.git("rev-parse", "HEAD"), f.sha);
 });
+
+test("Git validation diagnostics return to the repair thread before final inspection", async t => {
+  const state = await fixture(t);
+  let fixes = 0;
+  let reviews = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => {
+      reviews++;
+      if (reviews === 1) return blocked;
+      assert.equal(await readFile(join(state.workspace, "code.txt"), "utf8"), "fixed behavior\n");
+      return approved;
+    },
+    fix: async prompt => {
+      fixes++;
+      if (fixes === 2) assert.match(prompt, /code.txt:1: trailing whitespace/);
+      await writeFile(join(state.workspace, "code.txt"), fixes === 1 ? "fixed behavior  \n" : "fixed behavior\n");
+    } });
+  assert.equal(fixes, 2);
+  assert.equal(reviews, 2);
+  assert.equal(result.report.verdict, "approve");
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+});
+
+test("persistent Git validation failure is bounded and never publishes", async t => {
+  const state = await fixture(t);
+  let fixes = 0;
+  let reviews = 0;
+  await assert.rejects(runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => { reviews++; return blocked; },
+    fix: async () => { fixes++; await writeFile(join(state.workspace, "code.txt"), "invalid whitespace  \n"); },
+  }), /code.txt:1: trailing whitespace/);
+  assert.equal(fixes, 2);
+  assert.equal(reviews, 1);
+  assert.equal(await state.git("rev-parse", "HEAD"), state.sha);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
+});
+
+for (const queued of [false, true]) test(`delivery deadline retains inspection when ${queued ? "queue" : "CI"} never finishes`, async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let clock = 0;
+  let inspections = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, {
+    github: state.github, review: async () => { inspections++; return approved; },
+    fix: async () => { assert.fail("No repair while waiting"); },
+    checks: async head => checkObservation(head, queued ? "passed" : "pending", state.sha),
+    deliver: async () => ({ state: "pending", queued }),
+    now: () => clock, deliveryTimeoutMs: 90_000,
+    wait: async ms => { clock += ms; },
+  });
+  assert.equal(clock, 90_000);
+  assert.equal(inspections, 1);
+  assert.equal(result.sha, state.sha);
+  assert.equal(result.merged, false);
+  assert.equal(result.report.verdict, "approve");
+  assert.match("delivery_blocked" in result ? result.delivery_blocked : "", /deadline exceeded/);
+});

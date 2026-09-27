@@ -65,6 +65,7 @@ async def test_task_transport_cannot_reuse_cli_probe(monkeypatch, persona, revis
             persona=persona,
             responses_tools=native,
         )
+    assert module._resolve_active_allowlist_policy.call_args.kwargs["require_hierarchy"] is True
     assert lookup.call_args.kwargs["compatibility_class"] == ("codex-sdk" if native else "anthropic_messages")
     assert lookup.call_args.kwargs["harness_contract_revision"] == revision
     assert lookup.call_args.kwargs["request_shape_sha256"] == shape
@@ -144,3 +145,77 @@ async def test_task_codex_cannot_fall_back_to_anthropic(monkeypatch):
             expected_policy_version="1",
             persona="agent-task-gpt-fixture",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("case", ["fresh", "stale", "missing", "other_context_stale", "global", "reader_failure"])
+async def test_task_pricing_uses_selected_profile_and_endpoint(monkeypatch, case, native):
+    now = datetime.now(UTC)
+    model = "us.anthropic.claude-opus-5"
+    if case == "global" and not native:
+        model = "global.anthropic.claude-opus-5"
+    if native:
+        model = "openai.gpt-6-astra"
+    policy = SimpleNamespace(
+        principal_status="active",
+        service_policy_unavailable_reason=None,
+        tenant_patterns=["*"],
+        service_restriction_pattern_sets=[],
+        context=object(),
+        routing_user_id="principal",
+    )
+    monkeypatch.setattr(module, "_resolve_active_allowlist_policy", AsyncMock(return_value=policy))
+    monkeypatch.setattr(
+        module.bedrock_routing_resolver,
+        "resolve",
+        AsyncMock(return_value=SimpleNamespace(account_id="123456789012", region="us-east-1", is_platform=False)),
+    )
+    monkeypatch.setattr(
+        module, "lookup_evidence", AsyncMock(return_value=SimpleNamespace(is_stale=False, is_proven=True, provider_request_id="real-probe"))
+    )
+
+    def rate(geo=None, region="us-east-1", age=0, tier="standard", context="flat"):
+        geo = geo or ("in_region" if native else "geo_cris")
+        return SimpleNamespace(
+            model_id="openai.gpt-6-astra" if native else "anthropic.claude-opus-5",
+            geography=geo,
+            region=region,
+            service_tier=tier,
+            context_tier=context,
+            verified_at=(now - timedelta(days=age)).isoformat(),
+        )
+
+    rows = [rate("global_cris", age=10), rate(region="eu-west-1", age=10), rate(tier="batch", age=10)]
+    if case != "missing" and not (native and case == "global"):
+        rows.append(rate(age=10 if case == "stale" else 0))
+    if case == "other_context_stale":
+        rows.append(rate(age=10, context="long"))
+    monkeypatch.setattr(
+        module,
+        "get_rate_state",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                rows=tuple(rows),
+                from_database=True,
+                reasons=("read_failure",) if case == "reader_failure" else (),
+                generation_id=160,
+                pointer_revision=160,
+            )
+        ),
+    )
+    db = SimpleNamespace(scalar=AsyncMock(return_value=SimpleNamespace(canonical_model_id=model, revision=2)))
+    kwargs = dict(
+        tenant="tenant",
+        principal="principal",
+        deadline=now + timedelta(hours=1),
+        expected_policy_version="2",
+        persona="agent-task-gpt-developer" if native else module.TASK_CYBER_PERSONA,
+    )
+    if case == "fresh":
+        binding = await module.resolve_task_model(db, **kwargs)
+        assert binding["model_id"] == model
+        assert binding["model_policy_version"] == "2"
+    else:
+        with pytest.raises(ModelPolicyError, match="task_model_pricing_unavailable"):
+            await module.resolve_task_model(db, **kwargs)

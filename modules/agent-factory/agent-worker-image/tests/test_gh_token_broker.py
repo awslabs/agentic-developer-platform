@@ -517,3 +517,10 @@ def test_protected_worker_never_loads_or_reuses_a_shared_signing_key(client, mon
     monkeypatch.setattr(marker_signing, "_key_loaded", True)
     assert marker_signing.compute_signature("correlation", "victim", "true", "other-run", "1") is None
     client.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def stub_agent_runtime(monkeypatch):
+    # These bootstrap tests stub execution; deadline/process-group tests run real children.
+    import subprocess
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))

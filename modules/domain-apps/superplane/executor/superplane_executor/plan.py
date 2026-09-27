@@ -30,6 +30,7 @@ class Plan:
     steps: tuple
     network: dict | None = None
     node_bootstrap: dict | None = None
+    cleanup_graph: dict | None = None
 
     @classmethod
     def read(cls, operation, target):
@@ -272,6 +273,21 @@ class Plan:
                 }
                 for index, action in enumerate(actions)
             )
+            from .cleanup_graph import (
+                PARAMETER as GRAPH,
+                read as read_graph,
+                steps as graph_steps,
+            )
+
+            graph = None
+            if GRAPH in request.parameters:
+                if not control:
+                    raise ValueError("staged cleanup requires governed teardown")
+                from .workspace import Workspace
+
+                Workspace.require_dedicated_node_authority(target)
+                graph = read_graph(request.parameters[GRAPH])
+                expected = tuple(json.loads(graph_steps(graph, name)))
             if steps != list(expected):
                 raise ValueError("plan descriptors mismatch")
             workload = data["workload"]
@@ -388,7 +404,7 @@ class Plan:
                 else None,
                 allocation_id=allocation,
             )
-            return cls(data, name, expected, network, node_bootstrap)
+            return cls(data, name, expected, network, node_bootstrap, graph)
         except (KeyError, TypeError, ValueError, AttributeError, ssl.SSLError):
             raise OperationRefused(
                 "approved controller plan is invalid or unsupported"

@@ -243,3 +243,91 @@ async def test_merge_is_reconciled_when_reviewer_terminal_report_is_missing_or_f
         await merge_protocol.tick(ctx)
         assert (await protocol.state(ctx))[2].state == "passed"
         assert ctx.mutations == [] and len(ctx.calls) == 1
+
+
+@pytest.mark.parametrize("authority_enabled", ["true", "false"])
+async def test_accepted_shared_flow_selects_shared_transport_during_authority_rollout(shared, monkeypatch, authority_enabled):
+    from src.orchestration.review_cycle_dispatch import cycle_services
+
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", authority_enabled)
+    context = SimpleNamespace(identity=shared.identity, execution=shared.execution)
+    service = await cycle_services(shared.factory, context)
+    assert isinstance(service, SharedCycleServices)
+    async with shared.factory() as db:
+        facts = await service.authority_context(db, context, shared.node, shared.binding, shared.root, protocol.Action.REVIEW)
+    assert facts[0]["evidence_origin"]["S"] == "owner_reconciled_legacy_delivery"
+
+
+async def test_disabled_shared_transport_blocks_before_protected_lookup_or_dispatch(shared, monkeypatch):
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setenv("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false")
+    shared.service = None
+    result = await protocol.tick(shared)
+    assert result.effects_attempted == 0
+    assert (await protocol.state(shared))[0].block_detail == "shared_worker_continuation_disabled"
+    assert not shared.calls
+
+
+@pytest.mark.parametrize(
+    "mutation,reason",
+    [
+        ("unknown_mode", "continuation_mode_unrecognized"),
+        ("malformed", "continuation_mode_unrecognized"),
+        ("version", "continuation_plan_changed"),
+        ("unattributed", "continuation_acceptance_unverifiable"),
+    ],
+)
+async def test_transport_selection_never_downgrades_unverifiable_plans(shared, monkeypatch, mutation, reason):
+    from src.orchestration.review_cycle import CycleBlockedError
+    from src.orchestration.review_cycle_dispatch import cycle_services
+
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    async with shared.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, shared.plan.id)
+        document = dict(plan.plan_document)
+        if mutation == "unknown_mode":
+            document["execution_continuation"] = {"mode": "unknown", "contract_version": 1}
+        elif mutation == "malformed":
+            document["execution_continuation"] = "shared_worker_role"
+        elif mutation == "version":
+            plan.version += 1
+        else:
+            plan.accepted_by_decision_id = None
+        plan.plan_document = document
+        await db.commit()
+    with pytest.raises(CycleBlockedError, match=reason):
+        await cycle_services(shared.factory, SimpleNamespace(identity=shared.identity, execution=shared.execution))
+
+
+async def test_shared_feature_flag_does_not_reinterpret_protected_flow(cycle, monkeypatch):  # noqa: F811
+    from src.orchestration.review_cycle_dispatch import ReviewCycleServices, cycle_services
+
+    monkeypatch.setenv("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "true")
+    service = await cycle_services(cycle.factory, SimpleNamespace(identity=cycle.identity, execution=cycle.execution))
+    assert type(service) is ReviewCycleServices
+
+
+async def test_production_router_dispatches_and_settles_shared_review_with_authority_enabled(shared, monkeypatch):
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setattr("src.orchestration.shared_cycle._get_sqs_client", lambda region: shared.service.queue)
+    monkeypatch.setattr("src.orchestration.shared_cycle.DispatchPassConfig.from_env", lambda: shared.service.config)
+    routed = SimpleNamespace(**vars(shared))
+    routed.service = None
+    assert (await protocol.tick(routed)).effects_succeeded == 1
+    assert len(shared.calls) == 1
+    await protocol.review(shared, approve=True)
+    await protocol.tick(routed)
+    assert (await protocol.state(shared))[0].phase == "merge_ready"
+
+
+async def test_merge_observer_uses_shared_receipts_during_authority_rollout(shared, monkeypatch):
+    async with merge_protocol.prepared_merge(shared, monkeypatch) as ctx:
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+        ctx.merge_services.authority = None
+        ctx.remote["rules"] = []
+        ctx.remote["protection"] = None
+        ctx.remote["reviews"] = []
+        ctx.merge_remote()
+        await merge_protocol.tick(ctx)
+        assert (await protocol.state(ctx))[2].state == "passed"
+        assert ctx.mutations == []

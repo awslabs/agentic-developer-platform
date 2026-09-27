@@ -85,6 +85,7 @@ import {
   TabsList,
 } from '@/components/ui';
 import { DepartmentList } from '@/components/org/DepartmentList';
+import { ServiceIdentityList } from '@/components/org/ServiceIdentityList';
 import { MemberList, type OrgMember } from '@/components/org/MemberList';
 import { TeamManagement } from '@/components/department/TeamManagement';
 // The GitHub-ID-first person picker the mockup names ("Same searchable picker as
@@ -924,7 +925,7 @@ export default function Organizations() {
               </span>
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Departments and teams, and the people in them.
+              Departments, teams, people, and service accounts.
             </p>
           </div>
 
@@ -992,6 +993,7 @@ export default function Organizations() {
                   )}
                 </div>
               )}
+              <ServiceIdentityList key={selectedOrg.id} orgId={selectedOrg.id} canManage={canManage} />
             </TabPanel>
 
             <TabPanel value="members" className="space-y-3">

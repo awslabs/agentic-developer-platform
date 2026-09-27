@@ -750,3 +750,10 @@ def test_bad_snapshot_stops_bootstrap_before_an_author_runs(run_worker, monkeypa
     assert seen == []
     assert failure.call_args.args[2] == "authoring_input_binding_mismatch"
     assert AMENDMENT_BASE_PATH_ENV not in os.environ
+
+
+@pytest.fixture(autouse=True)
+def stub_agent_runtime(monkeypatch):
+    # These bootstrap tests stub execution; deadline/process-group tests run real children.
+    import subprocess
+    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))

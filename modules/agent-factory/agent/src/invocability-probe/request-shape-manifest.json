@@ -5,6 +5,7 @@
   "harness_contract_revision": "0.3.220",
   "probe_prompt_sha256": "9e1fdea65b5ba7339557628bf074553ed86cc65ed9de38a3e870a33817b949e0",
   "models": {
+    "us.anthropic.claude-opus-5": "87bbb5a45d84d536298ab21ba511b0e66bf5547ba8751f318c3908e8aa343d1f",
     "global.anthropic.claude-opus-5-5": "d9fe0db58662c61add4d58824b40706a2f51708bf120c29a564d8c5c465434bf",
     "global.anthropic.claude-opus-5": "87bbb5a45d84d536298ab21ba511b0e66bf5547ba8751f318c3908e8aa343d1f",
     "global.anthropic.claude-opus-4-8": "c05f696431507f00e1ed96f19485ce4e59eea9f2d4bc2a7f25c8d14e6ef3fef8",

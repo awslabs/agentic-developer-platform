@@ -7,9 +7,9 @@ import { setTimeout as pause } from "node:timers/promises";
 import { parseVerdict, requiresChanges, reviewOutputSchema,
   type CodexEngineReviewEnvelope, type ReviewVerdict } from "./contracts.js";
 import { GitHubClient, formatReviewComment } from "./github.js";
-import { childEnvironment, gitEnvironment, repositoryUrl, selectedModel,
+import { authenticatedGit, childEnvironment, repositoryUrl, selectedModel,
   WORKER_SANDBOX_MODE, type ReviewRuntime } from "./reviewer.js";
-import { run } from "./process.js";
+import { ProcessError, run } from "./process.js";
 import { runResumableTurn } from "./turn.js";
 import { ModelExecutionBudget } from "./model-budget.js";
 import { observeReviewerChecks, type ReviewerChecks } from "./reviewer-checks.js";
@@ -62,6 +62,8 @@ export interface EngineReviewServices {
   checks?(head: string): Promise<ReviewerChecks>;
   deliver?(result: EngineReviewResult, envelope: CodexEngineReviewEnvelope): Promise<ReviewerMerge>;
   wait?(milliseconds: number): Promise<unknown>;
+  now?(): number;
+  deliveryTimeoutMs?: number;
 }
 
 export type EngineReviewResult = Awaited<ReturnType<typeof runEngineReviewPass>>;
@@ -165,9 +167,7 @@ async function runEngineReviewPass(
   const availableBase = await run("git", ["cat-file", "-e", `${baseSha}^{commit}`],
     { cwd: runtime.workspace, env: localEnv, allowFailure: true });
   if (availableBase.exitCode !== 0) {
-    const token = runtime.getGitHubToken ? await runtime.getGitHubToken() : runtime.githubToken;
-    await run("git", ["fetch", "--no-tags", repositoryUrl(envelope.repository), baseSha],
-      { cwd: runtime.workspace, env: gitEnvironment(token) });
+    await authenticatedGit(runtime, ["fetch", "--no-tags", repositoryUrl(envelope.repository), baseSha]);
   }
   const branch = await git(["symbolic-ref", "--short", "HEAD"]);
   const config = await readFile(join(runtime.workspace, ".git", "config"), "utf8");
@@ -232,9 +232,7 @@ async function runEngineReviewPass(
     if (conflict) {
       // The controller prepares the exact base merge. The model only resolves
       // files; HEAD/branch/config and the publication lease remain fenced.
-      const token = runtime.getGitHubToken ? await runtime.getGitHubToken() : runtime.githubToken;
-      await run("git", ["fetch", "--no-tags", repositoryUrl(envelope.repository), baseSha],
-        { cwd: runtime.workspace, env: gitEnvironment(token) });
+      await authenticatedGit(runtime, ["fetch", "--no-tags", repositoryUrl(envelope.repository), baseSha]);
       const merge = await run("git", ["-c", "core.hooksPath=/dev/null", "merge", "--no-commit", "--no-ff", baseSha],
         { cwd: runtime.workspace, env: localEnv, allowFailure: true });
       if (merge.exitCode && !await git(["ls-files", "--unmerged"])) throw new Error("Could not prepare the assigned base merge");
@@ -249,9 +247,27 @@ async function runEngineReviewPass(
       await verifyGit(expected);
       if (conflict) {
         if (mergeBase && await git(["rev-parse", "MERGE_HEAD"]) !== mergeBase) throw new Error("Codex changed the protected merge base");
-        await git(["diff", "--check"]);
         await git(["add", "--update", "--", "."]);
         if (await git(["ls-files", "--unmerged"])) throw new Error("Base merge still has unresolved files");
+      }
+      // Validate before paying for another inspection. Give the same repair
+      // thread one chance to fix concrete Git diagnostics, within its existing
+      // model allowance, then inspect the final tree before publication.
+      for (let attempt = 0; ; attempt++) {
+        await verifyGit(expected);
+        if (mergeBase && await git(["rev-parse", "MERGE_HEAD"]) !== mergeBase) {
+          throw new Error("Codex changed the protected merge base");
+        }
+        await git(["add", "--update", "--", "."]);
+        const repairFiles = (await untracked()).filter(file => !baseline.has(file));
+        if (repairFiles.length) await git(["add", "--", ...repairFiles]);
+        const args = ["diff", "--cached", "--check", baseSha];
+        const check = await run("git", args, { cwd: runtime.workspace, env: localEnv, allowFailure: true });
+        if (check.exitCode === 0) break;
+        if (attempt >= 1 || check.exitCode !== 2) throw new ProcessError("git", args, check, null);
+        const diagnostics = JSON.stringify({ stdout: check.stdout.slice(0, 8192), stderr: check.stderr.slice(0, 8192) })
+          .replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+        await controller.fix(`${context}\n\nThe repaired tree failed Git validation before publication. Fix only the reported whitespace errors or conflict markers while preserving story behavior. Do not commit, push, merge, change Git configuration, disable checks, or write review reports. The controller will stage, recheck and re-review your changes.\n\n<git-validation-data>${diagnostics}</git-validation-data>`);
       }
       verdict = await inspect(expected, true);
     }
@@ -287,15 +303,8 @@ async function runEngineReviewPass(
       if (await git(["rev-parse", "HEAD^{tree}"]) !== reviewedTree || await trackedDiff()) {
         throw new Error("Committed repair differs from the inspected tree; nothing pushed");
       }
-      let token: string;
-      if (runtime.getGitHubToken) token = await runtime.getGitHubToken();
-      else {
-        token = runtime.githubToken;
-        try { token = (await readFile(process.env.ADP_TOKEN_FILE ?? "/tmp/.adp-gh-token", "utf8")).trim() || token; } catch { /* embedded entrypoint always supplies renewal */ }
-      }
-      await run("git", ["push", `--force-with-lease=refs/heads/${initialPr.head.ref}:${expected}`,
-        repositoryUrl(envelope.repository), `HEAD:refs/heads/${initialPr.head.ref}`],
-      { cwd: runtime.workspace, env: gitEnvironment(token) });
+      await authenticatedGit(runtime, ["push", `--force-with-lease=refs/heads/${initialPr.head.ref}:${expected}`,
+        repositoryUrl(envelope.repository), `HEAD:refs/heads/${initialPr.head.ref}`]);
     } else {
       // An unpublished repaired tree is not evidence about the remote commit.
       if (files.length || mergeBase) {
@@ -328,11 +337,16 @@ export async function runEngineReview(
   if (!controller.checks || !controller.deliver) throw new Error("Reviewer-owned delivery requires checks and deterministic merge delivery");
   const root = envelope.cycle.head_sha;
   const finish = () => ({ ...result, repair_base_sha: result.sha === root ? null : root });
-  const wait = controller.wait ?? pause;
+  const now = controller.now ?? Date.now;
+  const timeout = controller.deliveryTimeoutMs ?? 60 * 60 * 1000;
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid delivery timeout");
+  const deadline = now() + timeout;
+  const wait = (milliseconds: number) => (controller.wait ?? pause)(Math.max(0, Math.min(milliseconds, deadline - now())));
   let observationFailures = 0;
   let deliveryFailures = 0;
   let queued = false;
   while (true) {
+    if (now() >= deadline) return { ...finish(), delivery_blocked: "Delivery deadline exceeded while waiting for CI or merge; inspected head retained for recovery" };
     if (Object.values(result.report.stages).some(stage => stage !== "completed")) return finish();
     let checks: ReviewerChecks;
     try {
