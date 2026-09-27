@@ -720,3 +720,13 @@ variable "codex_validation_service_endpoint" {
     error_message = "Use an HTTPS validation route without credentials, query, fragment or custom port."
   }
 }
+
+variable "task_max_usd_per_task" {
+  type        = number
+  default     = 1
+  description = "Platform ceiling for Task policy enrollment and edits in USD. Does not increase any existing identity or organization budget."
+  validation {
+    condition     = var.task_max_usd_per_task > 0
+    error_message = "Task policy ceiling must be positive."
+  }
+}

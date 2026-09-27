@@ -14,6 +14,15 @@ def command(args):
     return subprocess.check_output(args, text=True, timeout=360).strip()
 
 
+def admission_settings(environment):
+    """Match the runtime's fail-closed defaults without changing authority."""
+    names = ('AGENT_AUTHORITY_ENABLED', 'ADP_WORK_CLAIMS_ENABLED')
+    settings = {name: environment.get(name, 'false').lower() == 'true' for name in names}
+    if len(set(settings.values())) != 1:
+        raise ValueError('Protected authority and work-claim admission differ; apply matching Terraform rollout settings')
+    return settings
+
+
 def synchronize(*, image, account, region, environment, namespace, verify_only=False):
     def aws(*args):
         result = command(['aws', *args, '--region', region, '--output', 'json'])
@@ -50,11 +59,22 @@ def synchronize(*, image, account, region, environment, namespace, verify_only=F
         actual = next(c['image'] for c in containers if c['name'] == 'bedrockgateway')
         if pinned(actual) != expected:
             raise ValueError('Gateway changed or does not match the requested release')
+        # Read a running pod, not ConfigMap values that old pods may not have
+        # loaded. -S avoids unrelated site/instrumentation startup output.
+        observed = json.loads(command([
+            'kubectl', 'exec', 'deployment/bedrockgateway', '-n', namespace,
+            '-c', 'bedrockgateway', '--', 'python', '-S', '-c',
+            'import json,os; print(json.dumps({k:os.environ.get(k,"false") for k in '
+            '["AGENT_AUTHORITY_ENABLED","ADP_WORK_CLAIMS_ENABLED"]}))',
+        ]))
+        return admission_settings(observed)
 
-    gateway()
+    gateway_admission = gateway()
     function = f'arn:aws:lambda:{region}:{account}:function:adp-{environment}-orchestration-tick'
     # Missing function and permission errors are failures, not evidence of parity.
     before = aws('lambda', 'get-function', '--function-name', function)
+    if admission_settings(before['Configuration'].get('Environment', {}).get('Variables', {})) != gateway_admission:
+        raise ValueError('Gateway and engine admission settings differ; apply matching Terraform rollout settings')
     if not verify_only and before['Code']['ResolvedImageUri'] != expected:
         aws('lambda', 'update-function-code', '--function-name', function,
             '--image-uri', expected, '--revision-id', before['Configuration']['RevisionId'])
@@ -65,7 +85,9 @@ def synchronize(*, image, account, region, environment, namespace, verify_only=F
             or config['LastUpdateStatus'] != 'Successful'):
         raise ValueError('Engine release incomplete: Lambda digest/state does not match')
     # Detect a concurrent gateway deployment during the Lambda update.
-    gateway()
+    if (gateway() != gateway_admission
+            or admission_settings(config.get('Environment', {}).get('Variables', {})) != gateway_admission):
+        raise ValueError('Admission settings changed during release verification')
     return {'image': expected, 'function': function, 'status': 'verified'}
 
 

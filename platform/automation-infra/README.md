@@ -182,6 +182,34 @@ region. Verify by dispatching Gateway Frontend Deploy from `main` and checking
 the published HTML and completed CloudFront invalidation. Do not put this role
 in the build environment or use it for Gateway Deploy's backend job.
 
+## Gateway backend release profile
+
+`gateway-backend-deployment.tf` is an opt-in identity for the existing gateway
+release, migrations, and pricing finalization workflows. It does not grant IAM
+mutation, Terraform access, tenant-secret reads, or cluster-wide Kubernetes
+access. Its EKS policy is limited to the `adp-gateway` namespace, and its
+CodeBuild dispatch targets the existing gateway project whose service role must
+already have the per-project boundary. The three stable gateway secrets must
+exist before a release; the workflow no longer creates or rotates them.
+
+Use the operator identity and the independent automation state to plan and
+apply with `-var enable_gateway_backend_deployment=true` in addition to the
+state's normal account inputs. Retain this opt-in on every later plan; the role
+has `prevent_destroy` so an omitted opt-in fails rather than deleting the live
+release identity. Inspect the plan for the exact role, inline policy, boundary,
+and namespaced EKS access entry. Do not target or enable the broader
+`aws_iam_role.deployment` to recover gateway releases.
+
+Create `adp-gateway-deploy-<environment>` with an exact `main` branch policy and
+admin bypass disabled. Set its `ADP_DEPLOY_ROLE_ARN` to the
+`gateway_backend_deployment_role_arn` output and `ADP_DEPLOY_REGION` to the
+deployed region. Gateway Deploy's frontend job uses the existing
+`adp-frontend-deploy-<environment>` identity. The self-hosted
+`arc-runner-org` pool supplies execution only; both roles use explicit GitHub
+OIDC and have no ambient runner credential fallback. Run the Gateway Deploy
+workflow from `main`, then verify its build, gateway rollout, migrations,
+pricing, and smoke jobs before calling the release complete.
+
 ## Local validation
 
 `terraform test` in `modules/agent-factory/infra/modules/runner-iam` and

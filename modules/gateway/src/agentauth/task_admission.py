@@ -92,7 +92,7 @@ class TaskAdmission:
             tenant=caller.tenant_id,
             principal=caller.principal_id,
             deadline=deadline,
-            expected_policy_version=policy["model_policy_version"],
+            expected_policy_version=policy.get("model_policy_versions", {}).get(submit["persona"], policy["model_policy_version"]),
             persona=submit["persona"],
             **({"responses_tools": True} if tool_profile else {}),
             **({"include_context": True} if human_owner else {}),

@@ -382,7 +382,10 @@ def test_automatic_deploy_never_mutates_cluster_scoped_namespaces():
     workflow = (ROOT / ".github/workflows/gateway-deploy.yml").read_text()
     assert "kubectl create namespace ${{ env.NAMESPACE }}" not in workflow
     assert 'kubectl create namespace "${NAMESPACE}"' not in workflow
-    assert 'kubectl get namespace "${NAMESPACE}"' in workflow
+    # The deploy role has namespaced access only, so probe a resource that
+    # exists in every initialized namespace without reading Namespace objects.
+    assert 'kubectl get serviceaccount default -n "${NAMESPACE}"' in workflow
+    assert 'kubectl get namespace "${NAMESPACE}"' not in workflow
     assert "kubectl apply -f modules/gateway/k8s/namespace.yaml" not in workflow
     assert "verify-restricted-admission.sh" not in workflow
     assert 'kubectl create --dry-run=client --validate=false -f "$f"' in workflow

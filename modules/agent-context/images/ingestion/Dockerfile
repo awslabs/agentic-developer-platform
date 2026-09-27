@@ -14,6 +14,7 @@
 # non-existent pseudo-version. ZOEKT_IMAGE_TAG defaults to "latest" (matches
 # manifests/zoekt.yaml + config.env).
 ARG ZOEKT_IMAGE_TAG=latest
+FROM node:22.23.0-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS node-release
 FROM ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG} AS zoekt
 # Resolve the indexer binary to a fixed path regardless of where the upstream
 # image places it (avoids hardcoding /usr/local/bin which may drift).
@@ -38,14 +39,23 @@ RUN apt-get update && \
 # SCIP indexer toolchain (Phase 1 + Phase 2 languages)
 # ---------------------------------------------------------------------------
 
-# Node.js 20.x (required for scip-python, scip-typescript)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+# Fixed Node runtime and npm dependency tree (CVE-2026-48930 / GHSA-23hp-3jrh-7fpw).
+# The official Node image verifies signed release checksums. Do not install Node20.
+COPY --from=node-release /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-release /usr/local/LICENSE /opt/node/LICENSE
+ADD --checksum=sha256:d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483 https://registry.npmjs.org/npm/-/npm-11.20.0.tgz /tmp/npm.tgz
+RUN test ! -e /usr/bin/node && ln -s /usr/local/bin/node /usr/bin/node \
+    && mkdir -p /usr/lib/node_modules/npm \
+    && tar -xzf /tmp/npm.tgz --strip-components=1 -C /usr/lib/node_modules/npm \
+    && rm /tmp/npm.tgz \
+    && ln -s /usr/lib/node_modules/npm/bin/npm-cli.js /usr/bin/npm \
+    && ln -s /usr/lib/node_modules/npm/bin/npx-cli.js /usr/bin/npx \
+    && test "$(node --version)" = v22.23.0 \
+    && test "$(npm --version)" = 11.20.0
 
 # SCIP indexers via npm (global install)
 # Note: scip-java deferred — not in current corpus (D7 in neptune-deep-graph-design.md)
-RUN npm install -g \
+RUN npm install -g --prefix /usr \
     @sourcegraph/scip-python@0.6.6 \
     @sourcegraph/scip-typescript@0.4.0 \
     && npm cache clean --force

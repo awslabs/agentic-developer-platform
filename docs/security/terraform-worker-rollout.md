@@ -144,6 +144,16 @@ its environment Terraform configuration. Separate
 `orchestration_agent_authority_prepared=true` prepares IAM without dispatch.
 Keep admissions paused while updating and verifying these deployment units.
 
+Each producer derives `AGENT_AUTHORITY_ENABLED` and `ADP_WORK_CLAIMS_ENABLED`
+from its same authority rollout input. The tick, gateway and webhook therefore
+enable ownership tracking together with protected authority; there is no separate
+work-claim switch to remember during setup. Keep the gateway environment's
+`orchestration_agent_authority_enabled` aligned with webhook
+`agent_authority_enabled`. The standard gateway release verification reads a
+running gateway pod and the Lambda configuration and refuses completion if these
+controls disagree within either runtime or across them. It does not activate
+authority or resume flows to resolve a mismatch.
+
 For platform-owned EKS entries, set `agent_legacy_worker_admin_retired=true` and
 `agent_authority_legacy_workers_drained=true` in each owning platform state. The
 protected worker is always excluded from the administrator set, including when

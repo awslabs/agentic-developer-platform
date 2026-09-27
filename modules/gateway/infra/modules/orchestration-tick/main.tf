@@ -219,6 +219,9 @@ resource "aws_lambda_function" "tick" {
       BG_ORCH_DISPATCH_PERSONA               = var.dispatch_persona
       BG_ORCH_DISPATCH_MAX_PER_TICK          = tostring(var.dispatch_max_per_tick)
       AGENT_AUTHORITY_ENABLED                = tostring(var.agent_authority_enabled)
+      # Governed dispatch requires a work claim. Keep both controls tied to the
+      # same rollout input, as on the gateway and webhook producer.
+      ADP_WORK_CLAIMS_ENABLED                = tostring(var.agent_authority_enabled)
       ADP_SHARED_RUN_REPORTING_ENABLED       = tostring(var.shared_run_reporting_enabled)
       ADP_SHARED_WORKER_CONTINUATION_ENABLED = tostring(var.shared_worker_continuation_enabled)
       AGENT_WORKER_ROLE_ARN                  = var.shared_worker_role_arn

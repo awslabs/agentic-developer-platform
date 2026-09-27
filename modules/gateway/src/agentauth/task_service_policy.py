@@ -19,7 +19,28 @@ TASK_SCOPES = {"submit", "read", "input", "cancel", "artifacts"}
 MAX_DURATION_MINUTES = 360
 MAX_TURNS = 8
 MAX_OUTPUT_TOKENS = 4096
-MAX_USD = 1
+DEFAULT_MAX_USD = Decimal("1")
+PLATFORM_CAP_ENV = "ADP_TASK_MAX_USD_PER_TASK"
+
+
+def platform_max_usd() -> Decimal:
+    """Operator-managed enrollment ceiling; never grants spend to an identity."""
+    try:
+        value = Decimal(os.environ.get(PLATFORM_CAP_ENV, str(DEFAULT_MAX_USD)))
+        if not value.is_finite() or value <= 0:
+            raise ValueError()
+        return value
+    except (ArithmeticError, ValueError):
+        raise TaskServicePolicyError("platform_limit_unavailable") from None
+
+
+def platform_limits() -> dict:
+    return {
+        "max_duration_minutes": MAX_DURATION_MINUTES,
+        "max_turns": MAX_TURNS,
+        "max_output_tokens_per_turn": MAX_OUTPUT_TOKENS,
+        "max_usd_per_task": platform_max_usd(),
+    }
 
 
 def _valid_duration(value):
@@ -175,6 +196,13 @@ def _validate_policy(policy: dict) -> None:
         raise TaskServicePolicyError("invalid_policy")
     if not isinstance(policy.get("model_policy_version"), str) or not policy["model_policy_version"] or len(policy["model_policy_version"]) > 128:
         raise TaskServicePolicyError("invalid_policy")
+    versions = policy.get("model_policy_versions", {})
+    if (
+        not isinstance(versions, dict)
+        or set(versions) - set(personas)
+        or any(not isinstance(v, str) or not v or len(v) > 128 for v in versions.values())
+    ):
+        raise TaskServicePolicyError("invalid_policy")
     limits = policy.get("limits")
     required_limits = {"max_duration_minutes", "max_turns", "max_output_tokens_per_turn", "max_usd_per_task"}
     if not isinstance(limits, dict) or set(limits) - {"codex_max_turns"} != required_limits:
@@ -188,11 +216,21 @@ def _validate_policy(policy: dict) -> None:
         "max_duration_minutes": MAX_DURATION_MINUTES,
         "max_turns": MAX_TURNS,
         "max_output_tokens_per_turn": MAX_OUTPUT_TOKENS,
-        "max_usd_per_task": MAX_USD,
+        "max_usd_per_task": platform_max_usd(),
     }
     for name, ceiling in ceilings.items():
         value = limits.get(name)
-        if not isinstance(value, int | float | Decimal) or isinstance(value, bool) or value <= 0 or value > ceiling:
+        if name != "max_usd_per_task" and (
+            not isinstance(value, int | Decimal) or isinstance(value, bool) or not Decimal(str(value)).is_finite() or value != int(value)
+        ):
+            raise TaskServicePolicyError("invalid_policy")
+        if (
+            not isinstance(value, int | float | Decimal)
+            or isinstance(value, bool)
+            or not Decimal(str(value)).is_finite()
+            or value <= 0
+            or value > ceiling
+        ):
             raise TaskServicePolicyError("invalid_policy")
 
 

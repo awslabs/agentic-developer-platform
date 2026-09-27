@@ -174,6 +174,7 @@ UNIT_MODULES = [
     "src.admin.persona_models.self_routes",
     "src.admin.persona_models.routes",
     "src.admin.persona_models.human_task_routes",
+    "src.admin.persona_models.task_policy_ui_routes",
     # Issue #5425 (PMM-07): the versioned runtime-posture mutation and its audited
     # operational rollback. A THIRD module because its gate is strictly stronger
     # than either router above: the policy-settings row carries no TenantMixin, so

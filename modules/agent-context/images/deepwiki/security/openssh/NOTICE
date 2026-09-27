@@ -1,0 +1,13 @@
+ADP downstream Debian OpenSSH client security rebuild
+
+Base: Debian openssh 1:10.0p1-7+deb13u4, including its complete patch series.
+Downstream version: 1:10.0p1-7+deb13u4+adp.security.1
+
+CVE-2026-60002: upstream portable commit
+e8bdfb151a356d0171fea4194dd205fbb252be23, corresponding to OpenBSD commit
+faaa6ad72e7d69d41fa8b197b606265b7d9bc73f.
+The four-file client lifetime repair retains Debian's GSSAPI declarations;
+upstream revision-banner-only hunks are excluded. No client algorithm,
+compression feature, configuration path or package metadata is removed.
+Original upstream and Debian licenses/copyright remain installed.
+This is a downstream backport, not an unmodified upstream 10.4 release.

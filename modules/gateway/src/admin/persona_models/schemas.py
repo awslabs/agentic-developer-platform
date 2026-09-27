@@ -291,7 +291,7 @@ class TaskPolicyLimits(BaseModel):
     max_turns: int = Field(ge=1, le=8)
     codex_max_turns: int | None = Field(default=None, ge=1, le=32)
     max_output_tokens_per_turn: int = Field(ge=1, le=4096)
-    max_usd_per_task: Decimal = Field(gt=0, le=1)
+    max_usd_per_task: Decimal = Field(gt=0, allow_inf_nan=False)
 
     @model_serializer(mode="wrap")
     def omit_unused_codex_limit(self, handler):
@@ -318,6 +318,7 @@ class TaskPolicyPutRequest(BaseModel):
     repositories: dict[str, TaskRepositoryBinding] = Field(default_factory=dict, max_length=32)
     task_scopes: list[Literal["submit", "read", "input", "cancel", "artifacts"]] = Field(min_length=1, max_length=5)
     model_policy_version: str = Field(min_length=1, max_length=128)
+    model_policy_versions: dict[str, str] = Field(default_factory=dict, max_length=16)
     limits: TaskPolicyLimits
 
 
@@ -333,6 +334,7 @@ class TaskPolicyResponse(BaseModel):
     repositories: dict[str, TaskRepositoryBinding] = Field(default_factory=dict)
     task_scopes: list[str]
     model_policy_version: str
+    model_policy_versions: dict[str, str] = Field(default_factory=dict)
     limits: TaskPolicyLimits
     updated_at: datetime
     updated_by: str

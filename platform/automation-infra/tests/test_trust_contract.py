@@ -112,7 +112,7 @@ def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
             continue
         workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
         found = 0
-        for job in workflow["jobs"].values():
+        for job_name, job in workflow["jobs"].items():
             steps = job.get("steps", [])
             matching = [i for i, s in enumerate(steps) if s.get("uses") == f"./.github/actions/trusted-{kind}"]
             if not matching:
@@ -121,7 +121,13 @@ def test_privileged_jobs_have_protected_context_and_early_oidc(kind):
             assert len(matching) == 1, name
             assert "github.ref == 'refs/heads/main'" in job["if"], name
             assert job["runs-on"] == "arc-runner-org", name
-            assert job["environment"].startswith("adp-deploy-" if kind == "deployment" else "adp-build-"), name
+            if kind == "deployment" and name == "gateway-deploy.yml" and job_name == "deploy-frontend":
+                assert job["environment"].startswith("adp-frontend-deploy-"), name
+                assert steps[matching[0]]["with"]["role_arn"] == "${{ vars.ADP_FRONTEND_DEPLOY_ROLE_ARN }}"
+            elif kind == "deployment" and name in {"gateway-deploy.yml", "run-gateway-migrations.yml", "pricing-finalize.yml"}:
+                assert job["environment"].startswith("adp-gateway-deploy-"), name
+            else:
+                assert job["environment"].startswith("adp-deploy-" if kind == "deployment" else "adp-build-"), name
             assert job["permissions"]["id-token"] == "write", name
             if name == "gateway-infra-apply.yml":
                 assert kind == "deployment"
@@ -211,6 +217,19 @@ def test_frontend_publisher_has_separate_main_only_authority():
     gateway = yaml.safe_load((ROOT / ".github/workflows/gateway-deploy.yml").read_text())
     assert "modules/gateway/frontend/**" not in gateway.get("on", gateway.get(True))["push"]["paths"]
     assert "github.event_name == 'workflow_dispatch'" in gateway["jobs"]["deploy-frontend"]["if"]
+
+
+def test_gateway_release_uses_namespaced_identity_without_rotating_signing_secrets():
+    gateway = yaml.safe_load((ROOT / ".github/workflows/gateway-deploy.yml").read_text())
+    backend = gateway["jobs"]["deploy-backend"]
+    assert backend["environment"].startswith("adp-gateway-deploy-")
+    scripts = "\n".join(step.get("run", "") for step in backend["steps"])
+    assert "kubectl get serviceaccount default -n" in scripts
+    assert "kubectl get namespace" not in scripts
+    assert "aws secretsmanager create-secret" not in scripts
+    assert "aws secretsmanager put-secret-value" not in scripts
+    assert "ensure-signing-secret.py" not in scripts
+    assert scripts.count("aws secretsmanager get-secret-value") == 3
 
 
 def test_scan_jobs_keep_scoped_identity_and_no_schedule():

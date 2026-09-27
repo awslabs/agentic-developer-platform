@@ -228,3 +228,34 @@ def test_codex_turn_budget_is_optional_bounded_and_preserves_legacy_limit(store)
         value["limits"]["codex_max_turns"] = invalid
         with pytest.raises(TaskServicePolicyError):
             repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=1, policy=value, updated_by="human-admin-1")
+
+
+def test_operator_ceiling_does_not_raise_existing_policy(store, monkeypatch):
+    repository, _ = store
+    first = repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=policy(), updated_by="admin")
+    monkeypatch.setenv("ADP_TASK_MAX_USD_PER_TASK", "20")
+    assert repository.get(tenant_id=TENANT, canonical_principal_id=PRINCIPAL)["limits"]["max_usd_per_task"] == 1
+    changed = policy(limits={**first["limits"], "max_usd_per_task": Decimal("15")})
+    result = repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=1, policy=changed, updated_by="admin")
+    assert TaskPolicyResponse.model_validate(result).limits.max_usd_per_task == 15
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-1", "0", "oops"])
+def test_invalid_operator_ceiling_refuses_writes(store, monkeypatch, value):
+    repository, _ = store
+    monkeypatch.setenv("ADP_TASK_MAX_USD_PER_TASK", value)
+    with pytest.raises(TaskServicePolicyError, match="platform_limit_unavailable"):
+        repository.put(tenant_id=TENANT, canonical_principal_id=PRINCIPAL, expected_version=0, policy=policy(), updated_by="admin")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), Decimal("NaN")])
+def test_nonfinite_policy_never_reaches_dynamo(store, value):
+    repository, _ = store
+    with pytest.raises(TaskServicePolicyError, match="invalid_policy"):
+        repository.put(
+            tenant_id=TENANT,
+            canonical_principal_id=PRINCIPAL,
+            expected_version=0,
+            policy=policy(limits={**policy()["limits"], "max_usd_per_task": value}),
+            updated_by="admin",
+        )

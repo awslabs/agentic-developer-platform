@@ -992,10 +992,9 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   # ("magic link") tokens. src/shared/config.py no longer falls back to the
   # session-signing key (BG_TOKEN_SECRET_KEY), so this must exist for the
   # identity-linking endpoints to work — and because it is now separate, it can be
-  # replaced without signing every user out. Kept in step with the same block in
-  # .github/workflows/gateway-deploy.yml; the two paths drifted before (see the
-  # #2824 note above), and a key present on only one leaves the other path's
-  # environments answering 503 on identity linking.
+  # replaced without signing every user out. The operator path creates it if
+  # absent; .github/workflows/gateway-deploy.yml only reads the stable key.
+  # Both paths must use the same secret name or identity linking returns 503.
   # Rotation: docs/runbooks/gateway-secret-rotation.md
   MAGIC_LINK_SM="adp/${ENVIRONMENT}/gateway/magic-link-secret"
   MAGIC_LINK_SECRET=$(python3 "$ROOT_DIR/modules/gateway/scripts/ensure-signing-secret.py" \

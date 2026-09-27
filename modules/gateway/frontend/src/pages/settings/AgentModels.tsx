@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AgentTaskBudget } from '@/components/org/AgentTaskBudget';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
@@ -303,6 +304,9 @@ function PersonaCard({
           <button type="button" className="font-medium underline" onClick={onReload}>Reload current value</button>
         </div>
       )}
+      {persona.key.startsWith('agent-task-') && <AgentTaskBudget
+        principal={scopeIdentity.startsWith('service:') ? scopeIdentity.slice(8) : undefined}
+        persona={persona.key} selectionRevision={preference?.revision} model={selected?.canonical_model_id ?? preference?.effective_model_id} />}
     </article>
   );
 }
