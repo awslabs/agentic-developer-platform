@@ -45,7 +45,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from urllib.parse import urlparse
 
 import botocore.auth
@@ -79,10 +78,6 @@ class StatusGatewayError(Exception):
     Carries no response body and no token material: this is raised into fail-soft
     callers that log it, and a gateway refusal reason is not theirs to disclose.
     """
-
-    def __init__(self, message: str, *, retryable: bool = False):
-        super().__init__(message)
-        self.retryable = retryable
 
 
 def authority_enabled() -> bool:
@@ -197,8 +192,7 @@ def _post_bytes(path: str, data: bytes, *, content_type: str, success_statuses: 
                     # gateway's refusal reason, and the gateway deliberately keeps
                     # those uniform to the caller.
                     raise StatusGatewayError(
-                        f"gateway refused the write (status {response.status_code})",
-                        retryable=response.status_code in {408, 429, 500, 502, 503, 504},
+                        f"gateway refused the write (status {response.status_code})"
                     )
                 raw = response.raw.read(_MAX_RESPONSE_BYTES + 1, decode_content=True)
                 if len(raw) > _MAX_RESPONSE_BYTES:
@@ -206,12 +200,10 @@ def _post_bytes(path: str, data: bytes, *, content_type: str, success_statuses: 
                 return json.loads(raw or b"{}")
     except StatusGatewayError:
         raise
-    except (requests.RequestException, OSError):
+    except (requests.RequestException, ValueError, OSError):
         # Never let the underlying exception through: request exceptions stringify
         # to include the full URL and can include headers.
-        raise StatusGatewayError("agent authority service unavailable", retryable=True) from None
-    except ValueError:
-        raise StatusGatewayError("invalid gateway response") from None
+        raise StatusGatewayError("agent authority service unavailable") from None
 
 
 def record_status(status: str, fields: dict[str, str]) -> None:
@@ -222,19 +214,7 @@ def record_status(status: str, fields: dict[str, str]) -> None:
     """
     payload = {"status": status}
     payload.update({name: value for name, value in fields.items() if value})
-    # Replay the identical terminal report: the gateway commits it atomically
-    # and acknowledges duplicate reports, including a lost successful response.
-    # Fresh credentials and workload tokens are read by every _post call.
-    delays = (1, 2, 4, 8, 16) if status != "in_progress" else ()
-    for attempt in range(len(delays) + 1):
-        try:
-            _post("/status", payload)
-            return
-        except StatusGatewayError as exc:
-            if not exc.retryable or attempt == len(delays):
-                raise
-            logger.warning("Retrying terminal activity update after transient gateway failure (attempt %d)", attempt + 1)
-            time.sleep(delays[attempt])
+    _post("/status", payload)
 
 
 def register_control(*, token: str, token_expires_at: str) -> int:
