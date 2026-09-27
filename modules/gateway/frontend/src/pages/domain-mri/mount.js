@@ -2,7 +2,8 @@ import { taskRequest, downloadReport } from "./task-client.js";
 export function mountDomainMRI(root, fetcher, storageKey) {
   const lifetime = new AbortController();
   let disposed = false,
-    reportURL;
+    reportURL,
+    reportHTML;
   const storage = {
     setItem: (key, value) => sessionStorage.setItem(storageKey + key, value),
     getItem: (key) => sessionStorage.getItem(storageKey + key),
@@ -172,10 +173,12 @@ export function mountDomainMRI(root, fetcher, storageKey) {
       "A standalone report with evidence, citations and coverage limits.";
     if (!reportURL) {
       const blob = await downloadReport(fetcher, run.id, s, lifetime.signal);
+      reportHTML = await blob.text();
       if (disposed) return;
       reportURL = URL.createObjectURL(blob);
     }
-    $("report").src = reportURL;
+    // Inline the verified document inside the sandbox: the site CSP blocks Blob frames.
+    $("report").srcdoc = reportHTML;
     $("download").href = reportURL;
     $("download").download = run.domain + "-report.html";
     $("open-report").href = reportURL;
