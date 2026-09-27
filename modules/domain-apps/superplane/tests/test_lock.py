@@ -174,7 +174,7 @@ class TestPendingImagesCarryNoDigest:
 
     def test_resolving_a_pending_image_as_a_digest_fails_loudly(self) -> None:
         with pytest.raises(LockError, match="pending"):
-            resolved_digest("superplane-platform-monitor", LOCK_PATH)
+            resolved_digest("superplane-paid-worker", LOCK_PATH)
 
 
 class TestUnresolvedInputsAreRecordedNotInvented:

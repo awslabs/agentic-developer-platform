@@ -85,9 +85,20 @@ images:
   skypilot-api: sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a
   superplane-controller: sha256:aae626d78ec37bea5abd1dfde6a5a050ea73dddd95444314df18ec053545151a
   superplane-api: sha256:e837dfd7a879685291eaf8732f5986543b8981bd0875b3184fffa30901633da2
+  superplane-platform-monitor: sha256:d0095f223d42b205717ce79f64823118774afb8b2f6ad9e90e7f1505a4fe88d9
   superplane-executor: sha256:89504aee46365b40c67226ef73bb4224add695f27a0dfbb59ae57eeeddd91891
 
 image_sources:
+  superplane-platform-monitor:
+    registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
+    repository: adp-superplane-platform-monitor
+    ecr_repository: adp-superplane-platform-monitor
+    source_path: src/superplane-platform-monitor
+    build_workflow: .github/workflows/superplane-monitor-build.yml
+    tag: security27-de59fd318
+    publication_receipt: docs/security/runs/2026-09-27/monitor-promotion/publication.json
+    resolved_by: ECR manifest/config verification and native monitor acceptance
+    selected_because: Fixed Go runtime; zero Critical and High candidate findings
   skypilot-api:
     registry: 879318057152.dkr.ecr.us-east-1.amazonaws.com
     repository: adp-superplane-skypilot
@@ -139,11 +150,6 @@ pending_images:
       repository: https://github.com/aws-e/adp
       revision: 4db8393379573b9f4f977d444ade4adbfde86bcb
     blocked_by: source-owned project enrollment, separately approved infrastructure and remote build/image acceptance not yet recorded
-  superplane-platform-monitor:
-    source_path: src/superplane-platform-monitor
-    ecr_repository: adp-superplane-platform-monitor
-    build_workflow: .github/workflows/superplane-monitor-build.yml
-    blocked_by: final reviewed build and image acceptance not yet recorded
 
 # ── SkyPilot configuration inputs ────────────────────────────────────────────────────
 #
