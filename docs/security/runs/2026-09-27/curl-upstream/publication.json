@@ -1,0 +1,29 @@
+[
+  {
+    "component": "deepwiki",
+    "source_commit": "e29133a60919a5d9452a48e6b80ce72c58015f1c",
+    "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki:security27-curl-e29133a60",
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:6e089ef94fa52185731c5a8ee106f0e5feacc509c4f141cfaf172249984389c3",
+    "config_digest": "sha256:90a73a5d4e40486dfa489aba1350f4ab0f432fe52d6ab05dbb274ec44a907cf3",
+    "registry_matches_scanned_root": true,
+    "deployed": false
+  },
+  {
+    "component": "worker",
+    "source_commit": "e29133a60919a5d9452a48e6b80ce72c58015f1c",
+    "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime:security27-curl-e29133a60",
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f89d6cf8d679bc437a550cb5371bb4ea2723800ef014747fce22ff9f0ad457e5",
+    "config_digest": "sha256:0dad4f88380c33d15636a6a61ac7f7428c0ee64daafcd305e4b93836f3612660",
+    "registry_matches_scanned_root": true,
+    "deployed": false
+  },
+  {
+    "component": "skypilot",
+    "source_commit": "e29133a60919a5d9452a48e6b80ce72c58015f1c",
+    "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot:security27-curl-e29133a60",
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:265b773bc187017b27c5b17373246bbbc0ff80982928cc1e73c5bd0acff7bf2c",
+    "config_digest": "sha256:0ab521bd24531663e7fa79d0fa32ec14efefadfdbfa7f894aa5f11af3579ae63",
+    "registry_matches_scanned_root": true,
+    "deployed": false
+  }
+]

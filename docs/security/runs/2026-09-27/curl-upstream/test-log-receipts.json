@@ -1,0 +1,52 @@
+[
+  {
+    "file": "upstream-final-tests.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/upstream-final-tests.log",
+    "sha256": "9970a1047cc47d4b44bf8d6f4dca26d26fecac295decc3a88ac1a1c1259c72ed"
+  },
+  {
+    "file": "quic-static-tests-final.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/quic-static-tests-final.log",
+    "sha256": "adb9da69559d6daae44e7cc465772eff6ff034f912ce4f2caf260872664dc88c"
+  },
+  {
+    "file": "binary-abi-final.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/binary-abi-final.log",
+    "sha256": "89a408f3d022c9cb1a93efc503477d97a49d2adc4112f56169c39ef2fcd52ab3"
+  },
+  {
+    "file": "deepwiki-final-https.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/deepwiki-final-https.log",
+    "sha256": "d8c822924e6750a0f8db1d694eef5ebdb936382a2e36bc647d65a14ab8ed5da0"
+  },
+  {
+    "file": "worker-final-https.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/worker-final-https.log",
+    "sha256": "a3144413c06ed0f9fd4dd85a983d109dc793fa4538c52a2cc75324f6ea60edaf"
+  },
+  {
+    "file": "skypilot-final-https.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/skypilot-final-https.log",
+    "sha256": "28c9c3b927d467e10f853a8b7341a6de2f821cb4445b81063cb5a907d1e5e6ec"
+  },
+  {
+    "file": "deepwiki-runtime.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/deepwiki-runtime.log",
+    "sha256": "338f2e7020aab0e2e5e9309db7c0680acd67c5664f8310dc56cceca75485d2f0"
+  },
+  {
+    "file": "skypilot-runtime.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/skypilot-runtime.log",
+    "sha256": "7e1e9901b1c17e72b0fe0858e12605cfd72ca52770b958340e4227ee3f6f7b9b"
+  },
+  {
+    "file": "worker-licensed-tools.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/worker-licensed-tools.log",
+    "sha256": "222035f1a93c7c65dde87bc5a7db6d5ccae95c5254983b69fb3ae2c9715c7444"
+  },
+  {
+    "file": "regressions.log",
+    "retained_path": "/workspaces/projects/security27/curl-latest/regressions.log",
+    "sha256": "bb292fc03afa0a2ed900a3292ea89a09dd4ff64cea7a70a6aa59fe6355cf4865"
+  }
+]

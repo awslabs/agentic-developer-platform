@@ -1,0 +1,27 @@
+{
+  "source": "curl-final",
+  "image": "security27/deepwiki:curl-final",
+  "checks": [
+    {
+      "check": "tar",
+      "exit_code": 0,
+      "log": "/workspaces/projects/security27/deepwiki-curl-fina-tar-installed-path.log"
+    },
+    {
+      "check": "runtime",
+      "exit_code": 0,
+      "log": "/workspaces/projects/security27/deepwiki-curl-fina-runtime-installed-path.log"
+    },
+    {
+      "check": "stdlib",
+      "exit_code": 0,
+      "log": "/workspaces/projects/security27/deepwiki-curl-fina-stdlib-installed-path.log"
+    },
+    {
+      "check": "node-hostname",
+      "exit_code": 0,
+      "log": "/workspaces/projects/security27/deepwiki-curl-fina-node-hostname-installed-path.log"
+    }
+  ],
+  "live_acceptance": false
+}
