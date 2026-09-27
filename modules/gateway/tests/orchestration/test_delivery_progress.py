@@ -309,3 +309,30 @@ async def test_graph_reads_durable_admission_and_discards_it_after_dispatch(sess
     await session.flush()
     card = client.get(read.route(flow.id)).json()["nodes"][0]
     assert card["delivery_progress"]["blocker"] is None
+
+
+@pytest.mark.parametrize("outcome", ["retry_backoff", "scheduled", "attempts_exhausted", "flow_deadline_exhausted"])
+def test_developer_retry_status_explains_automation_and_blockers(outcome):
+    progress = node_progress(node=node(state="failed"), binding=None, dispatch={}, result={}, developer_retry={"attempt": 1, "result": outcome})
+    if outcome in {"retry_backoff", "scheduled"}:
+        assert progress.actor == "engine" and progress.scheduled_action
+        assert progress.stage == "retry"
+    else:
+        assert progress.actor == "operator" and progress.blocker == outcome
+        assert progress.scheduled_action is None
+
+
+def test_prior_attempt_retry_diagnostic_cannot_claim_current_automation():
+    progress = node_progress(
+        node=node(state="failed", attempts=2), binding=None, dispatch={}, result={}, developer_retry={"attempt": 1, "result": "scheduled"}
+    )
+    assert progress.actor == "operator" and progress.scheduled_action is None
+
+
+def test_unavailable_retry_evidence_is_rechecked_without_requesting_approval():
+    progress = node_progress(
+        node=node(state="failed"), binding=None, dispatch={}, result={}, developer_retry={"attempt": 1, "result": "recovery_evidence_unavailable"}
+    )
+    assert progress.actor == "engine"
+    assert progress.automation == "reconciliation_only"
+    assert progress.scheduled_action == "Recheck recovery eligibility"

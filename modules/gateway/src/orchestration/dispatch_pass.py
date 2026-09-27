@@ -974,6 +974,12 @@ async def _dispatch_one_unclaimed(
         cognito_sub=cognito_sub,
     )
     envelope.update(launch_configuration)
+    if observed_attempts:
+        from .developer_recovery import retry_context
+
+        recovery = await retry_context(session, node, observed_attempts)
+        if recovery is not None:
+            envelope["orchestration"]["developer_recovery"] = recovery
 
     if correction is not None:
         detail = correction.detail

@@ -1,4 +1,4 @@
-"""Authenticated owner renewal of a live shared-flow execution window."""
+"""Authenticated owner renewal of a live flow execution window."""
 
 from typing import Annotated
 

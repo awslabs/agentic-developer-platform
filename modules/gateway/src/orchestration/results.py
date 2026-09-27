@@ -746,4 +746,5 @@ async def protected_failure_for_assignment(*, node, dispatch, store=None):
         "status": "failed",
         "status_source": "protected_execution",
         "terminal_outcome": outcome,
+        "persona": raw.get("persona", {}).get("S"),
     }

@@ -1,3 +1,4 @@
+import { developerRecoveryContext } from './developer-recovery';
 import { writeFailureReport } from './failure-report';
 import { reviewCyclePrompt } from './review-cycle-input';
 import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
@@ -1061,6 +1062,7 @@ ${MEDIATED_GITHUB_PROMPT}` : ''}
 ---
 
 ## Your Task
+${AGENT_TYPE === 'developer' ? developerRecoveryContext(process.env.ADP_DEVELOPER_RECOVERY_CONTEXT) : ''}
 Process this GitHub issue and complete the assigned work.${mainIssueInfo}
 
 ### Issue #${issue.number}: ${issue.title}

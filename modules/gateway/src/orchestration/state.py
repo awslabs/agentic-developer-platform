@@ -168,7 +168,13 @@ class TransitionResult:
 
 
 def transition(
-    from_state: NodeState, to_state: NodeState, *, actor_kind: ActorKind, reason: str, stalled_review_authorized: bool = False
+    from_state: NodeState,
+    to_state: NodeState,
+    *,
+    actor_kind: ActorKind,
+    reason: str,
+    stalled_review_authorized: bool = False,
+    developer_retry_authorized: bool = False,
 ) -> TransitionResult:
     """Guard one node state change. Every engine state change goes through here.
 
@@ -180,6 +186,9 @@ def transition(
         stalled_review_authorized: Internal proof flag set only after recovery
             verifies an engine stall, worker exit, policy, pause and limits. It
             permits FAILED -> RUNNING for review; never READY or a halt override.
+
+        developer_retry_authorized: Internal proof from settled developer recovery;
+            permits FAILED -> READY within the accepted repair allowance only.
 
     Returns:
         A `TransitionResult`. On success `allowed` is True and `new_state` is
@@ -211,6 +220,11 @@ def transition(
     # Only a verified recovery decision may restore a timed-out review lane.
     # Ordinary failures and all halted/ready transitions keep their old rules.
     if stalled_review_authorized and actor_kind is ActorKind.SERVICE and from_state is NodeState.FAILED and to_state is NodeState.RUNNING:
+        permitted_actors = _ENGINE_OR_HUMAN
+
+    # Only the settled-failure recovery pass supplies this proof. Halt, gate,
+    # success and ordinary service-driven resume remain forbidden.
+    if developer_retry_authorized and actor_kind is ActorKind.SERVICE and from_state is NodeState.FAILED and to_state is NodeState.READY:
         permitted_actors = _ENGINE_OR_HUMAN
 
     if actor_kind not in permitted_actors:

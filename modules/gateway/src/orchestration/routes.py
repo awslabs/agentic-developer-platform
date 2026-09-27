@@ -1485,10 +1485,18 @@ async def get_flow_graph(
     waivers: dict[str, dict] = {}
     observed_at: dict[str, tuple[int, str]] = {}
     admission_refusals: dict[str, dict] = {}
+    developer_retries: dict[str, dict] = {}
     from .admission_diagnostics import ACTOR as ADMISSION_ACTOR
     from .admission_diagnostics import CONTRACT as ADMISSION_CONTRACT
 
     for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.kind == "developer_retry_checked" and decision.actor_id == "system:developer-recovery" and decision.actor_kind == "service":
+            try:
+                retry = json.loads(decision.reason or "{}")
+                if isinstance(retry, dict):
+                    developer_retries[decision.node_id] = retry
+            except (ValueError, TypeError):
+                pass
         if decision.kind == "evaluation_waived" and decision.actor_kind == "human":
             try:
                 content = json.loads(decision.reason or "{}")
@@ -1615,6 +1623,7 @@ async def get_flow_graph(
                     preserved_execution=is_preserved_execution(executions_by_node.get(node.id), preserved),
                     policy_hash=policy_inputs.policy.policy_hash if policy_inputs.policy else None,
                     admission_refusal=admission_refusals.get(node.id),
+                    developer_retry=developer_retries.get(node.id),
                     observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,
                 ),
                 last_gate_decision=gate_decisions.get(node.id),

@@ -2299,6 +2299,13 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if model_resolved:
         env_vars["ADP_MODEL_RESOLVED"] = model_resolved
 
+    # Recovery is advisory context from the sealed launch envelope, not authority.
+    # Clear inherited context for ordinary invocations in a reused worker.
+    recovery = (envelope.get("orchestration") or {}).get("developer_recovery")
+    env_vars["ADP_DEVELOPER_RECOVERY_CONTEXT"] = (
+        json.dumps(recovery) if isinstance(recovery, dict) else ""
+    )
+
     # Issue #3574: Expose /aws-label directive for agent visibility.
     # The label targets a specific linked AWS account within the user's vault.
     aws_label = envelope.get("aws_label")

@@ -540,6 +540,10 @@ async def _run() -> TickReport:
             except Exception:
                 logger.exception("orchestration execution runner: pass failed; prior controls and observations are committed")
                 execution_runner_report = RunnerReport(enabled=True, errors=1)
+            from .developer_recovery import recover_failed_developers
+
+            recovered_developers = await recover_failed_developers(session)
+            logger.info("orchestration developer recovery: scheduled=%d", recovered_developers)
             dispatch_report = await run_dispatch_pass(session)
             # Last, so the rendered snapshot reflects every transition this
             # invocation made — including the dispatch just above, which is the

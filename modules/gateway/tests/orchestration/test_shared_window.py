@@ -366,3 +366,108 @@ def test_wall_clock_request_rejects_invalid_ceiling(value):
             reason="Owner renewal",
             max_wall_clock_seconds=value,
         )
+
+
+@pytest.fixture
+async def protected_window(window, monkeypatch):
+    b = window
+    monkeypatch.setenv("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false")
+    policy = b.s.policy.model_copy(deep=True)
+    policy.schema_version = 1
+    policy.user_credentials = None
+    policy.expires_at = datetime.now(UTC) + timedelta(days=7)
+    policy.policy_id = policy.policy_hash = policy.principal_id = None
+    policy = stamp_policy(policy, principal_id=APPROVER, org_id=b.s.flow.org_id)
+    document = copy.deepcopy(b.s.plan.plan_document)
+    document.pop("execution_continuation")
+    document["execution_policy"] = policy.model_dump(mode="json")
+    b.s.plan.plan_document, b.s.plan.plan_hash = document, digest(document)
+    started = datetime.now(UTC) - timedelta(seconds=policy.limits.max_wall_clock_seconds + 60)
+    b.s.session.add(
+        OrchestrationDecision(
+            org_id=b.s.flow.org_id,
+            flow_id=b.s.flow.id,
+            kind="node_dispatched",
+            actor_kind="service",
+            actor_id="engine",
+            actor_role="service",
+            created_at=started,
+        )
+    )
+    b.s.node.state, b.s.node.attempts = "failed", 1
+    b.execution.status, b.execution.next_check_at = "concluded", None
+    await b.s.session.flush()
+    b.request = b.request.model_copy(
+        update={
+            "expected_plan_hash": b.s.plan.plan_hash,
+            "expires_at": policy.expires_at,
+            "max_wall_clock_seconds": policy.limits.max_wall_clock_seconds + 14400,
+        }
+    )
+    return b
+
+
+async def test_protected_elapsed_window_can_renew_without_changing_expiry_or_failed_attempt(protected_window):
+    from src.orchestration.runtime_policy import flow_started_at
+
+    b = protected_window
+    before = (await effective(b)).policy
+    document = copy.deepcopy(b.s.plan.plan_document)
+    started = await flow_started_at(b.s.session, org_id=b.s.flow.org_id, flow_id=b.s.flow.id)
+    deadline = b.execution.deadline_at
+    receipt, request = await accept(b)
+    after = (await effective(b)).policy
+    assert after.expires_at == before.expires_at
+    assert after.limits.max_wall_clock_seconds == request.max_wall_clock_seconds
+    assert after.limits.max_attempts_per_node == before.limits.max_attempts_per_node
+    assert after._shared_window_decision_id == receipt["decision_id"]
+    assert b.s.plan.plan_document == document
+    assert b.s.node.state == "failed" and b.s.node.attempts == 1
+    assert b.execution.status == "concluded" and b.execution.deadline_at == deadline
+    assert await flow_started_at(b.s.session, org_id=b.s.flow.org_id, flow_id=b.s.flow.id) == started
+
+
+@pytest.mark.parametrize("case", ["unchanged", "decrease", "too_large", "other_owner", "expired"])
+async def test_protected_same_expiry_requires_owner_and_positive_bounded_increase(protected_window, case):
+    b = protected_window
+    before = (await effective(b)).policy
+    changes = {
+        "unchanged": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds},
+        "decrease": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds - 1},
+        "too_large": {"max_wall_clock_seconds": before.limits.max_wall_clock_seconds + 86401},
+        "expired": {"expires_at": datetime.now(UTC) - timedelta(seconds=1)},
+    }
+    b.request = b.request.model_copy(update=changes.get(case, {}))
+    if case == "other_owner":
+        b.actor = replace(b.actor, actor_id="other-admin")
+    with pytest.raises(WindowRenewalError):
+        await accept(b)
+    assert (await effective(b)).policy == before
+
+
+@pytest.mark.parametrize("case", ["actor", "plan_hash", "wall_clock", "past_acceptance"])
+async def test_protected_receipt_tampering_refuses_admission(protected_window, case):
+    b = protected_window
+    receipt, _ = await accept(b)
+    row = await b.s.session.get(OrchestrationDecision, receipt["decision_id"])
+    data = json.loads(row.reason)
+    if case == "plan_hash":
+        data["plan_hash"] = "a" * 64
+    elif case == "wall_clock":
+        data["max_wall_clock_seconds"] = data["before_wall_clock_seconds"]
+    elif case == "past_acceptance":
+        data["accepted_at"] = data["expires_at"]
+    b.s.session.add(
+        OrchestrationDecision(
+            org_id=row.org_id,
+            flow_id=row.flow_id,
+            kind=row.kind,
+            actor_id="other-admin" if case == "actor" else row.actor_id,
+            actor_kind=row.actor_kind,
+            actor_role=row.actor_role,
+            created_at=datetime.now(UTC) + timedelta(seconds=1),
+            reason=json.dumps(data),
+        )
+    )
+    await b.s.session.flush()
+    assert (await effective(b)).refusal is not None

@@ -174,6 +174,7 @@ def node_progress(
     preserved_execution=False,
     policy_hash=None,
     admission_refusal=None,
+    developer_retry=None,
     observed_at=None,
 ) -> DeliveryProgress | None:
     if node.kind != "story":
@@ -182,6 +183,46 @@ def node_progress(
         return DeliveryProgress(
             stage="complete", actor="none", detail="Delivery evidence was accepted.", automation="not_applicable", observed_at=observed_at
         )
+    if node.state in {"failed", "ready"} and isinstance(developer_retry, dict) and developer_retry.get("attempt") == node.attempts:
+        outcome = developer_retry.get("result")
+        if outcome in {"retry_backoff", "scheduled"}:
+            return DeliveryProgress(
+                stage="retry",
+                actor="engine",
+                detail="The developer attempt failed. The engine will retry using the prior failure evidence and existing work.",
+                next_action="Recheck recovery eligibility and dispatch the next permitted attempt.",
+                scheduled_action="Retry development after backoff" if outcome == "retry_backoff" else "Dispatch the recovery attempt",
+                automation="engine",
+            )
+        if outcome == "recovery_evidence_unavailable":
+            return DeliveryProgress(
+                stage="retry",
+                actor="engine",
+                detail="Recovery evidence could not be verified. The engine will check again before starting another worker.",
+                blocker=outcome,
+                blockers=[outcome],
+                next_action="Recheck recovery evidence.",
+                scheduled_action="Recheck recovery eligibility",
+                automation="reconciliation_only",
+            )
+        descriptions = {
+            "attempts_exhausted": "The approved development attempts are exhausted.",
+            "policy_expired": "The accepted execution policy has expired.",
+            "flow_deadline_exhausted": "The flow's approved execution window is exhausted.",
+            "flow_not_active": "The flow is paused or no longer active.",
+            "repair_requires_approval": "The accepted policy does not allow autonomous repair.",
+            "failure_requires_operator": "The recorded failure requires operator intervention.",
+        }
+        if outcome in descriptions:
+            return DeliveryProgress(
+                stage="failed",
+                actor="operator",
+                detail=descriptions[outcome],
+                blocker=outcome,
+                blockers=[outcome],
+                next_action="Inspect the failure and resolve the recorded recovery blocker.",
+                automation="paused",
+            )
     if node.state in {"failed", "halted", "rejected_at_gate", "awaiting_gate", "superseded"}:
         return DeliveryProgress(
             stage=node.state,

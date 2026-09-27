@@ -2254,8 +2254,11 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)
         monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", lambda *_: None)
 
+        recovery = {"previous_run_id": "orch:prior", "previous_attempt": 1} if protected else None
+        monkeypatch.setenv("ADP_DEVELOPER_RECOVERY_CONTEXT", "stale prior task")
         mock_receive_msg.return_value = (
-            json.dumps({**SAMPLE_ENVELOPE, "model_resolved": selected_model}),
+            json.dumps({**SAMPLE_ENVELOPE, "model_resolved": selected_model,
+                        "orchestration": {"developer_recovery": recovery}}),
             "receipt-gw1",
         )
         mock_vault = MagicMock()
@@ -2290,6 +2293,7 @@ class TestBedrockViaGateway:
         assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == f"http://127.0.0.1:{port or '9090'}"
         assert agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
         assert agent_env["ANTHROPIC_MODEL"] == selected_model
+        assert agent_env["ADP_DEVELOPER_RECOVERY_CONTEXT"] == (json.dumps(recovery) if recovery else "")
         # Must NOT have ANTHROPIC_BASE_URL (that routes to the broken translator)
         assert "ANTHROPIC_BASE_URL" not in agent_env
         if protected:

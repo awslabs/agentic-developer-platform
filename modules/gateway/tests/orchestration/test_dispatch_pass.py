@@ -2062,6 +2062,7 @@ class TestSavedPersonaMapping:
 
 async def test_retry_dispatch_carries_provider_verified_pr_before_publish(session, monkeypatch):
     from unittest.mock import AsyncMock
+    from uuid import uuid4
 
     from src.orchestration.pr_bindings import PullRequestIdentity, register_binding, resolve_registration_target
 
@@ -2071,12 +2072,34 @@ async def test_retry_dispatch_carries_provider_verified_pr_before_publish(sessio
     pr = PullRequestIdentity(12345, "PR_existing", REPO, 777, "a" * 40)
     target = await resolve_registration_target(session, run_id=first.pending[0].envelope["message_id"])
     original, _ = await register_binding(session, target=target, pr=pr, actor_id="worker", actor_kind=ActorKind.SERVICE)
+    from src.orchestration.developer_recovery import ACTOR, KIND, recovery_id
+
+    db_recovery = {
+        "previous_run_id": first.pending[0].envelope["message_id"],
+        "previous_attempt": 1,
+        "failure_decision_id": str(uuid4()),
+        "preserve_existing_work": True,
+    }
+    session.add(
+        OrchestrationDecision(
+            id=recovery_id(node.id, 1),
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            kind=KIND,
+            actor_id=ACTOR,
+            actor_role="engine",
+            actor_kind="service",
+            reason=json.dumps(db_recovery),
+        )
+    )
     node.state = "ready"
     await session.flush()
     refreshed = PullRequestIdentity(12345, "PR_existing", REPO, 777, "b" * 40)
     monkeypatch.setattr("src.orchestration.pr_identity.resolve_pr_identity", AsyncMock(return_value=refreshed))
     report = await run_dispatch_pass(session, _config())
     assert report.dispatched == 1 and report.success
+    assert report.pending[0].envelope["orchestration"]["developer_recovery"] == db_recovery
     assert node.attempts == 2
     assert original.attempt == 2 and original.head_sha == "b" * 40 and original.revision == 2
     assert report.pending[0].envelope["bound_pull_request"]["pr_number"] == 777
