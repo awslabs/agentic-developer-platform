@@ -57,7 +57,7 @@ def test_source_revision_reaches_every_checkout_and_build_tag():
     assert "name=IMAGE_TAG,value=${{ inputs.adp_source_revision || github.sha }}" in build["with"]["environment_variables"]
     # Pass the immutable revision through the reusable workflow input: GitHub
     # suppresses job outputs containing the masked AWS account ID.
-    assert document["jobs"]["run-migrations"]["with"]["expected_image_tag"] == "${{ inputs.adp_source_revision || github.sha }}"
+    assert document["jobs"]["run-migrations"]["with"]["expected_image_digest"] == "${{ needs.deploy-backend.outputs.release_digest }}"
     assert TRANSPORT_INPUTS <= document["jobs"]["run-migrations"]["with"].keys()
     migration = workflow("run-gateway-migrations.yml")
     assert TRANSPORT_INPUTS <= migration[True]["workflow_call"]["inputs"].keys()

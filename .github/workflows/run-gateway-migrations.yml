@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: ''
+      expected_image_digest:
+        description: "Exact deployed gateway digest; reconstructed against the trusted account"
+        required: false
+        type: string
+        default: ''
       expected_image_tag:
         description: "Expected gateway release SHA tag; resolved against the trusted account"
         required: false
@@ -79,6 +84,11 @@ on:
         default: ''
       expected_image:
         description: "Expected gateway release image; empty uses current deployment image"
+        required: false
+        type: string
+        default: ''
+      expected_image_digest:
+        description: "Exact deployed gateway digest; reconstructed against the trusted account"
         required: false
         type: string
         default: ''
@@ -173,6 +183,7 @@ jobs:
           INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
           INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
           INPUT_EXPECTED_IMAGE: ${{ inputs.expected_image || '' }}
+          INPUT_EXPECTED_IMAGE_DIGEST: ${{ inputs.expected_image_digest || '' }}
           INPUT_EXPECTED_IMAGE_TAG: ${{ inputs.expected_image_tag || '' }}
         run: python3 modules/gateway/scripts/deployment-workflow-context.py
       - name: Upload deployment workflow context
@@ -197,10 +208,16 @@ jobs:
       - name: Migrate and verify activated pricing on the release image
         env:
           PRICING_EXPECTED_IMAGE: ${{ inputs.expected_image }}
+          PRICING_EXPECTED_IMAGE_DIGEST: ${{ inputs.expected_image_digest }}
           PRICING_EXPECTED_IMAGE_TAG: ${{ inputs.expected_image_tag }}
         run: |
           set -euo pipefail
           PRICING_IMAGE_ARGS=()
+          if [ -n "$PRICING_EXPECTED_IMAGE_DIGEST" ]; then
+            test -z "$PRICING_EXPECTED_IMAGE$PRICING_EXPECTED_IMAGE_TAG" || { echo "::error::Provide one expected release reference"; exit 1; }
+            [[ "$PRICING_EXPECTED_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Invalid release digest"; exit 1; }
+            PRICING_EXPECTED_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway@${PRICING_EXPECTED_IMAGE_DIGEST}"
+          fi
           if [ -n "$PRICING_EXPECTED_IMAGE_TAG" ]; then
             test -z "$PRICING_EXPECTED_IMAGE" || { echo "::error::Provide one expected release reference"; exit 1; }
             [[ "$PRICING_EXPECTED_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Expected release tag must be a commit SHA"; exit 1; }
