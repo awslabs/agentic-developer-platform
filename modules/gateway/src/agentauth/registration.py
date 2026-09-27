@@ -362,8 +362,7 @@ class AgentRegistrationService:
         continuation = raw.get("orchestration_continuation_receipt", {}).get("S")
         if parent_grant and not reservation and continuation:
             execution_update["ConditionExpression"] += (
-                " AND orchestration_continuation_receipt = :continuation"
-                " AND attribute_not_exists(dispatch_reservation_id)"
+                " AND orchestration_continuation_receipt = :continuation AND attribute_not_exists(dispatch_reservation_id)"
             )
             execution_update["ExpressionAttributeValues"][":continuation"] = {"S": continuation}
         elif bool(parent_grant) != bool(reservation):
