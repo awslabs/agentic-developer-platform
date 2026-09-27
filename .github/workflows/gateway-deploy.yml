@@ -167,8 +167,6 @@ jobs:
     environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
     if: github.ref == 'refs/heads/main' && (needs.changes.outputs.backend == 'true')
-    outputs:
-      release_image: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
     # AWS authority comes from the protected deployment environment.
     permissions:
       id-token: write
@@ -1103,7 +1101,10 @@ jobs:
       adp_correlation: ${{ inputs.adp_correlation || '' }}
       adp_source_revision: ${{ inputs.adp_source_revision || '' }}
       adp_definition_revision: ${{ inputs.adp_definition_revision || '' }}
-      expected_image: ${{ needs.deploy-backend.outputs.release_image }}
+      # GitHub suppresses job outputs containing the masked AWS account ID.
+      # Pass only the immutable tag; the called job builds the URI after loading
+      # its trusted account config.
+      expected_image_tag: ${{ inputs.adp_source_revision || github.sha }}
       account_id: ${{ inputs.account_id || '' }}
       environment: ${{ inputs.environment || 'dev' }}
       customer_account_id: ${{ inputs.customer_account_id || '' }}
@@ -1148,11 +1149,12 @@ jobs:
           customer_user_id: ${{ inputs.customer_user_id }}
       - name: Verify release pricing and enable the schedule
         env:
-          PRICING_RELEASE_IMAGE: ${{ needs.deploy-backend.outputs.release_image }}
+          PRICING_RELEASE_TAG: ${{ inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
           command -v kubectl >/dev/null
           aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          PRICING_RELEASE_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_TAG}"
           python3 modules/gateway/scripts/pricing-rollout.py finalize \
             --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" \
             --expected-image "$PRICING_RELEASE_IMAGE"

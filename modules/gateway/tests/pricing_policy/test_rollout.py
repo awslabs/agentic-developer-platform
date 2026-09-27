@@ -311,8 +311,17 @@ def test_workflows_serialize_and_pin_release_image():
     jobs = workflows["gateway-deploy.yml"]["jobs"]
     assert jobs["finalize-pricing"]["needs"] == ["deploy-backend", "run-migrations"]
     assert "finalize-pricing" in jobs["smoke-test"]["needs"]
-    assert jobs["run-migrations"]["with"]["expected_image"] == "${{ needs.deploy-backend.outputs.release_image }}"
-    assert "github.sha" in jobs["deploy-backend"]["outputs"]["release_image"]
+    assert jobs["run-migrations"]["with"]["expected_image_tag"] == "${{ inputs.adp_source_revision || github.sha }}"
+    assert "release_image" not in jobs["deploy-backend"].get("outputs", {})
+    finalize = next(step for step in jobs["finalize-pricing"]["steps"] if step.get("name") == "Verify release pricing and enable the schedule")
+    assert "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_TAG}" in finalize["run"]
+    migration = yaml.load((root / ".github/workflows/run-gateway-migrations.yml").read_text(), Loader=yaml.BaseLoader)
+    migrate_steps = migration["jobs"]["migrate"]["steps"]
+    context = next(i for i, step in enumerate(migrate_steps) if step.get("name") == "Select trusted EKS context")
+    execute = next(i for i, step in enumerate(migrate_steps) if step.get("name") == "Migrate and verify activated pricing on the release image")
+    assert context < execute
+    assert "aws eks update-kubeconfig" in migrate_steps[context]["run"]
+    assert "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_EXPECTED_IMAGE_TAG}" in migrate_steps[execute]["run"]
 
 
 @pytest.mark.parametrize(
