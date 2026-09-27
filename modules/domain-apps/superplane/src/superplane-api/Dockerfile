@@ -59,8 +59,8 @@ RUN PYTHONPATH=/install/lib/python3.12/site-packages python -c \
 FROM public.ecr.aws/docker/library/python:3.12-slim
 
 # Install runtime system deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
