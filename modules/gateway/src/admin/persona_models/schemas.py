@@ -41,11 +41,13 @@ class PreferenceEntry(BaseModel):
     availability_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
+    default_model_id: str | None = None
     effective_model_id: str | None = None
     effective_is_candidate: bool
     source: Literal["principal-mapping", "system-default"]
     status: Literal["configured", "not-configured", "unavailable", "disallowed", "stale"] = "not-configured"
     class_default_status: Literal["candidate", "proven"] | None = None
+    default_scope: Literal["persona", "class"] = "class"
 
     saved_model_id: str | None = None
     requested_alias: str | None = None
@@ -79,6 +81,7 @@ class PreferenceDetailResponse(BaseModel):
     source: Literal["principal-mapping", "system-default"]
     status: str
     class_default_status: Literal["candidate", "proven"] | None = None
+    default_scope: Literal["persona", "class"] = "class"
 
     saved_model_id: str | None = None
     requested_alias: str | None = None
@@ -227,6 +230,7 @@ class ConflictResponse(BaseModel):
     default_model_id: str | None = None
     default_source: str
     class_default_status: Literal["candidate", "proven"] | None = None
+    default_scope: Literal["persona", "class"] = "class"
 
 
 # ── Registration models ─────────────────────────────────────────────────────

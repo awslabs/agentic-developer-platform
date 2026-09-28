@@ -24,8 +24,14 @@ def test_current_head_installs_and_preserves_settlement_receipts(pg_url):
     assert "Settlement receipts must survive rollback" in result.stdout + result.stderr
     with psycopg2.connect(pg_url) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT version_num FROM alembic_version")
-        assert cursor.fetchone()[0] == expected_head
+        # Migration 080 commits earlier downgrade steps before its concurrent
+        # index operation. The later refusal preserves debit receipts, but does
+        # not undo those already committed steps.
+        assert cursor.fetchone()[0] == "080_usage_request_index"
         cursor.execute("SELECT request_id,total_tokens FROM budget_settlement_receipts")
         assert cursor.fetchall() == [("request", 6)]
-    # A refused rollback leaves the schema/version consistent and re-upgrade safe.
+    # A partially committed rollback remains safe to upgrade again.
     upgrade(pg_url, "head")
+    with psycopg2.connect(pg_url) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT version_num FROM alembic_version")
+        assert cursor.fetchone()[0] == expected_head

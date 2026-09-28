@@ -2154,3 +2154,64 @@ def test_legacy_codex_snapshot_keeps_explicit_model_and_requires_verified_live_p
         resolve_decision(
             inherited, invocation_id="review", persona="agent-codex-reviewer", now=NOW, live=replace(live, compatibility_class="claude-agent-sdk")
         )
+
+
+def test_persona_default_precedence_and_snapshot_roundtrip():
+    from dataclasses import replace
+
+    defaults = {"developer": {"model_id": OPUS, "revision": 1, "compatibility_class": "claude-agent-sdk", "harness_contract_revision": "0.3.283"}}
+    frozen = snapshot(schema_version=2, mappings={}, persona_defaults=defaults)
+    restored = ModelPolicySnapshot.from_dict(frozen.to_dict())
+    assert restored.to_dict() == frozen.to_dict()
+    assert resolve_decision(restored, invocation_id="child", persona="developer", now=NOW).resolved_model_id == OPUS
+    mapped = replace(restored, mappings={"developer": HAIKU})
+    assert resolve_decision(mapped, invocation_id="child", persona="developer", now=NOW).resolved_model_id == HAIKU
+    reset = replace(restored, persona_defaults={"developer": {**defaults["developer"], "model_id": None}})
+    assert resolve_decision(reset, invocation_id="child", persona="developer", now=NOW).resolved_model_id == SONNET
+    assert policy_digest(restored.to_dict()) != policy_digest(reset.to_dict())
+    assert resolve_decision(restored, invocation_id="later-child", persona="developer", now=NOW).resolved_model_id == OPUS
+    with pytest.raises(ModelPolicyError, match="snapshot_unsupported_revision"):
+        ModelPolicySnapshot.from_dict({**frozen.to_dict(), "schema_version": 1})
+
+
+@pytest.mark.asyncio
+async def test_database_persona_defaults_are_frozen_at_root(db_session):
+    from src.shared.models.persona_models import PersonaPlatformDefault
+
+    db_session.add(User(id="user-a", org_id="tenant-a", team_id="team-a", email="a@example.test", cognito_sub="human-sub"))
+    row = PersonaPlatformDefault(
+        persona_key="developer", compatibility_class="claude-agent-sdk", harness_contract_revision="0.3.283", canonical_model_id=OPUS, revision=1
+    )
+    db_session.add(row)
+    db_session.add(
+        PersonaModelPolicySetting(
+            compatibility_class="claude-agent-sdk",
+            harness_contract_revision="0.3.283",
+            active_default_model_id=SONNET,
+            revision=1,
+            posture_revision=1,
+            enforcement_posture="report_only",
+        )
+    )
+    await db_session.flush()
+
+    async def build():
+        return await build_root_snapshot(
+            db_session,
+            store=_RootStore({"authority_kind": {"S": "github_event"}, "human_id": {"S": "human-sub"}}),
+            invocation_id="root-a",
+            tenant_id="tenant-a",
+            execution={"flow_id": {"S": "chain-a"}},
+            grant=_grant("github_event"),
+            now=NOW,
+        )
+
+    first = await build()
+    row.canonical_model_id = HAIKU
+    row.revision = 2
+    await db_session.flush()
+    second = await build()
+    assert first.schema_version == second.schema_version == 2
+    assert first.policy_revision != second.policy_revision
+    assert resolve_decision(first, invocation_id="child", persona="developer", now=NOW).resolved_model_id == OPUS
+    assert resolve_decision(second, invocation_id="child", persona="developer", now=NOW).resolved_model_id == HAIKU

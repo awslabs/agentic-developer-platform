@@ -470,6 +470,13 @@
   },
   {
     "method": "PUT",
+    "path": "/admin/persona-defaults/{persona_key}",
+    "module": "src.admin.persona_models.persona_default_routes",
+    "endpoint": "set_persona_default",
+    "classification": "existing-writer"
+  },
+  {
+    "method": "PUT",
     "path": "/admin/persona-models/default/{compatibility_class}",
     "module": "src.admin.persona_models.default_routes",
     "endpoint": "set_class_default",

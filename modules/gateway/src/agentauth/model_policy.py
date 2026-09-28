@@ -18,7 +18,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -61,6 +61,7 @@ from src.shared.models.persona_models import (
     ALIAS_SOURCES,
     PersonaModelPolicySetting,
     PersonaModelPreference,
+    PersonaPlatformDefault,
     ServicePrincipal,
     ServicePrincipalAlias,
 )
@@ -69,6 +70,7 @@ from src.shared.schemas.auth import TokenContext
 logger = logging.getLogger("bedrockgateway.agentauth.model_policy")
 
 SNAPSHOT_SCHEMA_VERSION = 1
+PERSONA_DEFAULTS_SNAPSHOT_VERSION = 2
 #: The model-policy contract a client must declare to be admitted under an
 #: enforcing posture.  Distinct from ``SNAPSHOT_SCHEMA_VERSION``, which versions
 #: the frozen snapshot's wire format: this versions what a *consumer* promises to
@@ -178,6 +180,7 @@ class ModelPolicySnapshot:
     expires_at: datetime
     audience: str
     source: Literal["live", "last_known_good_cache"]
+    persona_defaults: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -187,6 +190,7 @@ class ModelPolicySnapshot:
             "principal_id": self.principal_id,
             "mappings": dict(sorted(self.mappings.items())),
             "class_defaults": {key: self.class_defaults[key] for key in sorted(self.class_defaults)},
+            **({"persona_defaults": {key: self.persona_defaults[key] for key in sorted(self.persona_defaults)}} if self.persona_defaults else {}),
             "persona_contracts": {key: self.persona_contracts[key] for key in sorted(self.persona_contracts)},
             "policy_revision": self.policy_revision,
             "allowlist_policy_revision": self.allowlist_policy_revision,
@@ -204,7 +208,7 @@ class ModelPolicySnapshot:
         try:
             if not isinstance(value, dict):
                 raise ModelPolicyError("snapshot_malformed")
-            if value.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
+            if value.get("schema_version") not in {SNAPSHOT_SCHEMA_VERSION, PERSONA_DEFAULTS_SNAPSHOT_VERSION}:
                 raise ModelPolicyError("snapshot_unsupported_revision")
             tenant_id = value["tenant_id"]
             principal_kind = value["principal_kind"]
@@ -212,6 +216,11 @@ class ModelPolicySnapshot:
             mappings = value["mappings"]
             class_defaults = value["class_defaults"]
             persona_contracts = value["persona_contracts"]
+            persona_defaults = value.get("persona_defaults", {})
+            if not isinstance(persona_defaults, dict) or any(not isinstance(k, str) or not isinstance(v, dict) for k, v in persona_defaults.items()):
+                raise ModelPolicyError("snapshot_malformed")
+            if bool(persona_defaults) != (value["schema_version"] == PERSONA_DEFAULTS_SNAPSHOT_VERSION):
+                raise ModelPolicyError("snapshot_unsupported_revision")
             if value.get("audience") != SNAPSHOT_AUDIENCE:
                 raise ModelPolicyError("snapshot_audience_mismatch")
             scalar_fields = (
@@ -237,7 +246,8 @@ class ModelPolicySnapshot:
             if expires <= issued:
                 raise ModelPolicyError("snapshot_malformed")
             return cls(
-                schema_version=SNAPSHOT_SCHEMA_VERSION,
+                schema_version=value["schema_version"],
+                persona_defaults=dict(persona_defaults),
                 tenant_id=tenant_id,
                 principal_kind=principal_kind,
                 principal_id=principal_id,
@@ -412,7 +422,7 @@ def resolve_decision(
     if live is not None and compatibility_class == "codex-sdk" and harness_revision == HARNESS_CONTRACT_REVISION:
         harness_revision = persona_harness_contract_revision(persona)
     class_policy = snapshot.class_defaults.get(compatibility_class)
-    if class_policy is None and live is not None and (direct_override or snapshot.mappings.get(persona)):
+    if class_policy is None and live is not None and (direct_override or snapshot.mappings.get(persona) or snapshot.persona_defaults.get(persona)):
         # The class may have been provisioned after the root snapshot. An
         # explicit frozen model needs no default, and posture is already read
         # live. Preserve absent historical evidence as absent, not invented.
@@ -441,6 +451,18 @@ def resolve_decision(
     resolved = direct_override or mapping
     requested = direct_requested if direct_override else mapping
     source: Literal["explicit-direct", "principal-mapping", "system-default"] = "explicit-direct" if direct_override else "principal-mapping"
+    if resolved is None:
+        persona_default = snapshot.persona_defaults.get(persona)
+        if persona_default and persona_default.get("model_id") is not None:
+            if (
+                persona_default.get("compatibility_class") != compatibility_class
+                or persona_default.get("harness_contract_revision") != harness_revision
+            ):
+                raise ModelPolicyError("harness_incompatible")
+            resolved = persona_default.get("model_id")
+            if not isinstance(resolved, str) or not resolved:
+                raise ModelPolicyError("persona_default_unavailable")
+            source = "system-default"
     if resolved is None:
         if not isinstance(class_policy.get("model_id"), str) or not class_policy["model_id"]:
             raise ModelPolicyError("class_default_unavailable")
@@ -1163,6 +1185,7 @@ async def build_root_snapshot(
                 )
             )
             settings = list(await session.scalars(select(PersonaModelPolicySetting)))
+            persona_settings = list(await session.scalars(select(PersonaPlatformDefault)))
     except SQLAlchemyError:
         # Reached only after the savepoint rollback above has completed, so the
         # last-known-good fallback below runs on a usable transaction and the
@@ -1190,7 +1213,17 @@ async def build_root_snapshot(
         }
         for row in settings
     }
+    persona_defaults = {
+        row.persona_key: {
+            "model_id": row.canonical_model_id,
+            "revision": row.revision,
+            "compatibility_class": row.compatibility_class,
+            "harness_contract_revision": row.harness_contract_revision,
+        }
+        for row in persona_settings
+    }
     revision_input = {
+        **({"persona_defaults": persona_defaults} if persona_defaults else {}),
         "preferences": [
             {"persona": row.persona_key, "model": row.canonical_model_id, "revision": row.revision}
             for row in sorted(preferences, key=lambda item: item.persona_key)
@@ -1199,7 +1232,8 @@ async def build_root_snapshot(
     }
     contracts, catalogue_revision = _contract_maps()
     snapshot = ModelPolicySnapshot(
-        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        schema_version=PERSONA_DEFAULTS_SNAPSHOT_VERSION if persona_defaults else SNAPSHOT_SCHEMA_VERSION,
+        persona_defaults=persona_defaults,
         tenant_id=tenant_id,
         principal_kind=principal_kind,
         principal_id=principal_id,
@@ -1248,7 +1282,7 @@ async def _persist_snapshot(*, store, invocation_id: str, tenant_id: str, snapsh
             ExpressionAttributeValues={
                 ":snapshot": {"S": raw},
                 ":digest": {"S": digest},
-                ":schema": {"N": str(SNAPSHOT_SCHEMA_VERSION)},
+                ":schema": {"N": str(snapshot.schema_version)},
                 ":root": {"S": snapshot.root_invocation_id},
                 ":revision": {"S": snapshot.policy_revision},
                 ":correlation": {"S": snapshot.correlation_id},

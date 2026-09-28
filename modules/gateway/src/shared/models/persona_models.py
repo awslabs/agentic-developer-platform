@@ -163,6 +163,22 @@ class PersonaModelPolicySetting(Base):
     )
 
 
+class PersonaPlatformDefault(Base):
+    """Platform-owned persona fallback, below a principal's explicit preference."""
+
+    __tablename__ = "persona_platform_defaults"
+
+    persona_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    compatibility_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_model_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    harness_contract_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    __table_args__ = (CheckConstraint("revision >= 1", name="ck_persona_platform_default_revision"),)
+
+
 class PersonaModelRetirementAlert(Base, TenantMixin):
     """Durable claim/delivery outbox for operator retirement alerts."""
 
