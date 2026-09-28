@@ -60,6 +60,14 @@ on:
         description: 'Ingestion full source SHA or sha256 digest (default: latest published digest)'
         required: false
         default: ''
+      ingestion_only:
+        description: 'Promote only ingestion job images; preserve running Jobs and other configuration'
+        type: boolean
+        default: false
+      ingestion_expected_image:
+        description: 'Required for ingestion_only: exact current full ingestion digest reference'
+        type: string
+        default: ''
       deepwiki_only:
         description: 'Promote only DeepWiki image, preserving all live service configuration'
         type: boolean
@@ -88,7 +96,7 @@ jobs:
     environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 30
     # Manual dispatch always runs; auto (workflow_run) only on a successful build.
-    if: github.ref == 'refs/heads/main' && inputs.deepwiki_only != true && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    if: github.ref == 'refs/heads/main' && inputs.deepwiki_only != true && inputs.ingestion_only != true && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
 
     permissions:
       contents: read
@@ -230,6 +238,15 @@ jobs:
             || echo "WARNING: Cannot apply RBAC (likely pre-existing). Continuing."
           echo "RBAC: adp:trusted-deployment → ingestion-pipeline-role"
 
+      - name: Resolve automatic ingestion image without replacing unrelated builds
+        if: github.event_name == 'workflow_run'
+        env:
+          TRIGGER_SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          IMAGE=$(python3 modules/agent-context/scripts/resolve-auto-ingestion-image.py)
+          echo "ADP_RESOLVED_INGESTION_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
       - name: Run DB migrations (in-cluster Job)
         if: ${{ inputs.skip_migrations != true }}
         env:
@@ -253,7 +270,9 @@ jobs:
           # Determine ingestion image (same logic as CronJob step)
           INGESTION_REPO="adp-${{ env.ENVIRONMENT }}-agent-context-ingestion"
           INPUT_TAG="${ADP_INPUT_146F27724A}"
-          if [ -n "$INPUT_TAG" ]; then
+          if [ -n "${ADP_RESOLVED_INGESTION_IMAGE:-}" ]; then
+            MIGRATION_IMAGE="$ADP_RESOLVED_INGESTION_IMAGE"
+          elif [ -n "$INPUT_TAG" ]; then
             if [[ "$INPUT_TAG" == sha256:* ]]; then
               MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}@${INPUT_TAG}"
             else
@@ -609,7 +628,7 @@ jobs:
 
   promote-deepwiki:
     name: Promote DeepWiki image only
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.deepwiki_only == true
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.deepwiki_only == true && inputs.ingestion_only != true
     runs-on: arc-runner-org
     environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 15
@@ -655,4 +674,54 @@ jobs:
         with:
           name: deepwiki-promotion-receipt
           path: deepwiki-promotion-receipt.json
+          if-no-files-found: error
+
+  promote-ingestion:
+    name: Promote ingestion image only
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.ingestion_only == true && inputs.deepwiki_only != true
+    runs-on: arc-runner-org
+    environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.customer_account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+      - name: Promote verified ingestion image
+        env:
+          ADP_INPUT_INGESTION_IMAGE_TAG: ${{ inputs.ingestion_image_tag }}
+          INGESTION_EXPECTED_IMAGE: ${{ inputs.ingestion_expected_image }}
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT_ID"
+          [[ "$ADP_INPUT_INGESTION_IMAGE_TAG" =~ ^sha256:[0-9a-f]{64}$ ]]
+          export ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION"
+          INGESTION_IMAGE=$(python3 platform/scripts/resolve-ecr-image.py "${ECR_REGISTRY}/adp-${ENVIRONMENT}-agent-context-ingestion@${ADP_INPUT_INGESTION_IMAGE_TAG}")
+          export INGESTION_IMAGE
+          python3 modules/agent-context/scripts/promote-ingestion-image.py
+      - name: Retain promotion receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: ingestion-promotion-receipt
+          path: ingestion-promotion-receipt.json
           if-no-files-found: error

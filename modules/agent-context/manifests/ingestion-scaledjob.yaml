@@ -17,6 +17,8 @@ metadata:
     app.kubernetes.io/part-of: agent-context-platform
     app.kubernetes.io/component: ingestion-worker
 spec:
+  rollout:
+    strategy: gradual
   jobTargetRef:
     parallelism: 1
     completions: 1
