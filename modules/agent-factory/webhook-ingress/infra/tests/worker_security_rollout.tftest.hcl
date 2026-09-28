@@ -3,6 +3,30 @@ mock_provider "kubernetes" {}
 mock_provider "helm" {}
 mock_provider "tls" {}
 
+run "domain_apps_are_absent_without_an_explicit_opt_in" {
+  command = plan
+  assert {
+    condition = (
+      length(module.cyber) == 0 &&
+      length(local.domain_worker_environment) == 0 &&
+      length(local.domain_worker_artifact_resources) == 0 &&
+      length(local.domain_worker_egress) == 0
+    )
+    error_message = "A basic webhook platform deploy must not install cyber or grant its worker integrations."
+  }
+}
+
+run "cyber_settings_install_the_domain_app" {
+  command = plan
+  variables {
+    domain_app_settings = { cyber = {} }
+  }
+  assert {
+    condition     = length(module.cyber) == 1 && length(local.domain_worker_artifact_resources) == 1
+    error_message = "Explicit cyber settings must retain the cyber installation and worker integration."
+  }
+}
+
 run "codex_validation_is_off_by_default" {
   command = plan
   assert {

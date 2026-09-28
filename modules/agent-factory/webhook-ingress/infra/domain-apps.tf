@@ -1,5 +1,8 @@
 # Platform composition only; implementation and release settings belong to the app.
 module "cyber" {
+  # Domain apps are installed only when the operator supplies their settings.
+  # An empty cyber map is still an explicit opt-in with app defaults.
+  count                   = contains(keys(var.domain_app_settings), "cyber") ? 1 : 0
   source                  = "../../../domain-apps/cyber/infra/platform-integration"
   name_prefix             = local.name_prefix
   aws_region              = var.aws_region
@@ -20,50 +23,54 @@ module "cyber" {
 }
 
 locals {
-  domain_worker_environment        = module.cyber.worker_environment
-  domain_worker_artifact_resources = module.cyber.worker_artifact_resources
-  domain_worker_egress             = module.cyber.worker_egress
+  domain_worker_environment        = try(module.cyber[0].worker_environment, {})
+  domain_worker_artifact_resources = try(module.cyber[0].worker_artifact_resources, [])
+  domain_worker_egress             = try(module.cyber[0].worker_egress, [])
 }
 
 # Retain these moves for existing installations. Resource names, identities,
 # namespace and compatibility image remain unchanged; no state push/import is needed.
+moved {
+  from = module.cyber
+  to   = module.cyber[0]
+}
 
 moved {
   from = aws_iam_role_policy.agent_scaledjob_browser_deny
-  to   = module.cyber.aws_iam_role_policy.agent_scaledjob_browser_deny
+  to   = module.cyber[0].aws_iam_role_policy.agent_scaledjob_browser_deny
 }
 
 moved {
   from = aws_iam_policy.url_analysis_browser_broker_boundary
-  to   = module.cyber.aws_iam_policy.url_analysis_browser_broker_boundary
+  to   = module.cyber[0].aws_iam_policy.url_analysis_browser_broker_boundary
 }
 
 moved {
   from = aws_iam_role.url_analysis_browser_broker
-  to   = module.cyber.aws_iam_role.url_analysis_browser_broker
+  to   = module.cyber[0].aws_iam_role.url_analysis_browser_broker
 }
 
 moved {
   from = aws_iam_role_policy.url_analysis_browser_broker
-  to   = module.cyber.aws_iam_role_policy.url_analysis_browser_broker
+  to   = module.cyber[0].aws_iam_role_policy.url_analysis_browser_broker
 }
 
 moved {
   from = kubernetes_service_account.url_analysis_browser_broker
-  to   = module.cyber.kubernetes_service_account.url_analysis_browser_broker
+  to   = module.cyber[0].kubernetes_service_account.url_analysis_browser_broker
 }
 
 moved {
   from = kubernetes_deployment.url_analysis_browser_broker
-  to   = module.cyber.kubernetes_deployment.url_analysis_browser_broker
+  to   = module.cyber[0].kubernetes_deployment.url_analysis_browser_broker
 }
 
 moved {
   from = kubernetes_service.url_analysis_browser_broker
-  to   = module.cyber.kubernetes_service.url_analysis_browser_broker
+  to   = module.cyber[0].kubernetes_service.url_analysis_browser_broker
 }
 
 moved {
   from = kubernetes_network_policy.url_analysis_browser_broker
-  to   = module.cyber.kubernetes_network_policy.url_analysis_browser_broker
+  to   = module.cyber[0].kubernetes_network_policy.url_analysis_browser_broker
 }
