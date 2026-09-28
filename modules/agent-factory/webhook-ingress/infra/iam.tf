@@ -440,11 +440,10 @@ resource "aws_iam_role_policy" "gateway_agent_authority" {
 # Task persistence spans the existing request and protected authority tables in
 # one transaction.  Lambda receives no corresponding task grant; the gateway is
 # the only principal that can bind a request-table envelope to a locator.
-resource "aws_iam_role_policy" "gateway_task_storage" {
-  name = "adp-${var.environment}-policy-gateway-task-storage"
-  role = "adp-${var.environment}-role-gateway-service"
-
-  policy = jsonencode({
+# Reuse the gateway's managed-policy rollout switch so this new grant does not
+# exceed the role's aggregate inline-policy quota on upgraded installations.
+locals {
+  gateway_task_storage_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
@@ -484,6 +483,25 @@ resource "aws_iam_role_policy" "gateway_task_storage" {
       },
     ]
   })
+}
+
+resource "aws_iam_role_policy" "gateway_task_storage" {
+  count  = var.gateway_authority_managed_policies ? 0 : 1
+  name   = "adp-${var.environment}-policy-gateway-task-storage"
+  role   = "adp-${var.environment}-role-gateway-service"
+  policy = local.gateway_task_storage_policy
+}
+
+resource "aws_iam_policy" "gateway_task_storage" {
+  count  = var.gateway_authority_managed_policies ? 1 : 0
+  name   = "adp-${var.environment}-policy-gateway-task-storage"
+  policy = local.gateway_task_storage_policy
+}
+
+resource "aws_iam_role_policy_attachment" "gateway_task_storage" {
+  count      = var.gateway_authority_managed_policies ? 1 : 0
+  role       = "adp-${var.environment}-role-gateway-service"
+  policy_arn = aws_iam_policy.gateway_task_storage[0].arn
 }
 
 # -----------------------------------------------------------------------------

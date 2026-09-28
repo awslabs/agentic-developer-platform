@@ -467,6 +467,11 @@ run "managed_gateway_grants_do_not_consume_inline_quota" {
     gateway_authority_managed_policies = true
   }
   override_resource {
+    target          = aws_dynamodb_table.agent_authority
+    override_during = plan
+    values          = { arn = "arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-agent-authority" }
+  }
+  override_resource {
     target          = aws_iam_role.agent_scaledjob
     override_during = plan
     values          = { arn = "arn:aws:iam::123456789012:role/adp-dev-agent-scaledjob-role" }
@@ -481,16 +486,32 @@ run "managed_gateway_grants_do_not_consume_inline_quota" {
     override_during = plan
     values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-policy-gateway-task-source" }
   }
+  override_resource {
+    target          = aws_iam_policy.gateway_task_storage
+    override_during = plan
+    values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-policy-gateway-task-storage" }
+  }
   assert {
     condition = (
       length(aws_iam_role_policy.gateway_authorized_dispatch) == 0 &&
       length(aws_iam_role_policy.gateway_task_source) == 0 &&
+      length(aws_iam_role_policy.gateway_task_storage) == 0 &&
       aws_iam_role_policy_attachment.gateway_authorized_dispatch[0].role == "adp-dev-role-gateway-service" &&
       aws_iam_role_policy_attachment.gateway_task_source[0].role == "adp-dev-role-gateway-service" &&
+      aws_iam_role_policy_attachment.gateway_task_storage[0].role == "adp-dev-role-gateway-service" &&
       aws_iam_role_policy_attachment.gateway_authorized_dispatch[0].policy_arn == aws_iam_policy.gateway_authorized_dispatch[0].arn &&
-      aws_iam_role_policy_attachment.gateway_task_source[0].policy_arn == aws_iam_policy.gateway_task_source[0].arn
+      aws_iam_role_policy_attachment.gateway_task_source[0].policy_arn == aws_iam_policy.gateway_task_source[0].arn &&
+      aws_iam_role_policy_attachment.gateway_task_storage[0].policy_arn == aws_iam_policy.gateway_task_storage[0].arn
     )
-    error_message = "Managed mode must attach both scoped policies to the gateway without consuming inline quota."
+    error_message = "Managed mode must attach scoped gateway policies without consuming inline quota."
+  }
+  assert {
+    condition = jsondecode(aws_iam_policy.gateway_task_storage[0].policy).Statement[2] == {
+      Sid       = "TaskLocatorRetentionDelete", Effect = "Allow", Action = ["dynamodb:DeleteItem"],
+      Resource  = [aws_dynamodb_table.agent_authority.arn],
+      Condition = { "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] } }
+    }
+    error_message = "Managed task storage must retain the exact locator-delete scope."
   }
   assert {
     condition = jsondecode(aws_iam_policy.gateway_authorized_dispatch[0].policy).Statement[2] == {
