@@ -47,8 +47,9 @@ def main():
         raise ValueError('Promotion requires exact digests in this environment DeepWiki repository')
     before = deployment()
     patch(before, expected, candidate, dry_run=True)
-    patch(before, expected, candidate)
     try:
+        # Include ambiguous client failures in guarded rollback.
+        patch(before, expected, candidate)
         print(run('kubectl', '-n', 'agent-context', 'rollout', 'status', 'deploy/deepwiki', '--timeout=300s'))
         health = "import urllib.request; assert all(urllib.request.urlopen(u,timeout=10).status==200 for u in ['http://127.0.0.1:8001/health','http://127.0.0.1:3000/']); print('DeepWiki API and UI passed')"
         print(run('kubectl', '-n', 'agent-context', 'exec', 'deploy/deepwiki', '-c', 'deepwiki', '--', 'python', '-c', health))
@@ -64,8 +65,12 @@ def main():
         }, indent=2) + '\n')
     except Exception:
         # Do not overwrite a concurrent operator's image change.
-        patch(deployment(), candidate, expected)
-        print(run('kubectl', '-n', 'agent-context', 'rollout', 'status', 'deploy/deepwiki', '--timeout=300s'))
+        current = deployment()
+        containers = current['spec']['template']['spec']['containers']
+        live_image = next(c['image'] for c in containers if c['name'] == 'deepwiki')
+        if live_image != expected:
+            patch(current, candidate, expected)
+            print(run('kubectl', '-n', 'agent-context', 'rollout', 'status', 'deploy/deepwiki', '--timeout=300s'))
         raise
 
 

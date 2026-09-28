@@ -75,3 +75,31 @@ def test_wrong_repository_is_rejected_before_cluster_access(monkeypatch):
     monkeypatch.setattr(promotion, 'deployment', lambda: pytest.fail('cluster access'))
     with pytest.raises(ValueError, match='exact digests'):
         promotion.main()
+
+
+@pytest.mark.parametrize('server_applied', [False, True])
+def test_failed_patch_response_checks_actual_state_before_rollback(monkeypatch, tmp_path, server_applied):
+    monkeypatch.chdir(tmp_path)
+    for k, v in {'DEEPWIKI_IMAGE': NEW, 'DEEPWIKI_EXPECTED_IMAGE': OLD,
+                 'ECR_REGISTRY': PREFIX.split('/')[0], 'ENVIRONMENT': 'dev'}.items():
+        monkeypatch.setenv(k, v)
+    live = document()
+    rollbacks = []
+    monkeypatch.setattr(promotion, 'deployment', lambda: copy.deepcopy(live))
+    monkeypatch.setattr(promotion, 'run', lambda *args: 'rolled back')
+    def patch(doc, expected, candidate, dry_run=False):
+        promotion.image_patch(doc, expected, candidate)
+        if dry_run:
+            return
+        if candidate == NEW:
+            if server_applied:
+                live['spec']['template']['spec']['containers'][1]['image'] = NEW
+            raise RuntimeError('client lost response')
+        rollbacks.append(candidate)
+        live['spec']['template']['spec']['containers'][1]['image'] = candidate
+    monkeypatch.setattr(promotion, 'patch', patch)
+    with pytest.raises(RuntimeError, match='client lost response'):
+        promotion.main()
+    assert live['spec']['template']['spec']['containers'][1]['image'] == OLD
+    assert rollbacks == ([OLD] if server_applied else [])
+    assert not Path('deepwiki-promotion-receipt.json').exists()

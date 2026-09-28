@@ -36,7 +36,7 @@ def env(monkeypatch):
         monkeypatch.setenv(key, value)
 
 
-@pytest.mark.parametrize('failure', [None, 'preflight', 'second-write'])
+@pytest.mark.parametrize('failure', [None, 'preflight', 'second-write', 'ambiguous-write'])
 def test_all_targets_preflight_and_partial_failure_rollback(monkeypatch, tmp_path, failure):
     monkeypatch.chdir(tmp_path)
     live = {t[1]: document(t) for t in promotion.TARGETS}
@@ -54,6 +54,8 @@ def test_all_targets_preflight_and_partial_failure_rollback(monkeypatch, tmp_pat
             promotion.value_at(live[t[1]], t[2].rsplit('/', 1)[0])['image'] = candidate
             if t[0] == 'scaledjob':
                 live[t[1]]['spec']['rollout'] = {'strategy': 'gradual'}
+            if failure == 'ambiguous-write' and t[1] == 'vuln-scan' and candidate == NEW:
+                raise RuntimeError('ambiguous-write')
     monkeypatch.setattr(promotion, 'apply', apply)
     if failure:
         with pytest.raises(RuntimeError, match=failure):

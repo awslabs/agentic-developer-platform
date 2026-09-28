@@ -64,8 +64,9 @@ def main():
     changed = []
     try:
         for t, d in zip(TARGETS, before):
-            apply(t, d, expected, candidate)
+            # A failed client response does not prove the server rejected the patch.
             changed.append(t)
+            apply(t, d, expected, candidate)
         for t, d in zip(TARGETS, before):
             after = get(*t[:2])
             desired = copy.deepcopy(d)
@@ -83,7 +84,10 @@ def main():
         errors = []
         for t in reversed(changed):
             try:
-                apply(t, get(*t[:2]), candidate, expected)
+                current = get(*t[:2])
+                if value_at(current, t[2]) == expected:
+                    continue
+                apply(t, current, candidate, expected)
             except Exception as exc:
                 errors.append(str(exc))
         if errors:
