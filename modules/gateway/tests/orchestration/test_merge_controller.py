@@ -733,3 +733,37 @@ async def test_github_second_precision_merge_timestamp_remains_verifiable(merge)
     assert receipt.merged_at == when
     with pytest.raises(ValueError, match="chronological"):
         MergeReceipt.model_validate({**receipt.model_dump(), "eligibility_observed_at": when + timedelta(seconds=1)})
+
+
+async def test_protected_merge_with_default_pending_container_settles(merge):
+    """Real flows retain the default container state while their nodes run."""
+    from src.orchestration.models import OrchestrationFlow
+
+    async with merge.factory() as db:
+        flow = await db.get(OrchestrationFlow, merge.node.flow_id)
+        flow.state = "pending"
+        await db.commit()
+    first = await tick(merge)
+    assert first.effects_succeeded == 1, (await state(merge))[0].block_detail
+    await tick(merge)
+    execution, claim, node, _ = await state(merge)
+    assert node.state == "passed"
+    assert execution.phase == "deployment_pending"
+    assert claim.generation == merge.identity.claim_generation
+    assert len(merge.mutations) == 1
+    async with merge.factory() as db:
+        assert (await db.get(OrchestrationFlow, merge.node.flow_id)).state == "pending"
+
+
+@pytest.mark.parametrize("gate", ["halted", "failed", "completed", "rejected_at_gate"])
+async def test_inactive_container_still_prevents_protected_merge(merge, gate):
+    from src.orchestration.models import OrchestrationFlow
+
+    async with merge.factory() as db:
+        flow = await db.get(OrchestrationFlow, merge.node.flow_id)
+        flow.state = gate
+        await db.commit()
+    result = await tick(merge)
+    assert result.blocked == 1
+    assert merge.mutations == []
+    assert (await state(merge))[2].state == "running"
