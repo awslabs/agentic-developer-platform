@@ -15,7 +15,9 @@ case "$mode" in
     terraform -chdir="$infra_dir" validate
     vars_file=$(realpath "$3")
     plan_file=$(realpath -m "$4")
-    image_vars=()
+    target_region=${AWS_REGION:?Set the confirmed deployment region}
+    [[ "$target_region" =~ ^[a-z0-9-]+$ ]] || exit 2
+    image_vars=("-var=aws_account_id=$expected_account" "-var=aws_region=$target_region")
     for variable in image_uri browser_service_image; do
       env_name="TF_VAR_$variable"
       if [[ -n "${!env_name:-}" ]]; then

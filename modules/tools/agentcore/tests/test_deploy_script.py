@@ -32,11 +32,12 @@ if 'show' in sys.argv: print(os.environ['PLAN_JSON'])
     saved.touch()
     calls = tmp_path / 'calls'
     env = {**os.environ, 'PATH': str(bin_dir)+':'+os.environ['PATH'], 'EXPECTED_AWS_ACCOUNT_ID': account,
-           'TF_VAR_image_uri': image, 'TF_VAR_browser_service_image': image, 'CALLS': str(calls),
+           'AWS_REGION': 'us-east-1', 'TF_VAR_image_uri': image, 'TF_VAR_browser_service_image': image, 'CALLS': str(calls),
            'PLAN_JSON': json.dumps({'resource_changes': [{'change': {'actions': actions}}]})}
     result = subprocess.run(['bash', str(SCRIPT), 'plan', str(backend), str(tfvars), str(saved)], env=env, capture_output=True)
     assert (result.returncode == 0) == allowed
     plan = next(json.loads(line) for line in calls.read_text().splitlines() if '"plan"' in line)
+    assert '-var=aws_account_id='+account in plan and '-var=aws_region=us-east-1' in plan
     assert plan.index('-var=image_uri='+image) > plan.index('-var-file='+str(tfvars))
     result = subprocess.run(['bash', str(SCRIPT), 'apply', str(backend), str(saved)], env=env, capture_output=True)
     assert (result.returncode == 0) == allowed

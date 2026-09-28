@@ -71,7 +71,7 @@ variable "rest_api_id" {
   default = ""
 }
 variable "tools_parent_resource_id" {
-  description = "ID of the existing /tools resource in the shared REST API; this stack creates only /tools/cyber."
+  description = "ID of the existing /tools resource in the shared REST API; this stack creates the three shared tool routes."
   type        = string
   default     = ""
 }
