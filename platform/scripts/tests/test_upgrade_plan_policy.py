@@ -132,9 +132,9 @@ class PlanPolicyTests(unittest.TestCase):
     def gitlab_migration(self):
         arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/gitlab-webhook-secret-aB1234"
         secret = {"arn": arn, "name": "adp/dev/gitlab-webhook-secret"}
-        return {"resource_changes": [
+        return {"variables": {"environment": {"value": "dev"}}, "resource_changes": [
             change("aws_secretsmanager_secret_version.gitlab_webhook_secret[0]",
-                   "aws_secretsmanager_secret_version", {"arn": arn, "secret_id": arn, "secret_string": "unchanged"}, None, ("forget",)),
+                   "aws_secretsmanager_secret_version", {"arn": arn, "secret_id": arn, "version_id": "terraform-example", "secret_string": "unchanged"}, None, ("forget",)),
             change("aws_secretsmanager_secret.gitlab_webhook_secret[0]", "aws_secretsmanager_secret",
                    secret, dict(secret), ("no-op",))]}
 
@@ -142,6 +142,58 @@ class PlanPolicyTests(unittest.TestCase):
         plan = self.gitlab_migration()
         self.assertEqual(policy.evaluate(plan, "webhook-ingress", "123456789012"),
                          {"routine": [plan["resource_changes"][0]["address"]], "blocked": [], "protected": []})
+
+    def test_operator_version_forget_allows_only_retained_secret_metadata(self):
+        for key, suffix in (
+            ("github_app_id", "github-app/adp-agent-platform-id"),
+            ("github_app_key", "github-app/adp-agent-platform-key"),
+            ("marker_signing_key", "webhook-ingress/marker-signing-key"),
+            ("webhook_secret", "webhook-ingress/github-webhook-secret"),
+        ):
+            with self.subTest(key=key):
+                name = "adp/dev/" + suffix
+                arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:" + name + "-aB1234"
+                old = {"arn": arn, "name": name, "kms_key_id": "existing", "recovery_window_in_days": 7}
+                new = dict(old, recovery_window_in_days=30)
+                plan = {"variables": {"environment": {"value": "dev"}}, "resource_changes": [
+                    change("aws_secretsmanager_secret_version." + key, "aws_secretsmanager_secret_version",
+                           {"arn": arn, "secret_id": arn, "version_id": "terraform-example", "secret_string": "private"}, None, ("forget",)),
+                    change("aws_secretsmanager_secret." + key, "aws_secretsmanager_secret", old, new, ("update",)),
+                ]}
+                self.assertEqual(policy.evaluate(plan, "webhook-ingress", "123456789012")["routine"],
+                                 [plan["resource_changes"][0]["address"]])
+                for mutation in (
+                    lambda p: p["resource_changes"][1]["change"]["after"].update(kms_key_id="different"),
+                    lambda p: p["resource_changes"][0]["change"].update(actions=["delete"]),
+                    lambda p: p["variables"]["environment"].update(value="prod"),
+                    lambda p: p["resource_changes"][0]["change"]["before"].pop("version_id"),
+                ):
+                    bad = copy.deepcopy(plan)
+                    mutation(bad)
+                    self.assertIn(bad["resource_changes"][0]["address"],
+                                  policy.evaluate(bad, "webhook-ingress", "123456789012")["protected"])
+
+    def test_worker_gateway_rollout_marker_requires_disabled_authority_and_same_target(self):
+        old = {"configuration": "a" * 64, "marker_version": "disabled", "rollout_script": "b" * 64}
+        resource = change("terraform_data.worker_gateway_rollout[0]", "terraform_data",
+                          {"triggers_replace": old},
+                          {"triggers_replace": dict(old, configuration="c" * 64)}, ("create", "delete"))
+        variables = {k: {"value": v} for k, v in {
+            "agent_authority_enabled": False, "environment": "dev", "eks_cluster_name": "adp-dev-eks-cluster",
+            "gateway_namespace": "adp-gateway", "aws_region": "us-east-1"}.items()}
+        plan = {"variables": variables, "resource_changes": [resource]}
+        self.assertEqual(policy.evaluate(plan, "webhook-ingress", "123456789012")["routine"],
+                         [resource["address"]])
+        for mutation in (
+            lambda p: p["variables"]["agent_authority_enabled"].update(value=True),
+            lambda p: p["variables"]["eks_cluster_name"].update(value="other"),
+            lambda p: p["resource_changes"][0]["change"]["after"]["triggers_replace"].update(marker_version="changed"),
+            lambda p: p["resource_changes"][0]["change"]["after"]["triggers_replace"].update(configuration="a" * 64),
+            lambda p: p["resource_changes"][0]["change"].update(actions=["delete", "create"]),
+        ):
+            bad = copy.deepcopy(plan)
+            mutation(bad)
+            self.assertIn(resource["address"], policy.evaluate(bad, "webhook-ingress", "123456789012")["blocked"])
 
     def test_gitlab_exception_never_accepts_other_credential_changes(self):
         mutations = {

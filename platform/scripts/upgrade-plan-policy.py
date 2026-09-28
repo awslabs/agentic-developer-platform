@@ -11,7 +11,7 @@ actions = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(actions)
 
 
-def routine(resource, module, account):
+def routine(resource, module, account, plan):
     change = resource["change"]
     before, after = change.get("before") or {}, change.get("after") or {}
     order = change["actions"]
@@ -81,38 +81,74 @@ def routine(resource, module, account):
                 and set(old) == set(new)
                 and set(new) <= {"namespace", "cluster_name", "cluster_region", "manifest_sha", "replicas"}
                 and bool(old.get("manifest_sha")) and bool(new.get("manifest_sha")))
+    if module == "webhook-ingress" and address == "terraform_data.worker_gateway_rollout[0]":
+        # This carrier only runs the rollout script on create. The old marker
+        # has no destroy provisioner, and protected authority stays disabled.
+        old, new = before.get("triggers_replace", {}), after.get("triggers_replace", {})
+        variables = plan.get("variables", {})
+        value = lambda name: variables.get(name, {}).get("value")
+        return (resource.get("type") == "terraform_data"
+                and order == ["create", "delete"]
+                and set(old) == set(new) == {"configuration", "marker_version", "rollout_script"}
+                and old["marker_version"] == new["marker_version"] == "disabled"
+                and old["configuration"] != new["configuration"]
+                and old["rollout_script"] == new["rollout_script"]
+                and all(re.fullmatch(r"[0-9a-f]{64}", digest)
+                        for digest in (old["configuration"], new["configuration"], old["rollout_script"]))
+                and value("agent_authority_enabled") is False
+                and value("environment") in ("dev", "staging", "prod")
+                and value("eks_cluster_name") == f'adp-{value("environment")}-eks-cluster'
+                and value("gateway_namespace") == "adp-gateway"
+                and bool(re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", value("aws_region") or "")))
     return False
 
 
-def retained_gitlab_version(resource, plan, module, account):
-    """Recognize only the placeholder-version ownership migration, not deletion.
+def retained_operator_version(resource, plan, module, account):
+    """Recognize operator-owned version migrations, never value deletion.
 
-    The secret must remain managed and unchanged in the same saved plan. No
-    other credential forget, update, replacement or removal is exempted.
+    The corresponding secret must remain managed with its identity and KMS key
+    unchanged. Only recovery-window and tag metadata may change in this plan.
     """
     change = resource["change"]
     before = change.get("before") or {}
+    names = {
+        "github_app_id": "github-app/adp-agent-platform-id",
+        "github_app_key": "github-app/adp-agent-platform-key",
+        "marker_signing_key": "webhook-ingress/marker-signing-key",
+        "webhook_secret": "webhook-ingress/github-webhook-secret",
+        "gitlab_webhook_secret[0]": "gitlab-webhook-secret",
+    }
+    prefix = "aws_secretsmanager_secret_version."
+    key = resource["address"][len(prefix):] if resource["address"].startswith(prefix) else ""
+    environment = plan.get("variables", {}).get("environment", {}).get("value")
     if (module != "webhook-ingress"
-            or resource["address"] != "aws_secretsmanager_secret_version.gitlab_webhook_secret[0]"
+            or key not in names or environment not in ("dev", "staging", "prod")
             or resource.get("type") != "aws_secretsmanager_secret_version"
             or change["actions"] != ["forget"] or change.get("after") is not None
             or not re.fullmatch(r"[0-9]{12}", account)):
         return False
     arn = before.get("secret_id", "")
-    match = re.fullmatch(
-        r"arn:(aws(?:-[a-z]+)*):secretsmanager:([a-z0-9-]+):" + account
-        + r":secret:(adp/[a-z][a-z0-9-]*/gitlab-webhook-secret)-[A-Za-z0-9]{6}", arn)
-    if not match or before.get("arn") != arn:
+    secret_name = f"adp/{environment}/{names[key]}"
+    pattern = (r"arn:aws(?:-[a-z]+)*:secretsmanager:[a-z0-9-]+:" + account
+               + r":secret:" + re.escape(secret_name) + r"-[A-Za-z0-9]{6}")
+    if not re.fullmatch(pattern, arn) or before.get("arn") != arn or not before.get("version_id"):
         return False
     retained = [r for r in plan["resource_changes"]
-                if r["address"] == "aws_secretsmanager_secret.gitlab_webhook_secret[0]"
+                if r["address"] == "aws_secretsmanager_secret." + key
                 and r.get("type") == "aws_secretsmanager_secret"]
     if len(retained) != 1:
         return False
     secret = retained[0]["change"]
-    attrs = secret.get("before") or {}
-    return (secret["actions"] == ["no-op"] and attrs == secret.get("after")
-            and attrs.get("arn") == arn and attrs.get("name") == match[3])
+    old, new = secret.get("before") or {}, secret.get("after") or {}
+    permitted_metadata = {"recovery_window_in_days", "tags", "tags_all"}
+    return (secret["actions"] in (["no-op"], ["update"])
+            and (secret["actions"] != ["no-op"] or old == new)
+            and (secret["actions"] == ["no-op"] or any(
+                old.get(field) != new.get(field) for field in permitted_metadata))
+            and old.get("arn") == new.get("arn") == arn
+            and old.get("name") == new.get("name") == secret_name
+            and all(old.get(field) == new.get(field)
+                    for field in set(old) | set(new) if field not in permitted_metadata))
 
 
 def protected_change(resource):
@@ -137,11 +173,11 @@ def evaluate(plan, module, account):
     actions.deletions(plan)
     allowed, blocked, protected = [], [], []
     for resource in plan["resource_changes"]:
-        retained_version = retained_gitlab_version(resource, plan, module, account)
+        retained_version = retained_operator_version(resource, plan, module, account)
         if protected_change(resource) and not retained_version:
             protected.append(resource["address"])
         if set(resource["change"]["actions"]) & {"delete", "forget"}:
-            (allowed if retained_version or routine(resource, module, account) else blocked).append(resource["address"])
+            (allowed if retained_version or routine(resource, module, account, plan) else blocked).append(resource["address"])
     return {"routine": allowed, "blocked": blocked, "protected": protected}
 
 
