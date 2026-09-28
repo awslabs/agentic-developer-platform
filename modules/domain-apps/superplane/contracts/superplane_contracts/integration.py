@@ -99,6 +99,9 @@ class PortOwner(str, Enum):
     GATEWAY_VAULT = "gateway_vault"
     """Gateway credential authority (#4912): evidence, exact binding, trusted delivery."""
 
+    GATEWAY_IDENTITY = "gateway_identity"
+    """ADP identity: current selected-org membership and typed principal status."""
+
     PROVIDER = "provider"
     """The cloud provider itself — the only source of provider truth."""
 
@@ -473,6 +476,21 @@ PRODUCTION_PORTS: tuple[PortContract, ...] = (
         # `contracts/superplane_contracts/provisioning_adapter.py:71`.
         refusal_exceptions=("ProvisioningRefused",),
         live_verifier="Wave 6 live gate (#5540); workspace lifecycle per #5400",
+    ),
+    # ------------------------------------------------------------- gateway identity
+    PortContract(
+        name="current_identity_reader",
+        owner=PortOwner.GATEWAY_IDENTITY,
+        declared_at="src/superplane-api/app/current_identity.py:24",
+        purpose=(
+            "Read current typed ADP membership and enabled-state evidence without "
+            "substituting token claims or domain grants for upstream identity."
+        ),
+        bound_identifiers=("subject", "principal_type", "adp_org_id"),
+        required_permission=None,
+        acts_as="the protected ADP caller for the exact original principal and tenant",
+        unknown_outcome=UnknownOutcome.NONE_MEANS_UNVERIFIED,
+        live_verifier="Permissions live acceptance (#6489), identity integration #6127",
     ),
     # ---------------------------------------------------------------------- domain
     PortContract(

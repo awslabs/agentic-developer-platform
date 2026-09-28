@@ -123,8 +123,14 @@ The domain user model has one `org_id` per projection. Migration 036 makes nulla
 `cognito_sub` unique within that organization, allowing distinct organization-local
 projections of the same immutable subject. This does not establish current ADP
 membership or link accounts by email. Keep authorization on the verified subject,
-principal type, mapped organization and live grants; current ADP membership and
-service-delegation integration remain required under #6127.
+principal type, mapped organization and live grants. An additive current-identity
+reader contract can recheck typed membership/disabled-state evidence at HTTP and
+operation boundaries. `CURRENT_IDENTITY_ENFORCED` defaults to false until the
+protected ADP reader is composed; this preserves existing strict token/grant
+checks, not a claim of current upstream membership. Enabled identity checks never fall
+back on refusal. Explicitly enabling the integration without a reader fails
+readiness and mapped-tenant admission. #6127 still owns the production reader,
+worker composition and release enablement; no shared execution is enabled here.
 
 Authorization rules:
 

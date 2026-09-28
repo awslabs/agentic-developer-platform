@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     # through an explicit development profile and explicit enforcement opt-out.
     superplane_security_profile: Literal["production", "development"] = "production"
     domain_auth_enforced: bool = True
+    # Additive current-identity integration, not a switch for existing JWT/grant
+    # enforcement. Enable only with the protected ADP reader composed in API and
+    # worker processes. Existing releases retain their signed-token/live-grant path.
+    current_identity_enforced: bool = False
 
     @model_validator(mode="after")
     def require_production_auth(self):

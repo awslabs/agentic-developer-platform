@@ -92,16 +92,23 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
+from superplane_auth.policy import Permission, strip_identity_headers
 
 from app import auth as domain_auth
 from app.adapters.operation_authority_source import (
     ActingPrincipal,
     reset_acting_principal,
     set_acting_principal,
+)
+from app.current_identity import (
+    IdentityUnavailable,
+    identity_checks_enabled,
+    require_current_identity,
 )
 from app.database import get_session
 from app.endpoint_inventory import (
@@ -111,7 +118,6 @@ from app.endpoint_inventory import (
     Scope,
     classify,
 )
-from superplane_auth.policy import Permission, strip_identity_headers
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +236,18 @@ async def _authorize(
     from app.organization_binding import bind_caller
 
     caller = await bind_caller(db, caller)
+    reader = getattr(request.app.state, "current_identity_reader", None)
+    if caller.source_org_id and identity_checks_enabled():
+        try:
+            identity = await require_current_identity(
+                reader,
+                subject=caller.principal.subject,
+                principal_type=caller.principal.account_type,
+                adp_org_id=caller.source_org_id,
+            )
+        except IdentityUnavailable:
+            raise HTTPException(403, "current ADP identity required") from None
+        caller = replace(caller, identity_evidence=identity.membership_id)
     request.state.caller = caller
 
     if scope is Scope.WORKSPACE:
@@ -238,7 +256,7 @@ async def _authorize(
             db, caller, workspace_id, permission
         )
         request.state.grant = grant
-        return _acting_for(caller, str(workspace_id))
+        return _acting_for(caller, str(workspace_id), request)
 
     if scope is Scope.ORGANIZATION:
         await domain_auth.authorize_organization_operation(db, caller, permission)
@@ -248,7 +266,7 @@ async def _authorize(
         # is about to create as the resolver's asserted `workspace_id`, and the
         # resolver accepts an empty one from the context rather than treating `""`
         # as a workspace named "".
-        return _acting_for(caller, "")
+        return _acting_for(caller, "", request)
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -256,7 +274,7 @@ async def _authorize(
     )
 
 
-def _acting_for(caller: domain_auth.VerifiedCaller, workspace_id: str):
+def _acting_for(caller: domain_auth.VerifiedCaller, workspace_id: str, request: Request):
     """The acting principal for the harness ports, from verified claims only.
 
     Every field comes off ``caller.principal``, which ``DomainPrincipal`` documents
@@ -271,6 +289,9 @@ def _acting_for(caller: domain_auth.VerifiedCaller, workspace_id: str):
         org_id=caller.principal.org_id,
         workspace_id=workspace_id,
         account_type=caller.principal.account_type,
+        adp_org_id=caller.source_org_id,
+        membership_id=caller.identity_evidence,
+        identity_reader=getattr(request.app.state, "current_identity_reader", None),
     )
 
 

@@ -890,3 +890,22 @@ python3 -m pytest modules/domain-apps/superplane/tests/test_integration_contract
 cd modules/domain-apps/superplane/src/superplane-api
 python3 -m pytest tests/test_capability_probes.py -q
 ```
+
+
+### Current ADP identity reader (#6127)
+
+`current_identity_reader` is registered with owner `gateway_identity`. Its exact
+binding is immutable subject, verified human/service type and selected ADP
+organization; it returns current membership/enabled evidence or no verified
+identity. Domain grants and JWT role claims cannot supply that evidence. The
+calling boundary converts missing, mismatched or unavailable evidence into a
+refusal when current-identity enforcement is enabled.
+
+This is a declaration of an externally owned interface, not an implementation
+or a new mandatory capability in the legacy four-port readiness readout.
+`CURRENT_IDENTITY_ENFORCED` defaults false pending protected API/worker
+composition. Health reports required/configured posture separately; explicit
+enablement without a reader fails readiness and mapped requests. Existing strict
+token/live-grant enforcement remains active. #6489 owns live verification, with
+#6127 retaining production reader/original-principal integration and coordinated
+rollout. Registration does not enable the integration or satisfy live acceptance.

@@ -1217,7 +1217,17 @@ class TestNoPermissionUnionAcrossOrganizationsOrWorkspaces:
 
 
 @pytest.mark.asyncio
-async def test_explicit_adp_org_switch_and_current_grant_revocation(client, enforcing):
+async def test_explicit_adp_org_switch_and_current_grant_revocation(client, enforcing, monkeypatch):
+    from app.current_identity import CurrentIdentity
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+
+    class Memberships:
+        async def read(self, *, subject, principal_type, adp_org_id):
+            return CurrentIdentity(subject, principal_type, adp_org_id, "membership-1", True, True)
+
+    monkeypatch.setattr(fastapi_app.state, "current_identity_reader", Memberships(), raising=False)
     from datetime import UTC, datetime
     from sqlalchemy import select
     from tests.conftest import async_session_test
@@ -1261,6 +1271,19 @@ async def test_bound_user_management_never_mutates_global_cognito(
     from sqlalchemy import select
     from app.models.user import User
     from tests.conftest import async_session_test
+    from app.current_identity import CurrentIdentity
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+
+    class Memberships:
+        async def read(self, *, subject, principal_type, adp_org_id):
+            return CurrentIdentity(
+                subject, principal_type, adp_org_id, "membership-1", True, True,
+                "delegation-1" if principal_type == "service" else None,
+            )
+
+    monkeypatch.setattr(fastapi_app.state, "current_identity_reader", Memberships(), raising=False)
 
     org_id = uuid.uuid4()
     member_id = uuid.uuid4()

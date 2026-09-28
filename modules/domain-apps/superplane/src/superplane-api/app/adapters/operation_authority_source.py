@@ -86,11 +86,17 @@ from __future__ import annotations
 
 import contextvars
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import select
 
+from app.current_identity import (
+    CurrentIdentityReader,
+    IdentityUnavailable,
+    identity_checks_enabled,
+    require_current_identity,
+)
 from app.models.organization_grant import (
     ORGANIZATION_ADMINISTER,
     OrganizationGrantRecord,
@@ -134,6 +140,9 @@ class ActingPrincipal:
     org_id: str
     workspace_id: str
     account_type: str = "human"
+    adp_org_id: str | None = None
+    membership_id: str | None = None
+    identity_reader: CurrentIdentityReader | None = None
 
 
 # Request-scoped, so concurrent requests cannot observe each other's principal.
@@ -203,6 +212,38 @@ class GrantBackedAuthority:
         caller = _acting.get()
         if caller is None:
             return None
+
+        if identity_checks_enabled():
+            from app.models.organization import Organization
+
+            # Missing optional context must not turn a mapped tenant into a
+            # legacy tenant. Resolve the binding from the authoritative store.
+            organization = await self._read(
+                "current identity organization",
+                lambda session: session.execute(
+                    select(Organization).where(Organization.id == _as_uuid(caller.org_id))
+                ),
+            )
+            if organization is _UNREADABLE:
+                raise _AuthorityUnreadable("current identity organization")
+            if organization is None:
+                return None
+            if organization.adp_org_id:
+                if (
+                    caller.adp_org_id != organization.adp_org_id
+                    or not caller.membership_id
+                ):
+                    return None
+                try:
+                    await require_current_identity(
+                        caller.identity_reader,
+                        subject=caller.subject,
+                        principal_type=caller.account_type,
+                        adp_org_id=organization.adp_org_id,
+                        membership_id=caller.membership_id,
+                    )
+                except IdentityUnavailable:
+                    return None
 
         if org_id and org_id != caller.org_id:
             # Never "corrected" to the real tenant. A caller naming another
@@ -627,7 +668,7 @@ class GrantBackedAuthority:
 
         # Org administration cannot override an existing workspace boundary.
         if not organization_scope and await self._workspace_exists(workspace_id):
-            return statuses
+            return await self._current_approvers(org_id, statuses)
 
         for record in org_grants:
             # An organization administrator holds workspace administration by
@@ -646,6 +687,45 @@ class GrantBackedAuthority:
                 revoked=record.revoked_at is not None,
             )
 
+        return await self._current_approvers(org_id, statuses)
+
+    async def _current_approvers(self, org_id: str, statuses: dict[str, Any]) -> dict[str, Any]:
+        from app.models.organization import Organization
+
+        if not statuses or not identity_checks_enabled():
+            return statuses
+        organization = await self._read(
+            "approver organization",
+            lambda session: session.execute(
+                select(Organization).where(Organization.id == _as_uuid(org_id))
+            ),
+        )
+        if organization is _UNREADABLE:
+            raise _AuthorityUnreadable("approver organization")
+        if organization is None:
+            return {}
+        if not organization.adp_org_id:
+            return statuses
+        caller = _acting.get()
+        if (
+            caller is None
+            or caller.org_id != org_id
+            or caller.adp_org_id != organization.adp_org_id
+        ):
+            return {
+                subject: replace(status, is_member=False, revoked=True)
+                for subject, status in statuses.items()
+            }
+        for subject, status in statuses.items():
+            try:
+                await require_current_identity(
+                    caller.identity_reader,
+                    subject=subject,
+                    principal_type="human",
+                    adp_org_id=organization.adp_org_id,
+                )
+            except IdentityUnavailable:
+                statuses[subject] = replace(status, is_member=False, revoked=True)
         return statuses
 
 

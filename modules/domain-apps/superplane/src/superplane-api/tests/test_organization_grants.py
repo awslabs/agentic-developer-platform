@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from superplane_auth.policy import DomainPrincipal, DomainTokenPolicy, Permission
 
 from app import auth
+from app.current_identity import CurrentIdentity
 from app.main import app
 from app.models.organization import Organization
 from app.models.organization_grant import (
@@ -21,6 +22,14 @@ from tests.conftest import async_session_test
 
 
 async def seed(monkeypatch, *, permission=ORGANIZATION_ADMINISTER, grant=True):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "current_identity_enforced", True)
+    class Memberships:
+        async def read(self, *, subject, principal_type, adp_org_id):
+            return CurrentIdentity(subject, principal_type, adp_org_id, "membership-1", True, True)
+
+    monkeypatch.setattr(app.state, "current_identity_reader", Memberships(), raising=False)
     org = uuid.uuid4()
     async with async_session_test() as db:
         db.add(Organization(id=org, name="empty", adp_org_id="selected-adp-org"))
