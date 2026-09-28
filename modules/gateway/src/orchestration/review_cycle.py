@@ -186,8 +186,8 @@ class ReviewCycleHandler:
             latest = dispatches[-1] if dispatches else None
             repairs = [row for row in rows if row.kind == "merge_repair_request" and row.status == "succeeded"]
             repair_request = repairs[-1] if repairs else None
-            if latest is not None and facts.get("bootstrap_retry_of") == facts["active_run_id"]:
-                # No credential was delivered: retry the failed stage with a new
+            if latest is not None and facts["active_run_id"] in {facts.get("bootstrap_retry_of"), facts.get("review_retry_of")}:
+                # Retry a terminal failure with remaining allowance through a new
                 # durable action, retaining its PR, author, findings and allowance.
                 snapshot.update(next_action=latest.detail["action"], author_run_id=latest.detail["author_run_id"])
                 for key in ("findings", "review_artifact"):
