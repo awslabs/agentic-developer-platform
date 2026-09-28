@@ -76,30 +76,93 @@ def routine(resource, module, account, plan):
         # its destroy provisioner on replacement. The old delete/create order
         # could delete the live ScaledJob and is no longer a routine upgrade.
         expected = ["create", "delete"] if address == "null_resource.keda_scaledjob" else ["delete", "create"]
-        return (order == expected
-                and all(old.get(k) and old[k] == new.get(k) for k in ("namespace", "cluster_name", "cluster_region"))
-                and set(old) == set(new)
-                and set(new) <= {"namespace", "cluster_name", "cluster_region", "manifest_sha", "replicas"}
-                and bool(old.get("manifest_sha")) and bool(new.get("manifest_sha")))
-    if module == "webhook-ingress" and address == "terraform_data.worker_gateway_rollout[0]":
+        return (
+            order == expected
+            and all(
+                old.get(k) and old[k] == new.get(k)
+                for k in ("namespace", "cluster_name", "cluster_region")
+            )
+            and set(old) == set(new)
+            and set(new)
+            <= {
+                "namespace",
+                "cluster_name",
+                "cluster_region",
+                "manifest_sha",
+                "replicas",
+            }
+            and bool(old.get("manifest_sha"))
+            and bool(new.get("manifest_sha"))
+        )
+    if (
+        module == "webhook-ingress"
+        and address == "terraform_data.worker_gateway_rollout[0]"
+    ):
         # This carrier only runs the rollout script on create. The old marker
         # has no destroy provisioner, and protected authority stays disabled.
+        # A failed create can leave its marker tainted and a predecessor deposed.
+        # Recreating reruns the same rollout; retiring the predecessor only
+        # removes Terraform state.
         old, new = before.get("triggers_replace", {}), after.get("triggers_replace", {})
         variables = plan.get("variables", {})
-        value = lambda name: variables.get(name, {}).get("value")
-        return (resource.get("type") == "terraform_data"
-                and order == ["create", "delete"]
-                and set(old) == set(new) == {"configuration", "marker_version", "rollout_script"}
-                and old["marker_version"] == new["marker_version"] == "disabled"
-                and old["configuration"] != new["configuration"]
-                and old["rollout_script"] == new["rollout_script"]
-                and all(re.fullmatch(r"[0-9a-f]{64}", digest)
-                        for digest in (old["configuration"], new["configuration"], old["rollout_script"]))
-                and value("agent_authority_enabled") is False
-                and value("environment") in ("dev", "staging", "prod")
-                and value("eks_cluster_name") == f'adp-{value("environment")}-eks-cluster'
-                and value("gateway_namespace") == "adp-gateway"
-                and bool(re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", value("aws_region") or "")))
+
+        def value(name):
+            return variables.get(name, {}).get("value")
+
+        target_ok = (
+            value("agent_authority_enabled") is False
+            and value("environment") in ("dev", "staging", "prod")
+            and value("eks_cluster_name") == f"adp-{value('environment')}-eks-cluster"
+            and value("gateway_namespace") == "adp-gateway"
+            and bool(re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", value("aws_region") or ""))
+            and bool(re.fullmatch(r"[0-9]{12}", account or ""))
+        )
+        keys = {"configuration", "marker_version", "rollout_script"}
+        old_valid = (
+            set(old) == keys
+            and old.get("marker_version") == "disabled"
+            and all(
+                re.fullmatch(r"[0-9a-f]{64}", old[k])
+                for k in ("configuration", "rollout_script")
+            )
+        )
+        if not (resource.get("type") == "terraform_data" and target_ok and old_valid):
+            return False
+        if resource.get("deposed") is not None:
+            current = [
+                item
+                for item in plan["resource_changes"]
+                if item["address"] == address and item.get("deposed") is None
+            ]
+            return (
+                bool(re.fullmatch(r"[0-9a-f]{8}", resource["deposed"]))
+                and order == ["delete"]
+                and change.get("after") is None
+                and len(current) == 1
+                and current[0].get("action_reason") == "replace_because_tainted"
+                and current[0]["change"]["before"]["triggers_replace"]
+                == current[0]["change"]["after"]["triggers_replace"]
+                and routine(current[0], module, account, plan)
+                and old["rollout_script"]
+                == current[0]["change"]["after"]["triggers_replace"]["rollout_script"]
+            )
+        return (
+            order == ["create", "delete"]
+            and set(new) == keys
+            and new.get("marker_version") == "disabled"
+            and old["rollout_script"] == new["rollout_script"]
+            and bool(re.fullmatch(r"[0-9a-f]{64}", new["configuration"]))
+            and (
+                (
+                    old["configuration"] != new["configuration"]
+                    and resource.get("action_reason") != "replace_because_tainted"
+                )
+                or (
+                    resource.get("action_reason") == "replace_because_tainted"
+                    and old["configuration"] == new["configuration"]
+                )
+            )
+        )
     return False
 
 

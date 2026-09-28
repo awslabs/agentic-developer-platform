@@ -193,7 +193,73 @@ class PlanPolicyTests(unittest.TestCase):
         ):
             bad = copy.deepcopy(plan)
             mutation(bad)
-            self.assertIn(resource["address"], policy.evaluate(bad, "webhook-ingress", "123456789012")["blocked"])
+            self.assertIn(
+                resource["address"],
+                policy.evaluate(bad, "webhook-ingress", "123456789012")["blocked"],
+            )
+
+    def test_tainted_worker_rollout_recovery_retires_only_its_deposed_marker(self):
+        address = "terraform_data.worker_gateway_rollout[0]"
+        old = {
+            "configuration": "a" * 64,
+            "marker_version": "disabled",
+            "rollout_script": "b" * 64,
+        }
+        current = change(
+            address,
+            "terraform_data",
+            {"triggers_replace": old},
+            {"triggers_replace": dict(old)},
+            ("create", "delete"),
+        )
+        current["action_reason"] = "replace_because_tainted"
+        deposed = change(
+            address,
+            "terraform_data",
+            {"triggers_replace": dict(old, configuration="c" * 64)},
+            None,
+            ("delete",),
+        )
+        deposed["deposed"] = "c5aef7d6"
+        variables = {
+            k: {"value": v}
+            for k, v in {
+                "agent_authority_enabled": False,
+                "environment": "dev",
+                "eks_cluster_name": "adp-dev-eks-cluster",
+                "gateway_namespace": "adp-gateway",
+                "aws_region": "us-east-1",
+            }.items()
+        }
+        plan = {"variables": variables, "resource_changes": [current, deposed]}
+        self.assertEqual(
+            policy.evaluate(plan, "webhook-ingress", "123456789012"),
+            {"routine": [address, address], "blocked": [], "protected": []},
+        )
+        for mutate in (
+            lambda p: p["resource_changes"][0].pop("action_reason"),
+            lambda p: p["resource_changes"][0]["change"]["after"][
+                "triggers_replace"
+            ].update(configuration="d" * 64),
+            lambda p: p["resource_changes"][1].update(deposed="unknown"),
+            lambda p: p["resource_changes"][1]["change"]["before"][
+                "triggers_replace"
+            ].update(rollout_script="d" * 64),
+            lambda p: p["variables"]["agent_authority_enabled"].update(value=True),
+        ):
+            bad = copy.deepcopy(plan)
+            mutate(bad)
+            self.assertTrue(
+                policy.evaluate(bad, "webhook-ingress", "123456789012")["blocked"]
+            )
+        self.assertIn(
+            address,
+            policy.evaluate(
+                {"variables": variables, "resource_changes": [deposed]},
+                "webhook-ingress",
+                "123456789012",
+            )["blocked"],
+        )
 
     def test_gitlab_exception_never_accepts_other_credential_changes(self):
         mutations = {
