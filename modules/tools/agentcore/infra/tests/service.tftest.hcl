@@ -79,3 +79,55 @@ run "dedicated_gateway_pins_connector_and_target_restrictions" {
     error_message = "Target-level filters remain in place independently of Task filters."
   }
 }
+
+run "empty_filters_are_omitted" {
+  command = plan
+  variables {
+    enabled                   = true
+    websearch_create_gateway  = true
+    websearch_enabled         = true
+    websearch_target_includes = []
+    websearch_target_excludes = []
+    image_uri                 = "123456789012.dkr.ecr.us-east-1.amazonaws.com/shared-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    rest_api_id               = "abc123"
+    tools_parent_resource_id  = "tools123"
+    api_execution_arn         = "arn:aws:execute-api:us-east-1:123456789012:abc123"
+    stage_name                = "dev"
+    worker_role_arns          = ["arn:aws:iam::123456789012:role/task-worker"]
+    authority_endpoint        = "https://gateway.example/internal/v1/agent/task"
+    authority_invoke_arns = [
+      "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/internal/v1/agent/task/tool-authorize",
+      "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/internal/v1/agent/task/artifact"
+    ]
+  }
+  assert {
+    condition     = aws_bedrockagentcore_gateway_target.websearch[0].target_configuration[0].mcp[0].connector[0].configuration[0].parameter_values == "{}"
+    error_message = "AWS rejects empty domain-filter lists; omit unset filters."
+  }
+}
+
+run "include_only_omits_empty_exclude" {
+  command = plan
+  variables {
+    enabled                   = true
+    websearch_create_gateway  = true
+    websearch_enabled         = true
+    websearch_target_includes = ["source.example"]
+    websearch_target_excludes = []
+    image_uri                 = "123456789012.dkr.ecr.us-east-1.amazonaws.com/shared-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    rest_api_id               = "abc123"
+    tools_parent_resource_id  = "tools123"
+    api_execution_arn         = "arn:aws:execute-api:us-east-1:123456789012:abc123"
+    stage_name                = "dev"
+    worker_role_arns          = ["arn:aws:iam::123456789012:role/task-worker"]
+    authority_endpoint        = "https://gateway.example/internal/v1/agent/task"
+    authority_invoke_arns = [
+      "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/internal/v1/agent/task/tool-authorize",
+      "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/internal/v1/agent/task/artifact"
+    ]
+  }
+  assert {
+    condition     = aws_bedrockagentcore_gateway_target.websearch[0].target_configuration[0].mcp[0].connector[0].configuration[0].parameter_values == jsonencode({ domainFilter = { include = ["source.example"] } })
+    error_message = "AWS rejects empty domain-filter lists; omit unset filters."
+  }
+}
