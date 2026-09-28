@@ -151,7 +151,7 @@ async def test_list_and_unknown_persona(session, prepared):
         assert response.status_code == 422
 
 
-async def test_codex_missing_contract_is_audited_refusal(session, prepared):
+async def test_codex_missing_evidence_is_audited_refusal(session, prepared):
     async with client(session) as http:
         response = await http.put(
             "/admin/persona-defaults/agent-codex-developer",
@@ -161,10 +161,10 @@ async def test_codex_missing_contract_is_audited_refusal(session, prepared):
             },
         )
     assert response.status_code == 422
-    assert response.json()["detail"]["reason"] == "probe_contract_unavailable"
+    assert response.json()["detail"]["reason"] == "model_unproven"
     assert await session.get(PersonaPlatformDefault, "agent-codex-developer") is None
     audit = await session.scalar(select(AuditLog).where(AuditLog.event_type == "persona_platform_default_rejected"))
-    assert audit.details["reason"] == "probe_contract_unavailable"
+    assert audit.details["reason"] == "model_unproven"
 
 
 @pytest.mark.parametrize("persona", ["agent-task-gpt-developer", "agent-task-gpt-architect", "agent-task-cyber"])
@@ -209,4 +209,41 @@ async def test_persona_default_requires_exact_profile_evidence(session, prepared
         async with client(session) as http:
             native = await http.put("/admin/persona-defaults/agent-codex-developer", json=body)
             assert native.status_code == 422
-            assert native.json()["detail"]["reason"] == "probe_contract_unavailable"
+            assert native.json()["detail"]["reason"] == "model_unproven"
+
+
+async def test_native_developer_does_not_borrow_reviewer_proof(session, prepared):
+    from src.admin.persona_models.native_probe_contract import NATIVE_PROBE_REVISION, native_request_shape
+
+    model = "openai.gpt-6-sol"
+    now = datetime.now(UTC)
+    proof = ModelInvocabilityEvidence(
+        account_id="111111111111",
+        region="us-east-1",
+        canonical_model_id=model,
+        compatibility_class="codex-sdk",
+        harness_contract_revision=NATIVE_PROBE_REVISION,
+        request_shape_sha256=native_request_shape("agent-codex-reviewer", model),
+        outcome="proven",
+        provider_request_id="reviewer-provider-receipt",
+        verified_at=now,
+        expires_at=now + timedelta(hours=1),
+        updated_at=now,
+    )
+    session.add(proof)
+    await session.commit()
+    async with client(session) as http:
+        body = {**BODY, "canonical_model_id": model}
+        path = "/admin/persona-defaults/agent-codex-developer"
+        rejected = await http.put(path, json=body)
+        assert rejected.status_code == 422
+        assert rejected.json()["detail"]["reason"] == "model_unproven"
+        await session.refresh(proof)
+        proof.request_shape_sha256 = native_request_shape("agent-codex-developer", model)
+        proof.provider_request_id = "developer-provider-receipt"
+        await session.commit()
+        accepted = await http.put(path, json=body)
+        assert accepted.status_code == 200, accepted.text
+    row = await session.get(PersonaPlatformDefault, "agent-codex-developer")
+    assert row.canonical_model_id == model
+    assert row.harness_contract_revision == NATIVE_PROBE_REVISION

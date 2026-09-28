@@ -46,6 +46,8 @@ from src.admin.persona_models.catalogue_schemas import (
 from src.shared.models.persona_model_catalogue import ModelInvocabilityEvidence
 from src.tasks.personas import TASK_PERSONAS
 
+from .native_probe_contract import NATIVE_PROBE_PERSONAS, native_request_shape
+
 # ---------------------------------------------------------------------------
 # Display metadata for personas
 # ---------------------------------------------------------------------------
@@ -99,6 +101,11 @@ def compute_request_shape_sha256(model_id: str, persona_key: str | None = None) 
     """
     if persona_key in TASK_PERSONAS:
         return TASK_PERSONAS[persona_key].request_shape_sha256
+    if persona_key in NATIVE_PROBE_PERSONAS:
+        digest = native_request_shape(persona_key, model_id)
+        if digest is None:
+            raise ProbeContractUnavailableError(f"No native SDK request shape for {persona_key}/{model_id}")
+        return digest
     from src.admin.persona_models.request_shape_manifest import expected_request_shape
 
     digest = expected_request_shape(model_id)
@@ -414,7 +421,11 @@ async def build_model_catalogue(
 
         # Gate 5: Invocability evidence
         evidence: ModelInvocabilityEvidence | None = None
-        if account_id and region and (model.compatibility_class == COMPATIBILITY_CLASS_CLAUDE or persona_key in TASK_PERSONAS):
+        if (
+            account_id
+            and region
+            and (model.compatibility_class == COMPATIBILITY_CLASS_CLAUDE or persona_key in TASK_PERSONAS or persona_key in NATIVE_PROBE_PERSONAS)
+        ):
             shape_sha = compute_request_shape_sha256(model.canonical_model_id, persona_key)
             evidence = await lookup_evidence(
                 db,
@@ -426,7 +437,7 @@ async def build_model_catalogue(
                 request_shape_sha256=shape_sha,
             )
 
-        if persona_key in TASK_PERSONAS and evidence is not None and not evidence.provider_request_id:
+        if (persona_key in TASK_PERSONAS or persona_key in NATIVE_PROBE_PERSONAS) and evidence is not None and not evidence.provider_request_id:
             evidence = None
         invocable = _invocable_state(evidence)
 
@@ -676,7 +687,11 @@ async def validate_selection(
             message=("No effective destination resolved for this caller. Model selection requires destination-specific invocability evidence."),
         )
 
-    if catalogue_entry.compatibility_class != COMPATIBILITY_CLASS_CLAUDE and persona_key not in TASK_PERSONAS:
+    if (
+        catalogue_entry.compatibility_class != COMPATIBILITY_CLASS_CLAUDE
+        and persona_key not in TASK_PERSONAS
+        and persona_key not in NATIVE_PROBE_PERSONAS
+    ):
         return SelectionRejection(
             reason="probing_disabled",
             message="Protected selection requires an SDK-generated probe contract for this harness.",
@@ -693,7 +708,7 @@ async def validate_selection(
         request_shape_sha256=shape_sha,
     )
 
-    if evidence is None or (persona_key in TASK_PERSONAS and not evidence.provider_request_id):
+    if evidence is None or ((persona_key in TASK_PERSONAS or persona_key in NATIVE_PROBE_PERSONAS) and not evidence.provider_request_id):
         return SelectionRejection(
             reason="probing_disabled",
             message=(

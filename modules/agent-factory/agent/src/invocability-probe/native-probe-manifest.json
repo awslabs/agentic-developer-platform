@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "sdk": "0.155.1",
+  "normalization": "codex-native-probe-v1",
+  "personas": {
+    "agent-codex-developer": {
+      "openai.gpt-6-astra": "1e73f44f8d6ef92bb16462d8c53a028565e15d2d311b4a4fa2f8b7c2dc5d9c70",
+      "openai.gpt-6-sol": "eb9e1c6fc10e0c3ce72420815930a26b23d449a2636e437ce0a465db41a5a16a",
+      "openai.gpt-6-luna": "cc89ddd85f051e3d9d534e18a012979576df1496f5d3d78671b5fa8f5be52868"
+    },
+    "agent-codex-reviewer": {
+      "openai.gpt-6-astra": "9cf89c759fd57a0b5da08904da147458e7277f174281642e99ab22e39eec3dee",
+      "openai.gpt-6-sol": "a682c761549cdbddee97c0028e0c353332d03b6e70c53bb947a681f2f5f017c6",
+      "openai.gpt-6-luna": "9fac9032ffd2f03d7468954ac063b6204c24f2850cbbedf12fd458b8de53bd21"
+    }
+  }
+}

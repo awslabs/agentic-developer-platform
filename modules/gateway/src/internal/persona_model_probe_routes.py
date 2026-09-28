@@ -7,9 +7,10 @@ from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.admin.persona_models.native_probe_contract import NATIVE_PROBE_PERSONAS
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.persona_model_probe_service import (
     ProbeConflictError,
@@ -31,6 +32,14 @@ class StrictBody(BaseModel):
 
 
 class ClaimRequest(StrictBody):
+    native_persona: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def native_profile(self):
+        if self.native_persona is not None and (self.native_persona not in NATIVE_PROBE_PERSONAS or self.task_persona is not None):
+            raise ValueError("Choose one registered native probe profile")
+        return self
+
     task_persona: str | None = Field(default=None, max_length=128)
     trigger: Literal["scheduled", "manual", "change"] = "scheduled"
 
@@ -123,7 +132,7 @@ async def verify_model_probe_irsa(
 
 @router.post("/claim", response_model=ClaimResponse, dependencies=[Depends(verify_model_probe_irsa)])
 async def claim(body: ClaimRequest, db: AsyncSession = Depends(get_db)) -> ClaimResponse:
-    result = await claim_probe(db, trigger=body.trigger, task_persona=body.task_persona)
+    result = await claim_probe(db, trigger=body.trigger, task_persona=body.task_persona, native_persona=body.native_persona)
     if not result.claimed or result.slot is None:
         return ClaimResponse(claimed=False, reason=result.reason)
     slot = result.slot

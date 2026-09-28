@@ -336,6 +336,7 @@ COPY --from=builder --chown=agent:agent /build/prod_modules/ /app/node_modules/
 COPY --from=codex-builder --chown=agent:agent /build/dist/ /app/codex-reviewer/dist/
 COPY --from=codex-builder --chown=agent:agent /build/node_modules/ /app/codex-reviewer/node_modules/
 COPY --from=codex-builder --chown=agent:agent /build/package.json /app/codex-reviewer/package.json
+COPY --chown=agent:agent modules/agent-factory/codex-reviewer/scripts/ /app/codex-reviewer/scripts/
 COPY --chown=agent:agent modules/agent-factory/codex-reviewer/prompts/ /app/codex-reviewer/prompts/
 
 # Task API investigator task agent (issue #5798). Same isolation rationale as

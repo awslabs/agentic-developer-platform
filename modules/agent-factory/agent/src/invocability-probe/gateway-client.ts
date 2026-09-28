@@ -48,7 +48,7 @@ export interface ProbeCompleteResponse {
 }
 
 export interface ProbeGateway {
-  claim(trigger?: ProbeTrigger, taskPersona?: string): Promise<ProbeClaim>;
+  claim(trigger?: ProbeTrigger, taskPersona?: string, nativePersona?: string): Promise<ProbeClaim>;
   start(slotId: string, leaseToken: string, requestShapeSha256: string): Promise<ProbeStart>;
   complete(slotId: string, leaseToken: string, completion: ProbeCompletion): Promise<ProbeCompleteResponse>;
 }
@@ -116,8 +116,8 @@ export class SigV4ProbeGateway implements ProbeGateway {
     return await response.json() as T;
   }
 
-  claim(trigger: ProbeTrigger = 'scheduled', taskPersona?: string): Promise<ProbeClaim> {
-    return this.post<ProbeClaim>('/claim', { trigger, ...(taskPersona ? { task_persona: taskPersona } : {}) });
+  claim(trigger: ProbeTrigger = 'scheduled', taskPersona?: string, nativePersona?: string): Promise<ProbeClaim> {
+    return this.post<ProbeClaim>('/claim', { trigger, ...(taskPersona ? { task_persona: taskPersona } : {}), ...(nativePersona ? { native_persona: nativePersona } : {}) });
   }
 
   start(slotId: string, leaseToken: string, requestShapeSha256: string): Promise<ProbeStart> {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { runProbeCycle } from './runner';
 import { runTaskProbe } from './task-runner';
+import { runNativeProbe } from './native-runner';
 
 export function assertLocalProbeEnabled(env: NodeJS.ProcessEnv = process.env): void {
   if (env.ADP_PERSONA_MODEL_PROBE_ENABLED !== 'true') {
@@ -10,7 +11,10 @@ export function assertLocalProbeEnabled(env: NodeJS.ProcessEnv = process.env): v
 
 async function main(): Promise<void> {
   assertLocalProbeEnabled();
-  const result = process.env.ADP_TASK_PROBE_PERSONA
+  if (process.env.ADP_NATIVE_PROBE_PERSONA && process.env.ADP_TASK_PROBE_PERSONA) throw new Error('Choose one probe profile');
+  const result = process.env.ADP_NATIVE_PROBE_PERSONA
+    ? await runNativeProbe(process.env.ADP_NATIVE_PROBE_PERSONA)
+    : process.env.ADP_TASK_PROBE_PERSONA
     ? await runTaskProbe(process.env.ADP_TASK_PROBE_PERSONA)
     : await runProbeCycle();
   process.stdout.write(`${JSON.stringify(result)}\n`);

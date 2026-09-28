@@ -674,3 +674,38 @@ async def test_codex_task_probe_reserves_only_codex_model_and_exact_profile(db_s
     assert result.slot.harness_contract_revision == TASK_PERSONAS[persona].harness_contract_revision
     assert result.slot.expected_request_shape_sha256 == TASK_PERSONAS[persona].request_shape_sha256
     assert len((await db_session.scalars(select(ModelProbeCycle))).all()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persona", ["agent-codex-developer", "agent-codex-reviewer"])
+async def test_native_claim_is_separate_from_task_registration(db_session, monkeypatch, persona):
+    from src.admin.persona_models.native_probe_contract import NATIVE_PROBE_REVISION, native_request_shape
+    from src.tasks.personas import TASK_PERSONAS
+
+    assert persona not in TASK_PERSONAS
+    _enable(monkeypatch)
+    db_session.add(_destination())
+    await db_session.commit()
+    app = FastAPI()
+    app.include_router(router)
+
+    async def database():
+        yield db_session
+
+    app.dependency_overrides[get_db] = database
+    app.dependency_overrides[verify_model_probe_irsa] = lambda: None
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for body in [
+            {"task_persona": persona},
+            {"native_persona": "agent-task-gpt-developer"},
+            {"native_persona": persona, "task_persona": "agent-task-gpt-developer"},
+        ]:
+            assert (await client.post("/internal/v1/persona-model-probes/claim", json=body)).status_code == 422
+        response = await client.post("/internal/v1/persona-model-probes/claim", json={"native_persona": persona})
+    assert response.status_code == 200, response.text
+    claim = response.json()
+    assert claim["claimed"]
+    assert claim["task_probe_json"] is None
+    assert claim["compatibility_class"] == "codex-sdk"
+    assert claim["harness_contract_revision"] == NATIVE_PROBE_REVISION
+    assert claim["expected_request_shape_sha256"] == native_request_shape(persona, claim["model_id"])
