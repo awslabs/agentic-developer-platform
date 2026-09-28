@@ -1,0 +1,16 @@
+{
+  "time": "2026-09-28T18:28:49.337889+00:00",
+  "run": 36456950756,
+  "scanners": [
+    {
+      "tool": "grype",
+      "provenance_objects": 23,
+      "coverage_keys": []
+    },
+    {
+      "tool": "syft",
+      "provenance_objects": 30,
+      "coverage_keys": []
+    }
+  ]
+}

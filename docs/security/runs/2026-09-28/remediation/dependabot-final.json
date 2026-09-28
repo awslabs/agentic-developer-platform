@@ -1,0 +1,10 @@
+{
+  "checked_at": "2026-09-28T18:11:38.963749+00:00",
+  "open_counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 12,
+    "low": 13
+  },
+  "scope": "GitHub Dependabot dependency alerts only"
+}

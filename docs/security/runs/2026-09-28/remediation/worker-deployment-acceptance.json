@@ -1,0 +1,18 @@
+{
+  "before": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:b0a1818251face459588d3e7082649314de0a4512242a192bc95f88d9c8f7b2c",
+  "after": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
+  "gateway_replicas_verified": 9,
+  "admitted_exact_digests": [
+    "sha256:34e063a0c8c97eb3f7681063b98886461825ecb67bbdf47296007e460f460851",
+    "sha256:767d1a2e568e8f9cceaaf07943648e606b5a054bab54af0e38525257c0c42b33"
+  ],
+  "prior_admission_preserved": true,
+  "scaledjob_rollout": "gradual",
+  "other_scaledjob_spec_preserved": true,
+  "running_jobs_modified": false,
+  "supporting_templates": [
+    "daemonset/agent-image-prepull",
+    "deployment/agent-warm-pool"
+  ],
+  "task_canary": "not yet exercised"
+}

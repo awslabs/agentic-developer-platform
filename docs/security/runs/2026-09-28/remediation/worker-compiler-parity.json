@@ -1,0 +1,30 @@
+[
+  {
+    "path": "memory.js",
+    "live_sha256": "fa76c2e0765586ac29c73f8aaabc922c8724e8c8b2cd4eeb0df58553853ee609",
+    "rebuilt_base_sha256": "fa76c2e0765586ac29c73f8aaabc922c8724e8c8b2cd4eeb0df58553853ee609",
+    "candidate_sha256": "0e272c7591561baf038a8211676571a6bd7c6fced443ea683707418c1cd436c2",
+    "base_byte_identical": true
+  },
+  {
+    "path": "skill-agent.js",
+    "live_sha256": "6ac72adc23666d3a6554d05636cf37edee9fb49faf3022454b01cd1c42644a48",
+    "rebuilt_base_sha256": "6ac72adc23666d3a6554d05636cf37edee9fb49faf3022454b01cd1c42644a48",
+    "candidate_sha256": "40efba7b38d82a98042193f19620f77ce279c7b1006b014e2aa24741ba16eff7",
+    "base_byte_identical": true
+  },
+  {
+    "path": "agent-pm.js",
+    "live_sha256": "2bf6994c6cd269f74aafe342a65bf36660c686b6123ff18d73d0739299cefc53",
+    "rebuilt_base_sha256": "2bf6994c6cd269f74aafe342a65bf36660c686b6123ff18d73d0739299cefc53",
+    "candidate_sha256": "d16b9f836e5941bacb66b6c26647350184171ee5f0c3055c93c4f892e3de3f82",
+    "base_byte_identical": true
+  },
+  {
+    "path": "reassessment.js",
+    "live_sha256": "bbee5bd6481bbc798fd6777569f05a682d2a07abcdb308901a7426b3b39970ee",
+    "rebuilt_base_sha256": "bbee5bd6481bbc798fd6777569f05a682d2a07abcdb308901a7426b3b39970ee",
+    "candidate_sha256": "d4db62aa734958c4762cad58a059efa79b86af0e97d88f9d668595386c8b4c04",
+    "base_byte_identical": true
+  }
+]

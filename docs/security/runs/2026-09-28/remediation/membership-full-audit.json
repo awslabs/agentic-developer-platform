@@ -1,0 +1,11 @@
+{
+  "database_identities": 15,
+  "proven_members": 11,
+  "table_rows": {
+    "adp-dev-identity-index": 47,
+    "adp-dev-user-identity-index": 30
+  },
+  "differences": 40,
+  "orphan_differences": 30,
+  "nonempty_replacements": 10
+}

@@ -1,0 +1,327 @@
+{
+  "time": "2026-09-28T18:16:46.562392+00:00",
+  "scope": "Read-only Debian source publication check. A newer sid/forky package is not treated as a supported trixie security update.",
+  "packages": [
+    {
+      "package": "expat",
+      "url": "https://sources.debian.org/api/src/expat/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "2.8.3-1~deb13u1"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "sid"
+          ],
+          "version": "2.8.5-1"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2.8.4-2"
+        }
+      ],
+      "observed_affected_versions": [
+        "2.8.3-1~deb13u1"
+      ]
+    },
+    {
+      "package": "perl",
+      "url": "https://sources.debian.org/api/src/perl/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie"
+          ],
+          "version": "5.40.1-6+deb13u1"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "experimental"
+          ],
+          "version": "5.44.0-1"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "5.42.3-1"
+        }
+      ],
+      "observed_affected_versions": [
+        "5.40.1-6+deb13u1"
+      ]
+    },
+    {
+      "package": "wget",
+      "url": "https://sources.debian.org/api/src/wget/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "1.25.0-2"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "1.25.0-3"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "1.25.0-2"
+        }
+      ],
+      "observed_affected_versions": [
+        "1.25.0-2"
+      ]
+    },
+    {
+      "package": "gnupg2",
+      "url": "https://sources.debian.org/api/src/gnupg2/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "2.4.7-21+deb13u1"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2.4.9-7"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2.4.9-4"
+        }
+      ],
+      "observed_affected_versions": [
+        "2.4.7-21+deb13u1",
+        "2.4.7-21+deb13u1+b5"
+      ]
+    },
+    {
+      "package": "libx11",
+      "url": "https://sources.debian.org/api/src/libx11/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "2:1.8.12-1"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2:1.8.13-1"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "2:1.8.12-1"
+        }
+      ],
+      "observed_affected_versions": [
+        "2:1.8.12-1"
+      ]
+    },
+    {
+      "package": "libxi",
+      "url": "https://sources.debian.org/api/src/libxi/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "2:1.8.2-1"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2:1.8.3-1"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2:1.8.2-2"
+        }
+      ],
+      "observed_affected_versions": [
+        "2:1.8.2-1"
+      ]
+    },
+    {
+      "package": "libxrender",
+      "url": "https://sources.debian.org/api/src/libxrender/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "1:0.9.12-1"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "1:0.9.12-1"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "bookworm",
+            "bookworm-proposed-updates"
+          ],
+          "version": "1:0.9.10-1.1"
+        }
+      ],
+      "observed_affected_versions": [
+        "1:0.9.12-1"
+      ]
+    },
+    {
+      "package": "cups",
+      "url": "https://sources.debian.org/api/src/cups/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie"
+          ],
+          "version": "2.4.10-3+deb13u2"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2.4.18-1"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "trixie"
+          ],
+          "version": "2.4.10-3+deb13u2"
+        }
+      ],
+      "observed_affected_versions": [
+        "2.4.10-3+deb13u2"
+      ]
+    },
+    {
+      "package": "acl",
+      "url": "https://sources.debian.org/api/src/acl/",
+      "stable_versions": [
+        {
+          "area": "main",
+          "suites": [
+            "trixie",
+            "forky",
+            "sid"
+          ],
+          "version": "2.3.2-2"
+        }
+      ],
+      "newest_listed": [
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2.4.0-1"
+        },
+        {
+          "area": "main",
+          "suites": [
+            "forky",
+            "sid"
+          ],
+          "version": "2.3.2-3"
+        }
+      ],
+      "observed_affected_versions": [
+        "2.3.2-2+b1"
+      ]
+    }
+  ]
+}

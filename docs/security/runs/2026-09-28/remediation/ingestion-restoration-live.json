@@ -1,0 +1,30 @@
+{
+  "time": "2026-09-28T18:13:25.369791+00:00",
+  "workflow_run": 36463557608,
+  "pr": 6713,
+  "targets": [
+    {
+      "kind": "cronjob",
+      "name": "ingestion-refresh",
+      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
+      "rollout": null,
+      "generation": 59
+    },
+    {
+      "kind": "cronjob",
+      "name": "vuln-scan",
+      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
+      "rollout": null,
+      "generation": 9
+    },
+    {
+      "kind": "scaledjob",
+      "name": "ingestion-worker",
+      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:73a8ad82f33b3b3790a67426d310c4bf2db484ff6b7259b251414bdb9446182b",
+      "rollout": {
+        "strategy": "gradual"
+      },
+      "generation": 40
+    }
+  ]
+}

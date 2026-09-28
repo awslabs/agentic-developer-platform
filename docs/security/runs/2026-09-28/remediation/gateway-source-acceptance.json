@@ -1,0 +1,18 @@
+{
+  "src/agentauth/model_identity.py": {
+    "live_sha256": "fca0dfcb7cd08a6b78806303f8673a9a89f45c171a28097e38e5df9c5a014244",
+    "source_sha256": "fca0dfcb7cd08a6b78806303f8673a9a89f45c171a28097e38e5df9c5a014244"
+  },
+  "src/auth/agent_registry.py": {
+    "live_sha256": "520d70288f176dffddd3e0d1032873cba9fe717979d4de77b054a93ce9212d92",
+    "source_sha256": "520d70288f176dffddd3e0d1032873cba9fe717979d4de77b054a93ce9212d92"
+  },
+  "src/budget/enforcement_service.py": {
+    "live_sha256": "ef3a59da7bfc3175f1cfac3646fc4d1764812e3fabb8513a3b57fdf8ffdd4706",
+    "source_sha256": "ef3a59da7bfc3175f1cfac3646fc4d1764812e3fabb8513a3b57fdf8ffdd4706"
+  },
+  "src/admin/bedrock_routing/self_routes.py": {
+    "live_sha256": "93c7f13fbff0d89913e1e559c27db2de5b999218f7e76a30614277bcb2e3e34f",
+    "source_sha256": "93c7f13fbff0d89913e1e559c27db2de5b999218f7e76a30614277bcb2e3e34f"
+  }
+}

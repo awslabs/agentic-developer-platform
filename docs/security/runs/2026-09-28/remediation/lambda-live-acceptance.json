@@ -1,0 +1,35 @@
+[
+  {
+    "function": "adp-dev-github-webhook",
+    "state": "Active",
+    "update": "Successful",
+    "code_sha256": "pza3kJ4QtNGmr1kdr7UUQfN91S+duAUb5CNOF78c8oA="
+  },
+  {
+    "function": "bedrockgw-dev-github-auth-broker",
+    "state": "Active",
+    "update": "Successful",
+    "code_sha256": "z/H1C6iAnjiKgMmesvl8QtvY/ejfhRgViP2stLzmYvw="
+  },
+  {
+    "function": "bedrockgw-dev-pre-signup-trigger",
+    "state": "Active",
+    "update": "Successful",
+    "code_sha256": "0oE4Ujz7kRJI8yzJAYvjJZv5Xi3Zlq5P4GFQFPvuRVk="
+  },
+  {
+    "case": "existing-member",
+    "function_error": null,
+    "auto_confirm": true
+  },
+  {
+    "case": "nonmember",
+    "function_error": "Unhandled",
+    "auto_confirm": false
+  },
+  {
+    "case": "webhook-invalid-signature",
+    "status_code": 401,
+    "function_error": null
+  }
+]

@@ -1,0 +1,113 @@
+{
+  "removed": [
+    {
+      "match": [
+        "CVE-2026-7210",
+        "High",
+        "libpython3.13-minimal",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-7210",
+        "High",
+        "libpython3.13-stdlib",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-7210",
+        "High",
+        "python3.13",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-7210",
+        "High",
+        "python3.13-minimal",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-15308",
+        "High",
+        "libpython3.13-minimal",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-15308",
+        "High",
+        "libpython3.13-stdlib",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-15308",
+        "High",
+        "python3.13",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-15308",
+        "High",
+        "python3.13-minimal",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-82049",
+        "High",
+        "libpython3.13-minimal",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-82049",
+        "High",
+        "libpython3.13-stdlib",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-82049",
+        "High",
+        "python3.13",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    },
+    {
+      "match": [
+        "CVE-2026-82049",
+        "High",
+        "python3.13-minimal",
+        "3.13.5-2+deb13u5"
+      ],
+      "count": 1
+    }
+  ],
+  "added": []
+}

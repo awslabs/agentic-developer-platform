@@ -1,0 +1,28 @@
+{
+  "checked_at": "2026-09-28T18:32:00.591783+00:00",
+  "runs": [
+    {
+      "conclusion": "",
+      "databaseId": 36456950756,
+      "headSha": "8a2e7632b322e82e692587a1920042f2e2693976",
+      "status": "in_progress",
+      "url": "https://github.com/aws-e/adp/actions/runs/36456950756"
+    },
+    {
+      "conclusion": "",
+      "databaseId": 36461844333,
+      "headSha": "0b1d672797efad429b0b79abfad6cbd485792c55",
+      "status": "pending",
+      "url": "https://github.com/aws-e/adp/actions/runs/36461844333"
+    }
+  ],
+  "known_diagnostic_input_failures": [
+    "docs/security/runs/2026-09-27/admin-closure/api-compat",
+    "modules/agent-context/images/deepwiki",
+    "modules/agent-context/images/deepwiki/high-security",
+    "modules/agent-context/images/ingestion"
+  ],
+  "input_restoration_completed": true,
+  "full_coverage_verified": false,
+  "zero_findings_claimed": false
+}

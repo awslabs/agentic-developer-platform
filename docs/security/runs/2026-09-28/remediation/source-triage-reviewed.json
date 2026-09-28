@@ -1,0 +1,485 @@
+{
+  "generated_at": "2026-09-28T18:26:56.017508+00:00",
+  "workflow_run": 36456950756,
+  "source_sha": "8a2e7632b322e82e692587a1920042f2e2693976",
+  "scope": "Partial triage of newly rated Semgrep Critical/High matches plus six Bandit High matches. Not repository-wide source clearance.",
+  "scanner_reports_modified": false,
+  "rule_suppressions_added": false,
+  "rows": [
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-eval-rule-eval_nodejs",
+      "file": "modules/agent-factory/agent/src/run-heartbeat.ts",
+      "line": 205,
+      "severity": "high",
+      "source_sha256": "acf85a23a33c94c3f3e166ff276e81300afd8753f581755580649293d07be589",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Timer receives a source-defined arrow function, not a string. In codex-runner the external deadline only controls a validated bounded numeric delay, not executed JavaScript."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-eval-rule-eval_nodejs",
+      "file": "modules/tools/task-sdk/codex-runner.mjs",
+      "line": 77,
+      "severity": "high",
+      "source_sha256": "0c0d225833c2af9fdd8752baf3e8bc05a35c2a892fbf62f7c297d408306f2cec",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Timer receives a source-defined arrow function, not a string. In codex-runner the external deadline only controls a validated bounded numeric delay, not executed JavaScript."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "demos/domain-mri/public/app.js",
+      "line": 23,
+      "severity": "critical",
+      "source_sha256": "62a08a0a411604903f60eee8d5c711d181959fcc05ce9914d9cce1ba493009b7",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Browser-executed fetch in the frontend/static application. This sink does not cause a server to make an attacker-selected request. This disposition is limited to the SSRF rule; it is not a review of all frontend credential or origin policy."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/clients/gitlab_client.ts",
+      "line": 113,
+      "severity": "critical",
+      "source_sha256": "e48fba20c7a3e3d5ae04dc2541e87300e776ca55ac1bb58b30ebab91ba8b379f",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/clients/gitlab_client.ts",
+      "line": 36,
+      "severity": "critical",
+      "source_sha256": "e48fba20c7a3e3d5ae04dc2541e87300e776ca55ac1bb58b30ebab91ba8b379f",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/clients/gitlab_client.ts",
+      "line": 58,
+      "severity": "critical",
+      "source_sha256": "e48fba20c7a3e3d5ae04dc2541e87300e776ca55ac1bb58b30ebab91ba8b379f",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/clients/gitlab_client.ts",
+      "line": 83,
+      "severity": "critical",
+      "source_sha256": "e48fba20c7a3e3d5ae04dc2541e87300e776ca55ac1bb58b30ebab91ba8b379f",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/complex-task-chat/recall-at-task-start.ts",
+      "line": 177,
+      "severity": "critical",
+      "source_sha256": "0f2d71927ab6d7883c3a093a7199f31df745bf365a3ac45697e6c993256a91c3",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts",
+      "line": 139,
+      "severity": "critical",
+      "source_sha256": "cb23a64d11b125ac7a3870885eb02b64e9e9d9e5550adc12c259c49c32a7598e",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts",
+      "line": 158,
+      "severity": "critical",
+      "source_sha256": "cb23a64d11b125ac7a3870885eb02b64e9e9d9e5550adc12c259c49c32a7598e",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/components/checkRunStreamer.ts",
+      "line": 597,
+      "severity": "critical",
+      "source_sha256": "e62550dbe89c7d0c5a6f5f3b4a2c93a36a6409b328ee37fad964697f5d658e8a",
+      "status": "reviewed-destination-constrained",
+      "reason": "The request URL is constructed at this sink with literal https://api.github.com/repos/ before repository/check-run path values. These values cannot change the origin. redirect:error rejects relocation before sending the credential-bearing PATCH to another destination.",
+      "review_method": "Manual inspection of the complete URL construction and redirect handling in the exact source file bound by source_sha256."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/github-comments.ts",
+      "line": 427,
+      "severity": "critical",
+      "source_sha256": "6ee6e3fa0231533e7263f6730234ea2583e5ecde31ced9575b41433288a2d3e5",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/invocability-probe/capture-proxy.ts",
+      "line": 207,
+      "severity": "critical",
+      "source_sha256": "35b323c348b2edda0564d5e380f430b08bbbe1273b3a8b9fd59535375383ccc0",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/invocability-probe/gateway-client.ts",
+      "line": 105,
+      "severity": "critical",
+      "source_sha256": "ebf90016ed5b3b24713235f2de1e1ec9391d60e8c9a565dded34026ba352db90",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/lib/artifactGateway.ts",
+      "line": 32,
+      "severity": "critical",
+      "source_sha256": "7bcb415f3273bbba583244c2001c6d97a451867674aa995ba76d6d664240b0ba",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/lib/knowledgeBridge.ts",
+      "line": 66,
+      "severity": "critical",
+      "source_sha256": "c60431d2824169daf1d539154e376f9f01e0781de693db71ff0790a478cf520a",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/utils/comment-authority.ts",
+      "line": 7,
+      "severity": "critical",
+      "source_sha256": "ba036fc6c5aec79b979a26eb371f48012daaf7055170ac5266ac206d3b790f84",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Existing destination/redirect guards are visible, but the full caller-to-sink data flow is not yet reviewed for this exact new scanner match."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/agent/src/utils/installation.ts",
+      "line": 53,
+      "severity": "critical",
+      "source_sha256": "58373428392e02b24494738f5851ffd88ffccb19be62bc034cc212c25ef5d089",
+      "status": "reviewed-destination-constrained",
+      "reason": "GITHUB_API_ORIGIN is the literal https://api.github.com. Owner must match /^[A-Za-z0-9-]{1,39}$/ and kind is the local orgs/users enumeration. redirect:error rejects relocation, and response URL must exactly equal the requested owner-bound URL.",
+      "review_method": "Manual inspection of the complete URL construction and redirect handling in the exact source file bound by source_sha256."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/agent-factory/codex-reviewer/src/github.ts",
+      "line": 158,
+      "severity": "critical",
+      "source_sha256": "5e094bb13d7cbb0a7fc1e4f440abac2a8fdf61cb7b780e795de40acf8961967f",
+      "status": "reviewed-destination-constrained",
+      "reason": "All requests concatenate the literal https://api.github.com origin with a locally checked slash-rooted path. Fetch uses redirect:manual. Every redirect is checked for the same exact origin and absence of URL credentials before the next fetch; hop count is bounded to three and unsafe mutation redirects are rejected.",
+      "review_method": "Manual inspection of the complete URL construction and redirect handling in the exact source file bound by source_sha256."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/gateway/frontend/src/pages/DomainMRI.tsx",
+      "line": 24,
+      "severity": "critical",
+      "source_sha256": "0ec0e4ef75da41be34e4a3161085b147ec72b25a63819c88c0d09a5d8e7fe999",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Browser-executed fetch in the frontend/static application. This sink does not cause a server to make an attacker-selected request. This disposition is limited to the SSRF rule; it is not a review of all frontend credential or origin policy."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/gateway/frontend/src/services/activity.ts",
+      "line": 207,
+      "severity": "critical",
+      "source_sha256": "cf5a555f5e21578b0970b23e322f9998e2fac9104d98a33bab494b255e3b0257",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Browser-executed fetch in the frontend/static application. This sink does not cause a server to make an attacker-selected request. This disposition is limited to the SSRF rule; it is not a review of all frontend credential or origin policy."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/gateway/frontend/src/services/agentExplanations.ts",
+      "line": 19,
+      "severity": "critical",
+      "source_sha256": "b2b90e80ad4043e6c1f0bd12ef36a8473038b28a05efbfb61f63e1f949034f60",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Browser-executed fetch in the frontend/static application. This sink does not cause a server to make an attacker-selected request. This disposition is limited to the SSRF rule; it is not a review of all frontend credential or origin policy."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/gateway/frontend/src/services/api.ts",
+      "line": 92,
+      "severity": "critical",
+      "source_sha256": "391e994a78ff98e2f0fc0b7dd03e8a366a8bc29b6b04d22baf1537a67ee126ba",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Browser-executed fetch in the frontend/static application. This sink does not cause a server to make an attacker-selected request. This disposition is limited to the SSRF rule; it is not a review of all frontend credential or origin policy."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/gateway/frontend/src/services/auth.ts",
+      "line": 285,
+      "severity": "critical",
+      "source_sha256": "b1a672e2d2b89a54889e94dd8ef356123ad759d1de7e71b4f61ca709abdd9db9",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Browser-executed fetch in the frontend/static application. This sink does not cause a server to make an attacker-selected request. This disposition is limited to the SSRF rule; it is not a review of all frontend credential or origin policy."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/gateway/frontend/src/services/auth.ts",
+      "line": 355,
+      "severity": "critical",
+      "source_sha256": "b1a672e2d2b89a54889e94dd8ef356123ad759d1de7e71b4f61ca709abdd9db9",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Browser-executed fetch in the frontend/static application. This sink does not cause a server to make an attacker-selected request. This disposition is limited to the SSRF rule; it is not a review of all frontend credential or origin policy."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/gateway/frontend/src/services/taskActivity.ts",
+      "line": 25,
+      "severity": "critical",
+      "source_sha256": "a871fde24081c5c36ce5b95f26af0e98cbdc1fa53748559872e3d7012b03f71e",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Browser-executed fetch in the frontend/static application. This sink does not cause a server to make an attacker-selected request. This disposition is limited to the SSRF rule; it is not a review of all frontend credential or origin policy."
+    },
+    {
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "file": "modules/tools/task-sdk/test/codex.test.mjs",
+      "line": 72,
+      "severity": "critical",
+      "source_sha256": "b952b0bfeca62c681c56aab2965ea7e699cf21e67dd9528a19acd7c14b93cc4c",
+      "status": "reviewed-rule-not-applicable",
+      "reason": "Synthetic Node test calls the loopback tool server created within this test, with a generated test token. No externally supplied server URL is consumed at this sink."
+    },
+    {
+      "rule": "B202",
+      "file": "modules/domain-apps/superplane/images/api-compat-high/verify.py",
+      "line": 81,
+      "severity": "high",
+      "source_sha256": "18ec0f0c9811304e5590ec2f5421945ddc0d4e765721614f4c045ddcb7af020d",
+      "status": "reviewed-security-regression-fixture",
+      "reason": "Archive is constructed from literal synthetic entries in this file and extracted into a temporary directory with explicit tar/data filters or a data_filter wrapper. Assertions verify the backported link/path defenses. No external archive input is accepted.",
+      "fix_pr": null
+    },
+    {
+      "rule": "B202",
+      "file": "modules/domain-apps/superplane/images/skypilot/high-security/tarfile_regression.py",
+      "line": 29,
+      "severity": "high",
+      "source_sha256": "c9bec73c30648e8d209311593fddc930cb480ae3d2204a2a2b66cfd86e3aa474",
+      "status": "reviewed-security-regression-fixture",
+      "reason": "Archive is constructed from literal synthetic entries in this file and extracted into a temporary directory with explicit tar/data filters or a data_filter wrapper. Assertions verify the backported link/path defenses. No external archive input is accepted.",
+      "fix_pr": null
+    },
+    {
+      "rule": "B202",
+      "file": "modules/gateway/security/stdlib/check.py",
+      "line": 46,
+      "severity": "high",
+      "source_sha256": "7148341ad733ce3823692cab53b53e9e6494eb565fd6b2962735c173b109a5eb",
+      "status": "reviewed-security-regression-fixture",
+      "reason": "Archive is constructed from literal synthetic entries in this file and extracted into a temporary directory with explicit tar/data filters or a data_filter wrapper. Assertions verify the backported link/path defenses. No external archive input is accepted.",
+      "fix_pr": null
+    },
+    {
+      "rule": "B202",
+      "file": "modules/gateway/security/stdlib/check.py",
+      "line": 72,
+      "severity": "high",
+      "source_sha256": "7148341ad733ce3823692cab53b53e9e6494eb565fd6b2962735c173b109a5eb",
+      "status": "reviewed-security-regression-fixture",
+      "reason": "Archive is constructed from literal synthetic entries in this file and extracted into a temporary directory with explicit tar/data filters or a data_filter wrapper. Assertions verify the backported link/path defenses. No external archive input is accepted.",
+      "fix_pr": null
+    },
+    {
+      "rule": "B202",
+      "file": "modules/gateway/security/stdlib/check.py",
+      "line": 100,
+      "severity": "high",
+      "source_sha256": "7148341ad733ce3823692cab53b53e9e6494eb565fd6b2962735c173b109a5eb",
+      "status": "reviewed-security-regression-fixture",
+      "reason": "Archive is constructed from literal synthetic entries in this file and extracted into a temporary directory with explicit tar/data filters or a data_filter wrapper. Assertions verify the backported link/path defenses. No external archive input is accepted.",
+      "fix_pr": null
+    },
+    {
+      "rule": "B324",
+      "file": "platform/security/rsync-3.5.1/package.py",
+      "line": 42,
+      "severity": "high",
+      "source_sha256": "ce9f9192931bda550cd0b2b51e09bfcbaa41a8c7d42fc4e5ff3b76e71340e677",
+      "status": "fixed-in-later-source",
+      "reason": "Required Debian MD5 metadata is marked usedforsecurity=False by merged PR #6709; SHA-256 provenance remains unchanged. The earlier scanned revision retains its original raw match.",
+      "fix_pr": 6709
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B102",
+      "file": "docs/analysis/cli-uplift-rework/probe_historical_failures.py",
+      "line": 132,
+      "severity": "high",
+      "source_sha256": "b467eb92d083024d04bef08d068d2d06afbe0d72e4eff61fdaebb7c5c3a96abe",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B603",
+      "file": "docs/task-api/evidence/2026-09-25-cross-replica-quota/runner.py",
+      "line": 51,
+      "severity": "high",
+      "source_sha256": "7a4f584eb3e3d0d9c6e70da23c9b8ac7026018464a8be81abdc39e38a05d6c3f",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B603",
+      "file": "docs/task-api/evidence/2026-09-25-v3/cross-replica/fixture.py",
+      "line": 51,
+      "severity": "high",
+      "source_sha256": "7a4f584eb3e3d0d9c6e70da23c9b8ac7026018464a8be81abdc39e38a05d6c3f",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B603",
+      "file": "modules/agent-context/images/deepwiki/security/openssh/authenticate-source.py",
+      "line": 16,
+      "severity": "high",
+      "source_sha256": "c83562338041a5a1b75e11de85b8f109e2496d4e4b0f84fe2d534b76ebf23163",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B603",
+      "file": "modules/agent-context/images/ingestion/high-security/rebuild-go-tools.py",
+      "line": 12,
+      "severity": "high",
+      "source_sha256": "e5e34bcb7e33236536e7ffbf1d4d5a8cd9d63f57a01079ab2c1d90d9a8e692f4",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B603",
+      "file": "modules/agent-factory/agent-worker-image/verify-high-tools-overlay.py",
+      "line": 13,
+      "severity": "high",
+      "source_sha256": "01b652ca61c95f4d7fa5621c88df73ed005ca862dde7b750ab0804055dd7f7dd",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B603",
+      "file": "modules/domain-apps/superplane/images/native-node/lane/transport.py",
+      "line": 27,
+      "severity": "high",
+      "source_sha256": "14f7cd38dbc59e9adbf667aaa777a29dbae40c3287bce6295bd7a0eeba0306a0",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B603",
+      "file": "modules/domain-apps/superplane/images/native-node/source_provenance.py",
+      "line": 18,
+      "severity": "high",
+      "source_sha256": "18e8932de4292ece49daea3f013a199d4b0c61e9e1b18bfb11a7c42850229c1b",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B603",
+      "file": "platform/security/openssh-high/build-tools/authenticate-source.py",
+      "line": 16,
+      "severity": "high",
+      "source_sha256": "5c31b70c1180976c10dd5e4cfa8cb9cd2c783ea4ff99eadb000df71082998c6f",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B606",
+      "file": "modules/agent-factory/agent-worker-image/adp_cred/assume.py",
+      "line": 127,
+      "severity": "high",
+      "source_sha256": "a54cd3ae330d3c2be7293ed50dfd82cac8d86469b0da8a93be06e78fa4f673a9",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B606",
+      "file": "modules/agent-factory/agent-worker-image/lib/task_network_exec.py",
+      "line": 66,
+      "severity": "high",
+      "source_sha256": "201ec15170b9ae2b109a53b877d6d2edace7a6eeec70b5cff69fbab0eff3bbda",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B606",
+      "file": "modules/domain-apps/cyber/workers/isolation.py",
+      "line": 145,
+      "severity": "high",
+      "source_sha256": "7311498e4983b5ff8ef70c8af49165f1b8dba2e675c5b45fc011835cbef7e2d5",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.bandit.B606",
+      "file": "modules/domain-apps/superplane/installation/skypilot_bootstrap.py",
+      "line": 123,
+      "severity": "high",
+      "source_sha256": "68ad9d4a880db3e177ce4b22313e026987517bb28f55ec9335cdb69a8c708d2c",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+      "file": "modules/agent-context/images/deepwiki/security/openssh/authenticate-source.py",
+      "line": 16,
+      "severity": "high",
+      "source_sha256": "c83562338041a5a1b75e11de85b8f109e2496d4e4b0f84fe2d534b76ebf23163",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+      "file": "modules/agent-factory/agent-worker-image/verify-high-tools-overlay.py",
+      "line": 13,
+      "severity": "high",
+      "source_sha256": "01b652ca61c95f4d7fa5621c88df73ed005ca862dde7b750ab0804055dd7f7dd",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+      "file": "modules/domain-apps/superplane/images/native-node/lane/transport.py",
+      "line": 27,
+      "severity": "high",
+      "source_sha256": "14f7cd38dbc59e9adbf667aaa777a29dbae40c3287bce6295bd7a0eeba0306a0",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+      "file": "modules/domain-apps/superplane/images/native-node/source_provenance.py",
+      "line": 18,
+      "severity": "high",
+      "source_sha256": "18e8932de4292ece49daea3f013a199d4b0c61e9e1b18bfb11a7c42850229c1b",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    },
+    {
+      "rule": "tmp.gitlab.python_exec_rule-subprocess-call-array",
+      "file": "platform/security/openssh-high/build-tools/authenticate-source.py",
+      "line": 16,
+      "severity": "high",
+      "source_sha256": "5c31b70c1180976c10dd5e4cfa8cb9cd2c783ea4ff99eadb000df71082998c6f",
+      "status": "open-needs-complete-dataflow-review",
+      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+    }
+  ],
+  "status_counts": {
+    "reviewed-rule-not-applicable": 11,
+    "open-needs-complete-dataflow-review": 31,
+    "reviewed-destination-constrained": 3,
+    "reviewed-security-regression-fixture": 5,
+    "fixed-in-later-source": 1
+  }
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "function": "bedrockgw-dev-github-auth-broker",
+    "membership_read_permission": "allowed",
+    "mode": "platform",
+    "open_signup": "false"
+  },
+  {
+    "function": "bedrockgw-dev-pre-signup-trigger",
+    "membership_read_permission": "allowed",
+    "mode": "platform",
+    "open_signup": "false"
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:43eec354851625f1d65684479f9471dfed491596aab5ca8706b72a7aac23c787",
+  "restored_without_rebuild": true,
+  "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki:retained-pinned-43eec3548516",
+  "deployed": false
+}

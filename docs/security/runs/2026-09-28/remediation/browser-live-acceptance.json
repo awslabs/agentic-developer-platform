@@ -1,0 +1,12 @@
+{
+  "before": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-shared-tools-browser@sha256:7befd26fc757d7e42416a16af0542ffa29132b502f12fa38aeed8aa4d45e5e66",
+  "after": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-shared-tools-browser@sha256:353142a6e870e93a4b60d43167f76e81566c18b6b4cc2da52d866748e83e3910",
+  "ready_replicas": 1,
+  "generation": 5,
+  "spec_preserved_except_image": true,
+  "queue_drained": true,
+  "provider_sessions_terminated": true,
+  "installed_security_tests": "passed",
+  "consumer_import": "passed",
+  "live_task_canary": false
+}

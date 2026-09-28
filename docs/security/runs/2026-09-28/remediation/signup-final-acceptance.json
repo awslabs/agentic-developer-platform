@@ -1,0 +1,22 @@
+{
+  "projection_consistency": "zero differences in both tables",
+  "operator_has_proven_membership": true,
+  "checks": [
+    {
+      "case": "existing-member",
+      "accepted": true,
+      "function_error": null
+    },
+    {
+      "case": "nonmember",
+      "accepted": false,
+      "function_error": "Unhandled"
+    },
+    {
+      "case": "former-orphan-projection",
+      "accepted": false,
+      "function_error": "Unhandled"
+    }
+  ],
+  "scope": "live pre-signup and data validation; actual OAuth broker sign-in not exercised"
+}

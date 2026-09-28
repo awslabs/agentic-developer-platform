@@ -1,0 +1,137 @@
+{
+  "before": {
+    "time": "2026-09-28T17:23:39.459232+00:00",
+    "observed": {
+      "Critical": 0,
+      "High": 68,
+      "occurrences": 622
+    },
+    "conservative": {
+      "Critical": 0,
+      "High": 73,
+      "occurrences": 751
+    },
+    "inventory_coverage": {
+      "inventory": "/workspaces/projects/security28-remediation-evidence/live-refresh-20260928T164952Z",
+      "inventory_resource_receipt_sha256": "61e8e781ef706ac5cfa006754a04464c18caf32c8a542ac14e481acfc4f096a3",
+      "generated_at": "2026-09-28T16:49:55.068178+00:00",
+      "pods": 82,
+      "container_spec_rows": 133,
+      "active_pod_container_rows": 125,
+      "unique_observed_digests": 33,
+      "active_pod_digests": 32,
+      "historical_only_digests": 1,
+      "desired_template_rows": 36,
+      "gap_counts": {
+        "owner_chain_incomplete": 13,
+        "missing_runtime_digest": 5,
+        "desired_template_without_observed_digest": 6
+      },
+      "scope": "point-in-time EKS image/package inventory; not source/static/secret findings or external compute",
+      "init_container_policy": "include init images attached to active pods; report their exposure class separately"
+    }
+  },
+  "after": {
+    "time": "2026-09-28T18:21:54.997632+00:00",
+    "observed": {
+      "Critical": 0,
+      "High": 66,
+      "occurrences": 609
+    },
+    "conservative": {
+      "Critical": 0,
+      "High": 71,
+      "occurrences": 738
+    },
+    "inventory_coverage": {
+      "inventory": "/workspaces/projects/security28-remediation-evidence/live-refresh-20260928T182123Z",
+      "inventory_resource_receipt_sha256": "681418cebaf812a262b77c650638df71eb14d3b34198d41b032a261ffd61253a",
+      "generated_at": "2026-09-28T18:21:25.855701+00:00",
+      "pods": 97,
+      "container_spec_rows": 157,
+      "active_pod_container_rows": 152,
+      "unique_observed_digests": 34,
+      "active_pod_digests": 32,
+      "historical_only_digests": 2,
+      "desired_template_rows": 36,
+      "gap_counts": {
+        "owner_chain_incomplete": 18,
+        "missing_runtime_digest": 1,
+        "desired_template_without_observed_digest": 6
+      },
+      "scope": "point-in-time EKS image/package inventory; not source/static/secret findings or external compute",
+      "init_container_policy": "include init images attached to active pods; report their exposure class separately"
+    }
+  },
+  "removed_unique_advisories": [
+    "CVE-2026-15308",
+    "CVE-2026-7210"
+  ],
+  "disposition_policy": "Raw matches retained. Only exact scanned config/source/binary evidence and reviewed vendor scope deducted. Not a repository-wide zero-Critical claim.",
+  "checkpoint_1740": {
+    "time": "2026-09-28T17:41:09.554039+00:00",
+    "observed": {
+      "Critical": 0,
+      "High": 66,
+      "occurrences": 609
+    },
+    "conservative": {
+      "Critical": 0,
+      "High": 71,
+      "occurrences": 738
+    },
+    "inventory_coverage": {
+      "inventory": "/workspaces/projects/security28-remediation-evidence/live-refresh-20260928T174035Z",
+      "inventory_resource_receipt_sha256": "d675cabc2fd643cba24fcfeb0c4194815798658d4d1dfebde344ed966f030df5",
+      "generated_at": "2026-09-28T17:40:38.903596+00:00",
+      "pods": 336,
+      "container_spec_rows": 478,
+      "active_pod_container_rows": 470,
+      "unique_observed_digests": 33,
+      "active_pod_digests": 32,
+      "historical_only_digests": 1,
+      "desired_template_rows": 36,
+      "gap_counts": {
+        "missing_runtime_digest": 99,
+        "owner_chain_incomplete": 90,
+        "desired_template_without_observed_digest": 6
+      },
+      "scope": "point-in-time EKS image/package inventory; not source/static/secret findings or external compute",
+      "init_container_policy": "include init images attached to active pods; report their exposure class separately"
+    }
+  },
+  "occurrence_interpretation": "Final inventory no longer observes the old worker image as active. The intermediate 18:13 snapshot included both worker images; those distinct-image occurrences were retained until observed retirement. Final totals are 13 fewer occurrences and two fewer unique High advisories than baseline.",
+  "rollout_checkpoint_1813": {
+    "time": "2026-09-28T18:14:05.653043+00:00",
+    "observed": {
+      "Critical": 0,
+      "High": 66,
+      "occurrences": 682
+    },
+    "conservative": {
+      "Critical": 0,
+      "High": 71,
+      "occurrences": 811
+    },
+    "inventory_coverage": {
+      "inventory": "/workspaces/projects/security28-remediation-evidence/live-refresh-20260928T181323Z",
+      "inventory_resource_receipt_sha256": "b2c1a1511c699b168c883a8e9a73638cf9202c88909eaa8944492e4b41e87854",
+      "generated_at": "2026-09-28T18:13:26.461251+00:00",
+      "pods": 176,
+      "container_spec_rows": 269,
+      "active_pod_container_rows": 264,
+      "unique_observed_digests": 34,
+      "active_pod_digests": 33,
+      "historical_only_digests": 1,
+      "desired_template_rows": 36,
+      "gap_counts": {
+        "owner_chain_incomplete": 36,
+        "missing_runtime_digest": 3,
+        "desired_template_without_observed_digest": 6
+      },
+      "scope": "point-in-time EKS image/package inventory; not source/static/secret findings or external compute",
+      "init_container_policy": "include init images attached to active pods; report their exposure class separately"
+    }
+  },
+  "fewer_occurrences": 13
+}

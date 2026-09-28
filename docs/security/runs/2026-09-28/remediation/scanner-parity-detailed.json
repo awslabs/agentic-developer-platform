@@ -1,0 +1,10 @@
+{
+  "direct_archive_findings": 988,
+  "split_scan_findings": 989,
+  "removed": 0,
+  "added": 1,
+  "added_rule_ids": [
+    "GO-2026-5158-go.opentelemetry.io/otel"
+  ],
+  "comparison": "Rule, level, full message and locations; normalize only the local archive directory"
+}
