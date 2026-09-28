@@ -34,8 +34,8 @@ class Provider:
         self.calls.append((kwargs["name"], kwargs))
         name = kwargs["name"]
         result = {"startCommandExecution": {"taskId": "private-task-id"},
-                  "getTask": {"status": "completed", "output": "5\n"},
-                  "readFiles": {"content": "table,5\n"}}[name]
+                  "getTask": {"taskStatus": "completed", "stdout": "5\n", "exitCode": 0},
+                  "executeCommand": {"content": "table,5\n"}}[name]
         return {"stream": iter([{"result": {"structuredContent": result}}])}
 
     def stop_code_interpreter_session(self, **kwargs):
@@ -118,7 +118,7 @@ def test_task_to_route_to_artifact_and_provider_lifecycle(route):
     assert status == 200 and submitted["operation_status"] == "pending"
     assert provider.calls[-1][1]["arguments"]["command"] == "python -c 'print(sum([2, 3]))'"
     _, result = send("result", {"session_id": session, "execution_id": execution})
-    assert result["operation_status"] == "confirmed" and result["result"]["output"] == "5\n"
+    assert result["operation_status"] == "confirmed" and result["result"]["stdout"] == "5\n"
     assert hashlib.sha256(artifacts[result["artifact"]["artifact_id"]]).hexdigest() == result["artifact"]["content_sha256"]
     _, file = send("file", {"session_id": session, "path": "/tmp/table.csv"})
     assert file["result"]["contents"][0]["structuredContent"]["content"] == "table,5\n"
@@ -158,7 +158,7 @@ def test_real_task_host_consumes_route_receipts_and_artifacts(route):
     pending = invoke("execute", {"session_id": session, "code": "print(sum([2, 3]))", "language": "python"})
     assert pending["operation_status"] == "pending"
     completed = invoke("result", {"session_id": session, "execution_id": pending["request_id"]})
-    assert completed["operation_status"] == "confirmed" and completed["result"]["output"] == "5\n"
+    assert completed["operation_status"] == "confirmed" and completed["result"]["stdout"] == "5\n"
     artifact = completed["artifact"]
     assert hashlib.sha256(artifacts[artifact["artifact_id"]]).hexdigest() == artifact["content_sha256"]
     file = invoke("file", {"session_id": session, "path": "/tmp/table.csv"})
@@ -312,3 +312,25 @@ def test_cleanup_is_allowed_after_deadline_cancellation_and_exhausted_quota(rout
     assert send("close", {"session_id": started["result"]["session_id"]})[0] == 200
     assert send("cancel_jobs", {})[1]["result"] == {"status": "confirmed", "pending_jobs": []}
     assert sum(name == "stop" for name, _ in provider.calls) == 1
+
+
+def test_file_command_reads_tmp_with_bounds(route):
+    import base64
+    import subprocess
+    import shlex
+    import tempfile
+
+    send, grants, provider, artifacts, identity = route
+    _, started = send("start", {})
+    with tempfile.NamedTemporaryFile(prefix="adp-proof-", dir="/tmp") as proof:
+        proof.write(b"42\n")
+        proof.flush()
+        send("file", {"session_id": started["result"]["session_id"], "path": proof.name})
+        name, request = provider.calls[-1]
+        assert name == "executeCommand"
+        command = [sys.executable, *shlex.split(request["arguments"]["command"])[1:]]
+        completed = subprocess.run(command, capture_output=True, check=True)
+        assert base64.b64decode(json.loads(completed.stdout)["data"]) == b"42\n"
+        proof.write(b"x" * 8193)
+        proof.flush()
+        assert subprocess.run(command, capture_output=True).returncode != 0
