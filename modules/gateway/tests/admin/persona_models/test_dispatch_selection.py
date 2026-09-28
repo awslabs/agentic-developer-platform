@@ -176,3 +176,28 @@ async def test_engine_launch_and_individual_trigger_resolve_identically(mapped, 
 async def test_engine_launch_refuses_invalid_configuration(mapped):
     with pytest.raises(service.PreferenceRejectedError):
         await dispatch_selection.resolve_launch_configuration(mapped, org_id="tenant-b", user_id="root-sub", persona="developer")
+
+
+async def test_platform_persona_default_is_below_user_and_direct_choices(mapped):
+    from src.shared.models.persona_models import PersonaPlatformDefault
+
+    opus = "global.anthropic.claude-opus-5"
+    for persona in ("reviewer", "developer"):
+        mapped.add(
+            PersonaPlatformDefault(
+                persona_key=persona, compatibility_class="claude-agent-sdk", harness_contract_revision="0.3.283", canonical_model_id=opus, revision=1
+            )
+        )
+    await mapped.commit()
+    reviewer = await dispatch_selection.apply_dispatch_selection(mapped, envelope("reviewer"))
+    developer = await dispatch_selection.apply_dispatch_selection(mapped, envelope())
+    explicit = await dispatch_selection.apply_dispatch_selection(mapped, {**envelope("reviewer"), "model_requested": SONNET})
+    assert reviewer["model_resolved"] == opus
+    assert developer["model_resolved"] == HAIKU
+    assert explicit["model_resolved"] == SONNET
+    row = await mapped.get(PersonaPlatformDefault, "reviewer")
+    row.canonical_model_id = None
+    await mapped.commit()
+    reset = await dispatch_selection.apply_dispatch_selection(mapped, envelope("reviewer"))
+    assert reset["model_resolved"] == SONNET
+    assert reviewer["model_resolved"] == opus

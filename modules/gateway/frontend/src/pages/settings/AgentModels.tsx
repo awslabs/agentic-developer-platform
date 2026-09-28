@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PlatformPersonaDefaults } from './PlatformPersonaDefaults';
+import { useAuth } from '@/hooks/useAuth';
+import { AdminRole } from '@/types';
 import { AgentTaskBudget } from '@/components/org/AgentTaskBudget';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
@@ -130,6 +133,8 @@ function mergeDetail(entries: PersonaPreference[], detail: PreferenceDetail): Pe
           // Carried from the response so a reset back to the class default reports the
           // server's current proof state rather than the pre-mutation value.
           class_default_status: detail.class_default_status ?? null,
+          default_model_id: detail.default_model_id,
+          default_scope: detail.default_scope,
           saved_model_id: detail.saved_model_id,
           requested_alias: detail.requested_alias,
           revision: detail.revision,
@@ -212,6 +217,9 @@ function PersonaCard({
           <p className="mt-1 text-sm text-gray-600 dark:text-gray-300" data-testid={`effective-source-${persona.key}`}>
             {effectiveSourceLabel(preference)}
           </p>
+          {preference?.source === 'principal-mapping' && preference.default_model_id && (
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">Default: {preference.default_model_id}</p>
+          )}
           {effectivePrice && <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">{effectivePrice}</p>}
           {preference?.warnings?.map((warning) => (
             <p key={warning} role="status" className="mt-3 text-sm text-amber-700 dark:text-amber-300">{warning}</p>
@@ -312,6 +320,7 @@ function PersonaCard({
 }
 
 export default function AgentModels() {
+  const { hasRole } = useAuth();
   const [scopeKind, setScopeKind] = useState<ScopeKind>('self');
   const [adminPrincipalId, setAdminPrincipalId] = useState<string | undefined>(undefined);
   const [principals, setPrincipals] = useState<ManageableServicePrincipal[]>([]);
@@ -500,6 +509,7 @@ export default function AgentModels() {
         )}
       </div>
 
+      {hasRole(AdminRole.PLATFORM_ADMIN) && <PlatformPersonaDefaults onSaved={() => void load(scopeKind, adminPrincipalId)} />}
       {selectedPrincipal && (
         <Alert variant="info" title="Managed service account">
           Changes below apply to {selectedPrincipal.display_name} in {selectedPrincipal.tenant_label}, not to your own account.
