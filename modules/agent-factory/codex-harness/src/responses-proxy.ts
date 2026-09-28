@@ -98,6 +98,23 @@ export interface ConfirmedTextOperation {
  */
 export type TextResponsesHost = (request: TextResponsesRequest, signal: AbortSignal) => Promise<ConfirmedTextOperation>;
 
+function boundedMessage(value: z.infer<typeof message>): z.infer<typeof message> {
+  const parts = typeof value.content === "string"
+    ? [{ type: value.role === "assistant" ? "output_text" as const : "input_text" as const, text: value.content }]
+    : value.content;
+  if (parts.every(part => part.text.length <= 32000)) return value;
+  const content = parts.flatMap(part => {
+    if (part.text.length <= 32000) return [part];
+    const points = Array.from(part.text);
+    const chunks = [];
+    for (let offset = 0; offset < points.length; offset += 16000)
+      chunks.push({ ...part, text: points.slice(offset, offset + 16000).join("") });
+    return chunks;
+  });
+  if (content.length > 64) throw new Error("Responses message exceeds part bound");
+  return { ...value, content };
+}
+
 export function normalizeTextRequest(value: unknown, policy: TextResponsesPolicy): TextResponsesRequest {
   const parsed = sdkRequest.parse(value);
   if (parsed.model !== policy.model || parsed.reasoning.effort !== policy.effort) throw new Error("SDK model binding mismatch");
@@ -141,7 +158,7 @@ export function normalizeTextRequest(value: unknown, policy: TextResponsesPolicy
     ...(policy.tools ? { tools: [{ type: "namespace", name: "mcp__adp", description: "Authorized ADP tools.",
       tools: policy.tools.definitions.map(tool => ({ type: "function", name: tool.name, description: tool.description,
         parameters: tool.parameters ? structuredClone(tool.parameters) : z.toJSONSchema(tool.input.strict(), { target: "draft-7" }), strict: false })) }], parallel_tool_calls: false as const } : {}),
-    input: parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
+    input: Array.isArray(parsed.input) ? parsed.input.map(item => "role" in item ? boundedMessage(item) : item) : parsed.input, ...(parsed.instructions === undefined ? {} : { instructions: parsed.instructions }),
     reasoning: { effort: policy.effort },
     max_output_tokens: Math.min(parsed.max_output_tokens ?? policy.maxOutputTokens, policy.maxOutputTokens),
   };

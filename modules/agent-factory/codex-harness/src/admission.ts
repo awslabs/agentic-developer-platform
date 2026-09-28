@@ -39,7 +39,8 @@ export function planVerifiedRun(
   snapshot: ReturnType<typeof snapshotPersona>, policy: VerifiedRunPolicy,
   source: InvocationSource, repository: RepositoryBinding | undefined,
   providerCapabilities: readonly Capability[], nowMs: number,
-) {
+): { persona: Persona; capabilities: Capability[]; limits: Persona["limits"]; options: ThreadOptions;
+  sdkConfig: ReturnType<typeof restrictedSdkConfig>; unavailableOptionalCapabilities: Capability[] } {
   if (sha256(snapshot.definition) !== snapshot.digest) throw new Error("Snapshot digest mismatch");
   verifySnapshot(snapshot);
   const persona = personaSchema.parse(JSON.parse(snapshot.definition));
@@ -71,6 +72,11 @@ export function planVerifiedRun(
   const missing = persona.requiredCapabilities.filter(c => !permitted(c));
   if (missing.length) throw new Error(`Required capabilities unavailable: ${missing.join(", ")}`);
   const capabilities = [...persona.requiredCapabilities, ...persona.optionalCapabilities.filter(permitted)];
+  for (const skill of persona.skills) {
+    if (skill.requiredCapabilities?.some(c => !capabilities.includes(c))) {
+      throw new Error(`Required skill capabilities unavailable: ${skill.id}`);
+    }
+  }
   const limits = {
     maxTurns: Math.min(persona.limits.maxTurns, policy.limits.maxTurns),
     maxContextBytes: Math.min(persona.limits.maxContextBytes, policy.limits.maxContextBytes),

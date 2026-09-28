@@ -227,3 +227,18 @@ test("discarded SDK metadata gets envelope space without increasing admitted req
     assert.equal(calls, 1);
   } finally { await proxy.close(); }
 });
+
+
+test("large persona text is split losslessly within the existing host part bounds", () => {
+  const text = "shared-policy-".repeat(3000) + "😀".repeat(1000);
+  const normalized = normalizeTextRequest({ ...request(), input: [{ role: "developer", content: [{ type: "input_text", text }] }] },
+    { ...policy, maxRequestBytes: 63 * 1024 });
+  assert.ok(Array.isArray(normalized.input));
+  const item = normalized.input[0];
+  assert.ok(item && "role" in item && Array.isArray(item.content));
+  assert.equal(item.role, "developer");
+  assert.equal(item.content.map(part => part.text).join(""), text);
+  assert.ok(item.content.every(part => part.text.length <= 32000));
+  assert.throws(() => normalizeTextRequest({ ...request(), input: [{ role: "developer", content: text }] },
+    { ...policy, maxRequestBytes: 1024 }), /bound/);
+});

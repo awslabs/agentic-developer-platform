@@ -327,3 +327,59 @@ def test_tracing_extra_is_optional_for_admission(frozen, monkeypatch):
     arguments, _, _ = frozen
     monkeypatch.setitem(sys.modules, "opentelemetry", None)
     assert "traceparent" not in harness.freeze_harness(**arguments)
+
+
+def projected_snapshot():
+    value = snapshot("product")
+    definition = json.loads(value["definition"])
+    source = "personas/product.md"
+    content = (ROOT / "modules/agent-factory/rules" / source).read_bytes()
+    definition["sharedRules"] = {"version": 1, "persona": "product", "sources": [{"path": source, "sha256": hashlib.sha256(content).hexdigest()}]}
+    value["definition"] = rfc8785.dumps(definition).decode()
+    value["digest"] = hashlib.sha256(value["definition"].encode()).hexdigest()
+    return value
+
+
+def test_shared_rules_are_preserved_as_small_digest_bound_references():
+    value = projected_snapshot()
+    frozen, definition = harness.validate_snapshot(value)
+    assert frozen.model_dump() == value
+    assert definition.sharedRules.persona == "product"
+    assert len(json.dumps(value).encode()) < 16000
+
+
+@pytest.mark.parametrize("path", ["../secret", "/etc/passwd", "personas/../../secret", "personas//product.md"])
+def test_shared_rule_reference_path_escape_fails_before_admission(path):
+    value = projected_snapshot()
+    definition = json.loads(value["definition"])
+    definition["sharedRules"]["sources"][0]["path"] = path
+    value["definition"] = rfc8785.dumps(definition).decode()
+    value["digest"] = hashlib.sha256(value["definition"].encode()).hexdigest()
+    with pytest.raises(ValueError):
+        harness.validate_snapshot(value)
+
+
+def test_shared_rule_persona_cannot_replace_the_admitted_persona():
+    value = projected_snapshot()
+    definition = json.loads(value["definition"])
+    definition["sharedRules"]["persona"] = "operations"
+    value["definition"] = rfc8785.dumps(definition).decode()
+    value["digest"] = hashlib.sha256(value["definition"].encode()).hexdigest()
+    with pytest.raises(ValueError, match="another persona"):
+        harness.validate_snapshot(value)
+
+
+@pytest.mark.parametrize("dependency", [{"requiredCapabilities": ["aws.assume"]}, {"requiredTools": ["unavailable_tool"]}])
+def test_skill_dependencies_cannot_create_authority_at_admission(frozen, dependency):
+    arguments, _, file = frozen
+    value = snapshot()
+    definition = json.loads(value["definition"])
+    content = "Use only the explicitly admitted tool."
+    definition["skills"] = [{"id": "fixture", "sha256": hashlib.sha256(content.encode()).hexdigest(), **dependency}]
+    value["definition"] = rfc8785.dumps(definition).decode()
+    value["digest"] = hashlib.sha256(value["definition"].encode()).hexdigest()
+    value["instructions"] += "\n\n" + content
+    value["skillSources"] = json.dumps([["fixture", content]])
+    file.write_text(json.dumps({"schemaVersion": 1, "snapshots": [value]}))
+    with pytest.raises(harness.TaskHarnessError, match="prerequisite unavailable"):
+        harness.freeze_harness(**arguments)

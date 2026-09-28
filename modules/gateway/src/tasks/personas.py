@@ -51,11 +51,24 @@ def _profile(revision, body):
     return TaskPersonaProfile("anthropic_messages", revision, json.dumps(body, sort_keys=True, separators=(",", ":")))
 
 
+CODEX_REPORT_PERSONAS = frozenset(
+    {
+        "agent-task-gpt-architect",
+        "agent-task-gpt-product",
+        "agent-task-gpt-pm",
+        "agent-task-gpt-intent-refinement",
+    }
+)
+
+
 TASK_PERSONAS = MappingProxyType(
     {
-        "agent-task-gpt-intent-refinement": TaskPersonaProfile(
-            "codex-sdk", TASK_RESPONSES_REVISION, json.dumps(TASK_RESPONSES_PROBE_BODY, sort_keys=True, separators=(",", ":"))
-        ),
+        **{
+            persona: TaskPersonaProfile(
+                "codex-sdk", TASK_RESPONSES_REVISION, json.dumps(TASK_RESPONSES_PROBE_BODY, sort_keys=True, separators=(",", ":"))
+            )
+            for persona in sorted(CODEX_REPORT_PERSONAS)
+        },
         "agent-task-gpt-developer": TaskPersonaProfile(
             "codex-sdk", TASK_RESPONSES_TOOLS_REVISION, json.dumps(TASK_RESPONSES_TOOLS_PROBE_BODY, sort_keys=True, separators=(",", ":"))
         ),

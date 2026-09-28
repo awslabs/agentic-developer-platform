@@ -60,6 +60,34 @@ class Limits(Closed):
 class Skill(Closed):
     id: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,63}$")]
     sha256: Digest
+    requiredCapabilities: list[CAPABILITIES] | None = None
+    requiredTools: Annotated[list[Annotated[str, Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$")]], Field(max_length=32)] | None = None
+
+    @model_validator(mode="after")
+    def unique_capabilities(self):
+        values = self.requiredCapabilities or []
+        if len(values) != len(set(values)) or len(self.requiredTools or []) != len(set(self.requiredTools or [])):
+            raise ValueError("duplicate skill capability")
+        return self
+
+
+class RuleReference(Closed):
+    path: Annotated[str, Field(pattern=r"^[a-zA-Z0-9_./-]+$", max_length=255)]
+    sha256: Digest
+
+
+class SharedRules(Closed):
+    version: Literal[1]
+    persona: Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{0,63}$")]
+    sources: Annotated[list[RuleReference], Field(min_length=1, max_length=32)]
+
+    @model_validator(mode="after")
+    def paths(self):
+        if len({s.path for s in self.sources}) != len(self.sources) or any(
+            s.path.startswith("/") or any(p in ("", ".", "..") for p in s.path.split("/")) for s in self.sources
+        ):
+            raise ValueError("invalid shared rule paths")
+        return self
 
 
 class Persona(Closed):
@@ -68,6 +96,7 @@ class Persona(Closed):
     revision: Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")]
     displayName: Annotated[str, Field(min_length=1, max_length=100)]
     instructions: Annotated[str, Field(min_length=1, max_length=24000)]
+    sharedRules: SharedRules | None = None
     skills: Annotated[list[Skill], Field(max_length=16)]
     requiredCapabilities: list[CAPABILITIES]
     optionalCapabilities: list[CAPABILITIES]
@@ -91,6 +120,8 @@ class Persona(Closed):
         }.get(self.completionPolicy, set())
         if not required.issubset(self.requiredCapabilities):
             raise ValueError("completion policy lacks required capabilities")
+        if self.sharedRules and self.key != "gpt-" + self.sharedRules.persona:
+            raise ValueError("shared rules belong to another persona")
         return self
 
 
@@ -163,7 +194,7 @@ def validate_snapshot(value):
     if not isinstance(raw_definition, dict) or type(raw_definition.get("schemaVersion")) is not int:
         raise TaskHarnessError("invalid persona schema version")
     persona = Persona.model_validate(raw_definition)
-    definition = rfc8785.dumps(persona.model_dump()).decode()
+    definition = rfc8785.dumps(persona.model_dump(exclude_none=True)).decode()
     if _sha(definition) != snapshot.digest or definition != snapshot.definition:
         raise TaskHarnessError("snapshot definition digest mismatch")
     sources = json.loads(snapshot.skillSources)
@@ -212,7 +243,15 @@ def validate_harness(value, *, persona, model_binding, limits):
             raise TaskHarnessError("invalid capability layers")
         if any(not set(definition.requiredCapabilities).issubset(layer) for layer in layers.values()):
             raise TaskHarnessError("required capabilities unavailable")
+        for skill in definition.skills:
+            required = set(skill.requiredCapabilities or [])
+            declared = set(definition.requiredCapabilities) | set(definition.optionalCapabilities)
+            if not required.issubset(declared) or any(not required.issubset(layer) for layer in layers.values()):
+                raise TaskHarnessError("required skill capabilities unavailable")
         tools = harness.tools or []
+        for skill in definition.skills:
+            if not set(skill.requiredTools or []).issubset({tool.definition["name"] for tool in tools}):
+                raise TaskHarnessError("required skill tool unavailable")
         permissions = [tool.permission for tool in tools]
         if len(permissions) != len(set(permissions)):
             raise TaskHarnessError("duplicate runtime permission")

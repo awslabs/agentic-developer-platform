@@ -1,10 +1,11 @@
 /** Actual shared session, pinned SDK, Responses bridge and MCP transport.
  * Host model/tool receipts are deterministic fixtures; no external effects. */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { z } from 'zod';
-import { snapshotPersona } from '../dist/persona.js';
+import { snapshotPersona, sha256 } from '../dist/persona.js';
 import { HARNESS_CONTRACT_REVISION } from '../dist/admission.js';
 import { runAdmittedSession } from '../dist/session.js';
 
@@ -15,10 +16,12 @@ let completionChecks = 0, revoked = false;
 const capabilities = completionMode ? ['repository.read', 'repository.write', 'tests.run', 'change.create'] : ['repository.read'];
 const toolText = toolError ? 'Evidence unavailable: fixture confirmed error.' : 'evidence-receipt-471: requirement verified';
 const finalText = toolError ? 'Fixture error reported.' : 'Fixture evidence verified.';
+const skill = readFileSync(new URL('./fixtures/evidence-skill/SKILL.md', import.meta.url), 'utf8');
 const snapshot = snapshotPersona(JSON.stringify({ schemaVersion: 1, key: 'gpt-fixture', revision: '1', displayName: 'Fixture',
-  instructions: 'Read the admitted evidence; report missing information accurately.', skills: [],
+  instructions: 'Read the admitted evidence; report missing information accurately.',
+  skills: [{ id: 'evidence-skill', sha256: sha256(skill), requiredCapabilities: ['repository.read'], requiredTools: ['read_evidence'] }],
   requiredCapabilities: capabilities, optionalCapabilities: [], surfaces: ['task-api'], completionPolicy: completionMode ? 'validated-change' : 'report', effort: 'medium',
-  limits: { maxTurns: modelLimit, maxContextBytes: 60000, maxDurationMs: 15000 } }), new Map());
+  limits: { maxTurns: modelLimit, maxContextBytes: 60000, maxDurationMs: 15000 } }), new Map([['evidence-skill', skill]]));
 const layers = Object.fromEntries(['tenant', 'principal', 'run', 'surface', 'runtime'].map(key => [key, capabilities]));
 const policy = { personaKey: 'gpt-fixture', personaDigest: snapshot.digest, compatibilityClass: 'codex-sdk', harnessRevision: HARNESS_CONTRACT_REVISION,
   canonicalModel: 'gpt-5-codex', allowedEfforts: ['medium'], capabilityLayers: layers,
@@ -54,6 +57,7 @@ const host = {
     },
   },
   async model(body) {
+    assert.ok(JSON.stringify(body).includes('Call read_evidence with key story-acceptance'), 'Pinned skill instructions missing');
     requests.push(body);
     assert.ok(requests.length <= modelLimit, 'Unexpected model replay');
     if (requests.length > 2) {
@@ -79,6 +83,7 @@ const host = {
 };
 await assert.rejects(runAdmittedSession({ ...input, repository: undefined }, host), /capabilities unavailable/);
 await assert.rejects(runAdmittedSession(input, { ...host, toolBroker: undefined }), /capabilities unavailable/);
+await assert.rejects(runAdmittedSession(input, { ...host, toolBroker: { ...host.toolBroker, definitions: host.toolBroker.definitions.map(tool => ({ ...tool, name: 'wrong_' + tool.name })) } }), /Required skill tool unavailable/);
 assert.equal(requests.length, 0);
 if (completionMode && completionMode !== 'repair') {
   const error = completionMode === 'revoked' ? /fixture revoked/ : completionMode === 'unknown' ? /fixture unknown completion/ : /completion evidence was not verified/;

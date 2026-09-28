@@ -133,3 +133,40 @@ def test_real_codex_task_lifecycle(tmp_path, monkeypatch, assignment_and_bootstr
     if mode == "steer":
         assert "Also inspect the retry configuration." in json.dumps(client.requests[1])
         assert "follow_up_input." + client.command_id in json.dumps(client.requests[1])
+
+
+@pytest.mark.parametrize("name", ["architect", "product", "pm", "intent-refinement"])
+def test_packaged_report_persona_with_shared_rules(tmp_path, monkeypatch, assignment_and_bootstrap, name):
+    import subprocess
+    node = os.environ.get("ADP_CODEX_TEST_NODE") or shutil.which("node")
+    package = ENTRY.parent.parent
+    compiled = subprocess.run([node, str(package / "scripts/catalogue.mjs"), str(package / "personas" / f"{name}.json")],
+                              check=True, capture_output=True, text=True)
+    snapshot = json.loads(compiled.stdout)["snapshots"][0]
+    definition = json.loads(snapshot["definition"])
+    assignment, envelope, bootstrap = assignment_and_bootstrap
+    persona = "agent-task-" + definition["key"]
+    assignment = replace(assignment, persona=persona)
+    envelope["persona"] = bootstrap["persona"] = persona
+    bootstrap["model_binding"].update(model_id="openai.gpt-6-astra", transport="openai_responses")
+    bootstrap["harness"] = harness(bootstrap["deadline_at"])
+    bootstrap["harness"]["snapshot"] = snapshot
+    bootstrap["harness"]["policy"].update(personaKey=definition["key"], personaDigest=snapshot["digest"],
+        canonicalModel="openai.gpt-6-astra", allowedEfforts=[definition["effort"]])
+    events = []
+    client = CodexClient(bootstrap, events, "success")
+    monkeypatch.setattr("lib.task_host.workload_identity", lambda: {"pod_uid": str(uuid.uuid4()), "namespace": "test"})
+    packaged = tmp_path / "app/codex-harness"
+    shutil.copytree(ENTRY.parent, packaged / "dist")
+    shutil.copytree(ROOT / "modules/agent-factory/rules", packaged / "rules")
+    shutil.copyfile(package / "package.json", packaged / "package.json")
+    (packaged / "node_modules").symlink_to(package / "node_modules", target_is_directory=True)
+    host = TaskHost(client=client, work_root=tmp_path / "work", command_resolver=lambda _: [node, str(packaged / "dist/task-entry.mjs"), "--embedded"])
+    result = host.run(assignment, envelope, heartbeat=FakeHeartbeat(events), acknowledge=lambda: events.append("ack"))
+    assert result == 0, (events, client.finalize_body)
+    assert client.finalize_body["outcome"] == "completed"
+    assert len(client.requests) == 1
+    request = json.dumps(client.requests[0])
+    assert f"personas/{name}.md" in request
+    assert "tools/credential-access.md" in request
+    assert events.index("artifact") < events.index("finalize:completed") < events.index("ack")

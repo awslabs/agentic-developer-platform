@@ -17,6 +17,7 @@ from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 from src.tasks.human_authority import human_locator
+from src.tasks.personas import CODEX_REPORT_PERSONAS
 from src.tasks.repository_authority import CODING_PERSONAS, safe_path
 
 router = APIRouter(prefix="/human-principals", tags=["human-task-admin"])
@@ -88,7 +89,13 @@ async def put_policy(
     admin, locator = await enrolled_target(db, current_user, user_id)
     # Only installed canonical Task executables qualify. Repository developer
     # authority cannot be created by labelling an investigator as a developer.
-    if set(body.allowed_personas) - {"agent-task-investigator", "agent-task-cyber", "agent-task-gpt-developer", *CODING_PERSONAS}:
+    if set(body.allowed_personas) - {
+        "agent-task-investigator",
+        "agent-task-cyber",
+        "agent-task-gpt-developer",
+        *CODING_PERSONAS,
+        *CODEX_REPORT_PERSONAS,
+    }:
         raise HTTPException(422, "Unsupported Task executable")
     if CODING_PERSONAS.intersection(body.allowed_personas) and not getattr(body, "repository_scopes", []):
         raise HTTPException(422, "Coding Tasks require explicit repository scope")

@@ -1,0 +1,334 @@
+{
+  "schemaVersion": 1,
+  "authority": "modules/agent-factory/webhook-ingress/lambda/common/personas.py",
+  "claudeCommonSources": [
+    "platform-workflow.md",
+    "core-workflow.md",
+    "agents/agent-routing.md",
+    "research/research-guide.md",
+    "tools/beads-usage.md",
+    "memory.md",
+    "personas/shared/human-communication.md",
+    "tools/credential-access.md"
+  ],
+  "phaseMap": "modules/agent-factory/rules/phase-map.json",
+  "overridePolicy": "Claude retains repository persona replacement; shared platform credential rules are always loaded. Codex reads installed shared policy as developer instructions; repository customization remains task context and cannot select identity or capabilities.",
+  "personas": [
+    {
+      "registeredPersona": "agent-codex-developer",
+      "sourceStatus": "present",
+      "codexKey": "gpt-developer",
+      "definition": "modules/agent-factory/codex-harness/personas/developer.json",
+      "status": "compatibility-adapter",
+      "completionPolicy": "validated-change",
+      "requiredCapabilities": [
+        "repository.read",
+        "repository.write",
+        "tests.run",
+        "change.create",
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "change.update",
+        "agents.delegate"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/agent-codex-developer.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/developer.md"
+    },
+    {
+      "registeredPersona": "agent-codex-reviewer",
+      "sourceStatus": "present",
+      "codexKey": "gpt-reviewer",
+      "definition": "modules/agent-factory/codex-harness/personas/reviewer.json",
+      "status": "compatibility-adapter",
+      "completionPolicy": "review-repair-merge",
+      "requiredCapabilities": [
+        "repository.read",
+        "repository.write",
+        "tests.run",
+        "branch.push",
+        "review.submit",
+        "change.merge",
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "change.update"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/agent-codex-reviewer.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/reviewer.md"
+    },
+    {
+      "registeredPersona": "aidlc",
+      "sourceStatus": "present",
+      "codexKey": "gpt-aidlc",
+      "definition": "modules/agent-factory/codex-harness/personas/aidlc.json",
+      "status": "candidate-unqualified",
+      "completionPolicy": "aidlc",
+      "requiredCapabilities": [
+        "agents.delegate",
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "repository.read",
+        "story.create"
+      ],
+      "skillDependencies": [
+        "aidlc-emit-issues"
+      ],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/aidlc.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/aidlc.md"
+    },
+    {
+      "registeredPersona": "architect",
+      "sourceStatus": "present",
+      "codexKey": "gpt-architect",
+      "definition": "modules/agent-factory/codex-harness/personas/architect.json",
+      "status": "candidate-unqualified",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "repository.read",
+        "story.create"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/architect.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/architect.md"
+    },
+    {
+      "registeredPersona": "codex",
+      "sourceStatus": "present",
+      "codexKey": null,
+      "definition": null,
+      "status": "inapplicable-claude-supervisor",
+      "completionPolicy": null,
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/codex.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/codex.md"
+    },
+    {
+      "registeredPersona": "developer",
+      "sourceStatus": "present",
+      "codexKey": "gpt-developer",
+      "definition": "modules/agent-factory/codex-harness/personas/developer.json",
+      "status": "candidate-unqualified",
+      "completionPolicy": "validated-change",
+      "requiredCapabilities": [
+        "repository.read",
+        "repository.write",
+        "tests.run",
+        "change.create",
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "change.update",
+        "agents.delegate"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/developer.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/developer.md"
+    },
+    {
+      "registeredPersona": "intent-refinement",
+      "sourceStatus": "present",
+      "codexKey": "gpt-intent-refinement",
+      "definition": "modules/agent-factory/codex-harness/personas/intent-refinement.json",
+      "status": "candidate-unqualified",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/intent-refinement.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/intent-refinement.md"
+    },
+    {
+      "registeredPersona": "malware-analysis-agent",
+      "sourceStatus": "present",
+      "codexKey": null,
+      "definition": null,
+      "status": "deferred",
+      "completionPolicy": null,
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "skillDependencies": [
+        "url-analysis",
+        "stage-1-triage",
+        "stage-2-osint",
+        "stage-3-static",
+        "stage-4-dynamic",
+        "stage-5-correlation",
+        "stage-6-verdict",
+        "stage-7-report"
+      ],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/domain-apps/cyber/agent/personas/malware-analysis-agent.md",
+      "sharedPersonaSource": "modules/domain-apps/cyber/agent/personas/malware-analysis-agent.md"
+    },
+    {
+      "registeredPersona": "operations",
+      "sourceStatus": "present",
+      "codexKey": "gpt-operations",
+      "definition": "modules/agent-factory/codex-harness/personas/operations.json",
+      "status": "candidate-unqualified",
+      "completionPolicy": "operations",
+      "requiredCapabilities": [
+        "aws.assume",
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "aws.mutate",
+        "repository.read",
+        "agents.delegate"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/operations.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/operations.md"
+    },
+    {
+      "registeredPersona": "pm",
+      "sourceStatus": "present",
+      "codexKey": "gpt-pm",
+      "definition": "modules/agent-factory/codex-harness/personas/pm.json",
+      "status": "candidate-unqualified",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "agents.delegate",
+        "repository.read",
+        "story.create"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/pm.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/pm.md"
+    },
+    {
+      "registeredPersona": "product",
+      "sourceStatus": "present",
+      "codexKey": "gpt-product",
+      "definition": "modules/agent-factory/codex-harness/personas/product.json",
+      "status": "candidate-unqualified",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "repository.read",
+        "story.create"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/product.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/product.md"
+    },
+    {
+      "registeredPersona": "pt-superpower",
+      "sourceStatus": "missing-preexisting-4037",
+      "codexKey": null,
+      "definition": null,
+      "status": "deferred",
+      "completionPolicy": null,
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": null,
+      "sharedPersonaSource": null
+    },
+    {
+      "registeredPersona": "reviewer",
+      "sourceStatus": "present",
+      "codexKey": "gpt-reviewer",
+      "definition": "modules/agent-factory/codex-harness/personas/reviewer.json",
+      "status": "candidate-unqualified",
+      "completionPolicy": "review-repair-merge",
+      "requiredCapabilities": [
+        "repository.read",
+        "repository.write",
+        "tests.run",
+        "branch.push",
+        "review.submit",
+        "change.merge",
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "change.update"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/reviewer.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/reviewer.md"
+    },
+    {
+      "registeredPersona": "superplane-operator",
+      "sourceStatus": "present",
+      "codexKey": null,
+      "definition": null,
+      "status": "deferred",
+      "completionPolicy": null,
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "skillDependencies": [
+        "superplane",
+        "skypilot"
+      ],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/domain-apps/superplane/agent/personas/superplane-operator.md",
+      "sharedPersonaSource": "modules/domain-apps/superplane/agent/personas/superplane-operator.md"
+    },
+    {
+      "registeredPersona": "superplane-researcher",
+      "sourceStatus": "present",
+      "codexKey": null,
+      "definition": null,
+      "status": "deferred",
+      "completionPolicy": null,
+      "requiredCapabilities": [],
+      "optionalCapabilities": [],
+      "skillDependencies": [
+        "superplane",
+        "skypilot"
+      ],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/domain-apps/superplane/agent/personas/superplane-researcher.md",
+      "sharedPersonaSource": "modules/domain-apps/superplane/agent/personas/superplane-researcher.md"
+    }
+  ],
+  "claudeTools": [
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "WebSearch",
+    "WebFetch",
+    "Skill"
+  ],
+  "conditionalClaudeTools": {
+    "KNOWLEDGE_LAYER_ENABLED": "KNOWLEDGE_LAYER_TOOLS and configured knowledge MCP server",
+    "AIDLC_ENABLED": [
+      "Task"
+    ]
+  },
+  "claudeToolAuthoritySource": "modules/agent-factory/agent/src/agent-worker.ts",
+  "skillStagingSource": "modules/agent-factory/agent-worker-image/stage-personas.sh",
+  "claudeCompletionSource": "modules/agent-factory/agent/src/agent-worker.ts"
+}

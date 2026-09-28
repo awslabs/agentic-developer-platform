@@ -168,7 +168,8 @@ be qualified.
 
 
 The packaged Task keys `agent-task-gpt-developer` and
-`agent-task-gpt-intent-refinement` have authoritative Codex compatibility metadata
+`agent-task-gpt-intent-refinement`, `agent-task-gpt-architect`,
+`agent-task-gpt-product` and `agent-task-gpt-pm` have authoritative Codex compatibility metadata
 and resolve to this shared entrypoint only when the host explicitly includes them
 in `ADP_CODEX_TASK_PERSONAS`. The Terraform `codex_task_personas` setting defaults
 to an empty set in every environment; `codex_otel_endpoint` uses the existing ADOT collector when

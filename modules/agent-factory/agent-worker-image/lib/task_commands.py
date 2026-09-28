@@ -47,7 +47,10 @@ TASK_AGENT_COMMANDS: dict[str, tuple[str, ...]] = {
 # This setting is never inherited by the SDK or accepted from a Task envelope.
 CODEX_TASK_COMMANDS: dict[str, tuple[str, ...]] = {
     key: ("node", "/app/codex-harness/dist/task-entry.mjs", "--embedded")
-    for key in ("agent-task-gpt-developer", "agent-task-gpt-intent-refinement")
+    for key in (
+        "agent-task-gpt-developer", "agent-task-gpt-intent-refinement",
+        "agent-task-gpt-architect", "agent-task-gpt-product", "agent-task-gpt-pm",
+    )
 }
 
 

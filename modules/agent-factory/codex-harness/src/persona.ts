@@ -17,8 +17,14 @@ export const personaSchema = z.object({
   revision: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/),
   displayName: z.string().min(1).max(100),
   instructions: z.string().min(1).max(24000),
+  sharedRules: z.object({
+    version: z.literal(1), persona: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    sources: z.array(z.object({ path: z.string().regex(/^[a-zA-Z0-9_.\/-]+$/).max(255), sha256: digest }).strict()).min(1).max(32),
+  }).strict().optional(),
   skills: z.array(z.object({
     id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/), sha256: digest,
+    requiredCapabilities: z.array(capabilitySchema).refine(unique).optional(),
+    requiredTools: z.array(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$/)).max(32).refine(unique).optional(),
   }).strict()).max(16).refine(v => unique(v.map(s => s.id)), "Duplicate skill"),
   requiredCapabilities: z.array(capabilitySchema).refine(unique),
   optionalCapabilities: z.array(capabilitySchema).refine(unique),
@@ -59,6 +65,10 @@ export const sha256 = (text: string) => createHash("sha256").update(text).digest
 export function snapshotPersona(raw: string, skillContent: ReadonlyMap<string, string>) {
   if (Buffer.byteLength(raw) > 65536) throw new Error("Persona definition exceeds 64 KiB");
   const persona = personaSchema.parse(JSON.parse(raw));
+  if (persona.sharedRules && (new Set(persona.sharedRules.sources.map(s => s.path)).size !== persona.sharedRules.sources.length
+    || persona.sharedRules.sources.some(s => s.path.startsWith('/') || s.path.split('/').some(p => !p || p === '.' || p === '..')))) {
+    throw new Error("Invalid shared rule references");
+  }
   const skills = persona.skills.map(skill => {
     const content = skillContent.get(skill.id);
     if (content === undefined || Buffer.byteLength(content) > 65536 || sha256(content) !== skill.sha256) {
@@ -66,6 +76,8 @@ export function snapshotPersona(raw: string, skillContent: ReadonlyMap<string, s
     }
     return content;
   });
+  const shared = persona.sharedRules;
+  if (shared && persona.key !== `gpt-${shared.persona}`) throw new Error("Shared rules belong to another persona");
   const instructions = [persona.instructions, ...skills].join("\n\n");
   if (Buffer.byteLength(instructions) > persona.limits.maxContextBytes) {
     throw new Error("Persona and skills exhaust the context budget");

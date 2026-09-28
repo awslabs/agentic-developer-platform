@@ -24,10 +24,10 @@ from src.admin.persona_models.catalogue_service import build_persona_catalogue
 class TestPersonaCatalogue:
     """AC-01 and AC-02: the persona catalogue reads from the authoritative source."""
 
-    def test_catalogue_has_exactly_20_personas(self):
-        """AC-02: all 20 registered keys, including automatic personas."""
+    def test_catalogue_has_exactly_24_personas(self):
+        """AC-02: all 24 registered keys, including automatic personas."""
         catalogue = build_persona_catalogue()
-        assert len(catalogue) == 21, f"Expected 21 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
+        assert len(catalogue) == 24, f"Expected 24 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
 
     def test_catalogue_keys_match_valid_personas(self):
         """AC-01/AC-02: keys are exactly VALID_PERSONAS, no more, no less."""
@@ -51,7 +51,13 @@ class TestPersonaCatalogue:
         catalogue = build_persona_catalogue()
         for persona in catalogue:
             expected = COMPATIBILITY_CLASS_CODEX if persona.key in {"agent-codex-reviewer", "agent-codex-developer"} else COMPATIBILITY_CLASS_CLAUDE
-            if persona.key in {"agent-task-gpt-developer", "agent-task-gpt-intent-refinement"}:
+            if persona.key in {
+                "agent-task-gpt-developer",
+                "agent-task-gpt-intent-refinement",
+                "agent-task-gpt-architect",
+                "agent-task-gpt-product",
+                "agent-task-gpt-pm",
+            }:
                 expected = COMPATIBILITY_CLASS_CODEX
             elif persona.key.startswith("agent-task-"):
                 expected = "anthropic_messages"
@@ -72,7 +78,7 @@ class TestPersonaCatalogue:
                 assert persona.not_configurable_reason is None, f"{persona.key} is configurable but has reason: {persona.not_configurable_reason}"
 
     def test_expected_persona_keys_present(self):
-        """All 20 expected persona keys are present."""
+        """All 24 expected persona keys are present."""
         expected = {
             "agent-codex-reviewer",
             "agent-codex-developer",
@@ -95,6 +101,9 @@ class TestPersonaCatalogue:
         assert catalogue_keys == expected | {
             "agent-task-gpt-developer",
             "agent-task-gpt-intent-refinement",
+            "agent-task-gpt-architect",
+            "agent-task-gpt-product",
+            "agent-task-gpt-pm",
             "agent-task-investigator",
             "agent-task-cyber",
             "agent-task-claude-developer",

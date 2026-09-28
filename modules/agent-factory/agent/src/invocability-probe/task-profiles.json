@@ -30,5 +30,23 @@
     "body": "{\"input\":\"Call task_probe with value OK.\",\"max_output_tokens\":128,\"parallel_tool_calls\":false,\"reasoning\":{\"effort\":\"medium\"},\"tools\":[{\"description\":\"Authorized ADP tools.\",\"name\":\"mcp__adp\",\"tools\":[{\"description\":\"Return probe evidence.\",\"name\":\"task_probe\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"value\":{\"type\":\"string\"}},\"required\":[\"value\"],\"type\":\"object\"},\"strict\":false,\"type\":\"function\"}],\"type\":\"namespace\"}]}",
     "digest": "cd32df8e1b174afa890ee5c95a94ef8db03301af336acdf1cd27f5bfd1c2246d",
     "transport": "openai_responses"
+  },
+  "agent-task-gpt-architect": {
+    "revision": "task-codex-sdk-inline-responses-v2",
+    "body": "{\"input\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"medium\"}}",
+    "digest": "fbd06d53ee3a9b2c6ecf8336fcab58e7c026629b7cf83cfa743377f0bc5507e2",
+    "transport": "openai_responses"
+  },
+  "agent-task-gpt-product": {
+    "revision": "task-codex-sdk-inline-responses-v2",
+    "body": "{\"input\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"medium\"}}",
+    "digest": "fbd06d53ee3a9b2c6ecf8336fcab58e7c026629b7cf83cfa743377f0bc5507e2",
+    "transport": "openai_responses"
+  },
+  "agent-task-gpt-pm": {
+    "revision": "task-codex-sdk-inline-responses-v2",
+    "body": "{\"input\":[{\"content\":[{\"text\":\"Reply OK.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"max_output_tokens\":64,\"reasoning\":{\"effort\":\"medium\"}}",
+    "digest": "fbd06d53ee3a9b2c6ecf8336fcab58e7c026629b7cf83cfa743377f0bc5507e2",
+    "transport": "openai_responses"
   }
 }

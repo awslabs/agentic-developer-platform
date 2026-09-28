@@ -2,16 +2,23 @@
 import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { projectRules, COMMON_RULES, phaseRules } from '../dist/projection.js';
+import { fileURLToPath } from 'node:url';
 import { snapshotPersona } from '../dist/persona.js';
 import { HARNESS_CONTRACT_REVISION } from '../dist/admission.js';
 import { runAdmittedSession } from '../dist/session.js';
 
-const snapshot = snapshotPersona(JSON.stringify({ schemaVersion: 1, key: 'gpt-fixture', revision: '1', displayName: 'Fixture',
+const shared = process.argv.includes('--shared-rules');
+const root = fileURLToPath(new URL('../../rules/', import.meta.url));
+const projected = shared ? projectRules(root, 'product', [...COMMON_RULES, 'personas/product.md', ...phaseRules(root, 'product')]) : undefined;
+const sharedRules = projected && { ...projected, sources: projected.sources.map(({ path, sha256 }) => ({ path, sha256 })) };
+const key = shared ? 'gpt-product' : 'gpt-fixture';
+const snapshot = snapshotPersona(JSON.stringify({ schemaVersion: 1, key, ...(sharedRules ? { sharedRules } : {}), revision: '1', displayName: 'Fixture',
   instructions: 'Use fixture evidence and report uncertainties. Do not use tools.', skills: [],
   requiredCapabilities: ['artifacts.publish'], optionalCapabilities: [], surfaces: ['task-api'], completionPolicy: 'report', effort: 'medium',
   limits: { maxTurns: 2, maxContextBytes: 60000, maxDurationMs: 15000 } }), new Map());
 const layers = Object.fromEntries(['tenant', 'principal', 'run', 'surface', 'runtime'].map(key => [key, ['artifacts.publish']]));
-const policy = { personaKey: 'gpt-fixture', personaDigest: snapshot.digest, compatibilityClass: 'codex-sdk', harnessRevision: HARNESS_CONTRACT_REVISION,
+const policy = { personaKey: key, personaDigest: snapshot.digest, compatibilityClass: 'codex-sdk', harnessRevision: HARNESS_CONTRACT_REVISION,
   canonicalModel: 'gpt-5-codex', allowedEfforts: ['medium'], capabilityLayers: layers,
   limits: { maxTurns: 2, maxContextBytes: 60000, maxDurationMs: 15000 }, deadlineMs: Date.now() + 60000 };
 const input = { runId: 'fixture-run', snapshot, policy, source: { kind: 'task-api', taskId: 'tsk_fixture', generation: 1 },
@@ -26,6 +33,7 @@ const host = {
   async model(request) {
     calls++;
     assert.ok(JSON.stringify(request).includes(snapshot.instructions), 'Pinned persona instructions missing from actual SDK request');
+    if (shared) assert.ok(JSON.stringify(request).includes('## ADP source: personas/product.md'), 'Real session omitted shared rule projection');
     assert.equal('model' in request, false);
     assert.equal('tools' in request, false);
     return { operationStatus: 'confirmed', response: { id: 'resp_fixture', status: 'completed', output: [

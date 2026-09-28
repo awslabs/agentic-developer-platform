@@ -696,7 +696,7 @@ variable "codex_task_personas" {
   type        = set(string)
   default     = []
   validation {
-    condition     = alltrue([for persona in var.codex_task_personas : contains(["agent-task-gpt-developer", "agent-task-gpt-intent-refinement"], persona)])
+    condition     = alltrue([for persona in var.codex_task_personas : contains(["agent-task-gpt-developer", "agent-task-gpt-intent-refinement", "agent-task-gpt-architect", "agent-task-gpt-product", "agent-task-gpt-pm"], persona)])
     error_message = "Only packaged shared Codex Task personas may be enabled."
   }
 }
