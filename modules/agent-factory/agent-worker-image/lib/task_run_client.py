@@ -460,6 +460,18 @@ class TaskRunClient:
             valid = False
         if not valid:
             raise TaskRunClientError("Tool endpoint unavailable")
+        if parsed.path.endswith("/tools/browser"):
+            cleanup = body.get("operation") == "cancel_jobs"
+            deadline = self._clock() + 210
+            if not cleanup:
+                deadline = min(deadline, self._deadline)
+            while True:
+                result = self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
+                if result.get("operation_status") != "pending" or (self._stopping and not cleanup):
+                    return result
+                if self._clock() >= deadline:
+                    return result
+                time.sleep(min(2, max(0, deadline - self._clock())))
         return self._post("cyber", body, run_bound=True, tool_endpoint=endpoint)
 
     def validation_service(self, body: dict) -> dict:

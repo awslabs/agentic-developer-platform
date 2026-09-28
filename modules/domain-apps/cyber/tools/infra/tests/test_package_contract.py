@@ -12,6 +12,17 @@ def test_container_copies_only_owned_tool_packages():
     assert 'CMD ["cyber_tools.handler.lambda_handler"]' in lines
 
 
+def test_browser_service_image_has_only_owned_sources_and_no_listener():
+    dockerfile = (INFRA.parent / "Dockerfile.browser").read_text()
+    assert "COPY modules/tools/adp_tools/ /app/adp_tools/" in dockerfile
+    assert "COPY modules/domain-apps/cyber/tools/cyber_tools/ /app/cyber_tools/" in dockerfile
+    assert "COPY modules/domain-apps/cyber/agent/skills/url-analysis/ /app/skills/url-analysis/" in dockerfile
+    assert 'CMD ["python3", "-m", "cyber_tools.browser_http"]' in dockerfile
+    assert "EXPOSE " not in dockerfile
+    ignored = (INFRA.parent / "Dockerfile.browser.dockerignore").read_text()
+    assert "**/.env*" in ignored and "!modules/tools/adp_tools/**" in ignored
+
+
 def test_shared_api_stage_and_public_lambda_are_not_owned():
     source = "\n".join(path.read_text() for path in INFRA.glob("*.tf"))
     for resource in ("aws_api_gateway_stage", "aws_api_gateway_deployment", "aws_lambda_function_url"):

@@ -107,6 +107,32 @@ run "native_browser_has_no_broker_dependency" {
   }
 }
 
+run "browser_http_is_additive_and_default_off" {
+  command = plan
+  variables {
+    tools_endpoint         = "https://gateway.example/dev/tools/cyber"
+    task_url_tools_enabled = true
+  }
+  assert {
+    condition     = jsondecode(output.worker_environment.ADP_TASK_TOOL_ROUTES)["cyber.browser_start"] == "local:cyber_tools.task_browser.TaskBrowser" && jsondecode(output.worker_environment.ADP_TASK_TOOL_ROUTES)["cyber.common_crawl_scan"] == "https://gateway.example/dev/tools/cyber/common-crawl"
+    error_message = "New Tasks must retain local Browser and HTTP Common Crawl by default."
+  }
+}
+
+run "browser_http_opt_in_switches_all_operations_together" {
+  command = plan
+  variables {
+    tools_endpoint            = "https://gateway.example/dev/tools/cyber"
+    browser_tools_endpoint    = "https://gateway.example/dev/tools/browser"
+    task_url_tools_enabled    = true
+    task_browser_http_enabled = true
+  }
+  assert {
+    condition     = alltrue([for op in ["browser_start", "browser_step", "browser_inspect", "browser_close", "browser_cleanup"] : jsondecode(output.worker_environment.ADP_TASK_TOOL_ROUTES)["cyber.${op}"] == var.browser_tools_endpoint]) && jsondecode(output.worker_environment.ADP_TASK_TOOL_ROUTES)["cyber.common_crawl_scan"] == "https://gateway.example/dev/tools/cyber/common-crawl"
+    error_message = "Opt-in routes all Browser operations and cleanup without moving Common Crawl."
+  }
+}
+
 run "websearch_route_is_opt_in_and_preserves_url_tools" {
   command = plan
   variables {

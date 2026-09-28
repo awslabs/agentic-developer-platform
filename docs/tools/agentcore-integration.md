@@ -138,6 +138,231 @@ Common Crawl transports are unchanged. The service test workflow uses the same
 boto3 version as the Lambda image and validates requests against its service model;
 these offline checks do not establish real-provider execution or sandbox isolation.
 
+
+## Browser HTTP tool (#6636)
+
+Issue #6636, parent #6633. `POST /tools/browser` is additive and disabled by
+default. Existing Tasks use `local:cyber_tools.task_browser.TaskBrowser`;
+Common Crawl remains HTTP. `/tools/cyber` still rejects browser operations.
+The separate shared API stage owner publishes routes after review, not merge.
+
+## Shared Task contract (1.0)
+
+Initial callers are IAM-authenticated Task workers; a model chooses an allowed
+registered tool name, never an endpoint. All `/tools` services reuse
+`TaskAttemptBody` and `TaskAuthorityClient` from `modules/tools/adp_tools`.
+Gateway requires AWS_IAM, passes the verified worker ARN, and the service
+allowlists exact roles and forwards only the run credential/workload proof to
+`tool-authorize`. The authoritative response binds Task, attempt, tenant,
+principal and scope; never take tenant, principal, caller ARN or endpoint from
+client JSON or headers. Grants are the intersection of current principal policy,
+Task-frozen grants and current persona. Cleanup is restricted to owned sessions.
+
+`POST /tools/browser` request (every object rejects unknown keys):
+
+```json
+{"schema_version":"1.0","attempt":{"run":{"task_id":"tsk_00000000-0000-4000-8000-000000000001","invocation_id":"00000000-0000-4000-8000-000000000002","generation":1},"runtime_attempt_id":"00000000-0000-4000-8000-000000000003"},"operation_id":"00000000-0000-4000-8000-000000000004","operation":"browser_start","payload":{"url":"https://example.org/","scope":"host","profile":"desktop"}}
+```
+
+Task IDs are `tsk_` plus lowercase UUIDv4; invocation/attempt/operation IDs
+are lowercase UUIDv4 and generation is integer 1–64. The decoded request is
+at most 65,536 bytes. Other AgentCore stories may use different operation and
+payload definitions but must reuse these top-level fields, Task authorization,
+artifact and result semantics. Unknown operations, types and fields fail before
+provider calls. Browser operations and exact grants:
+
+| Operation | Grant | Required payload | Optional payload |
+| --- | --- | --- | --- |
+| `browser_start` | `cyber.browser_start` | `url` | `session_key`, `profile`, `scope` |
+| `browser_step` | `cyber.browser_step` | `session_id`, `view_id`, `action` | `candidate_id`, `seconds`, `url` |
+| `browser_inspect` | `cyber.browser_inspect` | `session_id` | `section`, `offset` |
+| `browser_close` | `cyber.browser_close` | `session_id` | none |
+| `cancel_jobs` | `cyber.cancel_jobs` with `cleanup=true` | none | none |
+
+The built Task SDK invokes these as `cyber.browser_start`,
+`cyber.browser_step`, `cyber.browser_inspect`, `cyber.browser_close` and
+host-only `cyber.browser_cleanup` (which sends `operation:"cancel_jobs"`).
+For example, reuse the start request's **attempt** with a new UUIDv4
+`operation_id` for each distinct operation and these payloads, in order:
+
+```json
+{"operation":"browser_step","payload":{"session_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view_id":"view1","action":"screenshot"}}
+{"operation":"browser_inspect","payload":{"session_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","section":"screenshot"}}
+{"operation":"browser_close","payload":{"session_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+```
+
+The 64-hex handle and `view_id` above are placeholders from the **confirmed
+start** result, not caller-selected IDs. The SDK supplies the unchanged
+`schema_version`, `attempt` and generated `operation_id` in each envelope.
+
+`url_contract.py` is the payload schema: strings at most 2048 characters;
+`session_id` is 64 lowercase hex; `session_key` is 1–64 URL-safe characters;
+profile is `desktop`/`mobile`; scope is `host`/`observed_external`; action is
+`navigate`, `follow`, `expand`, `root`, `screenshot`, `back`, `scroll` or `wait`.
+Candidate IDs are required **only** for follow/expand, wait seconds (1–15)
+**only** for wait, URL **only** for navigate. Inspection section is `summary`,
+`dom`, `forms`, `scripts`, `network`, `frames`, `screenshot` or `choices`, offset
+is integer 0–1000000. A start URL must occur in the Task inputs; Task
+`browser_scope=host` forbids widening. Each action requires fresh authority.
+
+Responses use the existing Task consumer fields `schema_version`, `task_id`,
+`operation_id`, `operation_status` (`confirmed`, `rejected`, `pending`, `unknown`),
+`result` and, for confirmed evidence, `artifact` (`artifact_id`,
+`content_type`, `content_sha256`, `byte_length`). Confirmed start/step results
+contain `status: completed`, opaque `session_id`, `view_id`, `session_open`,
+`cleanup_status`, bounded `choices`, `observations` and `evidence_artifacts`.
+Inspect retains paged text or a bounded JPEG preview. Raw screenshots and DOM
+use the existing Task artifact path, not inline provider tokens or remote URLs.
+A lost outcome retains the **same** operation identity:
+
+```json
+{"schema_version":"1.0","task_id":"tsk_00000000-0000-4000-8000-000000000001","operation_id":"00000000-0000-4000-8000-000000000004","operation_status":"unknown","result":{"status":"unknown","reason":"browser_outcome_unavailable"}}
+```
+
+Confirmed start example (IDs here are illustrative):
+
+```json
+{"schema_version":"1.0","task_id":"tsk_00000000-0000-4000-8000-000000000001","operation_id":"00000000-0000-4000-8000-000000000004","operation_status":"confirmed","result":{"status":"completed","session_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view_id":"view1","session_open":true,"cleanup_status":"open","choices":[],"evidence_artifacts":["art_00000000-0000-4000-8000-000000000005"],"observations":[]},"artifact":{"artifact_id":"art_00000000-0000-4000-8000-000000000006","content_type":"application/json","content_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","byte_length":123}}
+```
+
+Invalid inputs: HTTP 422 `{"code":"invalid_request","message":"Unsupported browser operation"}`
+or a field-specific refusal; transport/Task authority failures: HTTP 403
+`code: tool_refused`. A valid, authenticated but unowned session returns HTTP
+200 with `operation_status:"rejected"` and `result.status:"refused"`. An
+unavailable gateway returns HTTP 503 `code: outcome_unavailable`; a lost
+provider result remains an HTTP 200 `unknown` receipt. Never expose exception text,
+credentials, session tokens or URL query strings in errors. Atomically claim
+operation ID + verified attempt + sorted-JSON payload digest **before** provider
+calls. Start/step/close also claim a durable digest alias so a *different* ID
+for the same uncertain action returns HTTP 409 rather than repeating it.
+Persist pending/confirmed/rejected/unknown outcomes beyond session expiry;
+replaying an uncertain start/navigation/action must only read the old outcome,
+never dispatch again. Expire browser sessions separately. Send progress and
+artifact receipts through the Task SDK event/artifact consumer without an extra
+model turn.
+
+Runnable **mocked-provider integration tests** (not a live AWS claim):
+
+```bash
+uv venv --system-site-packages /tmp/adp-browser-tests
+uv pip install --python /tmp/adp-browser-tests/bin/python 'pytest>=8,<9' 'moto[dynamodb,sqs]>=5,<6' 'rfc8785==0.1.4' 'fastapi>=0.115' 'pydantic>=2' 'Pillow>=10'
+env -u ADP_TASK_TOOL_ROUTES -u ADP_TASK_TOOL_CLEANUP \
+  BG_CONFIG_DIR="$(mktemp -d)" \
+  PYTHONPATH=modules/domain-apps/cyber/tools:modules/tools:modules/domain-apps/cyber/agent/skills/url-analysis:modules/agent-factory/agent-worker-image \
+  /tmp/adp-browser-tests/bin/python -m pytest -q \
+  modules/domain-apps/cyber/tools/tests modules/domain-apps/cyber/tools/infra/tests \
+  modules/agent-factory/agent-worker-image/tests/test_task_run_client.py
+terraform -chdir=modules/domain-apps/cyber/tools/infra test
+terraform -chdir=modules/domain-apps/cyber/infra/platform-integration test
+```
+
+At this source revision, the local acceptance suite exercises:
+
+| Criterion | Local result | Evidence and limit |
+| --- | --- | --- |
+| AC-01 | Pass, mocked AWS/provider | `test_browser_http.py` sends start, screenshot/DOM inspect, step and close through the Task host, IAM Lambda, durable queue consumer, artifact receipts and offline Task report. No live AWS receipt. |
+| AC-02 | Pass for explicit guards, mocked AWS/provider | Cross-Task use, private-IP navigation, disallowed scope, unknown fields, IAM caller denial and revoked grant are refused before provider actions. Redirects, page subrequests and DNS rebinding are **not** filtered or live-tested. |
+| AC-03 | Pass, mocked AWS/provider | Same-ID and fresh-ID duplicate actions, lost provider/artifact result, cancelled Task, stale claim and restart/owned stop tests prevent action replay and false cleanup success. Provider expiry after irrecoverable start is a documented operator reconciliation case. |
+| AC-04 | Pass, mocked AWS/provider | Terraform route tests keep local Browser and Common Crawl as defaults; opt-in switches all Browser names at once. Existing cyber Node SDK/report and Python routing tests pass. No production switch. |
+
+The Node baseline runs after `npm ci --include=dev` and `npm run build` in
+`modules/agent-factory/task-agents/investigator` and `npm ci` / `npm run build`
+in `modules/agent-factory/task-agents/cyber`, followed by `npm test` there.
+The live-provider smoke below remains an operator handoff, not acceptance
+evidence from this PR.
+
+## Provider and hosting
+
+`TaskBrowser` keeps its session/receipt map in worker memory;
+`local_browser` holds Playwright and a private Unix socket **in that pod**, with
+a default 600-second lease. The `/tools/cyber` Lambda has a 28-second lifetime;
+copying the adapter there loses the session and ownership across requests.
+The historical `url-analysis-browser-broker` is a one-shot HTTP capture service,
+not an interactive replacement. Native Browser uses `BrowserClient.start`,
+CDP `ConnectBrowserAutomationStream`, and `StopBrowserSession`, not a generic
+runtime or `InvokeBrowser`. Provider docs describe configurable session timeouts
+(default 15 minutes, maximum 8 hours), not a guarantee of Task ownership.
+
+The additive implementation uses an AWS_IAM gateway Lambda at
+`POST /tools/browser` to check the worker role and fresh Task grant before creating
+an atomic DynamoDB operation claim and sending a FIFO SQS message. A single
+private EKS consumer owns the native browser socket and provider adapter;
+there is **no public listener or Lambda browser state**. The consumer
+revalidates the Task authority with forwarded workload/run proofs before each
+action and writes a bounded Task artifact receipt to the durable claim. The
+worker polls the **same operation ID** for up to 210 seconds, never dispatching
+another action when a gateway response is lost. Claims older than 240 seconds
+return `unknown`, not a retry; queued work older than 225 seconds is dropped
+before dispatch. SQS redelivery only reads the existing claim. After process
+loss, previous receipts and Task/attempt session ownership survive in DynamoDB,
+but browser sockets do not. Steps fail closed, and cleanup stops/verifies only
+owned provider sessions. Uncertain cleanup reports pending. The native lease
+defaults to 600 seconds; session continuity after pod loss is not asserted.
+
+`browser_http_enabled=false` in the separate tools stack provisions nothing;
+`browser_admission_enabled=false` provisions the route but refuses new starts;
+`task_browser_http_enabled=false` in the cyber worker integration keeps **all**
+existing Browser names local by default. Set the latter only for *new Tasks*,
+with `browser_tools_endpoint=https://<gateway>/<stage>/tools/browser`, after
+the service and stage are available. The gateway Lambda has exact Task
+authority, table and FIFO send permissions; the EKS IRSA role has exact
+authority, table, FIFO receive and region-bound Browser lifecycle permissions.
+The protected worker gets only this route's stage-qualified invoke ARN. No
+tenant ID or identity headers supplied by the model are accepted. The native
+adapter validates analyst-selected URLs, candidates and scope, but does not
+provide all-traffic filtering of redirects, page subrequests or DNS rebinding.
+Do not claim a private-network egress safety guarantee for this endpoint.
+
+**Network boundary:** The HTTP path refuses explicitly disallowed selected
+destinations and scopes. The native Browser does not filter every page-generated
+request, redirect or DNS rebinding; this endpoint is not an all-traffic private
+network filter. Live account quotas, reachability and provider permissions are
+not verified. A guarded custom browser/egress boundary needs its own review,
+not a redesign of the currently working Task browser in this issue.
+
+## Switch, deployment and operator handoff
+
+Keep existing `ADP_TASK_TOOL_ROUTES` browser entries local by default, including
+`cyber.browser_cleanup`; Common Crawl stays `/tools/cyber/common-crawl`.
+`browser_tools_endpoint` and `task_browser_http_enabled=false` are
+app-owned configuration inputs in `infra/platform-integration/outputs.tf` and
+the protected worker invoke allowlist. Switch **all** browser operations,
+including cleanup, atomically for *new Tasks* to the exact HTTPS
+`/tools/browser` route after validation; pin the backend for each Task/attempt.
+On rollback disable new HTTP starts, drain/close owned HTTP sessions, then route
+new attempts local. Never fall back to local on an unknown HTTP start.
+
+Build a separate immutable browser service image; review a separate IaC plan for
+private EKS egress (the consumer has no ingress), role trust, queue, table and
+API route. The cyber Lambda, Common Crawl,
+shared login stores and model proxy are unchanged. The shared API owner must
+publish the route in a coordinated stage release, not by replacing a concurrent
+deployment. See `modules/domain-apps/cyber/tools/infra/README.md` for the build,
+plan and stage-ownership pattern and `docs/adp-platform-deployment/deploy-with-agent.md`
+for later **authorized** live operations. Account/region/resource IDs are
+configuration, never demo constants. Isolate `BG_CONFIG_DIR` in tests.
+
+For a
+*separately authorized* one-session live smoke: confirm account, region, quota,
+permissions and cost budget; start one controlled public page with a lease at
+most 600 seconds; record Task receipt and provider session ID privately;
+close and check TERMINATED status, watch concurrent session/seconds and
+CloudWatch/CloudTrail, and drain before removing only the new resources.
+Browser session seconds, bytes/artifacts and provider charges are separate from
+model tokens; an estimate is not settled billing. No infrastructure or paid
+session is created by this PR.
+
+### Browser review fixes
+
+The gateway republishes queued claims with the same FIFO deduplication identity
+when initial queue publication fails. Normal browser actions remain non-replayable.
+Cleanup is idempotent: pending cleanup can be processed again with the same
+operation ID, stops only owned sessions, and prevents further actions for the
+attempt even after a consumer restart. Unknown sessions remain pending until the
+provider lease plus the 120-second startup allowance expires. Completed cleanup
+releases the in-memory owner. The host continues bounded cleanup polling after
+Task cancellation or deadline expiry. No existing default browser route changes.
+
 ## Web Search implementation (#6634)
 
 The Browser section above is the unchanged design checkpoint from #6637; **Web

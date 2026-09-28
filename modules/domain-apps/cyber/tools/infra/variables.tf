@@ -2,6 +2,42 @@ variable "enabled" {
   type    = bool
   default = false
 }
+variable "browser_http_enabled" {
+  type    = bool
+  default = false
+}
+variable "browser_admission_enabled" {
+  type    = bool
+  default = false
+}
+variable "browser_session_seconds" {
+  type    = number
+  default = 600
+  validation {
+    condition     = var.browser_session_seconds >= 1 && var.browser_session_seconds <= 1800 && floor(var.browser_session_seconds) == var.browser_session_seconds
+    error_message = "Browser session lease must be 1-1800 whole seconds."
+  }
+}
+variable "browser_service_image" {
+  type    = string
+  default = ""
+  validation {
+    condition     = var.browser_service_image == "" || can(regex("^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[^@:]+@sha256:[a-f0-9]{64}$", var.browser_service_image))
+    error_message = "Pin the browser service image to an ECR digest."
+  }
+}
+variable "browser_namespace" {
+  type    = string
+  default = ""
+}
+variable "browser_oidc_provider_arn" {
+  type    = string
+  default = ""
+}
+variable "browser_oidc_issuer" {
+  type    = string
+  default = ""
+}
 variable "aws_account_id" {
   type = string
   validation {

@@ -119,6 +119,88 @@ Terraform tests use a mocked provider. They validate default-off behavior,
 immutable-image admission and exact IAM route scope, and do not establish live
 network reachability or queue/application trust.
 
+## Additive Browser HTTP tool (#6636)
+
+`browser_http_enabled=false` and `browser_admission_enabled=false` are separate
+defaults. Enable the former to plan a dedicated `POST /tools/browser` AWS_IAM
+route, Lambda gateway, encrypted FIFO queue and dead-letter queue, protected
+claim/session DynamoDB table and **one** private EKS consumer. No LoadBalancer,
+Function URL, public node access, cyber Lambda routing change or API stage
+deployment is created. The EKS consumer has no inbound listener; it receives
+only FIFO jobs. Its IRSA role can read Task authority, operate only its own
+queue/table and use regional AgentCore Browser lifecycle/CDP APIs. The gateway
+role can only authorize, read/write claims and enqueue. Set explicit namespace,
+OIDC provider ARN/issuer, pinned `browser_service_image` and pinned `image_uri`
+for the gateway, exact worker roles, Task authority endpoint and ARNs. Supply
+Kubernetes provider credentials for the *existing* private cluster; this stack
+does not create a cluster. Use a separate state key and coordinate ownership of
+the shared `/tools` parent resource with the API owner.
+
+Build the separate consumer image from the repository root with
+`docker build --platform linux/amd64 --provenance=false -f modules/domain-apps/cyber/tools/Dockerfile.browser -t <private-ECR-repo>:<source-revision> .`.
+Publish it only under an explicitly authorized ECR account and pin its returned
+immutable digest as `browser_service_image`. Build the existing Lambda package
+with `build-image.sh` above and pin its digest as `image_uri`. The service image
+includes the maintained `local_browser`/Playwright adapter; it does not change
+the Task worker image. Use `deploy.sh plan` and `deploy.sh apply` with confirmed
+account and reviewed saved plan, then ask the shared API owner to publish the
+new stage; merge does **not** deploy it. Set `browser_admission_enabled=true`
+only in a later reviewed plan to accept new HTTP starts. Set
+`browser_tools_endpoint` and `task_browser_http_enabled=true` in the cyber
+worker integration **only for new Tasks**; all five browser routes, including
+cleanup, switch together, while Common Crawl and default native Browser do not.
+Keep older Task routing pinned; never fall back between backends on timeout.
+
+An operation ID and verified Task/attempt/payload digest are durably claimed
+before the provider call. The worker polls the same ID up to 210 seconds. FIFO
+dispatch skips claims older than 225 seconds; outstanding receipts become
+unknown after 240 seconds. Max four recorded sessions per Task attempt. The
+native process lease defaults to 600 seconds (configured by
+`browser_session_seconds` / `CYBER_BROWSER_SESSION_SECONDS` in the consumer image);
+the owned session record retains its explicit expiry timestamp. The native
+adapter passes this configured lease to AgentCore; its 15-minute service
+default does not override our explicit session timeout. If a pod dies,
+later actions fail closed; session records let an owned cleanup attempt stop
+and verify the provider session using IRSA. A failed stop remains pending.
+Do not reset the table: its claims prevent uncertain replay. Queue messages
+contain short-lived Task proofs and are SSE-encrypted; restrict queue readers,
+DLQ access and retention to the trusted service/operators. No model input can
+select the queue, endpoint, region, provider ID or tenant identity.
+
+Browser charges depend on concurrent active sessions, session seconds and
+provider data transfer; the FIFO/SQS, DynamoDB, EKS pod and Task artifacts add
+separate operational costs. Watch browser session metrics, SQS oldest age and
+DLQ, table pending/unknown rows, pod restarts, artifact bytes and CloudTrail
+stops. These are observations, **not** settled AWS cost. The Browser adapter
+refuses explicit forbidden URLs/scope; it does not promise filtering of every
+page redirect or subrequest inside the AWS-managed browser network.
+
+For rollback set `browser_admission_enabled=false` (cleanup and same-ID polling
+remain available), route only *new* attempts back to local via
+`task_browser_http_enabled=false`, then drain/stop outstanding owned sessions.
+Do not disable `browser_http_enabled` while claims or sessions are unsettled:
+that would plan deletion of the queue/route and fail on the protected table.
+Retire only after verified close or explicit provider lease expiry review,
+retaining claims for the non-replay window. Never replace concurrent stage
+deployments, shared login stores or existing cyber endpoints.
+
+Mock-provider tests use isolated `BG_CONFIG_DIR` and do not create AWS sessions:
+
+```bash
+env -u ADP_TASK_TOOL_ROUTES -u ADP_TASK_TOOL_CLEANUP BG_CONFIG_DIR="$(mktemp -d)" \
+  PYTHONPATH=modules/domain-apps/cyber/tools:modules/tools:modules/domain-apps/cyber/agent/skills/url-analysis:modules/agent-factory/agent-worker-image \
+  python -m pytest -q modules/domain-apps/cyber/tools/tests modules/domain-apps/cyber/tools/infra/tests modules/agent-factory/agent-worker-image/tests/test_task_run_client.py
+terraform -chdir=modules/domain-apps/cyber/tools/infra test
+terraform -chdir=modules/domain-apps/cyber/infra/platform-integration test
+```
+
+For a separately authorized live smoke, first confirm the account, region,
+IAM, quota and a capped one-session budget. Start one controlled public URL on
+a new HTTP-opted Task, inspect evidence/artifact receipts and close within a
+600-second lease. Verify `TERMINATED` through the provider API, record only
+non-secret session/account identifiers in protected operator records, and
+drain the queue before disabling admission. No live smoke is claimed here.
+
 Web Search's optional dedicated IAM Gateway/target, pinned connector version,
 exact IAM route and disabled-by-default rollout are specified in
 `docs/tools/agentcore-integration.md`. Existing Browser and Common Crawl routes

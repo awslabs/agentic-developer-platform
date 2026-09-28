@@ -1,6 +1,18 @@
 variable "name_prefix" {
   type = string
 }
+variable "browser_tools_endpoint" {
+  type    = string
+  default = ""
+  validation {
+    condition     = var.browser_tools_endpoint == "" || can(regex("^https://[A-Za-z0-9.-]+(:443)?(/[A-Za-z0-9_-]+)*/tools/browser$", var.browser_tools_endpoint))
+    error_message = "Use the exact HTTPS /tools/browser gateway route."
+  }
+}
+variable "task_browser_http_enabled" {
+  type    = bool
+  default = false
+}
 
 variable "aws_region" {
   type = string
