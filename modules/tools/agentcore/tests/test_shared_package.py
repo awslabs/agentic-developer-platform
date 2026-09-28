@@ -26,6 +26,8 @@ def test_shared_images_and_imports_have_no_cyber_or_gateway_source():
     broker = (ROOT / "modules/domain-apps/cyber/browser/Dockerfile").read_text()
     assert "COPY --chown=agent:agent modules/tools/agentcore/agentcore_tools/ /app/agentcore_tools/" in broker
     assert "PYTHONPATH=/app:/app/skills/url-analysis" in broker
+    overlay = (ROOT / "modules/domain-apps/cyber/agent/Dockerfile.browser-overlay").read_text()
+    assert "modules/tools/agentcore/agentcore_tools/ /app/agentcore_tools/" in overlay
     for source in (SHARED / "agentcore_tools").rglob("*.py"):
         assert not re.search(r"\b(?:import|from)\s+cyber_tools\b", source.read_text()), source
     for script in ("build-image.sh", "deploy.sh"):
