@@ -2,8 +2,9 @@
 
 Cyber-specific implementation is maintained under `modules/domain-apps/cyber/`.
 The platform retains integration entry points: workflow triggers and job policy,
-shared image assembly, persona registration, a Terraform module call, and the
-shared CodeBuild project factory.
+shared image assembly, persona registration, an explicitly enabled Terraform
+module call, and the shared CodeBuild project factory. The factory reads this
+app's project manifest only when cyber build jobs are selected.
 
 ## Terraform source relocation
 

@@ -332,6 +332,7 @@ module "codebuild" {
   account_id                 = data.aws_caller_identity.current.account_id
   aws_region                 = var.aws_region
   ecr_registry               = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+  enabled_domain_apps        = var.enabled_domain_apps
 }
 
 # -----------------------------------------------------------------------------

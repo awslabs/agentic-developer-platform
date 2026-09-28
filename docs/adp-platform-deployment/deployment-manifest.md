@@ -120,9 +120,11 @@ Legacy `platform/scripts/deploy-all.sh --destroy` also calls `phase_superplane` 
 Deploys **last** and is destroyed **first**: a domain app sits on top of the platform, the
 gateway and the agent runtime, so teardown must remove it before its dependencies go.
 
-Registered in both the deploy and undeploy paths deliberately. `modules/domain-apps/cyber/`
-is absent from `deploy-all.sh` entirely, which is why its resources survive teardown —
-that is the failure mode this registration exists not to repeat.
+Registered in both the deploy and undeploy paths deliberately. Cyber's sandbox
+has its own deployment script and state; the base `deploy-all.sh` does not run it.
+The hosted cyber integration in webhook Terraform is explicit opt-in through
+`domain_app_settings.cyber`. Cyber and Superplane build project declarations
+live in their app directories and are omitted from a fresh base platform apply.
 
 | Resource | AWS Service | Validation Command | Expected |
 |----------|------------|-------------------|----------|

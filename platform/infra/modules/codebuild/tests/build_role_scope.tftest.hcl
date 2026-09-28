@@ -52,6 +52,7 @@ override_resource {
 }
 
 variables {
+  enabled_domain_apps        = ["superplane"]
   name_prefix                = "adp-test"
   state_bucket               = "adp-terraform-state-123456789012"
   account_id                 = "123456789012"

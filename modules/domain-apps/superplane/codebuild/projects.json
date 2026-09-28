@@ -1,0 +1,26 @@
+{
+  "superplane-api": {
+    "buildspec": "modules/domain-apps/superplane/releases/buildspecs/api.yml",
+    "ecr_repos": ["adp-superplane-api"],
+    "privileged": true,
+    "privileged_why": "docker build of the maintained Superplane API image"
+  },
+  "superplane-controller": {
+    "buildspec": "modules/domain-apps/superplane/releases/buildspecs/controller.yml",
+    "ecr_repos": ["adp-superplane-controller"],
+    "privileged": true,
+    "privileged_why": "docker build of the maintained Superplane controller image"
+  },
+  "superplane-monitor": {
+    "buildspec": "modules/domain-apps/superplane/releases/buildspecs/monitor.yml",
+    "ecr_repos": ["adp-superplane-platform-monitor"],
+    "privileged": true,
+    "privileged_why": "docker build of the maintained Superplane platform monitor image"
+  },
+  "superplane-executor": {
+    "buildspec": "modules/domain-apps/superplane/releases/buildspecs/executor.yml",
+    "ecr_repos": ["adp-superplane-executor"],
+    "privileged": true,
+    "privileged_why": "docker build of the maintained Superplane executor image"
+  }
+}

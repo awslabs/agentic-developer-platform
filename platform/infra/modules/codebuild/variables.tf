@@ -3,6 +3,12 @@ variable "name_prefix" {
   type        = string
 }
 
+variable "enabled_domain_apps" {
+  description = "Domain apps whose own CodeBuild project manifests are explicitly installed. Empty for the base platform."
+  type        = set(string)
+  default     = []
+}
+
 variable "state_bucket" {
   description = "S3 bucket holding Terraform state and CodeBuild source zips"
   type        = string

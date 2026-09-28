@@ -5,6 +5,13 @@ investigations, direct AgentCore browsing, sandbox infrastructure, images, build
 and operational documentation. It uses ADP's shared agent runtime, model gateway,
 identity, and GitHub integration.
 
+The basic platform deployment does not install cyber resources. Deploy the
+cyber sandbox through `scripts/deploy.sh` when the app is needed. Select its
+CodeBuild jobs explicitly with `ADP_ENABLED_DOMAIN_APPS=cyber` in the platform
+deploy flow; hosted worker integration additionally requires an explicit
+`domain_app_settings.cyber` overlay. Those settings must not be copied into a
+basic platform account.
+
 | Directory | Ownership |
 | --- | --- |
 | `agent/` | Persona, skills, investigation/report code, hosted Python dependencies |

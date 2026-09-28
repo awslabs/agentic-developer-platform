@@ -107,6 +107,17 @@ CodeBuild by default; you only need Docker if you pass `--local`.
 | Agents only | `deploy-all.sh --agent-factory-only` | Yes | lower (no RDS) |
 | Code intelligence | `deploy-all.sh --agent-context-only` | No | ~$800/mo ⚠️ pricey |
 
+The default full command installs the shared platform, gateway and agent stack.
+It does not install domain apps. Superplane is a separate optional phase
+(`SUPERPLANE_ENABLED=true` or `--superplane-only`); cyber's sandbox is deployed
+through `modules/domain-apps/cyber/scripts/deploy.sh`. A hosted cyber worker
+integration requires an explicit `domain_app_settings.cyber` overlay. Their
+image build jobs are selected separately through
+`ADP_ENABLED_DOMAIN_APPS=cyber,superplane`; a fresh basic deployment selects none.
+During `--update`, previously installed domain build jobs are retained unless
+the operator explicitly selects `ADP_ENABLED_DOMAIN_APPS=none`. Any resulting
+deletes still pass through the saved-plan destroy gate.
+
 If you just want to see the platform work with the least setup,
 **`--gateway-only`** is simplest — no GitHub involvement at all.
 

@@ -112,34 +112,13 @@ locals {
       privileged     = true
       privileged_why = "scan_security_images.py builds/pulls each scan target with docker before syft reads it"
     }
-    "superplane-api" = {
-      buildspec      = "modules/domain-apps/superplane/releases/buildspecs/api.yml"
-      ecr_repos      = ["adp-superplane-api"]
-      privileged     = true
-      privileged_why = "docker build of the maintained Superplane API image"
-    }
-    "superplane-controller" = {
-      buildspec      = "modules/domain-apps/superplane/releases/buildspecs/controller.yml"
-      ecr_repos      = ["adp-superplane-controller"]
-      privileged     = true
-      privileged_why = "docker build of the maintained Superplane controller image"
-    }
-    "superplane-monitor" = {
-      buildspec      = "modules/domain-apps/superplane/releases/buildspecs/monitor.yml"
-      ecr_repos      = ["adp-superplane-platform-monitor"]
-      privileged     = true
-      privileged_why = "docker build of the maintained Superplane platform monitor image"
-    }
-    "superplane-executor" = {
-      buildspec      = "modules/domain-apps/superplane/releases/buildspecs/executor.yml"
-      ecr_repos      = ["adp-superplane-executor"]
-      privileged     = true
-      privileged_why = "docker build of the maintained Superplane executor image"
-    }
   }
 
+  # Domain app build declarations live with their apps. The base platform never
+  # installs them; an operator enables each app explicitly during its deployment.
   projects = merge(local.core_projects, [for manifest in sort(tolist(fileset("${path.module}/../../../../modules/domain-apps", "*/codebuild/projects.json"))) :
     jsondecode(file("${path.module}/../../../../modules/domain-apps/${manifest}"))
+    if contains(var.enabled_domain_apps, split("/", manifest)[0])
   ]...)
 
   agent_context_images = toset([

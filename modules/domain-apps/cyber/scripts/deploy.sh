@@ -39,7 +39,13 @@ terraform init \
   -backend-config="dynamodb_table=adp-terraform-locks" \
   -input=false
 
-terraform apply -var-file=terraform.tfvars -auto-approve
+# The checked-in tfvars contains a literal ACCOUNT_ID placeholder. Always bind
+# the app stack to the selected profile rather than inheriting that example.
+terraform apply -var-file=terraform.tfvars \
+  -var="account_id=${ACCOUNT_ID}" \
+  -var="environment=${ENVIRONMENT}" \
+  -var="aws_region=${AWS_REGION}" \
+  -auto-approve
 
 # Capture outputs
 CLUSTER_NAME=$(terraform output -raw cyber_cluster_name)
