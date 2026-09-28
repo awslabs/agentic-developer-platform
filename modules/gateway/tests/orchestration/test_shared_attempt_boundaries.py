@@ -221,9 +221,10 @@ async def test_different_story_admissions_serialize_before_worker_count(shared, 
 
 
 @pytest.mark.parametrize(
-    "used,approved,allowed", [(2, False, True), (2, True, True), (3, False, False), (3, True, False), (18, True, False), (19, True, False)]
+    "used,approved,allowed",
+    [(2, False, True), (2, True, True), (3, False, True), (8, False, False), (3, True, True), (18, True, True), (19, True, True), (20, True, False)],
 )
-async def test_runner_ceiling_stops_retries_despite_approved_increase_and_preserves_attempts(shared, used, approved, allowed):  # noqa: F811
+async def test_accepted_review_allowance_controls_retries_and_preserves_attempts(shared, used, approved, allowed):  # noqa: F811
     from src.orchestration.compile import ApprovalContext
     from src.orchestration.continuation import digest
     from src.orchestration.execution_policy import stamp_policy
@@ -289,7 +290,7 @@ async def test_runner_ceiling_stops_retries_despite_approved_increase_and_preser
         assert execution.status == "blocked"
         assert execution.block_code == "attempts_exhausted"
         # Later scheduler ticks must neither reset spent attempts nor dispatch
-        # another worker, even with the old twenty-attempt approval still active.
+        # another worker once the accepted allowance has been exhausted.
         for _ in range(3):
             async with ctx.factory() as db:
                 states = await OrchestrationRepository(db).node_display_states(org_id=node.org_id, flow_id=node.flow_id)
