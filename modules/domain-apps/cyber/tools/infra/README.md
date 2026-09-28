@@ -1,5 +1,15 @@
 # Cyber tools Lambda deployment
 
+**Post-extraction (#6671):** this stack owns Cyber investigation and Common
+Crawl only; general-purpose Web Search, Code Interpreter, Browser endpoints,
+provider IAM and the shared operation table belong to
+`modules/tools/agentcore/infra`. Supply its exact `operations_table_name` and
+`operations_table_arn` before enabling Cyber; applying this module against old
+state without the reviewed transfer would propose deleting moved resources.
+See `docs/tools/shared-agentcore-tools.md` for migration, build, rollback and
+current operator instructions. Historical endpoint sections below describe the
+pre-extraction state and must not be followed for new shared routes.
+
 This stack packages the cyber-owned service and adds POST `/tools/cyber` to an
 existing REST API. It does not deploy the gateway, create a Function URL, create
 an API stage, or replace a shared API deployment. Both infrastructure activation

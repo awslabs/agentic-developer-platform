@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from browser_guard import DestinationRefused
+from agentcore_tools.browser_runtime.errors import BrowserBrokerError as BrowserBrokerError
 from case_contract import MAX_RESPONSE_BYTES
 from denylist import DenylistResult
 
@@ -20,21 +21,6 @@ DEFAULT_TIMEOUT_SECONDS = 360
 MAX_ERROR_BYTES = 64 * 1024
 
 
-class BrowserBrokerError(RuntimeError):
-    """Raised when the trusted browser broker cannot complete an analysis."""
-
-    def __init__(
-        self,
-        message,
-        *,
-        code="broker_unavailable",
-        retry_after=None,
-        cleanup=None,
-        browser_start_unattempted=False,
-    ):
-        super().__init__(message)
-        self.code, self.retry_after, self.cleanup = code, retry_after, cleanup
-        self.browser_start_unattempted = browser_start_unattempted
 
 
 def _decode_json(payload: bytes) -> dict[str, Any]:

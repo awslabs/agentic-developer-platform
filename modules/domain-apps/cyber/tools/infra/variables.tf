@@ -290,3 +290,16 @@ variable "websearch_target_excludes" {
     error_message = "Supply up to 100 lowercase domain names."
   }
 }
+
+variable "operations_table_name" {
+  type    = string
+  default = ""
+}
+variable "operations_table_arn" {
+  type    = string
+  default = ""
+  validation {
+    condition     = var.operations_table_arn == "" || can(regex("^arn:aws:dynamodb:[a-z0-9-]+:[0-9]{12}:table/[A-Za-z0-9_.-]+$", var.operations_table_arn))
+    error_message = "Use an exact shared operation-table ARN."
+  }
+}

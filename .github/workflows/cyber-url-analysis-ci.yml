@@ -6,6 +6,7 @@ name: Cyber URL Analysis CI
     paths:
     - modules/domain-apps/cyber/infra/platform-integration/**
     - modules/domain-apps/cyber/browser/**
+    - modules/tools/agentcore/**
     - modules/domain-apps/cyber/releases/**
     - modules/domain-apps/cyber/tests/**
     - modules/agent-factory/webhook-ingress/infra/**

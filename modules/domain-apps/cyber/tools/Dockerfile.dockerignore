@@ -3,6 +3,9 @@
 !modules/tools/
 !modules/tools/adp_tools/
 !modules/tools/adp_tools/**
+!modules/tools/agentcore/
+!modules/tools/agentcore/agentcore_tools/
+!modules/tools/agentcore/agentcore_tools/**
 !modules/domain-apps/
 !modules/domain-apps/cyber/
 !modules/domain-apps/cyber/tools/

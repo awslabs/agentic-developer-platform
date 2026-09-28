@@ -47,7 +47,6 @@ run "browser_route_worker_and_consumer_are_scoped" {
       "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/internal/v1/agent/task/tool-authorize",
       "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/internal/v1/agent/task/artifact"
     ]
-    sample_bucket_arn = "arn:aws:s3:::sample-bucket"
   }
   assert {
     condition     = aws_api_gateway_method.browser[0].authorization == "AWS_IAM" && aws_lambda_permission.browser[0].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/tools/browser"

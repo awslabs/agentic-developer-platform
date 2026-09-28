@@ -59,3 +59,14 @@ Domain runtime images copy this library and their own application package only;
 they must not copy/import the gateway source tree. Deployment and provider
 credentials remain domain-owned. Normal execution defaults disabled until the
 operator configures and qualifies the service.
+
+## Shared AgentCore tools
+
+Web Search, Code Interpreter and Browser service implementations, images, tests,
+Terraform and manually dispatched CI/deployment live in
+`modules/tools/agentcore/`. The existing Cyber Browser adapter retains the
+local default and exact `cyber.browser_*` grant names; Code Interpreter and
+Web Search use `code_interpreter.*` and `websearch.search`. For request examples,
+non-Cyber Task authorization, immutable builds, trust bindings, state migration
+and rollback, see `docs/tools/shared-agentcore-tools.md`. No automatic deploy,
+API stage publication or paid provider calls occur on merge.

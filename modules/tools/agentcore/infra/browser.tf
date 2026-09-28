@@ -104,7 +104,7 @@ resource "aws_lambda_function" "browser" {
   role          = aws_iam_role.browser_gateway[0].arn
   package_type  = "Image"
   image_uri     = var.image_uri
-  image_config { command = ["cyber_tools.browser_http.lambda_handler"] }
+  image_config { command = ["agentcore_tools.browser_http.lambda_handler"] }
   timeout                        = 25
   memory_size                    = 512
   reserved_concurrent_executions = 10
@@ -182,7 +182,7 @@ resource "kubernetes_deployment" "browser" {
         container {
           name    = "browser"
           image   = var.browser_service_image
-          command = ["python3", "-m", "cyber_tools.browser_http"]
+          command = ["python3", "-m", "agentcore_tools.browser_http"]
           env {
             name  = "AWS_REGION"
             value = var.aws_region

@@ -1,5 +1,11 @@
 # AgentCore tools: Task integration contract
 
+**Current ownership (#6671):** `modules/tools/agentcore/` owns the general-purpose
+services and infrastructure. The Cyber-specific deployment statements later in
+this historical review record describe the pre-extraction setup; use
+`docs/tools/shared-agentcore-tools.md` for current build, state migration,
+non-Cyber grants, smoke and rollback instructions.
+
 Issue #6635 introduces **Code Interpreter**; sibling tools must reuse the Task
 attempt and operation envelope rather than define another identity format. This
 is an implementation contract, not evidence of a deployed or qualified AWS
@@ -8,7 +14,7 @@ resource. The existing browser worker path remains active by default.
 ## Transport and authority
 
 `POST /tools/code-interpreter` is an AWS_IAM method on the existing REST API,
-backed by the separately deployed cyber tools Lambda. The worker's host-side
+backed by the separately deployed shared AgentCore tools Lambda. The worker's host-side
 `ADP_TASK_TOOL_ROUTES` must map **each** enabled permission to its HTTPS URL:
 
 ```json
@@ -418,7 +424,7 @@ recheck before rollout.
 
 ### Provider ownership and deployment
 
-`modules/domain-apps/cyber/tools/infra/websearch.tf` owns the IAM route,
+`modules/tools/agentcore/infra/websearch.tf` owns the IAM route,
 stage-qualified invoke permissions and (when `websearch_create_gateway=true`)
 a dedicated AWS_IAM AgentCore Gateway + target `connector_id=web-search`,
 **version 1.2.0**, target-level include/exclude lists and a Gateway service role
@@ -447,7 +453,7 @@ must configure persona/principal grants explicitly (no wildcard), include
 separate boundary is enforced, publish the reviewed shared API deployment,
 then enable app worker routing and Lambda admission. This stack does **not**
 auto-publish the shared API stage or deploy on merge. Use
-`modules/domain-apps/cyber/tools/infra/build-image.sh` and `deploy.sh plan`
+`modules/tools/agentcore/infra/build-image.sh` and `deploy.sh plan`
 with the verified immutable image and repository's normal app-worker rollout;
 read their README for exact inputs. Terraform `init -backend=false`/`validate`
 and local tests need no account or AWS provisioning. Restore both enable flags

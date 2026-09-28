@@ -481,8 +481,10 @@ def test_public_registry_does_not_request_ecr_credentials(monkeypatch):
 @pytest.mark.parametrize("dockerfile,context,inputs", [
     ("modules/agent-context/images/parser/Dockerfile", "modules/agent-context/images/ingestion",
      ["isolated_parser.py", "parser_manifest.py", "scip_indexer.py", "scip_proto", "lang_go.py"]),
-    ("modules/domain-apps/cyber/browser/Dockerfile", "modules/domain-apps/cyber",
-     ["browser/requirements.txt", "agent/skills/url-analysis"]),
+    ("modules/domain-apps/cyber/browser/Dockerfile", ".",
+     ["modules/domain-apps/cyber/browser/requirements.txt", "modules/domain-apps/cyber/agent/skills/url-analysis", "modules/tools/agentcore/agentcore_tools"]),
+    ("modules/tools/agentcore/Dockerfile", ".",
+     ["modules/tools/adp_tools", "modules/tools/agentcore/agentcore_tools"]),
     ("modules/domain-apps/cyber/workers/Dockerfile", "modules/domain-apps/cyber",
      ["workers/requirements.txt", "workers/isolation.py", "agent/skills/stage-3-static/validate_script.py"]),
 ])
