@@ -104,3 +104,26 @@ early. Restored builds add work, so the final proposed bounds are 150 minutes
 per image CodeBuild project and 165 minutes per GitHub job, preserving time
 for receipts and cleanup. This supersedes the initial Syft-only 90-minute fix.
 The dispatch must use a main workflow definition containing these bounds.
+
+The diagnostic run completed with both image scanners timed out; cleanup
+confirmed both child builds terminal and their temporary source archives removed.
+Its late logs exposed two further root build contexts (OpenSSH artifact and
+SkyPilot OpenSSH) and a curl overlay defaulting to scratch without a runtime user.
+The contexts now match their COPY inputs. Curl's standalone default is the
+existing reviewed DeepWiki base/user from bases.json; component overlay callers
+continue passing explicit overrides. The exact missing DeepWiki base was
+restored from local cache without rebuilding it. The curl overlay and SkyPilot
+OpenSSH build and run with their original non-root identities.
+
+To address the observed Docker Hub rate-limit failures across targets, remaining
+official Node/Ruby/Go references use public ECR mirrors with independently
+verified identical manifest digests. Parser's Python tag was also verified equal
+in both registries. No package version, image digest, scanner target or finding
+was removed by this registry change. Scanner tests: 76 passed, 1 skipped.
+
+The focused parser Grype rescan confirms removal of the four targeted High
+matches: raw High drops from 94 to 90, with 24 Critical unchanged. Remaining
+severe matches are OS packages plus the Python-version
+finding, which remains visible for review. All three parser indexers and stdlib regression checks pass. The raw
+scan hash and database identity are retained in late-input-repairs.json; this
+is not a claim of zero High or complete repository coverage.

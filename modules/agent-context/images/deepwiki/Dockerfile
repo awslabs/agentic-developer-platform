@@ -27,7 +27,7 @@ RUN --network=none sh /build-tools/build.sh
 # Official upstream commit d92819a9c9f3b99416e3580ff235fc9d3adf8b89.
 # Upstream publishes main/latest/sha tags; the configured v1.2.2 tag is unavailable.
 # Official multi-platform Node release; fixes CVE-2026-48930 in the builder and UI runtime.
-FROM node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node-release
+FROM public.ecr.aws/docker/library/node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node-release
 FROM ghcr.io/asyncfuncai/deepwiki-open@sha256:730b72494f407397c896c586af0a31af9671d509af420e6792d834ff094a9c8f AS node-base
 USER root
 # Remove NodeSource Node20 instead of leaving a vulnerable second executable.

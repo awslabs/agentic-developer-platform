@@ -1,4 +1,6 @@
-ARG BASE=scratch
+# Standalone scans use the existing reviewed DeepWiki candidate. Component
+# overlay builds still pass their explicit BASE and original RUNTIME_USER.
+ARG BASE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99
 FROM public.ecr.aws/docker/library/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkgconf autoconf automake libtool patchelf gnupg \
@@ -50,5 +52,5 @@ RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
 COPY --from=build /packages/curl/usr/share/doc/curl/ /opt/adp-curl-security/curl/
 COPY --from=build /packages/libcurl4t64/usr/share/doc/libcurl4t64/ /opt/adp-curl-security/libcurl4t64/
 COPY --from=build /packages/libcurl3t64-gnutls/usr/share/doc/libcurl3t64-gnutls/ /opt/adp-curl-security/libcurl3t64-gnutls/
-ARG RUNTIME_USER
+ARG RUNTIME_USER=appuser
 USER ${RUNTIME_USER}

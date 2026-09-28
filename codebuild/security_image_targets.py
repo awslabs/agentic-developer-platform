@@ -17,6 +17,8 @@ BUILD_CONFIG = {
     },
     "modules/tools/agentcore/Dockerfile": {"context": "."},
     "modules/tools/validation/Dockerfile": {"context": "."},
+    "platform/security/openssh-high/Dockerfile": {"context": "."},
+    "platform/security/skypilot-openssh/Dockerfile": {"context": "."},
     "modules/agent-context/images/parser/Dockerfile": {"context": "modules/agent-context/images/ingestion"},
     "modules/domain-apps/cyber/tools/Dockerfile": {"context": "."},
     "modules/domain-apps/cyber/browser/Dockerfile": {"context": "."},

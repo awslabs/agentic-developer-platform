@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Dedicated search runtime. Indexing runs in ingestion, which copies the matched
 # static zoekt-git-index binary from this image and supplies git and ctags.
-FROM golang:1.26.8@sha256:6c2a5538f964f1c82f97ad14988bf05de100d922d159d0e398b54c7b0ca0c6c9 AS build
+FROM public.ecr.aws/docker/library/golang:1.26.8@sha256:6c2a5538f964f1c82f97ad14988bf05de100d922d159d0e398b54c7b0ca0c6c9 AS build
 ADD --checksum=sha256:94d67e89e7407a5a2afd8481245ab0b252a43867eff4d818552ef8acd9f0d03d https://codeload.github.com/sourcegraph/zoekt/tar.gz/153817f643cde8b229ee388c1dddbcf07f4798af /tmp/zoekt.tar.gz
 WORKDIR /src
 RUN tar -xzf /tmp/zoekt.tar.gz --strip-components=1 && rm /tmp/zoekt.tar.gz

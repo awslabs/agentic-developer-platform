@@ -487,6 +487,10 @@ def test_public_registry_does_not_request_ecr_credentials(monkeypatch):
      ["isolated_parser.py", "parser_manifest.py", "scip_indexer.py", "scip_proto", "lang_go.py"]),
     ("modules/domain-apps/cyber/browser/Dockerfile", ".",
      ["modules/domain-apps/cyber/browser/requirements.txt", "modules/domain-apps/cyber/agent/skills/url-analysis", "modules/tools/agentcore/agentcore_tools"]),
+    ("platform/security/openssh-high/Dockerfile", ".",
+     ["platform/security/openssh-high/build-tools"]),
+    ("platform/security/skypilot-openssh/Dockerfile", ".",
+     ["modules/agent-context/images/deepwiki/security/openssh", "platform/security/skypilot-openssh/install.py"]),
     ("modules/tools/validation/Dockerfile", ".",
      ["modules/tools/adp_tools", "modules/tools/validation/validation_tools", "modules/agent-factory/agent-worker-image/lib/codex_validation.py"]),
     ("modules/tools/agentcore/Dockerfile", ".",
@@ -650,3 +654,11 @@ def test_codebuild_action_selects_full_scan_archive_only_for_scanners(tmp_path, 
                    env={**os.environ, "PROJECT_NAME": project, "GITHUB_WORKSPACE": str(workspace),
                         "ARCHIVE": str(archive), "CAPTURE": str(capture)})
     assert capture.read_text().splitlines() == [str(workspace), str(archive), *mode]
+
+
+def test_standalone_curl_overlay_preserves_reviewed_candidate_and_identity():
+    root = ROOT / "platform/security/curl-8.22.0"
+    candidate = json.loads((root / "bases.json").read_text())["deepwiki"]
+    recipe = (root / "Dockerfile").read_text().splitlines()
+    assert "ARG BASE=" + candidate["reference"] in recipe
+    assert "ARG RUNTIME_USER=" + candidate["user"] in recipe

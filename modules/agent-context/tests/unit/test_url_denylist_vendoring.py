@@ -3,7 +3,7 @@
 Why this test exists
 --------------------
 ``images/ingestion/url_denylist.py`` is a copy of
-``modules/domain-apps/cyber/agent/skills/url-analysis/denylist.py``. The ingestion
+``modules/tools/agentcore/agentcore_tools/browser_runtime/denylist.py``. The ingestion
 image is a separate Docker build context and cannot import across module
 boundaries, so a copy is unavoidable.
 
@@ -38,7 +38,7 @@ import url_denylist  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _CANONICAL = (
-    _REPO_ROOT / "modules/domain-apps/cyber/agent/skills/url-analysis/denylist.py"
+    _REPO_ROOT / "modules/tools/agentcore/agentcore_tools/browser_runtime/denylist.py"
 )
 _VENDORED = (
     _REPO_ROOT / "modules/agent-context/images/ingestion/url_denylist.py"
@@ -75,7 +75,7 @@ class TestVendoredCopyMatchesSource:
 
         assert vendored == canonical, (
             "images/ingestion/url_denylist.py has drifted from "
-            "modules/domain-apps/cyber/agent/skills/url-analysis/denylist.py.\n"
+            "modules/tools/agentcore/agentcore_tools/browser_runtime/denylist.py.\n"
             "Re-sync it (banner first, then the canonical file verbatim). Do not "
             "edit the vendored copy to fix a bug — fix it upstream and re-sync, or "
             "the two diverge silently the way .claude/skills/url-analysis/ did."
@@ -84,7 +84,7 @@ class TestVendoredCopyMatchesSource:
     def test_banner_names_the_source_of_truth(self):
         """The banner points at the canonical path, not just 'somewhere else'."""
         banner = _VENDORED.read_text().partition(_BANNER_END)[0]
-        assert "url-analysis/denylist.py" in banner
+        assert "agentcore_tools/browser_runtime/denylist.py" in banner
         assert "DO NOT EDIT" in banner.upper()
 
 

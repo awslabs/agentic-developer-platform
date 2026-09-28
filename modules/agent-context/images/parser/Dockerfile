@@ -16,8 +16,8 @@
 
 # Stage 2: SCIP toolchain
 FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2 AS high-security-tools
-FROM node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node-release
-FROM python:3.13-slim AS parser
+FROM public.ecr.aws/docker/library/node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node-release
+FROM public.ecr.aws/docker/library/python:3.13-slim AS parser
 
 # Install system dependencies for SCIP indexers
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
