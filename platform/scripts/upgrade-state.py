@@ -124,6 +124,37 @@ def broker_settings(variables):
     return result
 
 
+def gateway_layer_settings(gateway_state, account, environment):
+    """Keep the installed layer package and retention policy on normal updates.
+
+    A release promotion uses immutable S3 keys with skip_destroy=True. The
+    repository's fresh-deploy defaults point at mutable CodeBuild upload keys;
+    reverting a promoted account to those defaults replaces and deletes its
+    pinned layer versions even when the build recipes have not changed.
+    """
+    result = {}
+    for label, module, name in (
+            ("pyjwt", "module.lambda_authorizer[0]", "pyjwt-py313"),
+            ("psycopg2", "module.budget_lambda[0]", "psycopg2-py312")):
+        matches = [attrs for resource, attrs in resources(gateway_state, "aws_lambda_layer_version")
+                   if resource.get("module") == module and resource["name"] == label]
+        if not matches:
+            continue
+        if len(matches) != 1:
+            raise ValueError(f"Ambiguous installed {label} layer")
+        layer = matches[0]
+        key = layer.get("s3_key", "")
+        filename = re.escape(name + ".zip")
+        if (layer.get("s3_bucket") != f"adp-terraform-state-{account}"
+                or layer.get("layer_name") != f"bedrockgw-{environment}-{name}"
+                or not re.fullmatch(rf"(?:lambda-layers/{filename}|adp-releases/sha256/[0-9a-f]{{64}}/{filename})", key)
+                or not isinstance(layer.get("skip_destroy"), bool)):
+            raise ValueError(f"Cannot preserve installed {label} layer")
+        result[f"{label}_layer_s3_key"] = key
+        result[f"{label}_layer_skip_destroy"] = layer["skip_destroy"]
+    return result
+
+
 def gateway_engine_settings(gateway_state, webhook_state, account, region, environment):
     """Retain an already-wired tick without enabling an unconfigured engine.
 
@@ -347,6 +378,7 @@ def prepare(args):
     write_json(directory / "eks-access.json", {"publicAccessCidrs": platform["eks_public_access_cidrs"]})
     gateway = {"environment": args.environment, "aws_region": args.region}
     gateway_state = states.get("gateway", {})
+    gateway.update(gateway_layer_settings(gateway_state, args.account, args.environment))
     gateway.update(gateway_engine_settings(gateway_state, states.get("webhook-ingress", {}),
                                            args.account, args.region, args.environment))
     brokers = [a for r, a in resources(gateway_state, "aws_lambda_function") if "github_auth_broker" in r.get("module", "")]

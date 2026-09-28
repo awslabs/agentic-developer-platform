@@ -21,6 +21,29 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+# Update mode recovers these from the installed layer versions. Fresh deploys
+# continue to use the mutable CodeBuild upload keys; a prior release's
+# immutable package and retention setting must never be silently reverted.
+variable "pyjwt_layer_s3_key" {
+  type    = string
+  default = "lambda-layers/pyjwt-py313.zip"
+}
+
+variable "pyjwt_layer_skip_destroy" {
+  type    = bool
+  default = false
+}
+
+variable "psycopg2_layer_s3_key" {
+  type    = string
+  default = "lambda-layers/psycopg2-py312.zip"
+}
+
+variable "psycopg2_layer_skip_destroy" {
+  type    = bool
+  default = false
+}
+
 variable "cost_center" {
   type        = string
   description = "Cost center for billing allocation"

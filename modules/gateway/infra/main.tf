@@ -1054,7 +1054,9 @@ module "budget_lambda" {
   rds_resource_id       = module.rds.db_instance_resource_id
 
   # S3 bucket containing pre-built Lambda layer artifacts (Issue #1038)
-  lambda_artifact_bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  lambda_artifact_bucket      = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  psycopg2_layer_s3_key       = var.psycopg2_layer_s3_key
+  psycopg2_layer_skip_destroy = var.psycopg2_layer_skip_destroy
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
@@ -1336,7 +1338,9 @@ module "lambda_authorizer" {
   aws_region  = var.aws_region
 
   # S3 bucket containing pre-built Lambda layer artifacts (Issue #408)
-  lambda_artifact_bucket = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  lambda_artifact_bucket   = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  pyjwt_layer_s3_key       = var.pyjwt_layer_s3_key
+  pyjwt_layer_skip_destroy = var.pyjwt_layer_skip_destroy
 
   # Cognito Configuration
   cognito_user_pool_id = module.cognito.cognito_user_pool_id

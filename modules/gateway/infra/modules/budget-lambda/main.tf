@@ -147,15 +147,16 @@ data "archive_file" "pricing_refresh" {
 
 data "aws_s3_object" "psycopg2_layer" {
   bucket = var.lambda_artifact_bucket
-  key    = "lambda-layers/psycopg2-py312.zip"
+  key    = var.psycopg2_layer_s3_key
 }
 
 resource "aws_lambda_layer_version" "psycopg2" {
   layer_name          = "${var.name_prefix}-psycopg2-py312"
   description         = "psycopg2-binary 2.9.9 for Python 3.12 (x86_64)"
   s3_bucket           = var.lambda_artifact_bucket
-  s3_key              = "lambda-layers/psycopg2-py312.zip"
+  s3_key              = var.psycopg2_layer_s3_key
   source_code_hash    = data.aws_s3_object.psycopg2_layer.etag
+  skip_destroy        = var.psycopg2_layer_skip_destroy
   compatible_runtimes = ["python3.12"]
 
   compatible_architectures = ["x86_64"]
