@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, Index, Numeric, String, UniqueConstraint, text
+from sqlalchemy import JSON, BigInteger, CheckConstraint, Date, DateTime, Index, Numeric, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
@@ -243,3 +243,19 @@ class BudgetSettlementReceipt(Base):
     user_id: Mapped[str] = mapped_column(String(255), nullable=False)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False)
     total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class BudgetPricingCorrection(Base):
+    """One audited incident credit per request; original debit stays replayable."""
+
+    __tablename__ = "budget_pricing_corrections"
+    org_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    correction_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    credit_usd: Mapped[Decimal] = mapped_column(Numeric(14, 6), nullable=False)
+    original_decision: Mapped[dict] = mapped_column(JSON, nullable=False)
+    corrected_decision: Mapped[dict] = mapped_column(JSON, nullable=False)
+    allocation_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
