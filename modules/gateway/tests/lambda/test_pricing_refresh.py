@@ -93,7 +93,7 @@ def test_all_transport_failures_return_no_fresh_values(refresh, monkeypatch):
     monkeypatch.undo()
     monkeypatch.setattr(module, "fetch_source", Mock(side_effect=OSError("network unreachable")))
     rows, failures = module.fetch_rates((template("openai.gpt-oss-120b", context="flat"),), module.time.monotonic() + 2)
-    assert rows == () and len(failures) == 9
+    assert rows == () and len(failures) == len(module.CARD_SLUGS) + 1
 
 
 def test_unparseable_fetched_source_is_rejected(refresh, monkeypatch):
@@ -152,6 +152,7 @@ def test_coordinated_claude_sources_refresh_all_rates_and_partial_retains(refres
     monkeypatch.undo()
     fixtures = Path(__file__).parents[1] / "pricing_policy" / "fixtures" / "aws"
     snapshot = load_snapshot("2026-09-12.2")
+    monkeypatch.setattr(module, "CARD_SLUGS", {model: slug for model, slug in CARD_SLUGS.items() if model in snapshot.models})
     sources = {CARD_BASE + slug + ".md": (fixtures / (slug + ".md")).read_bytes() for slug in CARD_SLUGS.values()}
     sources[CATALOG_BASE + "/us-east-1/index.json"] = (fixtures / "oss-us-east-1.json").read_bytes()
     sources[PRICING_PAGE_URL] = (fixtures / "claude" / "pricing-widgets.html").read_bytes()
@@ -172,6 +173,27 @@ def test_coordinated_claude_sources_refresh_all_rates_and_partial_retains(refres
     candidate = assemble_candidate(snapshot.rates, rows, snapshot.required_variants)
     assert len(candidate.retained_keys) == 1006
     assert all(r.model_id.startswith("openai.") for r in rows)
+
+
+def test_gpt6_sol_luna_refresh_includes_cache_rates(refresh, monkeypatch):
+    from pathlib import Path
+
+    from pricing_policy import load_snapshot
+    from pricing_policy.aws_sources import CARD_BASE, CARD_SLUGS
+
+    module, _ = refresh
+    monkeypatch.undo()
+    fixtures = Path(__file__).parents[1] / "pricing_policy" / "fixtures" / "aws"
+    cards = {model: slug for model, slug in CARD_SLUGS.items() if model in {"openai.gpt-6-sol", "openai.gpt-6-luna"}}
+    monkeypatch.setattr(module, "CARD_SLUGS", cards)
+    sources = {CARD_BASE + slug + ".md": (fixtures / (slug + ".md")).read_bytes() for slug in cards.values()}
+    monkeypatch.setattr(module, "fetch_source", lambda url, *args: sources[url])
+    snapshot = load_snapshot()
+    templates = tuple(row for row in snapshot.rates if row.model_id in cards)
+    rows, failures = module.fetch_rates(templates, module.time.monotonic() + 20, snapshot.models)
+    assert len(rows) == 152 and not failures
+    assert {row.variant_key for row in rows} == {row.variant_key for row in templates}
+    assert all(row.cache_read_price_per_1k_tokens == row.input_price_per_1k_tokens / 10 for row in rows)
 
 
 def test_claude_source_metric_classification(refresh, monkeypatch):
