@@ -12,17 +12,27 @@ CYBER = ROOT / "modules/domain-apps/cyber/tools"
 WORKFLOWS = ROOT / ".github/workflows"
 
 
-def test_shared_images_and_imports_have_no_cyber_or_gateway_source():
+def test_shared_images_exclude_cyber_and_gateway_runtime_source():
     for dockerfile in ("Dockerfile", "Dockerfile.browser"):
         lines = (SHARED / dockerfile).read_text().splitlines()
         copies = [line.split()[1] for line in lines if line.startswith("COPY ")]
-        assert all(path.startswith("modules/tools/") for path in copies)
+        # The exact stdlib maintenance bundle is a build input, not gateway
+        # application code or a runtime import dependency.
+        security_bundle = "modules/gateway/security/stdlib/"
+        assert all(path.startswith("modules/tools/") or path == security_bundle for path in copies)
+        if dockerfile == "Dockerfile.browser":
+            assert copies.count(security_bundle) == 1
+            assert f"COPY {security_bundle} /opt/adp-stdlib-security/" in lines
         assert "modules/tools/adp_tools" in copies or "modules/tools/adp_tools/" in copies
         assert "modules/tools/agentcore/agentcore_tools" in copies or "modules/tools/agentcore/agentcore_tools/" in copies
-        assert not any("cyber" in path or "gateway" in path for path in copies)
+        assert not any("cyber" in path or ("gateway" in path and path != security_bundle) for path in copies)
         assert "EXPOSE " not in "\n".join(lines)
         ignore = (SHARED / (dockerfile + ".dockerignore")).read_text()
-        assert "!modules/domain-apps" not in ignore and "!modules/gateway" not in ignore
+        assert "!modules/domain-apps" not in ignore
+        gateway_rules = [line for line in ignore.splitlines() if line.startswith("!modules/gateway")]
+        assert gateway_rules == (["!modules/gateway/", "!modules/gateway/security/",
+                                  "!modules/gateway/security/stdlib/", "!modules/gateway/security/stdlib/**"]
+                                 if dockerfile == "Dockerfile.browser" else [])
     broker = (ROOT / "modules/domain-apps/cyber/browser/Dockerfile").read_text()
     assert "COPY --chown=agent:agent modules/tools/agentcore/agentcore_tools/ /app/agentcore_tools/" in broker
     assert "PYTHONPATH=/app:/app/skills/url-analysis" in broker

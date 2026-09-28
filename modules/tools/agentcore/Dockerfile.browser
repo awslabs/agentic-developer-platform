@@ -1,4 +1,10 @@
-FROM python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+FROM public.ecr.aws/docker/library/python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+# Reuse the reviewed, exact-source CPython backports used by the gateway.
+COPY modules/gateway/security/stdlib/ /opt/adp-stdlib-security/
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && python /opt/adp-stdlib-security/apply.py \
+    && python /opt/adp-stdlib-security/check.py \
+    && apt-get purge -y patch && apt-get clean && rm -rf /var/lib/apt/lists/*
 RUN groupadd -g 1001 agent && useradd -u 1001 -g agent -m agent
 WORKDIR /app
 COPY modules/tools/agentcore/browser-requirements.txt /tmp/browser-requirements.txt
