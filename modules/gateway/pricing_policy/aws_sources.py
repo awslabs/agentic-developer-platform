@@ -15,6 +15,8 @@ from decimal import Decimal
 from .policy import RateRow
 
 CARD_SLUGS = {
+    "openai.gpt-6-sol": "gpt-6-sol",
+    "openai.gpt-6-luna": "gpt-6-luna",
     "openai.gpt-6-astra": "gpt-6-astra",
     "openai.gpt-5.6-sol": "gpt-56-sol",
     "openai.gpt-5.6-terra": "gpt-56-terra",
@@ -84,6 +86,10 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
         line = raw.strip()
         label = re.sub(r"^[#*\s]+|[*\s]+$", "", line).lower()
         if line.startswith(("###", "**")) and not line.startswith("|:"):
+            if label == "note":
+                finish_table()
+                header, separator, table_rows = False, False, 0
+                continue
             recognized = label.startswith(("short context", "long context", "commercial regions", "aws govcloud"))
             if not recognized:
                 raise SourceValidationError(f"unrecognized pricing scope {line!r}")
@@ -109,7 +115,8 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
         cells = [cell.strip().replace("**", "") for cell in line.strip("|").split("|")]
         if cells[0] == "Inference option":
             finish_table()
-            if cells != ["Inference option", "Input", "Input — 30m cache write", "Input — cache read", "Output"]:
+            write_heading = "Input — cache write" if model_id in {"openai.gpt-6-sol", "openai.gpt-6-luna"} else "Input — 30m cache write"
+            if cells != ["Inference option", "Input", write_heading, "Input — cache read", "Output"]:
                 raise SourceValidationError("unrecognized pricing table columns")
             header, separator, table_rows = True, False, 0
             tables += 1
@@ -123,6 +130,8 @@ def parse_model_card(content: bytes, model_id: str, templates: tuple[RateRow, ..
             raise SourceValidationError("price row outside a complete recognized table")
         geography_map = {
             "In-Region": ("in_region",),
+            "Mantle in-Region": ("in_region",),
+            "US Geo CRIS": ("geo_cris",),
             "Geo CRIS": ("geo_cris",),
             "Global CRIS": ("global_cris",),
             "In-Region / Geo CRIS": ("in_region", "geo_cris"),
