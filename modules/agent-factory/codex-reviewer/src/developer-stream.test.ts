@@ -45,3 +45,17 @@ test('tool errors remain visible without exposing raw tool output', () => {
   publishDeveloperEvent({ type: 'item.completed', item: { type: 'command_execution', id: 'bad', command: 'pytest', aggregated_output: 'private environment', status: 'failed', exit_code: 1 } }, reporter);
   assert.deepEqual(seen, ['activity:Finished (exit 1): pytest']);
 });
+
+test('operator cancellation never retries the Codex assignment', async () => {
+  const { reporter } = recorder();
+  const controller = new AbortController();
+  let starts = 0;
+  await assert.rejects(runDeveloperStream({ id: 'same-session', runStreamed: async () => {
+    starts++;
+    return { events: (async function* () {
+      controller.abort();
+      throw new Error('stream disconnected during operator abort');
+    })() };
+  } }, 'task', { signal: controller.signal }, reporter), /operator abort/);
+  assert.equal(starts, 1);
+});

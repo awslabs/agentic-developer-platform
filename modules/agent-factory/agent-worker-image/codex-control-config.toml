@@ -1,0 +1,18 @@
+# System-managed hooks: trust is confined to these reviewed image files.
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "python3 /app/codex-control-hook.py"
+timeout = 1900
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "python3 /app/codex-control-hook.py"
+timeout = 1900
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "python3 /app/codex-control-hook.py"
+timeout = 1900

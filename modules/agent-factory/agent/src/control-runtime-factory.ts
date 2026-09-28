@@ -21,7 +21,7 @@ import { ExplanationEvents, explanationsEnabled } from './explanation-events';
 import { revalidateQueuedCommand } from './control-revalidation';
 import { parseVerificationKeys } from './control-envelope';
 import { ControlStateStore } from './control-state';
-import { listenerActionsFor } from './control-runtime';
+import { listenerActionsFor, type ControlRuntimeAdapter } from './control-runtime';
 import { ClaudeControlAdapter, ClaudeBackgroundWorkObserver } from './harnesses/claude-control';
 import { PauseGate } from './pause-gate';
 import { controlDeadlineAt } from './control-deadline';
@@ -31,17 +31,20 @@ import { SteerQueue, type SteerOutcome } from './steer-queue';
 export type ControlLogger = (level: string, message: string, context?: Record<string, unknown>) => void;
 
 /** The published runtime a started control listener makes available to a run. */
-export interface ControlRuntime {
-  readonly adapter: ClaudeControlAdapter;
+export type RuntimeAdapter = ControlRuntimeAdapter & Pick<ClaudeControlAdapter,
+  'activeWorkCount' | 'isCancelled' | 'notifyWhenInputAccepted'> & { backgroundWorkCount?(): number | null };
+
+export interface ControlRuntime<A extends RuntimeAdapter = ClaudeControlAdapter> {
+  readonly adapter: A;
   readonly gate: PauseGate;
   readonly steerQueue: SteerQueue;
   /** Read the actual journal, including final cancellation, after listener shutdown. */
   readonly snapshot: () => ReturnType<ControlStateStore['snapshot']>;
 }
 
-export interface ControlRuntimeStartResult {
+export interface ControlRuntimeStartResult<A extends RuntimeAdapter = ClaudeControlAdapter> {
   /** `null` when the listener did not start — see `outcome.reason`. */
-  readonly runtime: ControlRuntime | null;
+  readonly runtime: ControlRuntime<A> | null;
   readonly events?: ExplanationEvents;
   readonly listener: ControlListener | null;
   readonly outcome: Awaited<ReturnType<ControlListener['start']>>;
@@ -61,25 +64,27 @@ export interface ControlRuntimeStartResult {
  * comment. Passing `undefined` there is a correct, inert choice — the queue
  * still resolves every submission, it just has nothing further to publish.
  */
-export async function startControlRuntime(args: {
+export async function startControlRuntime<A extends RuntimeAdapter = ClaudeControlAdapter>(args: {
+  createAdapter?: (gate: PauseGate) => A;
   env?: NodeJS.ProcessEnv;
   log: ControlLogger;
   onSteerOutcome?: (event: { commandId: string; outcome: SteerOutcome; reason: string }) => void;
-}): Promise<ControlRuntimeStartResult> {
+}): Promise<ControlRuntimeStartResult<A>> {
   const env = args.env ?? process.env;
   const log = args.log;
 
+  let controlAdapter: A;
   const backgroundWork = new ClaudeBackgroundWorkObserver();
   const pauseGate = new PauseGate({
     deadlineAt: () => controlDeadlineAt(env),
-    backgroundWorkProbe: () => backgroundWork.count(),
+    backgroundWorkProbe: () => args.createAdapter ? (controlAdapter?.backgroundWorkCount?.() ?? null) : backgroundWork.count(),
     log: (msg) => log('DEBUG', msg),
   });
-  const controlAdapter = new ClaudeControlAdapter({
+  controlAdapter = args.createAdapter?.(pauseGate) ?? new ClaudeControlAdapter({
     log: (msg) => log('DEBUG', msg),
     pauseGate,
     backgroundWorkObserver: backgroundWork,
-  });
+  }) as unknown as A;
 
   const controlStore = new ControlStateStore({
     generation: Number.parseInt(env.ADP_CONTROL_GENERATION || '1', 10) || 1,

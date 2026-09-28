@@ -2,6 +2,7 @@ import type { Thread, ThreadEvent, RunResult, TurnOptions } from '@openai/codex-
 import { interruptedTransport } from './turn.js';
 
 export interface DeveloperReporter {
+  control?: { signal: AbortSignal; socket: string };
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;

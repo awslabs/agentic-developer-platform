@@ -3647,7 +3647,7 @@ def _setup_agent_control(
             agent_env["ADP_CONTROL_ENVELOPE_KEYS_FILE"] = envelope_keys_file
         if envelope_keys:
             agent_env["ADP_CONTROL_ENVELOPE_KEYS"] = envelope_keys
-        else:
+        elif not envelope_keys_file:
             # Not fatal: no verb is implemented yet, so a pod with no key is the
             # normal state today and refusing to start control here would remove
             # the read paths for no benefit. The listener fails closed on its own

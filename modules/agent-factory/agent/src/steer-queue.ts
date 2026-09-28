@@ -283,6 +283,13 @@ export class SteerQueue {
    * instruction waits for whatever unrelated runtime event happens next, which
    * during a long tool call may be minutes away or may never come.
    */
+  private idleWaiters: Array<() => void> = [];
+
+  async flush(): Promise<void> {
+    this.kick();
+    if (this.draining) await new Promise<void>(resolve => this.idleWaiters.push(resolve));
+  }
+
   kick(): void {
     if (this.closed) return;
     this.kicked = true;
@@ -291,6 +298,7 @@ export class SteerQueue {
     void this.drain().finally(() => {
       this.draining = false;
       if (this.kicked && !this.closed) this.kick();
+      else for (const resolve of this.idleWaiters.splice(0)) resolve();
     });
   }
 

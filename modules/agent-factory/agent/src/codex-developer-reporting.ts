@@ -2,6 +2,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { LiveStatusComment, createWorkerStages } from './github-comments';
 import { CheckRunStreamer } from './components/checkRunStreamer';
+import { CodexControlAdapter } from './harnesses/codex-control';
 import { startControlRuntime } from './control-runtime-factory';
 import { containsSecret } from './experience-save-hook';
 import { writeFailureReport } from './failure-report';
@@ -9,6 +10,7 @@ import { createWorkerActivityLog } from './worker-activity-log';
 
 export interface DeveloperReportingContext { repository: string; issue: number; model: string }
 export interface DeveloperReporter {
+  control?: { signal: AbortSignal; socket: string };
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;
@@ -51,11 +53,12 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     tokenProvider: token, persona: 'agent-codex-developer', issueNumber: context.issue,
     model: context.model, costLabel: 'See Agent Activity for metered usage', log: message => log('WARN', message),
   });
-  // Reuse the authenticated explanation endpoint. Do not advertise Claude-only
-  // pause/steer capabilities when this adapter has not implemented them.
-  const control = await startControlRuntime({
-    env: { ...process.env, FEATURE_AGENT_CONTROL_ENABLED: 'false' }, log,
-  });
+  const control = await startControlRuntime({ log, createAdapter: gate => new CodexControlAdapter(gate) });
+  const adapter = control.runtime?.adapter;
+  if (adapter) {
+    adapter.drainSteering = () => control.runtime!.steerQueue.flush();
+    await adapter.start();
+  }
   let sequence = 0;
   let ended = false;
   const explanation = (text: string) => {
@@ -69,6 +72,8 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     clearInterval(logTimer);
     await activityLog.flush();
     control.events?.finish();
+    control.runtime?.steerQueue.dispose('Codex run ended');
+    await adapter?.dispose();
     check.destroy();
     await control.listener?.stop();
   };
@@ -85,6 +90,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     throw error;
   }
   return {
+    ...(adapter ? { control: { signal: adapter.signal, socket: adapter.socket } } : {}),
     explanation,
     activity(text) {
       text = publicDeveloperText(text);

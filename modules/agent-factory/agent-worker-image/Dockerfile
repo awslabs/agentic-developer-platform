@@ -372,6 +372,9 @@ COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
 # runtime HOME is /home/agent (non-root `agent` user), so it lands there —
 # NOT /root/.codex. Auth is the pod IRSA credential chain (zero secrets).
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/codex-config.toml /home/agent/.codex/config.toml
+# Managed lifecycle hooks are trusted image content; inactive outside controlled runs.
+COPY modules/agent-factory/agent-worker-image/codex-control-config.toml /etc/codex/config.toml
+COPY modules/agent-factory/agent-worker-image/codex-control-hook.py /app/codex-control-hook.py
 
 # Copy entrypoint and its lib/ support modules (vault_client, github_token, sts_assume)
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/entrypoint.py /app/entrypoint.py

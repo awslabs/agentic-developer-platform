@@ -53,6 +53,9 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
     // Keep the worker's shell environment and credential wrappers, as Claude does.
     env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
   };
+  if (reporter?.control) {
+    options.env = { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), ADP_CODEX_CONTROL_SOCKET: reporter.control.socket };
+  }
   const thread = new Codex(options).startThread({
     workingDirectory: workspace, model: task.model, modelReasoningEffort: "high",
     sandboxMode: "danger-full-access", approvalPolicy: "never",
@@ -66,7 +69,7 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
   let result;
   {
     result = await runDeveloperStream(thread, developerPrompt(task, issue, branch, persona), {
-      signal: AbortSignal.timeout(task.timeoutMs ?? 30 * 60 * 1000),
+      signal: AbortSignal.any([AbortSignal.timeout(task.timeoutMs ?? 30 * 60 * 1000), ...(reporter?.control ? [reporter.control.signal] : [])]),
     }, sink);
   }
   const localHead = (await run("git", ["rev-parse", "HEAD"], { cwd: workspace })).stdout.trim();
