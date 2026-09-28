@@ -518,3 +518,47 @@ async def test_protected_window_receipt_rechecks_canonical_owner(protected_windo
     user.cognito_sub = "replacement-login-subject"
     await b.s.session.flush()
     assert (await effective(b)).refusal is not None
+
+
+async def test_protected_retry_supplement_preserves_failed_attempt_and_budget(protected_window):
+    from src.orchestration.shared_retry import RetryIncreaseRequest, accept_retry_increase, preview_retry_increase
+
+    b = protected_window
+    before = (await effective(b)).policy
+    document = copy.deepcopy(b.s.plan.plan_document)
+    request = RetryIncreaseRequest(
+        expected_plan_version=b.s.plan.version,
+        expected_plan_hash=b.s.plan.plan_hash,
+        max_attempts_per_node=before.limits.max_attempts_per_node + 1,
+        reason="Owner authorizes a replacement review after infrastructure failure.",
+    )
+    preview = await preview_retry_increase(b.s.session, flow_id=b.s.flow.id, actor=b.actor, request=request)
+    receipt = await accept_retry_increase(
+        b.s.session,
+        flow_id=b.s.flow.id,
+        actor=b.actor,
+        request=request.model_copy(update={"expected_snapshot": preview["snapshot"]}),
+    )
+    after = (await effective(b)).policy
+    assert after.limits.max_attempts_per_node == request.max_attempts_per_node
+    assert after._shared_retry_decision_id == receipt["decision_id"]
+    assert after.limits.max_spend_usd == before.limits.max_spend_usd
+    assert after.limits.max_wall_clock_seconds == before.limits.max_wall_clock_seconds
+    assert b.s.plan.plan_document == document
+    assert b.s.node.attempts == 1 and b.s.node.state == "failed"
+    assert b.execution.status == "concluded"
+
+
+async def test_protected_retry_requires_original_owner(protected_window):
+    from src.orchestration.shared_retry import RetryIncreaseError, RetryIncreaseRequest, preview_retry_increase
+
+    b = protected_window
+    before = (await effective(b)).policy
+    request = RetryIncreaseRequest(
+        expected_plan_version=b.s.plan.version,
+        expected_plan_hash=b.s.plan.plan_hash,
+        max_attempts_per_node=before.limits.max_attempts_per_node + 1,
+        reason="A different administrator cannot borrow the plan owner authority.",
+    )
+    with pytest.raises(RetryIncreaseError, match="original_principal_required"):
+        await preview_retry_increase(b.s.session, flow_id=b.s.flow.id, actor=replace(b.actor, actor_id="other-owner"), request=request)
