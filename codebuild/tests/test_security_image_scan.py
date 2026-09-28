@@ -261,6 +261,17 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
                 raise subprocess.CalledProcessError(1, args)
         if args[:3] == ["docker", "image", "inspect"]:
             return SimpleNamespace(stdout="sha256:" + "d" * 64 + "\n")
+        if args[:2] == ["docker", "save"]:
+            Path(args[args.index("--output") + 1]).write_bytes(b"synthetic image archive")
+        if args[0] in {"grype", "syft"}:
+            if args[0] == "syft":
+                assert args[1].startswith("docker-archive:")
+                assert Path(args[1].split(":", 1)[1]).read_bytes() == b"synthetic image archive"
+            else:
+                assert args[1].startswith("sbom:")
+                assert Path(args[1].split(":", 1)[1]).is_file()
+            assert kwargs["env"]["GOMEMLIMIT"] == "2GiB"
+            assert kwargs["env"]["SYFT_PARALLELISM"] == "2"
         if args[0] == "grype":
             assert_raw_scan_configuration(args, kwargs)
             if failure != "missing_metadata":
@@ -346,6 +357,19 @@ def test_any_missing_target_fails_even_above_the_old_half_coverage_threshold(sou
             raise subprocess.CalledProcessError(1, args)
         if args[:3] == ["docker", "image", "inspect"]:
             return SimpleNamespace(stdout="sha256:" + "e" * 64 + "\n")
+        if args[:2] == ["docker", "save"]:
+            Path(args[args.index("--output") + 1]).write_bytes(b"synthetic image archive")
+        if args[0] in {"grype", "syft"}:
+            if args[0] == "syft":
+                assert args[1].startswith("docker-archive:")
+                assert Path(args[1].split(":", 1)[1]).read_bytes() == b"synthetic image archive"
+            else:
+                assert args[1].startswith("sbom:")
+                assert Path(args[1].split(":", 1)[1]).is_file()
+            assert kwargs["env"]["GOMEMLIMIT"] == "2GiB"
+            assert kwargs["env"]["SYFT_PARALLELISM"] == "2"
+        if args[0] == "syft":
+            Path(args[-1].split("=", 1)[1]).write_text(json.dumps({"artifacts": []}))
         if args[0] == "grype":
             assert_raw_scan_configuration(args, kwargs)
             write_descriptor(args)

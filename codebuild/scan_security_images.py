@@ -203,7 +203,7 @@ def scan(target, tool, output, root):
                 "build",
                 "--no-cache",
                 "--pull",
-                "--quiet",
+                "--progress=plain",
                 *options,
                 "-f",
                 target["dockerfile"],
@@ -219,6 +219,8 @@ def scan(target, tool, output, root):
     else:
         authenticate_registry(image)
         command(["docker", "pull", "--platform", "linux/amd64", image], timeout=600)
+    archive = output.with_suffix(".image.tar")
+    catalog = output.with_suffix(".syft.json")
     try:
         inspected = command(
             ["docker", "image", "inspect", "--format", "{{.Id}}", image],
@@ -229,6 +231,11 @@ def scan(target, tool, output, root):
         digest = inspected.stdout.strip()
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
             raise ValueError("Docker did not report an immutable sha256 image ID")
+        # Docker's streaming source can buffer large layers inside the scanner.
+        # A seekable archive plus bounded Go/cataloger concurrency keeps the
+        # full package scope while fitting the shared CodeBuild memory budget.
+        command(["docker", "save", "--output", str(archive), image], timeout=600)
+        scanner_env = {**os.environ, "GOMEMLIMIT": "2GiB", "SYFT_PARALLELISM": "2"}
         if tool == "grype":
             # Raw evidence bypasses configured ignore/fix-state exclusions and the
             # downstream filter. Grype-native matching exclusions still apply.
@@ -241,16 +248,24 @@ def scan(target, tool, output, root):
             raw_config.write_text(yaml.safe_dump(config))
             scan_env = {
                 k: v
-                for k, v in os.environ.items()
+                for k, v in scanner_env.items()
                 if not k.startswith("GRYPE_IGNORE")
                 and k not in {"GRYPE_ONLY_FIXED", "GRYPE_ONLY_NOTFIXED"}
             }
+            # Finish cataloging in its own process before matching. Keeping
+            # both the expanded image and vulnerability matches in one Grype
+            # process exceeded the 7 GiB CodeBuild host on SkyPilot.
+            command(
+                ["syft", "docker-archive:" + str(archive), "-o", "syft-json=" + str(catalog)],
+                timeout=600,
+                env=scanner_env,
+            )
             descriptor_path = output.with_suffix(".descriptor.json")
             with output.open("w") as stream:
                 command(
                     [
                         "grype",
-                        "docker:" + image,
+                        "sbom:" + str(catalog),
                         "-o",
                         "sarif",
                         "-o",
@@ -288,8 +303,9 @@ def scan(target, tool, output, root):
             )
         else:
             command(
-                ["syft", "docker:" + image, "-o", "cyclonedx-json=" + str(output)],
+                ["syft", "docker-archive:" + str(archive), "-o", "cyclonedx-json=" + str(output)],
                 timeout=600,
+                env=scanner_env,
             )
         document = json.loads(output.read_text())
         if tool == "grype" and not document.get("runs"):
@@ -298,6 +314,8 @@ def scan(target, tool, output, root):
             raise ValueError("Scanner did not produce a CycloneDX SBOM")
         return digest
     finally:
+        archive.unlink(missing_ok=True)
+        catalog.unlink(missing_ok=True)
         subprocess.run(
             ["docker", "rmi", image],
             check=False,
