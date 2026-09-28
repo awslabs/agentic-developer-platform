@@ -1,49 +1,19 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
-from pricing_policy import canonical_billing_model_id, is_v2_priced_model, legacy_flat_rates, legacy_flat_table
 from src.shared.schemas.budget import EntityType, PeriodType
 
 from .config import budget_config
-
-# Issue #4328: the period types that have a calendar window, and the single
-# source of truth for that question. Every reader that iterates budget_configs
-# rows and derives a calendar period must filter on this.
-#
-# Deliberately an ALLOWLIST, not `!= PeriodType.RUN`. A denylist means the next
-# period type added to the enum (say QUARTERLY) is picked up by every calendar
-# reader and passed to get_period_start_end, which raises for anything it does
-# not implement — reintroducing the exact org-wide 500 this constant exists to
-# fix. An allowlist makes a new period type inert in these readers until someone
-# deliberately adds it here, and this is the one grep-able place recording that.
-CALENDAR_PERIOD_TYPES: frozenset[str] = frozenset(
-    {
-        PeriodType.DAILY.value,
-        PeriodType.WEEKLY.value,
-        PeriodType.MONTHLY.value,
-    }
-)
 
 
 def calculate_model_cost(model_name: str, tokens_in: int, tokens_out: int) -> tuple[Decimal, Decimal, Decimal]:
     """
     Calculate the cost for a model based on input and output tokens.
 
-    OpenAI and Claude quotes use the live shared V2 cache. Other providers
-    retain their curated compatibility rates.
-
-    This is an estimator and a reporting helper — ``/budget/cost`` and the
-    pre-request middleware estimate. Settlement uses the durable pricing decision
-    (design §4.3); do not route billing through here.
-
     Returns:
         Tuple of (total_cost, input_cost_per_1k, output_cost_per_1k)
     """
-    if is_v2_priced_model(canonical_billing_model_id(model_name)):
-        from .pricing import pricing_service
-
-        return pricing_service.quote_cost(model_name, tokens_in, tokens_out)
-    pricing, _known = legacy_flat_rates(model_name)
+    pricing = budget_config.model_pricing.get(model_name, budget_config.model_pricing["default"])
 
     input_cost_per_1k = pricing["input"]
     output_cost_per_1k = pricing["output"]
@@ -70,15 +40,6 @@ def get_period_start_end(period_type: PeriodType, reference_date: date = None) -
     """
     if reference_date is None:
         reference_date = date.today()
-
-    if period_type == PeriodType.RUN:
-        # Issue #4187: a run/chain cap is lifetime-scoped, so there is no
-        # calendar period to derive. Raising is deliberate and load-bearing:
-        # silently returning today's date would make every run on a given day
-        # share one reservation key, so run A's spend would exhaust run B's cap.
-        # The run/chain id in the key is what separates the ledgers instead —
-        # see ReservationTarget.key().
-        raise ValueError("PeriodType.RUN is lifetime-scoped and has no calendar period; use the run/chain id as the ledger key")
 
     if period_type == PeriodType.DAILY:
         return reference_date, reference_date
@@ -201,11 +162,5 @@ def validate_budget_amount(amount: Decimal) -> bool:
 
 
 def get_model_names() -> list[str]:
-    """Get list of supported model names.
-
-    Issue #4969: sourced from the shared snapshot rather than the retired
-    ``budget_config.model_pricing``. Sorted for a stable order — the old dict
-    order was insertion order in a hand-edited literal, which is not a contract
-    anything should have depended on.
-    """
-    return sorted(name for name in legacy_flat_table() if name != "default")
+    """Get list of supported model names."""
+    return [name for name in budget_config.model_pricing.keys() if name != "default"]

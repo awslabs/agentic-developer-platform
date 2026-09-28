@@ -17,77 +17,7 @@ export interface InstallStartResponse {
   expires_at: string;
 }
 
-/**
- * Issue #4016: Read-only onboarding health checks.
- *
- * Every field is TRI-STATE: true = verified working, false = verified broken,
- * null/undefined = could not determine. null MUST render amber/grey, never red —
- * a check that errored is not a check that failed.
- */
-export interface ConnectionVerification {
-  /** Whether a Postgres record backs this connection. false = DynamoDB-only orphan. */
-  record_present?: boolean | null;
-  /** Whether the per-tenant GitHub App secret exists. false = agent workers will crash. */
-  tenant_secret_seeded?: boolean | null;
-  /** Whether the forward installation → tenant row exists. false = webhooks rejected. */
-  identity_index_row?: boolean | null;
-  /** Whether the reverse tenant → installation row exists. false = adp-trigger fails. */
-  reverse_identity_row?: boolean | null;
-  /**
-   * Issue #5184: provenance of the sibling `repositories` list. true = read live
-   * from GitHub (within the 60s cache); false = GitHub was unreachable and the
-   * stored snapshot was served, so the list is configuration and not proof of
-   * current access; null = no read was attempted. Same tri-state rule as above.
-   */
-  repositories_live?: boolean | null;
-}
-
-/**
- * Issue #4016: Deployment-wide onboarding health. Only present for callers who
- * can manage connections — the API omits it entirely for everyone else.
- */
-export interface PlatformVerification {
-  /** Whether the broker OAuth secret holds a real client_id. false = GitHub login dead. */
-  login_credentials?: boolean | null;
-  /** Whether the webhook secret is populated. false = every delivery 401s. */
-  webhook_secret?: boolean | null;
-
-  // Issue #4017: GitHub App configuration drift. Same tri-state convention —
-  // null = could not determine, renders amber, NEVER red.
-
-  /** Whether the App's webhook URL on GitHub matches this deployment. false = no agent ever triggers. */
-  app_webhook_url_matches?: boolean | null;
-  /** Whether the App still grants every required permission. false = agent operations 403. */
-  app_permissions_match?: boolean | null;
-  /** Whether the App is still subscribed to every required event. false = triggers never fire. */
-  app_events_match?: boolean | null;
-  /**
-   * The callback URL this deployment sends as redirect_uri. INFORMATIONAL ONLY —
-   * GitHub exposes no API to read an App's callback URL back, so this can never
-   * be diffed and must never be rendered as a pass/fail check.
-   */
-  expected_callback_url?: string | null;
-  /** Deep-link to the App's OAuth settings page, for comparing the callback URL by eye. */
-  app_oauth_settings_url?: string | null;
-  /** Human-readable detail for any App-config check that did not pass. */
-  app_config_warnings?: string[];
-}
-
-/** Issue #4017: response from POST /admin/connections/github/app/revalidate. */
-export interface RevalidateAppResponse {
-  checked: boolean;
-  app_webhook_url_matches?: boolean | null;
-  app_permissions_match?: boolean | null;
-  app_events_match?: boolean | null;
-  expected_callback_url?: string | null;
-  app_oauth_settings_url?: string | null;
-  warnings: string[];
-  expected_config_recorded: boolean;
-  message: string;
-}
-
 export interface GitHubConnectionItem {
-  revocation_pending?: boolean;
   provider: string;
   installation_id: number;
   account_login: string;
@@ -107,28 +37,15 @@ export interface GitHubConnectionItem {
   tenant_name?: string | null;
   /** Issue #3018: Whether this connection belongs to the caller's active tenant. */
   is_active_tenant?: boolean | null;
-  /** Issue #4016: Read-only onboarding health checks for this connection. */
-  verification?: ConnectionVerification | null;
 }
 
 export interface ConnectionsListResponse {
   connections: GitHubConnectionItem[];
-  /** Issue #4016: Deployment-wide checks. Absent for non-admin callers. */
-  platform_verification?: PlatformVerification | null;
 }
 
 export interface DeleteConnectionResponse {
   deleted: boolean;
   installation_id: number;
-  /** Local denial persists while provider uninstall or cleanup is pending. */
-  local_revoked?: boolean;
-  provider_uninstall_requested?: boolean;
-  /** True only after GitHub confirms uninstall (including already absent). */
-  provider_revoked?: boolean;
-  /** Named index cleanups that did not complete. Empty in the normal case. */
-  residual?: string[];
-  /** Operator-facing note when `residual` is non-empty. */
-  warning?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,17 +165,6 @@ export async function startGitHubAppRegistration(
   return apiClient.post<RegisterAppStartResponse>(
     '/admin/connections/github/app/register-start',
     request,
-  );
-}
-
-/**
- * Re-check the registered App's live configuration on GitHub (Issue #4017).
- * Platform admin only. Read-only against GitHub — never touches credentials.
- */
-export async function revalidateGitHubAppConfig(): Promise<RevalidateAppResponse> {
-  return apiClient.post<RevalidateAppResponse>(
-    '/admin/connections/github/app/revalidate',
-    {},
   );
 }
 

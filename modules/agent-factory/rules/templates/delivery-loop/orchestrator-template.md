@@ -11,12 +11,6 @@
 [WAVE_LABEL] orchestration — drive these stories to merge in order, run the
 wave evaluation after deploy, loop on defects until green.
 
-## Progress reports
-Report capabilities and dependencies in plain language, with named owners for
-next actions. Distinguish merged, deployed and accepted. Keep story detail on
-the story and post an update only when readiness, a blocker or a decision changes.
-Coordination ending does not mean the wave is complete.
-
 ## Stories (dependency order)
 1. #[STORY_1] — [one-line summary] (no dependency)
 2. #[STORY_2] — [one-line summary] (after #[DEP])

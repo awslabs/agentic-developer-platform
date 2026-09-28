@@ -20,7 +20,6 @@ SUBMIT_QUEUE_URL = os.environ.get("SUBMIT_QUEUE_URL", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 # SQS message size limit
 MAX_SQS_MESSAGE_BYTES = 256 * 1024
-MODEL_POLICY_UNAVAILABLE_CHANNEL = "snapshot_unavailable_channel"
 
 _sqs = None
 
@@ -32,7 +31,7 @@ def _get_sqs():
     return _sqs
 
 
-def publish_envelope(envelope: dict, *, model_root: dict | None = None) -> str | None:
+def publish_envelope(envelope: dict) -> str | None:
     """Publish a normalized envelope to the agent submit queue.
 
     Args:
@@ -47,52 +46,12 @@ def publish_envelope(envelope: dict, *, model_root: dict | None = None) -> str |
         return None
 
     tenant_id = envelope.get("tenant_id", "unknown")
-    registered_body = None
-    try:
-        envelope = prepare_envelope(envelope)
-    except ValueError:
-        return None
-    if model_root is not None:
-        from common.model_root_client import (
-            RootRegistrationRefusedError,
-            register_model_root,
-        )
+    message_body = json.dumps(envelope, default=str)
 
-        try:
-            registered_body = register_model_root(envelope, **model_root)
-            envelope = json.loads(registered_body)
-            tenant_id = envelope["tenant_id"]
-        except RootRegistrationRefusedError:
-            logger.warning("Model root admission refused; nothing published")
-            return None
-    if (
-        registered_body is None
-        and os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
-    ):
-        if envelope.get("channel") == "gitlab":
-            # GitLab does not yet have a trusted admission seam or canonical
-            # tenant/root identity. In report-only it remains behaviour-neutral,
-            # but the unavailable policy path is explicit evidence rather than a
-            # silent default. PMM-09 must not enforce until PMM-07 routes this
-            # channel through gateway admission.
-            logger.warning(
-                "Model-policy snapshot unavailable run_id=%s reason=%s "
-                "posture=report_only",
-                envelope.get("message_id"),
-                MODEL_POLICY_UNAVAILABLE_CHANNEL,
-            )
-        else:
-            from common.gateway_client import admit_issue_work
-
-            if os.environ.get(
-                "AGENT_AUTHORITY_ENABLED", "false"
-            ).lower() != "true" or not admit_issue_work(envelope):
-                logger.warning(
-                    "Work ownership admission refused run_id=%s; nothing published",
-                    envelope.get("message_id"),
-                )
-                return None
-    message_body = registered_body or json.dumps(envelope, default=str)
+    # Guard: truncate payload if message exceeds SQS limit
+    if len(message_body.encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
+        envelope = _truncate_payload(envelope)
+        message_body = json.dumps(envelope, default=str)
 
     send_kwargs = {
         "QueueUrl": queue_url,
@@ -112,11 +71,7 @@ def publish_envelope(envelope: dict, *, model_root: dict | None = None) -> str |
 
         # Dedup by arrived_at + source to prevent double-processing
         dedup_key = f"{envelope.get('arrived_at', '')}_{repo}_{issue}"
-        send_kwargs["MessageDeduplicationId"] = (
-            envelope["message_id"]
-            if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
-            else dedup_key[:128]
-        )
+        send_kwargs["MessageDeduplicationId"] = dedup_key[:128]
 
     try:
         sqs = _get_sqs()
@@ -132,15 +87,6 @@ def publish_envelope(envelope: dict, *, model_root: dict | None = None) -> str |
     except Exception as e:
         logger.error("Failed to publish envelope for tenant=%s: %s", tenant_id, e)
         return None
-
-
-def prepare_envelope(envelope: dict) -> dict:
-    """Finalize the exact queue body before its protected digest is written."""
-    if len(json.dumps(envelope, default=str).encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
-        envelope = _truncate_payload(envelope)
-    if len(json.dumps(envelope, default=str).encode("utf-8")) > MAX_SQS_MESSAGE_BYTES:
-        raise ValueError("envelope exceeds the queue size limit")
-    return envelope
 
 
 def _truncate_payload(envelope: dict) -> dict:

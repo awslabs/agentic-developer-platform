@@ -6,39 +6,21 @@
 # Required env:
 #   AWS_PROFILE         (e.g. embark2)
 #   ENVIRONMENT         (e.g. dev)
-#   AGENT_IMAGE         (e.g. <acct>.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent:<tag>)
+#   AGENT_IMAGE         (e.g. <acct>.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway:<tag>)
 #
 # Optional env:
 #   NAMESPACE           (default: adp-gateway-agents)
-#   ADP_CHAT_MODEL_ACCESS_MODE (prepare-and-verify by default; verify for CI)
-#   ADP_CHAT_EXISTING_NAMESPACE_ONLY (true for scoped CI deployment)
 #
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-adp-gateway-agents}"
 ENVIRONMENT="${ENVIRONMENT:?ENVIRONMENT is required (e.g. dev)}"
-AWS_REGION="${AWS_REGION:-us-east-1}"
-ADP_CHAT_MODEL_POLICY_ENABLED="${ADP_CHAT_MODEL_POLICY_ENABLED:-false}"
-[[ "$ADP_CHAT_MODEL_POLICY_ENABLED" == true || "$ADP_CHAT_MODEL_POLICY_ENABLED" == false ]] || exit 1
 AGENT_IMAGE="${AGENT_IMAGE:?AGENT_IMAGE is required (full ECR URI with tag)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST="${SCRIPT_DIR}/chat-scaledjob.yaml"
 PREPULL_MANIFEST="${SCRIPT_DIR}/image-prepull-daemonset.yaml"
 INFRA_DIR="${SCRIPT_DIR}/../../infra"
-
-case "${ADP_CHAT_MODEL_ACCESS_MODE:-prepare-and-verify}" in
-  verify|prepare-and-verify) ;;
-  *) echo "Unsupported chat model access mode" >&2; exit 1 ;;
-esac
-
-# Check account access before changing the ConfigMap or admitting new chat jobs.
-bash "${SCRIPT_DIR}/../../../../platform/scripts/enable-bedrock-models.sh" \
-  "--${ADP_CHAT_MODEL_ACCESS_MODE:-prepare-and-verify}" --region "$AWS_REGION"
-
-# Verify the selected release before any cluster mutation; both consumers use this digest.
-AGENT_IMAGE=$(python3 "$SCRIPT_DIR/../../../../platform/scripts/resolve-ecr-image.py" "$AGENT_IMAGE")
-
 
 echo "[deploy-chat] Reading Terraform outputs from ${INFRA_DIR}"
 pushd "${INFRA_DIR}" > /dev/null
@@ -64,25 +46,6 @@ ARTIFACTS_BUCKET=$(terraform output -raw chat_artifacts_bucket)
 RESPONSE_QUEUE_URL=$(terraform output -raw gateway_response_queue_url)
 popd > /dev/null
 
-# SIGV4_PROXY_TARGET: the chat agent routes Bedrock through the gateway's REST
-# API (ADP_BEDROCK_VIA=gateway in the manifest), re-signing via a local
-# sigv4-proxy. Without this substitution the manifest ships the literal
-# placeholder, the proxy has no valid upstream, and the entrypoint's health check
-# falls back to direct Bedrock — so chat keeps working and gateway routing is
-# silently off, with nothing logged to say so.
-#
-# Read from SSM rather than a Terraform output because gateway-infra publishes it
-# and this module does not own it.
-APIGW_INVOKE_URL=$(aws ssm get-parameter \
-  --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
-  --region "$AWS_REGION" --query 'Parameter.Value' --output text)
-if [ -n "${APIGW_INVOKE_URL}" ] && [ "${APIGW_INVOKE_URL}" != "None" ]; then
-  SIGV4_PROXY_TARGET="${APIGW_INVOKE_URL}/agent"
-else
-  echo "[deploy-chat] Missing gateway API URL; refusing to deploy an unwired worker." >&2
-  exit 1
-fi
-
 echo "[deploy-chat] Wiring manifest placeholders:"
 echo "  CHAT_TASKS_FIFO_URL=${CHAT_TASKS_FIFO_URL}"
 echo "  CONTEXT_TABLE=${CONTEXT_TABLE}"
@@ -91,27 +54,16 @@ echo "  MEMORY_TABLE=${MEMORY_TABLE}"
 echo "  ARTIFACTS_BUCKET=${ARTIFACTS_BUCKET}"
 echo "  RESPONSE_QUEUE_URL=${RESPONSE_QUEUE_URL}"
 echo "  AGENT_IMAGE=${AGENT_IMAGE}"
-echo "  SIGV4_PROXY_TARGET=${SIGV4_PROXY_TARGET}"
 
-if [[ "${ADP_CHAT_EXISTING_NAMESPACE_ONLY:-false}" != true ]]; then
-  kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-fi
-
-if [[ "$ADP_CHAT_MODEL_POLICY_ENABLED" == true ]]; then
-  kubectl apply -f "${SCRIPT_DIR}/chat-model-rbac.yaml"
-fi
+kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
 sed \
-  -e "s|REPLACE_WITH_MODEL_CONTROL_ENDPOINT|${APIGW_INVOKE_URL}/agent/internal/v1/agent|g" \
-  -e "s|REPLACE_WITH_CHAT_MODEL_POLICY_ENABLED|${ADP_CHAT_MODEL_POLICY_ENABLED}|g" \
-  -e "s|REPLACE_WITH_AWS_REGION|${AWS_REGION}|g" \
   -e "s|REPLACE_WITH_CHAT_TASKS_FIFO_URL|${CHAT_TASKS_FIFO_URL}|g" \
   -e "s|REPLACE_WITH_CONTEXT_TABLE|${CONTEXT_TABLE}|g" \
   -e "s|REPLACE_WITH_ARTIFACTS_TABLE|${ARTIFACTS_TABLE}|g" \
   -e "s|REPLACE_WITH_MEMORY_TABLE|${MEMORY_TABLE}|g" \
   -e "s|REPLACE_WITH_ARTIFACTS_BUCKET|${ARTIFACTS_BUCKET}|g" \
   -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
-  -e "s|REPLACE_WITH_GATEWAY_APIGW_INVOKE_URL|${SIGV4_PROXY_TARGET}|g" \
   -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
   "${MANIFEST}" | kubectl apply -f -
 
@@ -127,11 +79,6 @@ kubectl get configmap chat-agent-config -n "${NAMESPACE}" -o name
 kubectl get triggerauthentication chat-agent-aws-auth -n "${NAMESPACE}" -o name
 kubectl get scaledjob chat-agent-worker -n "${NAMESPACE}" -o name
 kubectl get daemonset chat-agent-image-prepull -n "${NAMESPACE}" -o name
-kubectl wait --for=condition=Ready scaledjob/chat-agent-worker -n "$NAMESPACE" --timeout=300s
-LIVE_IMAGE=$(kubectl get scaledjob chat-agent-worker -n "$NAMESPACE" \
-  -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].image}')
-[ "$LIVE_IMAGE" = "$AGENT_IMAGE" ] || { echo "[deploy-chat] Wrong release image" >&2; exit 1; }
-kubectl rollout status daemonset/chat-agent-image-prepull -n "$NAMESPACE" --timeout=600s
 
 echo "[deploy-chat] Done. Tail events with:"
 echo "  kubectl get events -n ${NAMESPACE} --sort-by=.lastTimestamp | tail -20"

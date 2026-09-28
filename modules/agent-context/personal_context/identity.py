@@ -5,21 +5,10 @@ provides a fail-closed guard: personal-context operations without both headers
 receive an HTTP 403. Existing non-personal tools are unaffected when the
 headers are absent.
 
-Trust boundary: callers must present the Door's shared secret (``door/auth.py``),
-and ``manifests/networkpolicy.yaml`` limits which namespaces can reach the
-service. Headers are set by the trusted dispatch layer, not by agent code —
-mirrors the gateway's ``BG_TRUST_APIGW_HEADERS`` / ``X-Caller-Identity`` pattern.
-
-Neither control makes ``X-Owner-Sub`` unforgeable (issue #4073, finding #8): the
-secret is shared by every Door caller and the policy admits whole namespaces, so
-an authenticated caller can still name another user's subject id. Per-user
-isolation is enforced downstream by ``PersonalContextStore``'s owner read-filter,
-not by trusting this header.
-
-Earlier versions of this docstring claimed only pods in the agent-context
-namespace could reach the server, via a NetworkPolicy. No NetworkPolicy existed
-in this module when that was written, and the Service is a namespace-agnostic
-ClusterIP — every pod in the cluster could reach it, unauthenticated.
+Trust boundary: only pods within the agent-context Kubernetes namespace can
+reach the Context MCP Server (NetworkPolicy). Headers are set by the trusted
+dispatch layer, not by agent code — mirrors the gateway's
+``BG_TRUST_APIGW_HEADERS`` / ``X-Caller-Identity`` pattern.
 """
 
 from __future__ import annotations

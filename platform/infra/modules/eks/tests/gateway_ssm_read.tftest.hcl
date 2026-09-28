@@ -11,14 +11,6 @@ mock_provider "aws" {}
 mock_provider "kubernetes" {}
 mock_provider "tls" {}
 
-# Keep the existing policy test valid with Pod Identity associations enabled.
-override_resource {
-  target = aws_iam_role.gateway_service_irsa
-  values = {
-    arn = "arn:aws:iam::123456789012:role/adp-dev-gateway-service-irsa"
-  }
-}
-
 variables {
   environment             = "dev"
   name_prefix             = "adp-dev"

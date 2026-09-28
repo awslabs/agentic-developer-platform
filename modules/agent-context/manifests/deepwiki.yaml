@@ -16,34 +16,15 @@ spec:
     type: Recreate
   template:
     metadata:
-      # These services do not run a JVM; omit the unused Java agent and JARs.
-      annotations:
-        cloudwatch.aws.amazon.com/auto-annotate-java: "false"
-        instrumentation.opentelemetry.io/inject-java: "false"
       labels:
         app: deepwiki
         app.kubernetes.io/name: deepwiki
         app.kubernetes.io/part-of: agent-context-platform
     spec:
-      # API token is unnecessary; IRSA uses its separate projected web-identity token.
-      automountServiceAccountToken: false
       serviceAccountName: ${SERVICE_ACCOUNT}
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: deepwiki
         image: ${DEEPWIKI_IMAGE}
-        securityContext:
-          allowPrivilegeEscalation: false
-          privileged: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
         ports:
         - containerPort: ${DEEPWIKI_PORT}
           name: api
@@ -80,20 +61,14 @@ spec:
             cpu: "2"
             memory: "6Gi"
         volumeMounts:
-        - name: tmp
-          mountPath: /tmp
-        - name: next-cache
-          mountPath: /app/.next/cache
         - name: wiki-cache
-          mountPath: /home/appuser/.adalflow
+          mountPath: /root/.adalflow
           subPath: deepwiki
         - name: deepwiki-config
           mountPath: /app/api/config/generator.json
-          readOnly: true
           subPath: generator.json
         - name: deepwiki-config
           mountPath: /app/api/config/embedder.json
-          readOnly: true
           subPath: embedder.json
         readinessProbe:
           httpGet:
@@ -112,12 +87,6 @@ spec:
           timeoutSeconds: 15
           failureThreshold: 10
       volumes:
-      - name: tmp
-        emptyDir:
-          sizeLimit: 256Mi
-      - name: next-cache
-        emptyDir:
-          sizeLimit: 256Mi
       - name: wiki-cache
         emptyDir:
           sizeLimit: 10Gi
@@ -145,17 +114,3 @@ spec:
     targetPort: 3000
     name: frontend
   type: ClusterIP
-
----
-# Keep one ready replica through voluntary node consolidation. Deployment
-# rollouts still follow the strategy configured above.
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: deepwiki
-  namespace: ${NAMESPACE}
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: deepwiki

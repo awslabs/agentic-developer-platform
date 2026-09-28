@@ -23,8 +23,6 @@ import os
 import time
 from decimal import Decimal
 
-from legacy_model_guard import require_legacy_chat_admission
-
 import boto3
 
 from personas import load_persona
@@ -36,7 +34,7 @@ INPUT_QUEUE_URL = os.environ["INPUT_QUEUE_URL"]
 RESPONSE_QUEUE_URL = os.environ["RESPONSE_QUEUE_URL"]
 SESSIONS_TABLE_NAME = os.environ.get("SESSIONS_TABLE_NAME", "")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-MODEL = os.environ.get("ANTHROPIC_MODEL", "global.anthropic.claude-sonnet-5")
+MODEL = os.environ.get("ANTHROPIC_MODEL", "global.anthropic.claude-sonnet-4-6")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY_MESSAGES", "50"))
 WAIT_TIME = int(os.environ.get("WAIT_TIME", "20"))
@@ -145,29 +143,27 @@ def invoke_agent(task: dict, history: list[dict], persona_prompt: str) -> tuple[
     """
     Invoke Claude via Bedrock with conversation history.
 
-    Uses the Anthropic Bedrock client, then the raw Bedrock API.
-    This legacy path is not the Claude Agent SDK and cannot enforce PMM choices.
+    Tries Agent SDK first, falls back to raw Bedrock API.
     Returns (response_text, token_counts).
     """
     # Build messages: history + current user message
     messages = list(history)
     messages.append({"role": "user", "content": task.get("message", "")})
 
-    # Try the legacy Anthropic API client if available
+    # Try Agent SDK if available
     try:
         return _invoke_with_agent_sdk(persona_prompt, messages)
     except ImportError:
-        logger.info("Anthropic API client not available, using raw Bedrock API")
+        logger.info("Agent SDK not available, using raw Bedrock API")
     except Exception as e:
-        logger.warning("Anthropic API client failed, falling back to raw API: %s", e)
+        logger.warning("Agent SDK failed, falling back to raw API: %s", e)
 
     # Fallback: raw Bedrock API
     return _invoke_raw_bedrock(persona_prompt, messages)
 
 
 def _invoke_with_agent_sdk(system_prompt: str, messages: list[dict]) -> tuple[str, dict]:
-    """Invoke the legacy Anthropic Bedrock API (not the Claude Agent SDK)."""
-    require_legacy_chat_admission()
+    """Invoke using Claude Agent SDK Python (claude-agent-sdk)."""
     from anthropic import AnthropicBedrock
 
     client = AnthropicBedrock(aws_region=AWS_REGION)
@@ -189,13 +185,12 @@ def _invoke_with_agent_sdk(system_prompt: str, messages: list[dict]) -> tuple[st
         "output": response.usage.output_tokens,
     }
 
-    logger.info("Anthropic API response: %d input, %d output tokens", tokens["input"], tokens["output"])
+    logger.info("Agent SDK response: %d input, %d output tokens", tokens["input"], tokens["output"])
     return text, tokens
 
 
 def _invoke_raw_bedrock(system_prompt: str, messages: list[dict]) -> tuple[str, dict]:
     """Invoke using raw boto3 bedrock-runtime (no SDK dependency)."""
-    require_legacy_chat_admission()
     body = json.dumps({
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": MAX_TOKENS,

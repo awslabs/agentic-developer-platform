@@ -1,15 +1,13 @@
 """Cognito side-effects for identity operations.
 
 Issue #387: Idempotent Cognito group creation + user invitation.
-User creation failures are explicit; group creation remains idempotent. The
-calling lifecycle service owns database commits and recovery.
+Called post-commit — failures are logged and retried but don't roll back Postgres.
 """
 
 import asyncio
 import logging
 
 from src.admin.cognito_service import CognitoService, CognitoServiceError
-from src.shared.exceptions import ConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +56,10 @@ class CognitoSyncService:
         role: str = "member",
         send_invite: bool = True,
         github_username: str | None = None,
-    ) -> dict:
+    ) -> dict | None:
         """Create Cognito user and optionally send invite.
 
-        Return the actual Cognito identity or raise. Existing usernames are a
-        conflict, never success: reconciliation requires an expected subject.
+        Returns Cognito user dict on success, None on failure.
         """
         for attempt in range(MAX_RETRIES):
             try:
@@ -77,8 +74,22 @@ class CognitoSyncService:
                     github_username=github_username,
                     suppress_invitation=not send_invite,
                 )
+                # Add user to org group
+                try:
+                    await asyncio.to_thread(
+                        self._cognito.add_user_to_group,
+                        username=email,
+                        group_name=f"org-{org_id}",
+                    )
+                except Exception as e:
+                    logger.warning("Failed to add user %s to org group: %s", email, e)
+
                 return result
             except CognitoServiceError as e:
+                # UserAlreadyExists is not retryable — it's a success case
+                if "already exists" in str(e).lower():
+                    logger.info("User %s already exists in Cognito, treating as success", email)
+                    return {}
                 wait = BASE_BACKOFF_SECONDS * (2**attempt)
                 logger.warning(
                     "Cognito user creation failed (attempt %d/%d) for %s: %s. Retrying in %.1fs",
@@ -92,24 +103,7 @@ class CognitoSyncService:
                     await asyncio.sleep(wait)
 
         logger.error("Cognito user creation exhausted retries for %s", email)
-        raise CognitoServiceError("Cognito user creation failed; retry provisioning the existing ADP user")
-
-    async def verified_user(self, username: str, expected_sub: str) -> dict:
-        """Read the configured pool and compare immutable subjects, not emails."""
-        result = await asyncio.to_thread(self._cognito.get_user, username)
-        if not result:
-            raise ConflictError("Cognito user does not exist in the configured pool")
-        subject, _ = cognito_identity(result)
-        if subject != expected_sub:
-            raise ConflictError("Cognito subject does not match expected_sub")
-        if result.get("Enabled") is False:
-            raise ConflictError("Cannot link a disabled Cognito user")
-        return result
-
-    async def ensure_user_group(self, username: str, org_id: str) -> None:
-        if not await self.ensure_org_group(org_id):
-            raise CognitoServiceError("Cognito organization group could not be provisioned")
-        await asyncio.to_thread(self._cognito.add_user_to_group, username=username, group_name=f"org-{org_id}")
+        return None
 
     async def delete_user(self, email: str) -> bool:
         """Delete a user from Cognito. Best-effort."""
@@ -119,12 +113,3 @@ class CognitoSyncService:
         except Exception as e:
             logger.warning("Failed to delete Cognito user %s: %s", email, e)
             return False
-
-
-def cognito_identity(result: dict) -> tuple[str, str]:
-    """AdminCreateUser and AdminGetUser name their attribute lists differently."""
-    attributes = {item["Name"]: item["Value"] for item in result.get("Attributes", result.get("UserAttributes", []))}
-    subject, username = attributes.get("sub"), result.get("Username")
-    if not subject or not username:
-        raise CognitoServiceError("Cognito response did not include an immutable subject and username")
-    return subject, username

@@ -1,6 +1,0 @@
-{
-  "source_sha": "42b1d989672fa49e916c181838e2d5d5488eccfd",
-  "result": "220 passed, 4709 warnings in 30.52s",
-  "original_log_sha256": "02ba92a425af950957747310852788c72669915eb2bfd8b3f27316df6cdf2c61",
-  "scope": "Canonical Task store/report/runtime/delivery/recovery integration regressions; not live proof"
-}

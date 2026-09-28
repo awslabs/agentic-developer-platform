@@ -2,36 +2,12 @@
 Pre Sign-Up Lambda Trigger for AWS Cognito.
 
 Controls which GitHub users can create accounts via the "Sign in with GitHub" flow.
-Supports four modes:
-- open: Any GitHub user can sign in (requires ALLOW_OPEN_SIGNUP=true; see below)
+Supports three modes:
+- open: Any GitHub user can sign in
 - org: Only members of specified GitHub orgs can sign in
-- platform: Only users holding at least one platform org membership can sign in
 - explicit: Only users in the DynamoDB allowlist table can sign in
 
-Anything else — unset, typo'd, or a mode this copy does not know — denies.
-
 Issue #314: GitHub-based authentication across ADP web UIs
-
-Issue #4844 adds ``platform`` mode here for PARITY, not for enforcement. This
-trigger is NOT the live gate for GitHub sign-in: ``admin_create_user`` (what the
-auth broker calls) does not fire ``PreSignUp_ExternalProvider``, and this handler
-passes ``PreSignUp_AdminCreateUser`` straight through, so the broker is the only
-enforcement point (#3986, and ``lambda/github-auth-broker/handler.py``). The mode
-logic is kept identical anyway so a future trigger change cannot resurrect a
-divergent rule — the drift between these copies is what #4848/#4849 were filed
-over. A green parity matrix here proves nothing about live sign-in; the
-behavioral gate test targets the broker.
-
-Issue #4844 also aligns ``open`` mode with the broker's fail-closed semantics.
-This copy used to auto-confirm ``open`` with no safety flag while the broker
-required ``ALLOW_OPEN_SIGNUP=true`` — a real, verified divergence. It now requires
-the same flag. Terraform passes the flag from the same root-module variable that
-feeds the broker, so no environment's behaviour changes.
-
-The ``explicit`` divergence is deliberately NOT "aligned": this copy has a
-working DynamoDB allowlist implementation and the broker denies the mode as
-unimplemented. Deleting a working implementation to match a stub would be a
-regression, so it is documented here and in the parity matrix instead.
 """
 
 import json
@@ -53,10 +29,6 @@ ALLOWLIST_MODE = os.environ.get("ALLOWLIST_MODE", "org")
 ALLOWED_ORGS = os.environ.get("ALLOWED_ORGS", "")
 ALLOWLIST_TABLE = os.environ.get("ALLOWLIST_TABLE", "")
 GITHUB_TOKEN_SECRET_ARN = os.environ.get("GITHUB_TOKEN_SECRET_ARN", "")
-# Issue #4844: same escape hatch, same spelling, same default as the broker's
-# ALLOW_OPEN_SIGNUP (#3986). Without it, ALLOWLIST_MODE=open is a misconfiguration
-# rather than an instruction, in both copies.
-ALLOW_OPEN_SIGNUP = os.environ.get("ALLOW_OPEN_SIGNUP", "").lower() == "true"
 
 # Lazy-initialized clients
 _dynamodb = None
@@ -140,41 +112,12 @@ def handler(event: dict, context) -> dict:
 
     logger.info(f"Processing sign-up for GitHub user: {github_username}")
 
-    # Issue #4849, SHADOW MODE: exercise the membership-eligibility read and log
-    # what it would decide. Does not affect the outcome below — T5 (#4844) is what
-    # makes it authoritative. See _log_membership_eligibility_shadow.
-    _log_membership_eligibility_shadow(username, github_username)
-
-    # Issue #4844: .strip() as well as .lower(), matching the broker's
-    # `ALLOWLIST_MODE.strip().lower()`. Without the strip, a mode with stray
-    # whitespace (trivially easy to introduce in tfvars or a hand-patched Lambda
-    # env) parsed as a KNOWN mode in the broker and an UNKNOWN one here — the two
-    # copies disagreeing on the same string. Caught by the parity matrix in
-    # tests/lambda/test_allowlist_mode_parity.py.
-    mode = ALLOWLIST_MODE.strip().lower()
+    mode = ALLOWLIST_MODE.lower()
 
     if mode == "open":
-        # Issue #4844: aligned with the broker — 'open' without the explicit
-        # acknowledgement flag is treated as a misconfiguration, not an
-        # instruction. See the module docstring.
-        if not ALLOW_OPEN_SIGNUP:
-            logger.error("ALLOWLIST_MODE=open without ALLOW_OPEN_SIGNUP=true is a misconfiguration; denying sign-up")
-            raise Exception("Sign-up is currently disabled due to misconfiguration.")
-        logger.warning("Allowlist mode is 'open' with ALLOW_OPEN_SIGNUP=true; allowing %s with NO allowlist enforcement", github_username)
+        logger.info("Allowlist mode is 'open'; allowing all users")
         event["response"]["autoConfirmUser"] = True
         return event
-
-    elif mode == "platform":
-        # Issue #4844. Parity branch — see the module docstring for why this copy
-        # is not the live gate. Denies (by raising, this trigger's deny idiom) on
-        # both "no membership" and "could not check": an unavailable membership
-        # source must not fall through to a grant.
-        if _check_platform_membership(username):
-            logger.info("User %s holds a platform membership", github_username)
-            event["response"]["autoConfirmUser"] = True
-            return event
-        logger.warning("User %s does not hold a platform membership", github_username)
-        raise Exception(f"User {github_username} is not a member of any organization on this platform. Contact your administrator for access.")
 
     elif mode == "org":
         allowed = _check_org_membership(github_username)
@@ -199,100 +142,6 @@ def handler(event: dict, context) -> dict:
     else:
         logger.error(f"Unknown ALLOWLIST_MODE: {ALLOWLIST_MODE}; denying sign-up")
         raise Exception("Sign-up is currently disabled due to misconfiguration.")
-
-
-def _extract_github_user_id(username: str) -> str:
-    """Extract the numeric GitHub account id from the Cognito userName.
-
-    For external providers the userName is ``<ProviderName>_<providerUserId>``,
-    which for the GitHub IdP is ``GitHub_<numeric id>``. The id — not the login —
-    is what the identity-index projection is keyed on, because logins are
-    renameable. Deliberately does NOT fall back to the login/email the way
-    ``_extract_github_username`` does: a login is not a valid key here, and
-    guessing one would look up the wrong user rather than fail.
-    """
-    if "_" in username:
-        candidate = username.split("_", 1)[1]
-        if candidate.isdigit():
-            return candidate
-    return ""
-
-
-def _check_platform_membership(username: str) -> bool:
-    """Whether this identity holds at least one platform org membership (#4844).
-
-    ``ALLOWLIST_MODE=platform``'s predicate: eligibility comes from the platform's
-    own membership records, not from GitHub org membership. GitHub still proves
-    *who* the user is; it no longer decides *whether they belong*.
-
-    Keyed on the GitHub numeric **id** extracted from the Cognito userName, not
-    the login: the projection is id-keyed because logins are renameable.
-
-    The predicate is **row existence**, not ``is_active`` — that flag marks which
-    single workspace a user currently has selected, so filtering on it would deny
-    every member whose selection points at a different org, plus everyone with no
-    selection at all. The projection is built without that filter for the same
-    reason (``src/admin/memberships.py`` :: ``project_member_org_ids``).
-
-    Fail-CLOSED in every failure mode: no numeric id, an unreadable projection, a
-    missing shared module, or any exception all return False. Unlike
-    :func:`_log_membership_eligibility_shadow`, this verdict is load-bearing, so
-    swallowing an error into a grant would be fail-*open*.
-    """
-    try:
-        from membership_eligibility import ELIGIBLE
-        from membership_eligibility import check_platform_membership as _read
-
-        github_id = _extract_github_user_id(username)
-        if not github_id:
-            logger.error("ALLOWLIST_MODE=platform: no numeric github id in userName=%r; denying", username)
-            return False
-        verdict = _read(github_id)
-        if verdict == ELIGIBLE:
-            return True
-        logger.warning("ALLOWLIST_MODE=platform: github_id=%s verdict=%s; denying", github_id, verdict)
-        return False
-    except Exception as e:
-        # Includes ImportError: if the shared reader is missing from the zip the
-        # mode cannot be enforced, so it must not appear to pass. The packaging
-        # that keeps it present is in infra/modules/cognito/pre_signup.tf.
-        logger.exception("ALLOWLIST_MODE=platform: membership read raised for userName=%r; denying: %s", username, e)
-        return False
-
-
-def _log_membership_eligibility_shadow(username: str, github_username: str) -> None:
-    """Log what the membership-eligibility read would decide (Issue #4849).
-
-    Shadow only — never changes the sign-up outcome, and never raises: a fault in
-    a read that has no opinion yet must not be able to deny a sign-up.
-
-    Issue #4844: skipped under ``ALLOWLIST_MODE=platform``, where the same read is
-    the live decision for this copy and logs its own real verdict. Shadowing an
-    enforcing read would double the DynamoDB call inside Cognito's non-negotiable
-    5s trigger budget.
-    """
-    if ALLOWLIST_MODE.strip().lower() == "platform":
-        return
-    try:
-        from membership_eligibility import check_platform_membership
-
-        github_id = _extract_github_user_id(username)
-        if not github_id:
-            logger.info(
-                "membership-eligibility SHADOW: no numeric github id in userName=%r; skipping",
-                username,
-            )
-            return
-        verdict = check_platform_membership(github_id)
-        logger.info(
-            "membership-eligibility SHADOW: github_id=%s login=%s verdict=%s (mode=%s, outcome unaffected)",
-            github_id,
-            github_username,
-            verdict,
-            ALLOWLIST_MODE,
-        )
-    except Exception as e:
-        logger.warning(f"membership-eligibility SHADOW: read raised (ignored): {e}")
 
 
 def _extract_github_username(username: str, user_attributes: dict) -> str:

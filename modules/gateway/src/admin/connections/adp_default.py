@@ -137,11 +137,6 @@ async def attach_to_adp_default(
         provider="github",
         provider_scope_id=user_scope_id,
         org_id=adp_default_id,
-        # #4070: personal installs are a real installation->tenant binding, so they
-        # must populate the canonical column too. Left NULL, every personal install
-        # would be invisible to the resolver — i.e. unclaimed, and therefore
-        # claimable by anyone asserting it in their own github_installation_ids.
-        installation_id=str(installation_id),
         install_metadata={
             "installation_id": installation_id,
             "account_login": account_login,

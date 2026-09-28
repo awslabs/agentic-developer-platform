@@ -59,7 +59,7 @@ class TestIdentitiesService:
         assert result.provider == "slack"
         assert result.provider_user_id == "U12345"
         assert result.provider_username == "alice-slack"
-        assert result.verification_method == "admin_attested"
+        assert result.verification_method == "admin_manual"
         assert result.org_id == "id-org"
         assert result.team_id == "id-org-team"
 

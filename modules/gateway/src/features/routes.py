@@ -30,10 +30,6 @@ def _is_enabled_strict(env_var: str) -> bool:
     value = os.environ.get(env_var)
     if value is not None:
         return value.lower() == "true"
-    if env_var == "FEATURE_SUPERPLANE_ENABLED":
-        from src.domain_proxy.superplane import enabled
-
-        return enabled()
     return False
 
 
@@ -74,62 +70,5 @@ async def get_features(_current_user=Depends(get_current_user)):
             "logs": _is_enabled("FEATURE_LOGS_ENABLED"),
             # Fail-closed: optional add-on, hidden by default (Issue #3773)
             "gitlab": _is_enabled_strict("FEATURE_GITLAB_ENABLED"),
-            # Fail-closed: the orchestration engine + graph UI are a per-flow
-            # opt-in add-on (Issue #4209). Strict, not `_is_enabled`, for two
-            # reasons: legacy mode (AIDLC emits orchestrator + evaluation issues,
-            # the operations persona drives the loop) remains the default and
-            # fully supported path indefinitely (ruling D-R20), so the new path
-            # must be invisible unless somebody asks for it; and a lookup error
-            # must resolve to *off*, because failing open here would silently
-            # enable an opt-in engine path in production.
-            "orchestration_engine": _is_enabled_strict("FEATURE_ORCHESTRATION_ENGINE_ENABLED"),
-            # Fail-closed: the Budget & Spend screen (Issue #4402) ships behind a flag
-            # whose documented rollback is "flip it off — screen and nav vanish, no
-            # redeploy". That only holds if absence resolves to *off*: with
-            # `_is_enabled` the screen would be live in every environment the moment
-            # the SPA deployed, and unsetting the var would not turn it off again.
-            "budget_spend": _is_enabled_strict("FEATURE_BUDGET_SPEND_ENABLED"),
-            # Fail-closed: the live run-control channel (Issue #3960). Strict for a
-            # stronger reason than the flags above — this one gates a channel that
-            # reaches into a running pod, and its rollout invariant is that ordinary
-            # workloads stay off until the abort writer and its readers are deployed.
-            # A fail-open default would enable it in every environment the moment the
-            # gateway shipped, which is precisely the state the invariant forbids.
-            #
-            # Note this flag is read independently by the worker, which runs its own
-            # strict reader. Answering true here cannot start a listener in a pod: a
-            # gateway-side flag that could activate worker capabilities would make one
-            # config change enable a listener the ingress policy may not yet cover.
-            "agent_control": _is_enabled_strict("FEATURE_AGENT_CONTROL_ENABLED"),
-            "agent_explanations": _is_enabled_strict("FEATURE_AGENT_EXPLANATIONS_ENABLED"),
-            # Fail-closed: the opt-in /next UI shell (Issue #5079, EPIC #5078). The
-            # current UI is the default and stays so; /next is an additional
-            # experience users enter voluntarily. Its documented rollback is "flip
-            # this flag off — the entry link and the /next routes disappear, the
-            # current UI keeps working, and no configured data or model-routing rule
-            # changes". That only holds if absence resolves to *off*: with
-            # `_is_enabled` the new shell would be live in every environment the
-            # moment the gateway shipped, and unsetting the var would not turn it
-            # off again. This flag is a rollout control, NOT a security boundary —
-            # every page reachable under /next enforces the same server-side
-            # authorization as its current-UI counterpart.
-            "new_ui": _is_enabled_strict("FEATURE_NEW_UI_ENABLED"),
-            # Fail-closed: the Superplane domain app (Issue #5037, EPIC #4910). Strict
-            # for the reason the story's first acceptance criterion states directly —
-            # while this gate is off, no existing ADP surface may change behaviour and
-            # no Superplane route may be reachable on any tenant. `_is_enabled` would
-            # invert that: the route would be live in every environment the moment the
-            # gateway image shipped, and unsetting the var would not turn it off again.
-            #
-            # The module directory this gates is a skeleton whose infrastructure is not
-            # this unit's to deploy (Terraform is U3's, pinned images U2's). So a `true`
-            # here would advertise a route whose backing services do not exist yet —
-            # failing in front of a user rather than staying invisible until its owners
-            # have landed. Off is the correct state until then.
-            "superplane": _is_enabled_strict("FEATURE_SUPERPLANE_ENABLED"),
-            # Fail-closed rollout control for the per-persona model preferences
-            # page (Issue #5422). PMM-09 enables it only after model evidence and
-            # runtime enforcement are ready; absence must therefore remain off.
-            "agent_models": _is_enabled_strict("FEATURE_AGENT_MODELS_ENABLED"),
         }
     }

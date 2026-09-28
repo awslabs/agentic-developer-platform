@@ -1,7 +1,29 @@
 version: 0.2
-# The production helper checks source identity, reuses existing immutable artifacts,
-# preserves image selfchecks and verifies the published digest. No post-build push.
+
+# Builds the gateway backend image and pushes to ECR.
+# Referenced by .github/workflows/gateway-deploy.yml via
+# `codebuild/bs-gateway-build.yml` in the uploaded source zip.
+#
+# Env vars set by the CodeBuild project:
+#   AWS_REGION, ACCOUNT_ID, REGISTRY, ENVIRONMENT, IMAGE_TAG (optional)
+
 phases:
+  pre_build:
+    commands:
+      - |
+        if [ -z "${ADP_SOURCE_SHA:-}" ]; then
+          echo "ERROR: ADP_SOURCE_SHA not set. Build was started without --source-location-override." >&2
+          echo "This means the build is reading from the shared mutable key (stale source race)." >&2
+          echo "All builds must use codebuild-run.sh or the codebuild-run composite action." >&2
+          exit 1
+        fi
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
   build:
     commands:
-      - bash platform/scripts/publish-shared-image.sh adp-gateway
+      - cd modules/gateway
+      - docker build --no-cache --pull -t $REGISTRY/adp-gateway:latest .
+      - '[ -n "${IMAGE_TAG:-}" ] && docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG || true'
+  post_build:
+    commands:
+      - docker push $REGISTRY/adp-gateway:latest
+      - '[ -n "${IMAGE_TAG:-}" ] && docker push $REGISTRY/adp-gateway:$IMAGE_TAG || true'

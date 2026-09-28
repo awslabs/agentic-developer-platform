@@ -37,15 +37,6 @@ log = get_logger("ingest-doc")
 
 from config import settings
 from s3_store import S3ContentStore
-from scope import ScopeValidationError, compute_s3_prefix, parse_scope_from_env
-
-# Source admission guards (#5658). --source is caller-supplied: an s3:// URI is
-# checked against a bucket/prefix allowlist rather than against what the task role
-# happens to be able to read, and an http(s) URL is fetched through the pinned,
-# per-redirect-validated guard.
-from s3_source_guard import check_s3_source, safe_download_name
-from url_denylist import scrub_url_credentials
-from url_fetch import DestinationRefused, fetch as guarded_fetch
 
 # Stage tracking (issue #2308) — optional, fail-open if DB unavailable
 STAGE_TRACKING_AVAILABLE = False
@@ -97,33 +88,14 @@ def fetch_document(source: str, dest_dir: str) -> str | None:
 
 
 def _fetch_from_s3(s3_uri: str, dest_dir: str) -> str | None:
-    """Download a file from S3, after checking the source is one we may read.
-
-    The bucket and key are parsed by the guard rather than by string splitting
-    here: the previous ``replace("s3://","").split("/",1)`` accepted any bucket the
-    task role could read, and did not canonicalise the key, so ``..`` segments and
-    doubled slashes were compared as literal text.
-    """
+    """Download a file from S3."""
     import boto3
 
     try:
-        source_scope = parse_scope_from_env()
-    except ScopeValidationError as exc:
-        log.error("S3 source has invalid ownership scope: %s", exc)
-        return None
-    decision = check_s3_source(
-        s3_uri,
-        allowlist_raw=settings.s3_source_allowlist,
-        default_bucket=settings.s3_bucket_name,
-        scope=source_scope,
-    )
-    if not decision.allowed:
-        log.error("S3 source refused (%s): %s", decision.reason_code, decision.reason)
-        return None
+        parts = s3_uri.replace("s3://", "").split("/", 1)
+        bucket = parts[0]
+        key = parts[1] if len(parts) > 1 else ""
 
-    bucket, key = decision.bucket, decision.key
-
-    try:
         # Handle S3 folder (ends with /)
         if key.endswith("/"):
             log.info("S3 folder detected: %s — listing objects", s3_uri)
@@ -134,33 +106,15 @@ def _fetch_from_s3(s3_uri: str, dest_dir: str) -> str | None:
                 obj_key = obj["Key"]
                 if obj_key == key:
                     continue
-
-                # Re-check each listed object. list_objects_v2 with a prefix should
-                # only return keys under it, but the allowlist may restrict to a
-                # narrower prefix than the one listed, and the per-object decision
-                # is the one that authorises the download.
-                obj_decision = check_s3_source(
-                    f"s3://{bucket}/{obj_key}",
-                    allowlist_raw=settings.s3_source_allowlist,
-                    default_bucket=settings.s3_bucket_name,
-                    scope=source_scope,
-                )
-                if not obj_decision.allowed:
-                    log.warning(
-                        "Skipping listed object outside allowed scope (%s): %s",
-                        obj_decision.reason_code,
-                        obj_key,
-                    )
-                    continue
-
-                dest_path = os.path.join(dest_dir, safe_download_name(os.path.basename(obj_key)))
+                filename = os.path.basename(obj_key)
+                dest_path = os.path.join(dest_dir, filename)
                 s3.download_file(bucket, obj_key, dest_path)
                 paths.append(dest_path)
                 log.info("Downloaded %s -> %s", obj_key, dest_path)
             # Return first file (caller should handle folders separately)
             return paths[0] if paths else None
 
-        filename = safe_download_name(os.path.basename(key))
+        filename = os.path.basename(key) or "document"
         dest_path = os.path.join(dest_dir, filename)
 
         s3 = boto3.client("s3")
@@ -174,56 +128,38 @@ def _fetch_from_s3(s3_uri: str, dest_dir: str) -> str | None:
 
 
 def _fetch_from_url(url: str, dest_dir: str) -> str | None:
-    """Download a document from a URL, validating the URL and every redirect hop."""
+    """Download a document from a URL."""
     try:
-        resp = guarded_fetch(
-            url,
-            timeout=60,
+        resp = requests.get(
+            url, timeout=60,
             headers={"User-Agent": "AgentContext-DocIngestion/1.0"},
+            stream=True,
         )
-        if resp.status_code >= 400:
-            log.error("HTTP %d for %s", resp.status_code, scrub_url_credentials(url))
-            return None
+        resp.raise_for_status()
 
-        # The response body is already bounded by url_fetch.MAX_RESPONSE_BYTES;
-        # this enforces the pipeline's own (smaller) document limit.
-        if len(resp.content) > MAX_DOWNLOAD_SIZE:
-            log.error(
-                "Download exceeds %d MB limit: %s",
-                MAX_DOWNLOAD_SIZE // (1024 * 1024),
-                scrub_url_credentials(url),
-            )
-            return None
-
-        # Determine filename from URL or Content-Disposition. Both are supplied by
-        # the remote server, so both go through safe_download_name — the previous
-        # Content-Disposition path was joined to dest_dir with no sanitisation at
-        # all, and os.path.basename alone does not stop a backslash-separated
-        # traversal.
-        content_disp = resp.headers.get("content-disposition", "")
+        # Determine filename from URL or Content-Disposition
+        content_disp = resp.headers.get("Content-Disposition", "")
         if "filename=" in content_disp:
-            filename = safe_download_name(content_disp.split("filename=")[1])
+            filename = content_disp.split("filename=")[1].strip('"\'')
         else:
-            parsed = urlparse(resp.url)
-            filename = safe_download_name(os.path.basename(parsed.path))
+            parsed = urlparse(url)
+            filename = os.path.basename(parsed.path) or "document"
 
         dest_path = os.path.join(dest_dir, filename)
+        downloaded = 0
         with open(dest_path, "wb") as f:
-            f.write(resp.content)
+            for chunk in resp.iter_content(chunk_size=8192):
+                downloaded += len(chunk)
+                if downloaded > MAX_DOWNLOAD_SIZE:
+                    log.error("Download exceeds %d MB limit: %s", MAX_DOWNLOAD_SIZE // (1024 * 1024), url)
+                    return None
+                f.write(chunk)
 
-        log.info(
-            "Downloaded %s -> %s (%.1f KB)",
-            scrub_url_credentials(url),
-            dest_path,
-            os.path.getsize(dest_path) / 1024,
-        )
+        log.info("Downloaded %s -> %s (%.1f KB)", url, dest_path, os.path.getsize(dest_path) / 1024)
         return dest_path
 
-    except DestinationRefused as e:
-        log.error("URL source refused (%s): %s", e.reason_code, e.url)
-        return None
     except Exception as e:
-        log.error("URL download failed for %s: %s", scrub_url_credentials(url), e)
+        log.error("URL download failed for %s: %s", url, e)
         return None
 
 
@@ -410,12 +346,6 @@ def ingest_document(
         "steps": {},
     }
 
-    try:
-        scope = parse_scope_from_env()
-    except ScopeValidationError:
-        result.update(status="refused", error="invalid_scope")
-        return result
-
     # Initialize stage tracker if registry_asset_id provided (issue #2308)
     tracker = None
     if registry_asset_id and STAGE_TRACKING_AVAILABLE:
@@ -430,7 +360,7 @@ def ingest_document(
     # Initialize S3 content store
     store = S3ContentStore(
         bucket_name=settings.s3_bucket_name,
-        prefix=compute_s3_prefix(scope, settings.s3_content_prefix),
+        prefix=settings.s3_content_prefix,
         region_name=settings.aws_region,
     )
 

@@ -36,23 +36,9 @@ spec:
             app: personal-context-synthesis
         spec:
           serviceAccountName: ${SERVICE_ACCOUNT}
-          # Pod-level security context (#6038 — S15 non-root hardening).
-          securityContext:
-            runAsUser: 10001
-            runAsGroup: 10001
-            fsGroup: 10001
-            seccompProfile:
-              type: RuntimeDefault
           containers:
           - name: synthesis
             image: ${INGESTION_IMAGE}
-            securityContext:
-              runAsNonRoot: true
-              readOnlyRootFilesystem: true
-              allowPrivilegeEscalation: false
-              privileged: false
-              capabilities:
-                drop: ["ALL"]
             command: ["python", "-m", "personal_context.synthesis"]
             envFrom:
             - configMapRef:
@@ -75,11 +61,6 @@ spec:
               value: "${MIN_LEARNINGS_THRESHOLD}"
             - name: MAX_UNSYNTHESIZED_AGE_DAYS
               value: "${MAX_UNSYNTHESIZED_AGE_DAYS}"
-            volumeMounts:
-            - name: tmp
-              mountPath: /tmp
-            - name: home
-              mountPath: /home/appuser
             resources:
               requests:
                 cpu: "250m"
@@ -88,10 +69,3 @@ spec:
                 cpu: "1"
                 memory: "2Gi"
           restartPolicy: OnFailure
-          volumes:
-          - name: tmp
-            emptyDir:
-              sizeLimit: 1Gi
-          - name: home
-            emptyDir:
-              sizeLimit: 512Mi

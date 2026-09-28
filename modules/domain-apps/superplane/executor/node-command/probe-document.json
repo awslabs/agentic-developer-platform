@@ -1,1 +1,0 @@
-{"schemaVersion":"2.2","description":"Superplane approved node DNS TLS probe v1","parameters":{"Contract":{"type":"String","allowedPattern":"^[A-Za-z0-9+/=]{1,16384}$"}},"mainSteps":[{"action":"aws:runShellScript","name":"probe","inputs":{"timeoutSeconds":"45","runCommand":["exec /opt/superplane/bin/node-probe-v1 '{{ Contract }}'"]}}]}

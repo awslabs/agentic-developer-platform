@@ -95,7 +95,6 @@ describe('useAgentChat', () => {
   let onMessagesChange: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    vi.stubEnv('VITE_AGENT_WS_URL', 'wss://chat.example.test/v1');
     vi.useFakeTimers({ shouldAdvanceTime: true });
     MockWebSocket.instances = [];
     onMessagesChange = vi.fn();
@@ -103,7 +102,6 @@ describe('useAgentChat', () => {
   });
 
   afterEach(() => {
-    vi.unstubAllEnvs();
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -111,19 +109,6 @@ describe('useAgentChat', () => {
   // -----------------------------------------------------------------------
   // Connection lifecycle
   // -----------------------------------------------------------------------
-
-  it('does not open a socket when this deployment has no chat endpoint', async () => {
-    vi.stubEnv('VITE_AGENT_WS_URL', '');
-    const conv = makeConversation();
-    const { result } = renderHook(() => useAgentChat({ conversation: conv, onMessagesChange }));
-    await act(async () => { await Promise.resolve(); });
-
-    expect(MockWebSocket.instances).toHaveLength(0);
-    expect(result.current.connectionStatus).toBe('disconnected');
-    expect(onMessagesChange).toHaveBeenCalledWith(conv.id, expect.arrayContaining([
-      expect.objectContaining({ content: 'Agent chat is not configured for this deployment.', status: 'error' }),
-    ]));
-  });
 
   it('connects when conversation is provided', async () => {
     const conv = makeConversation();

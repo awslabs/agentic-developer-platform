@@ -32,7 +32,6 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
-data "aws_partition" "current" {}
 
 data "terraform_remote_state" "platform" {
   backend = "s3"
@@ -238,52 +237,6 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
           "cognito-idp:AdminUpdateUserAttributes"
         ]
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      },
-      {
-        # Native identity lifecycle (#5010). Keep every write scoped to the
-        # gateway pool; GetGroup is needed for idempotent CreateGroup retries.
-        Sid    = "CognitoIdentityLifecycle"
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:AdminCreateUser",
-          "cognito-idp:AdminDeleteUser",
-          "cognito-idp:AdminAddUserToGroup",
-          "cognito-idp:AdminRemoveUserFromGroup",
-          "cognito-idp:AdminListGroupsForUser",
-          "cognito-idp:CreateGroup",
-          "cognito-idp:GetGroup",
-          "cognito-idp:DeleteGroup"
-        ]
-        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      },
-      {
-        # Authorized machine-agent lifecycle (#5624). Cognito client creation,
-        # protected credential delivery and terminal retirement all use this
-        # existing gateway pool. This is static gateway authority, not worker
-        # or per-task permission, and grants no client update/secret rotation.
-        Sid    = "CognitoMachineClientLifecycle"
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:CreateUserPoolClient",
-          "cognito-idp:DescribeUserPoolClient",
-          "cognito-idp:DeleteUserPoolClient"
-        ]
-        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      },
-      {
-        # Web CLI login (/auth/cli): mints tokens on the CLI app client the
-        # same way the github-auth-broker does — fresh random permanent
-        # password + admin auth. Only invoked after the signed-in browser
-        # user approves, and only for broker-provisioned GitHub_* users
-        # (who never hold a real password). Scoped to this pool only.
-        Sid    = "CognitoCliLoginMint"
-        Effect = "Allow"
-        Action = [
-          "cognito-idp:AdminSetUserPassword",
-          "cognito-idp:AdminInitiateAuth",
-          "cognito-idp:AdminRespondToAuthChallenge"
-        ]
-        Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
       }
     ]
   })
@@ -402,20 +355,14 @@ resource "aws_iam_role_policy" "gateway_comprehend_pii" {
 # upstream requests with SigV4 using the gateway pod's OWN IRSA credentials —
 # unlike the Claude proxy path, which assumes a cross-account pool role.
 #
-# The route now targets AWS Bedrock's OpenAI-compatible endpoint on
-# bedrock-runtime.<region>.amazonaws.com (BG_MANTLE_BASE_URL), which authorizes
-# against the native bedrock:InvokeModel* actions on the inference profile and
-# its underlying foundation model — covered by the "MantleBedrockInvoke"
-# statement below (Resource "*"). No IAM change was needed for that migration.
-#
-# The earlier preview host bedrock-mantle.<region>.api.aws is its OWN service
-# (prefix "bedrock-mantle:") and authorized against bedrock-mantle:CreateInference
-# on the mantle project resource — NOT bedrock:InvokeModel*. Spike #2703 missed
-# this because it tested from a role with AdministratorAccess attached, which
-# masked the real required action; the gateway pod's own role got 401
-# access_denied until this grant was added (Issue #2817). The
-# "MantleCreateInference" statement below is now vestigial (the route no longer
-# calls that host) but is retained harmlessly for rollback to the preview host.
+# bedrock-mantle is its OWN service (prefix "bedrock-mantle:"), not part of the
+# "bedrock:" service. The upstream inference call authorizes against
+# bedrock-mantle:CreateInference on the mantle project resource — NOT
+# bedrock:InvokeModel*. Spike #2703 missed this because it tested from a role
+# with AdministratorAccess attached, which masked the real required action;
+# the gateway pod's own role got 401 access_denied until this grant was added
+# (Issue #2817). The bedrock:InvokeModel* statement below is kept because the
+# mantle docs are ambiguous about whether some model paths still check it.
 resource "aws_iam_role_policy" "gateway_mantle_bedrock_invoke" {
   count = var.enable_mantle_passthrough ? 1 : 0
   name  = "${local.name_prefix}-policy-gateway-mantle-bedrock-invoke"
@@ -550,14 +497,6 @@ resource "aws_iam_role_policy" "gateway_vault_secrets" {
         ]
       },
       {
-        # #5634: staged supplied-key activation moves only this deployment's
-        # GitHub App key version. Never grant version-stage writes to the vault.
-        Sid      = "GitHubAppKeyActivation"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:UpdateSecretVersionStage"]
-        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.environment}/github-app/adp-agent-platform-key-??????"
-      },
-      {
         # ListSecrets is account-wide by necessity (no resource-level scoping).
         # The gateway uses it to enumerate its own vault inventory (e.g. for
         # the orphan sweeper, admin listings, and per-user quota checks).
@@ -648,8 +587,7 @@ module "s3_chat_logs" {
 # =============================================================================
 
 module "rds" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  source                              = "./modules/rds"
+  source = "./modules/rds"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -700,14 +638,12 @@ module "redis" {
 # =============================================================================
 
 module "cognito" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  source                              = "./modules/cognito"
+  source = "./modules/cognito"
 
-  environment            = var.environment
-  name_prefix            = local.name_prefix
-  common_tags            = local.common_tags
-  mfa_configuration      = var.cognito_mfa_configuration
-  threat_protection_mode = var.cognito_threat_protection_mode
+  environment       = var.environment
+  name_prefix       = local.name_prefix
+  common_tags       = local.common_tags
+  mfa_configuration = var.cognito_mfa_configuration
   callback_urls = concat(
     var.cognito_callback_urls,
     ["https://${module.cloudfront.distribution_domain_name}/auth/callback"]
@@ -717,12 +653,9 @@ module "cognito" {
     ["https://${module.cloudfront.distribution_domain_name}"]
   )
   custom_domain          = var.cognito_custom_domain
-  certificate_arn        = var.cognito_custom_domain_certificate_arn
   access_token_validity  = var.cognito_access_token_validity
   refresh_token_validity = var.cognito_refresh_token_validity
   id_token_validity      = var.cognito_id_token_validity
-  # Web CLI login: short-lived, rotated refresh tokens for the CLI app client
-  cli_refresh_token_validity = var.cognito_cli_refresh_token_validity
 
   # Issue #60: Provision test users (admins group, test user, test admin)
   create_test_users = var.create_test_users
@@ -734,35 +667,6 @@ module "cognito" {
 
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
-
-  # Issue #4844: pass the allowlist configuration EXPLICITLY, from the same root
-  # variables that configure the broker. This block previously passed no
-  # pre_signup_* arguments at all, so the trigger ran the child module's defaults
-  # ("org" + an empty org list = deny-all if it ever fired) while the broker ran
-  # whatever the environment set — deny-vs-open divergence between two copies of
-  # one rule, in one environment. Introducing a new mode on top of unset defaults
-  # is the exact shape of the ALLOWLIST_MODE / ALLOW_OPEN_SIGNUP outage in
-  # CLAUDE.md, so the two copies are now configured together, in one deploy unit.
-  #
-  # This changes NO deployed behaviour today: pre-signup is not the live gate for
-  # GitHub sign-in (admin_create_user does not fire PreSignUp_ExternalProvider —
-  # see lambda/github-auth-broker/handler.py), so what it would have decided has
-  # never been consulted. It stops the two from drifting further.
-  pre_signup_allowlist_mode    = var.github_auth_allowlist_mode
-  pre_signup_allowed_orgs      = var.github_auth_allowed_orgs
-  pre_signup_allow_open_signup = var.github_auth_allow_open_signup
-
-  # Issue #4849: membership-eligibility projection read (shadow mode). Referencing
-  # the tables directly is safe HERE — they are resources of this root module, so
-  # this is root -> child, not the child -> root reference that would close the
-  # cloudfront/api_gateway/broker cycle documented elsewhere in this file.
-  identity_index_table_name      = aws_dynamodb_table.identity_index.name
-  user_identity_index_table_name = aws_dynamodb_table.user_identity_index.name
-  identity_index_table_arns = [
-    aws_dynamodb_table.identity_index.arn,
-    aws_dynamodb_table.user_identity_index.arn,
-  ]
-  user_identity_index_v2_read = var.user_identity_index_v2_read
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
@@ -799,45 +703,6 @@ module "s3_cloudfront_logs" {
 # CloudFront Module for Frontend CDN
 # =============================================================================
 
-# -----------------------------------------------------------------------------
-# Broker origin for CloudFront (see enable_broker_cloudfront_route)
-# -----------------------------------------------------------------------------
-# Shared Task ingress / GitHub broker origin. Task-only routing must not turn
-# on the GitHub OAuth behavior.
-# Resolved from the published invoke URL rather than from module.api_gateway
-# outputs, which would create a dependency cycle:
-#
-#   cloudfront -> api_gateway (origin id/stage)
-#             api_gateway -> github_auth_broker (broker_lambda_invoke_arn)
-#                        github_auth_broker -> cloudfront (frontend_url)
-#
-# Terraform builds the graph from both branches of a ternary, so making
-# frontend_url conditional does not remove that last edge. Issue #2708 hit the
-# same cycle from the other direction and solved it the same way — by not
-# referencing across the loop.
-#
-# Reading a parameter this stack also writes is safe here because the data source
-# only exists when the flag is on, and the flag is a second pass by definition:
-# the route cannot be enabled until the API Gateway it points at exists. This is
-# the same shape as enable_vpc_origin, which likewise depends on a value from an
-# earlier apply.
-data "aws_ssm_parameter" "apigw_invoke_url_for_broker_origin" {
-  count = var.enable_broker_cloudfront_route || var.enable_task_api_route ? 1 : 0
-
-  name = "/adp/${var.environment}/gateway/apigw-invoke-url"
-}
-
-locals {
-  # https://<id>.execute-api.<region>.amazonaws.com/<stage>
-  broker_origin_match = var.enable_broker_cloudfront_route || var.enable_task_api_route ? regexall(
-    "https://([a-z0-9]+)\\.execute-api\\.[a-z0-9-]+\\.amazonaws\\.com/(.+)$",
-    nonsensitive(data.aws_ssm_parameter.apigw_invoke_url_for_broker_origin[0].value)
-  ) : []
-
-  broker_origin_domain_name = length(local.broker_origin_match) > 0 ? "${local.broker_origin_match[0][0]}.execute-api.${var.aws_region}.amazonaws.com" : ""
-  broker_origin_path        = length(local.broker_origin_match) > 0 ? "/${local.broker_origin_match[0][1]}" : ""
-}
-
 module "cloudfront" {
   source = "./modules/cloudfront"
 
@@ -848,22 +713,8 @@ module "cloudfront" {
   s3_bucket_id                   = module.frontend_s3.bucket_id
   custom_domain_name             = var.frontend_domain_name
   acm_certificate_arn            = var.frontend_acm_certificate_arn
-  additional_connect_src         = var.frontend_additional_connect_src
-
-  # Route /auth/github/* through the distribution to the broker, so the OAuth
-  # flow stays on the frontend hostname. Gated on its own variable rather than on
-  # enable_api_gateway: the origin is additive and inert until
-  # VITE_GITHUB_AUTH_BROKER_URL and the broker's CALLBACK_URL point at it, so
-  # enabling it should be a deliberate step rather than a side effect of having
-  # an API Gateway.
-  broker_origin_domain_name      = local.broker_origin_domain_name
-  broker_origin_path             = local.broker_origin_path
-  enable_broker_cloudfront_route = var.enable_broker_cloudfront_route
-  enable_task_api_route          = var.enable_task_api_route
-
-  waf_web_acl_arn        = var.cloudfront_waf_web_acl_arn
-  enable_ipv6            = var.cloudfront_enable_ipv6
-  log_bucket_domain_name = var.enable_cloudfront_logging ? module.s3_cloudfront_logs[0].bucket_domain_name : ""
+  waf_web_acl_arn                = ""
+  log_bucket_domain_name         = var.enable_cloudfront_logging ? module.s3_cloudfront_logs[0].bucket_domain_name : ""
   # ALB domain is set dynamically by backend-deploy workflow after Ingress ALB is created
   # Pass empty string here — CloudFront will only have the S3 origin initially
   alb_domain_name = ""
@@ -919,69 +770,6 @@ module "cloudwatch_dashboard" {
   pod_deployment_name        = "bedrockgateway"
 }
 
-# =============================================================================
-# Budget Enforcement Alarms (Issue #4075)
-# =============================================================================
-# Budget enforcement fails CLOSED with a bounded grace window. These alarms make
-# that window observable — an unobserved grace window is fail-open with extra
-# steps. Metrics are app EMF from the gateway pod (namespace BedrockGateway,
-# matching src/shared/metrics.py).
-# =============================================================================
-
-module "budget_alarms" {
-  source = "./modules/budget-alarms"
-
-  environment   = var.environment
-  name_prefix   = local.name_prefix
-  common_tags   = local.common_tags
-  alarm_actions = var.budget_alarm_sns_topic_arns
-}
-
-# =============================================================================
-# Budget fail-mode SSM parameter (Issue #4075)
-# =============================================================================
-# Makes budget_fail_mode reversible at runtime. Without this the mode is a
-# compile-time constant, and the documented rollback ("set it back to open")
-# cannot be executed at all — which would make shipping fail-closed strictly
-# worse than the previous fail-open behaviour.
-#
-# Both ConfigMap renderers (gateway-deploy.yml and deploy-all.sh) read this
-# param and stamp it into BG_BUDGET_BUDGET_FAIL_MODE.
-# =============================================================================
-
-resource "aws_ssm_parameter" "budget_fail_mode" {
-  name        = "/adp/${var.environment}/gateway/budget-fail-mode"
-  description = "Budget enforcement fail mode: closed (deny on check failure, default) or open (rollback lever). Issue #4075."
-  type        = "String"
-  value       = "closed"
-
-  tags = local.common_tags
-
-  # Operators flip this out-of-band (SSM put + rollout restart) during an
-  # incident. Terraform must not revert that on the next apply.
-  lifecycle {
-    ignore_changes = [value]
-  }
-}
-
-# PMM-03 / D3: production organization/team model-access policy consumed by
-# both proxy admission and the gateway-signed per-hop model decision.  The
-# value is a JSON object: {"org-id":["canonical.model.*"],
-# "org-id:team-id":["canonical.model.id"]}.  Terraform creates the safe
-# no-explicit-policy baseline and never overwrites an operator-authored value.
-resource "aws_ssm_parameter" "model_allowed_models_config" {
-  name        = "/adp/${var.environment}/gateway/model-allowed-models-config"
-  description = "JSON organization/team model allowlists for gateway admission. PMM-03 D3."
-  type        = "String"
-  value       = "{}"
-
-  tags = local.common_tags
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-}
-
 # NOTE: EKS→RDS (5432) and EKS→Redis (6379) security group rules are owned by
 # platform infra (platform/infra/main.tf) — do NOT duplicate them here.
 # See: https://github.com/aws-e/adp/issues/2590
@@ -998,8 +786,7 @@ resource "aws_ssm_parameter" "model_allowed_models_config" {
 # =============================================================================
 
 module "rds_bootstrap" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  source                              = "./modules/rds-bootstrap"
+  source = "./modules/rds-bootstrap"
 
   name_prefix            = local.name_prefix
   namespace              = "bedrockgw"
@@ -1027,15 +814,13 @@ module "rds_bootstrap" {
 # =============================================================================
 
 module "budget_lambda" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  count                               = var.enable_chat_logging ? 1 : 0
-  source                              = "./modules/budget-lambda"
+  count  = var.enable_chat_logging ? 1 : 0
+  source = "./modules/budget-lambda"
 
   environment = var.environment
   name_prefix = local.name_prefix
   common_tags = local.common_tags
   aws_region  = var.aws_region
-  account_id  = data.aws_caller_identity.current.account_id
 
   # S3 Chat Logs Bucket
   chat_logs_bucket_name = module.s3_chat_logs[0].bucket_name
@@ -1062,170 +847,9 @@ module "budget_lambda" {
   # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
   enable_reserved_concurrency = var.enable_lambda_reserved_concurrency
 
-  pricing_refresh_timeout = var.pricing_refresh_timeout
-
-  # Existing topics are reused; empty input provisions the pricing SNS -> SQS
-  # operational inbox inside this module (no manual subscription confirmation).
-  alarm_actions = var.budget_alarm_sns_topic_arns
-
   # Ensure the psycopg2 layer zip is built+uploaded before this module's
   # aws_s3_object data source reads it.
   depends_on = [module.s3_chat_logs, module.rds, null_resource.build_psycopg2_layer]
-}
-
-# =============================================================================
-# Orchestration Tick Module (Issue #4203)
-# =============================================================================
-# The delivery-loop engine's heartbeat: EventBridge -> VPC Lambda -> RDS, every
-# few minutes. Reads the orchestration graph (migration 029_orchestration_graph),
-# moves nodes whose predecessors are satisfied from `pending` to `ready` through
-# the `transition()` guard, and exits. No dispatch — that is a later story.
-#
-# NOTE ON NAMING: `name_prefix` here is `adp-<env>`, NOT `local.name_prefix`
-# (which is `bedrockgw-<env>`). The tick's function, log group and schedule rule
-# are pinned to `adp-<env>-orchestration-tick` by the wave-3 evaluation and the
-# documented smoke check. Composed from `var.environment` rather than hardcoded,
-# matching the `adp-${var.environment}` idiom already used in kms.tf and
-# user_identity_index.tf in this same root module.
-#
-# Issue #4298: resolves the tick's image tag to a digest so a re-pushed tag
-# produces a real Terraform diff. See the image_uri comment in the module call.
-data "aws_ecr_image" "orchestration_tick" {
-  repository_name = "adp-gateway"
-  image_tag       = var.orchestration_tick_image_tag
-}
-
-# Issue #4316: the SG fronting the shared VPC interface endpoints, so the tick can
-# be granted 443 ingress to reach SQS over the private endpoint (private DNS is
-# enabled on it, so there is no public path to fall back to — see the variable's
-# description in the module for the full failure mode).
-#
-# Read as a data source rather than added as a `terraform_remote_state.platform`
-# output on purpose: a new platform output would not exist in state until
-# platform-infra-apply.yml runs, so `gateway-infra-apply.yml` would fail at plan
-# time on a missing output key until an operator applied the two roots in the right
-# order. The SG is created unconditionally by modules/networking with a stable
-# name and Service tag, so looking it up keeps this fix inside the single apply
-# that owns the tick. Filtered on the VPC as well, since name_prefix collides
-# across VPCs in the same account (adp-dev-vpc vs adp-dev-cyber-vpc).
-data "aws_security_group" "vpc_endpoints" {
-  count  = var.enable_orchestration_tick ? 1 : 0
-  vpc_id = local.vpc_id
-
-  filter {
-    name   = "tag:Name"
-    values = ["adp-${var.environment}-sg-vpce"]
-  }
-}
-
-# The Lambda runs the existing adp-gateway container image: the tick's logic is
-# `src/orchestration/tick.py` (async SQLAlchemy/asyncpg), and that image is the
-# only artifact that already carries the async stack plus the RDS CA bundle the
-# TLS path needs. See modules/orchestration-tick/main.tf for the full rationale.
-module "orchestration_tick" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  count                               = var.enable_orchestration_tick ? 1 : 0
-  source                              = "./modules/orchestration-tick"
-
-  environment = var.environment
-  name_prefix = "adp-${var.environment}"
-  common_tags = local.common_tags
-  aws_region  = var.aws_region
-
-  # Issue #4298 / #4313: resolve the tag to an immutable DIGEST at plan time.
-  #
-  # Passing "<repo>:latest" here is a static string, so Terraform sees no diff
-  # when a new image is pushed under the same tag and never calls UpdateFunctionCode.
-  # Lambda resolves a tag to a digest exactly once (at update time), so the tick
-  # kept executing whatever image it was last pointed at — across green
-  # gateway-deploy runs, with no error and no alarm. Wave 4 hit this twice: the
-  # only reason wave 3's tick ran current code is that an operator ran a one-off
-  # CLI update by hand.
-  #
-  # `aws_ecr_image` is a data source, so the digest is re-read on every plan; when
-  # the tag moves, image_uri changes and the function is updated as part of the
-  # normal apply. Pinning `orchestration_tick_image_tag` to a specific tag still
-  # works and now also pins the digest.
-  image_uri = "${local.ecr_gateway_url}@${data.aws_ecr_image.orchestration_tick.image_digest}"
-
-  # VPC Configuration
-  vpc_id             = local.vpc_id
-  private_subnet_ids = local.private_subnets
-
-  # Issue #4316: reach SQS over the private interface endpoint.
-  vpc_endpoint_security_group_id = data.aws_security_group.vpc_endpoints[0].id
-
-  # RDS Configuration
-  rds_security_group_id = local.rds_security_group_id
-  db_host               = module.rds.db_instance_address
-  db_port               = module.rds.db_instance_port
-  db_name               = var.rds_db_name
-  db_username           = var.rds_username
-  rds_resource_id       = module.rds.db_instance_resource_id
-
-  # Reuse exactly the Redis store and IAM user used by the gateway budget path.
-  redis_enabled           = var.enable_redis
-  redis_host              = var.enable_redis ? module.redis[0].primary_endpoint_address : ""
-  redis_port              = var.redis_port
-  redis_security_group_id = local.redis_security_group_id
-  redis_iam_auth          = var.enable_elasticache_iam_auth
-  redis_username          = var.enable_redis && var.enable_elasticache_iam_auth ? module.redis[0].redis_iam_user_id : ""
-  redis_cache_name        = var.enable_redis ? module.redis[0].replication_group_id : ""
-
-  tick_schedule = var.orchestration_tick_schedule
-
-  # Issue #4211: stall/halt alert delivery. Empty by default — see the variable's
-  # description for why an unsubscribed topic is visible rather than fatal.
-  alert_email_addresses = var.orchestration_alert_email_addresses
-
-  # Issue #4313: engine dispatch. The tick resolves the gate approver in-process
-  # and produces the agent envelope onto the agent-submit FIFO queue itself — no
-  # transport, no new route, no credential added to the webhook Lambda. The queue
-  # belongs to the webhook-ingress Terraform state, so it is referenced by
-  # ARN/URL variables rather than by a resource address.
-  agent_submit_queue_arn = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? local.worker_queue_arn : var.orchestration_dispatch_queue_arn
-  agent_submit_queue_url = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? local.worker_queue_url : var.orchestration_dispatch_queue_url
-  dispatch_repo          = var.orchestration_dispatch_repo
-  dispatch_max_per_tick  = var.orchestration_dispatch_max_per_tick
-
-  # Issue #4527: the GitHub engine-command bridge. The webhook Lambda marks an
-  # `@agent-engine` comment on the event row it already writes — no queue message,
-  # no gateway call — and the tick consumes the mark on its next wake. The table,
-  # its KMS key and the per-tenant App secrets live in other Terraform states, so
-  # they arrive as variables for the same reason the dispatch queue does.
-  #
-  # All four default to empty/false, which leaves the bridge inert: the pass reads
-  # nothing and reports `commands_enabled=false`.
-  engine_enabled                     = var.orchestration_engine_enabled
-  agent_authority_enabled            = var.orchestration_agent_authority_enabled
-  shared_run_reporting_enabled       = try(local.worker_runtime_wiring.shared_run_reporting_enabled, false)
-  shared_worker_continuation_enabled = try(local.worker_runtime_wiring.shared_worker_continuation_enabled, false)
-  shared_worker_role_arn             = try(local.worker_runtime_wiring.shared_worker_role_arn, "")
-  run_report_key_parameter           = try(local.worker_runtime_wiring.run_report_key_parameter, "")
-  persona_model_mapping_enabled      = var.persona_model_mapping_enabled
-  agent_authority_prepared           = var.orchestration_agent_authority_prepared && local.worker_events_table != "" && local.worker_events_key != ""
-  agent_authority_resources = {
-    webhook_events_table_name  = local.worker_events_table
-    webhook_events_kms_key_arn = local.worker_events_key
-  }
-  webhook_events_table_name     = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? local.worker_events_table : var.orchestration_webhook_events_table
-  webhook_events_kms_key_arn    = local.worker_events_key
-  github_app_secret_arn_pattern = var.orchestration_github_app_secret_arn_pattern
-
-  # Issue #4539: command attribution. The tick verifies the signature the webhook
-  # Lambda wrote before it trusts any authority field on the row. The secret belongs
-  # to the webhook-ingress state, so it arrives by ARN like the four above; empty
-  # leaves the verifier without a key, which quarantines every command rather than
-  # applying it unverified.
-  engine_command_signing_key_secret_arn = var.orchestration_engine_command_signing_key_secret_arn
-
-  # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
-  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
-
-  # Issue #2910: Lambda reserved concurrency gated for fresh-account quota
-  reserved_concurrency = var.enable_lambda_reserved_concurrency ? 2 : -1
-
-  depends_on = [module.rds]
 }
 
 # =============================================================================
@@ -1243,14 +867,8 @@ module "orchestration_tick" {
 # =============================================================================
 
 module "api_gateway" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  count                               = var.enable_api_gateway ? 1 : 0
-  source                              = "./modules/api-gateway"
-
-  # EAA runbook 5.1 — per-path source restrictions at the API edge. Empty by
-  # default, in which case no resource policy is created at all.
-  agent_route_source_cidrs    = var.agent_route_source_cidrs
-  internal_route_source_cidrs = var.internal_route_source_cidrs
+  count  = var.enable_api_gateway ? 1 : 0
+  source = "./modules/api-gateway"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -1270,15 +888,6 @@ module "api_gateway" {
   # ALB Security Groups (Issue #42) — VPC Link v2 SG needs egress to these
   # Set dynamically by the deploy workflow alongside ALB ARN/DNS
   alb_security_group_ids = var.alb_security_group_ids
-
-  # Internal-plane ALB (Issue #4010) — the `/internal/{proxy+}` route targets a
-  # separate ALB that CloudFront has no VPC origin for, so the internal control
-  # plane is unreachable from the edge by routing. All three default to
-  # empty/[], in which case the route falls back to the edge ALB (pre-#4010
-  # behavior). Populated by platform/scripts/wire-gateway-alb.sh.
-  internal_plane_alb_arn                = var.internal_plane_alb_arn
-  internal_plane_alb_dns                = var.internal_plane_alb_dns
-  internal_plane_alb_security_group_ids = var.internal_plane_alb_security_group_ids
 
   # Authentication (backend handles JWT validation)
   cognito_user_pool_arn = module.cognito.cognito_user_pool_arn
@@ -1300,17 +909,6 @@ module "api_gateway" {
   # at plan time (the invoke_arn above is unknown until apply).
   enable_broker_route = var.enable_github_auth_broker
 
-  # Issue #5795 (T2): POST /v1/tasks route in the OpenAPI body.
-  #
-  # These arrive as root variables rather than a module reference because the
-  # ingress Lambda is owned by modules/agent-factory/webhook-ingress, a separate
-  # Terraform state — the same reason internal_alb_arn is an input here. Both
-  # default to empty, and the route is default-off, so a gateway apply that does
-  # not set them publishes no task route and behaves exactly as it does today.
-  task_api_lambda_invoke_arn    = var.task_api_lambda_invoke_arn
-  task_api_lambda_function_name = var.task_api_lambda_function_name
-  enable_task_api_route         = var.enable_task_api_route
-
   depends_on = [module.cognito]
 }
 
@@ -1326,9 +924,8 @@ module "api_gateway" {
 # =============================================================================
 
 module "lambda_authorizer" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  count                               = var.enable_api_gateway ? 1 : 0
-  source                              = "./modules/lambda-authorizer"
+  count  = var.enable_api_gateway ? 1 : 0
+  source = "./modules/lambda-authorizer"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -1344,9 +941,6 @@ module "lambda_authorizer" {
   # API Gateway Configuration
   api_gateway_id            = module.api_gateway[0].api_gateway_id
   api_gateway_execution_arn = module.api_gateway[0].api_gateway_execution_arn
-
-  # Optional source-IP allowlist for the JWT/browser path (empty = disabled)
-  ip_allowlist_ssm_parameter = var.authorizer_ip_allowlist_ssm_parameter
 
   # Issue #642: KMS encryption for DynamoDB tables
   kms_key_arn = aws_kms_key.dynamodb.arn
@@ -1538,56 +1132,11 @@ resource "aws_ssm_parameter" "cognito_client_id" {
   tags = local.common_tags
 }
 
-resource "aws_ssm_parameter" "cognito_cli_client_id" {
-  name        = "/adp/${var.environment}/gateway/cognito-cli-client-id"
-  description = "Cognito app client ID for web CLI login (BG_COGNITO_CLI_CLIENT_ID)"
-  type        = "String"
-  value       = module.cognito.cli_client_id
-
-  tags = local.common_tags
-}
-
-resource "aws_ssm_parameter" "cognito_agent_client_id" {
-  name        = "/adp/${var.environment}/gateway/cognito-agent-client-id"
-  description = "Cognito app client ID for machine-to-machine gateway authentication"
-  type        = "String"
-  value       = module.cognito.agent_client_id
-
-  tags = local.common_tags
-}
-
-resource "aws_ssm_parameter" "agent_clients_table" {
-  name        = "/adp/${var.environment}/gateway/agent-clients-table"
-  description = "DynamoDB registry for dynamically provisioned Cognito machine clients"
-  type        = "String"
-  value       = module.cognito.agent_clients_table_name
-
-  tags = local.common_tags
-}
-
 resource "aws_ssm_parameter" "cognito_domain" {
   name        = "/adp/${var.environment}/gateway/cognito-domain"
   description = "Cognito hosted-UI domain prefix"
   type        = "String"
   value       = module.cognito.cognito_domain
-
-  tags = local.common_tags
-}
-
-# The user-facing origin of the platform: the custom domain when there is one,
-# otherwise the distribution's default hostname.
-#
-# Published because both callers of the backend deploy previously composed this
-# from `cloudfront-domain`, which is the wrong value once an alias exists — and
-# it is not a cosmetic wrongness. BG_GATEWAY_BASE_URL builds the GitHub App
-# Setup URL that the register flow *sends to GitHub*, and the magic-link URLs
-# that are sent to users. So a stale value propagates outside the deployment and
-# silently reverts an org-admin change to the App.
-resource "aws_ssm_parameter" "frontend_url" {
-  name        = "/adp/${var.environment}/gateway/frontend-url"
-  description = "User-facing origin of the platform (custom domain if set, else the CloudFront default). Consumed by the backend deploy for BG_GATEWAY_BASE_URL and CORS."
-  type        = "String"
-  value       = var.frontend_domain_name != "" ? "https://${var.frontend_domain_name}" : "https://${module.cloudfront.distribution_domain_name}"
 
   tags = local.common_tags
 }
@@ -1599,14 +1148,7 @@ resource "aws_ssm_parameter" "github_auth_broker_url" {
   description = "GitHub auth broker API Gateway invoke URL"
   type        = "String"
   # Issue #1011: Append /auth/github so the frontend can construct /start and /callback
-  #
-  # When the broker is served through CloudFront, this must be the distribution's
-  # hostname, not the API Gateway's. The frontend builds /start from this value,
-  # and the broker sets its OAuth state cookie on whatever host serves /start —
-  # so if this and the broker's CALLBACK_URL name different hosts, the callback
-  # never receives that cookie and every login fails `missing_state`. The two are
-  # a matched pair; this is the half the frontend sees.
-  value = var.enable_broker_cloudfront_route && var.frontend_domain_name != "" ? "https://${var.frontend_domain_name}/auth/github" : "${module.api_gateway[0].api_gateway_invoke_url}/auth/github"
+  value = "${module.api_gateway[0].api_gateway_invoke_url}/auth/github"
 
   tags = local.common_tags
 }
@@ -1677,34 +1219,6 @@ resource "aws_ssm_parameter" "redis_port" {
   tags = local.common_tags
 }
 
-# Issue #4342: the IAM-auth username and replication-group id the app needs to
-# mint an ElastiCache connect token. The user + user group have existed in
-# modules/redis/ since IAM auth was turned on, but neither value was ever
-# published, so the gateway had no way to learn them and connected with no
-# credential at all (as the disabled `default` user). These two params close
-# that gap; gateway-deploy.yml reads them into the ConfigMap.
-resource "aws_ssm_parameter" "redis_iam_username" {
-  count = var.enable_redis && var.enable_elasticache_iam_auth ? 1 : 0
-
-  name        = "/adp/${var.environment}/gateway/redis-iam-username"
-  description = "ElastiCache IAM-auth user name for gateway ConfigMap (Issue #4342)"
-  type        = "String"
-  value       = module.redis[0].redis_iam_user_id
-
-  tags = local.common_tags
-}
-
-resource "aws_ssm_parameter" "redis_cache_name" {
-  count = var.enable_redis && var.enable_elasticache_iam_auth ? 1 : 0
-
-  name        = "/adp/${var.environment}/gateway/redis-cache-name"
-  description = "ElastiCache replication group id — the IAM token is signed against this, NOT the endpoint host (Issue #4342)"
-  type        = "String"
-  value       = module.redis[0].replication_group_id
-
-  tags = local.common_tags
-}
-
 # =============================================================================
 # GitHub Auth Broker Lambda (Issue #520)
 # =============================================================================
@@ -1722,9 +1236,8 @@ data "aws_secretsmanager_secret" "github_oauth_for_broker" {
 }
 
 module "github_auth_broker" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  count                               = var.enable_github_auth_broker ? 1 : 0
-  source                              = "./modules/github-auth-broker"
+  count  = var.enable_github_auth_broker ? 1 : 0
+  source = "./modules/github-auth-broker"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -1734,34 +1247,12 @@ module "github_auth_broker" {
   cognito_user_pool_arn   = module.cognito.cognito_user_pool_arn
   cognito_client_id       = module.cognito.cognito_user_pool_client_id
   github_oauth_secret_arn = data.aws_secretsmanager_secret.github_oauth_for_broker[0].arn
-  # The user-facing origin, which is the custom domain when there is one: the
-  # broker redirects the browser here after auth (FRONTEND_URL in
-  # lambda/github-auth-broker/handler.py). Pinned to the distribution's default
-  # domain, a deployment with an alias sends users who signed in at their own
-  # hostname back to the *.cloudfront.net one — a working login that visibly
-  # lands on the wrong URL, and a second origin for cookies and CSP to disagree
-  # about.
-  frontend_url            = var.frontend_domain_name != "" ? "https://${var.frontend_domain_name}" : "https://${module.cloudfront.distribution_domain_name}"
+  frontend_url            = "https://${module.cloudfront.distribution_domain_name}"
   allowlist_mode          = var.github_auth_allowlist_mode
   allowed_orgs            = var.github_auth_allowed_orgs
   allow_open_signup       = var.github_auth_allow_open_signup
   github_token_secret_arn = var.github_auth_token_secret_arn
   lambda_artifact_bucket  = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
-
-  # Issue #4133: encrypt the session-handoff code table with the existing
-  # gateway DynamoDB CMK.
-  dynamodb_kms_key_arn = aws_kms_key.dynamodb.arn
-
-  # Issue #4849: membership-eligibility projection read (shadow mode). Safe as a
-  # direct reference because the tables are root-module resources — the cycle
-  # documented above is about the *broker* module referencing back into the root.
-  identity_index_table_name      = aws_dynamodb_table.identity_index.name
-  user_identity_index_table_name = aws_dynamodb_table.user_identity_index.name
-  identity_index_table_arns = [
-    aws_dynamodb_table.identity_index.arn,
-    aws_dynamodb_table.user_identity_index.arn,
-  ]
-  user_identity_index_v2_read = var.user_identity_index_v2_read
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
@@ -1787,7 +1278,6 @@ resource "aws_iam_role_policy" "gateway_identity_index" {
         Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
-          "dynamodb:ConditionCheckItem",
           "dynamodb:BatchWriteItem",
           "dynamodb:DeleteItem",
           "dynamodb:GetItem",
@@ -1798,12 +1288,6 @@ resource "aws_iam_role_policy" "gateway_identity_index" {
         Resource = [
           aws_dynamodb_table.identity_index.arn
         ]
-      },
-      {
-        Sid      = "AgentClientRegistryRead"
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
-        Resource = [module.cognito.agent_clients_table_arn]
       },
       {
         Sid    = "DynamoDBKMSAccess"
@@ -1838,7 +1322,7 @@ resource "aws_iam_role_policy" "gateway_ingestion_sqs_publish" {
           "sqs:SendMessage",
           "sqs:GetQueueUrl"
         ]
-        Resource = var.agent_context_ingestion_queue_arn != "" ? var.agent_context_ingestion_queue_arn : "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.cluster_name}-context-ingestion"
+        Resource = var.agent_context_ingestion_queue_arn
       }
     ]
   })

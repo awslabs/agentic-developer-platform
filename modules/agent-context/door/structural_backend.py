@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Any
 
-from .acl import SearchHit, _normalize_repo_name
+from .acl import SearchHit
 from .tracing import get_tracer
 
 log = logging.getLogger(__name__)
@@ -46,50 +46,81 @@ def _normalize_symbol(defn: dict) -> dict:
     }
 
 
-def index_provenance(index: dict, requested_repo_id: str) -> str:
-    """Use only identities written by the index producer, never a caller label.
-
-    Older fixtures use repo_id; current ingestion writes repo. Both are supported,
-    but contradictory declarations and absent provenance are refused.
-    """
-    declarations = [value.strip() for key in ("repo_id", "repo")
-                    if isinstance(value := index.get(key), str) and value.strip()]
-    if not declarations:
-        return ""
-    identities = {_normalize_repo_name(value.casefold()) for value in declarations}
-    return declarations[0] if len(identities) == 1 else ""
-
-
 async def load_code_index(repo_id: str, *, s3_client: Any, bucket: str, prefix: str) -> dict:
-    """Load exact artifact names and verify the producer's repository identity.
+    """Load a repo's code-index.json from S3.
 
-    Scoped and existing shared layouts remain readable for the same catalogued
-    repository. A short/suffix scan cannot select a different repository. Missing
-    or conflicting index provenance never inherits the requested repository.
+    Tries multiple key formats to handle naming variations:
+    1. code-indexes/{safe_name}.json (exact match, e.g. "addyosmani-agent-skills")
+    2. Suffix match: scan code-indexes/ for *-{repo_name}.json (handles short names)
+    3. Legacy: {prefix}/{safe_name}/code-index.json
+
+    Returns the parsed JSON dict, or an empty dict on any error.
     """
-    canonical = _normalize_repo_name(repo_id.casefold())
-    if len(canonical.split("/")) != 2 or any(part in {"", ".", ".."} for part in canonical.split("/")):
-        return {}
-    safe_name = _normalize_repo_id(_normalize_repo_name(repo_id))
-    keys = list(dict.fromkeys([
-        f"{prefix.rstrip('/')}/{safe_name}.json",
-        f"code-indexes/{safe_name}.json",
-        f"{prefix.rstrip('/')}/{safe_name}/code-index.json",
-    ]))
-    for key in keys:
+    safe_name = _normalize_repo_id(repo_id)
+
+    # Strategy 1: Exact match at code-indexes/{safe_name}.json
+    primary_key = f"code-indexes/{safe_name}.json"
+    with _structural_tracer.start_as_current_span(
+        "s3_fetch_index",
+        attributes={"repo_id": repo_id, "s3_key": primary_key},
+    ):
         try:
-            response = s3_client.get_object(Bucket=bucket, Key=key)
-            data = json.loads(response["Body"].read())
-            if not isinstance(data, dict):
-                continue
-            origin = index_provenance(data, repo_id)
-            if origin and _normalize_repo_name(origin.casefold()) == canonical:
+            response = s3_client.get_object(Bucket=bucket, Key=primary_key)
+            body = response["Body"].read()
+            data = json.loads(body)
+            if data:
+                log.debug("Loaded code-index for %s from %s", repo_id, primary_key)
                 return data
-            log.warning("Refusing structural index with missing or mismatched provenance")
         except s3_client.exceptions.NoSuchKey:
             pass
         except Exception:
-            log.warning("Unable to load code index for %s", repo_id, exc_info=True)
+            log.warning(
+                "Failed to load code-index for %s at %s", repo_id, primary_key, exc_info=True
+            )
+
+    # Strategy 2: Suffix match — repo_id might be a short name (e.g. "agent-skills")
+    # and the actual key is "addyosmani-agent-skills.json". List prefix and find match.
+    # When multiple files match the suffix, prefer the shortest filename (most specific
+    # match — e.g., "mattpocock-skills.json" over "Imbad0202-academic-research-skills.json").
+    try:
+        list_resp = s3_client.list_objects_v2(Bucket=bucket, Prefix="code-indexes/", MaxKeys=200)
+        candidates: list[str] = []
+        for obj in list_resp.get("Contents", []):
+            key = obj["Key"]
+            filename = key.split("/")[-1]
+            # Match: filename ends with -{safe_name}.json or equals {safe_name}.json
+            if filename.endswith(f"-{safe_name}.json") or filename == f"{safe_name}.json":
+                candidates.append(key)
+        # Sort by filename length (shortest = most specific match)
+        candidates.sort(key=lambda k: len(k.split("/")[-1]))
+        for key in candidates:
+            try:
+                response = s3_client.get_object(Bucket=bucket, Key=key)
+                body = response["Body"].read()
+                data = json.loads(body)
+                if data:
+                    log.debug("Loaded code-index for %s via suffix match at %s", repo_id, key)
+                    return data
+            except Exception:
+                continue
+    except Exception:
+        log.debug("Suffix-match scan failed for %s", repo_id)
+
+    # Strategy 3: Legacy key format
+    legacy_key = f"{prefix}/{safe_name}/code-index.json"
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=legacy_key)
+        body = response["Body"].read()
+        data = json.loads(body)
+        if data:
+            log.debug("Loaded code-index for %s from legacy %s", repo_id, legacy_key)
+            return data
+    except s3_client.exceptions.NoSuchKey:
+        pass
+    except Exception:
+        log.warning("Failed to load code-index for %s at %s", repo_id, legacy_key, exc_info=True)
+
+    log.debug("No code-index.json found for repo %s", repo_id)
     return {}
 
 
@@ -425,9 +456,6 @@ async def _check_code_index_for_exact_match(
     if not index:
         return None
 
-    # Provenance from the index, not from the caller's target spelling (#5658).
-    origin_repo = index_provenance(index, repo_id)
-
     raw_definitions = index.get("symbols", []) or index.get("definitions", [])
     definitions = [_normalize_symbol(d) for d in raw_definitions]
     call_graph = index.get("call_graph", {})
@@ -444,7 +472,7 @@ async def _check_code_index_for_exact_match(
             callers = _find_callers(full_key, call_graph)
 
             data: dict[str, Any] = {
-                "repo_id": origin_repo,
+                "repo_id": repo_id,
                 "file": file_path,
                 "line": defn["line"],
                 "symbol": symbol,
@@ -454,7 +482,7 @@ async def _check_code_index_for_exact_match(
                 "callees": callees if depth == "detailed" else callees[:3],
                 "source": "code-index-fallback",
             }
-            exact_matches.append(SearchHit(repo_name=origin_repo, data=data))
+            exact_matches.append(SearchHit(repo_name=repo_id, data=data))
 
     if exact_matches:
         # Rank among exact matches (demote generated files)
@@ -479,9 +507,6 @@ async def _understand_via_code_index(
     if not index:
         return []
 
-    # Provenance from the index, not from the caller's target spelling (#5658).
-    origin_repo = index_provenance(index, repo_id)
-
     raw_definitions = index.get("symbols", []) or index.get("definitions", [])
     definitions = [_normalize_symbol(d) for d in raw_definitions]
     call_graph = index.get("call_graph", {})
@@ -492,7 +517,7 @@ async def _understand_via_code_index(
     if not query_target:
         for defn in definitions[:50]:  # Cap at 50 for overview
             data: dict[str, Any] = {
-                "repo_id": origin_repo,
+                "repo_id": repo_id,
                 "file": defn["file"],
                 "line": defn["line"],
                 "symbol": defn["symbol"],
@@ -500,7 +525,7 @@ async def _understand_via_code_index(
                 "signature": defn["signature"],
                 "source": "code-index-fallback",
             }
-            results.append(SearchHit(repo_name=origin_repo, data=data))
+            results.append(SearchHit(repo_name=repo_id, data=data))
         return results
 
     # Search definitions matching the target
@@ -515,7 +540,7 @@ async def _understand_via_code_index(
             callers = _find_callers(full_key, call_graph)
 
             data = {
-                "repo_id": origin_repo,
+                "repo_id": repo_id,
                 "file": file_path,
                 "line": defn["line"],
                 "symbol": symbol,
@@ -525,7 +550,7 @@ async def _understand_via_code_index(
                 "callees": callees if depth == "detailed" else callees[:3],
                 "source": "code-index-fallback",
             }
-            results.append(SearchHit(repo_name=origin_repo, data=data))
+            results.append(SearchHit(repo_name=repo_id, data=data))
 
     # If target is a file/directory path, also return all definitions in that path
     if "/" in query_target and not results:
@@ -538,7 +563,7 @@ async def _understand_via_code_index(
         ]
         for defn in file_defs:
             data = {
-                "repo_id": origin_repo,
+                "repo_id": repo_id,
                 "file": defn["file"],
                 "line": defn["line"],
                 "symbol": defn["symbol"],
@@ -546,7 +571,7 @@ async def _understand_via_code_index(
                 "signature": defn["signature"],
                 "source": "code-index-fallback",
             }
-            results.append(SearchHit(repo_name=origin_repo, data=data))
+            results.append(SearchHit(repo_name=repo_id, data=data))
 
     # Fallback: if code-index had no match, use Zoekt to find definitions
     if not results and zoekt_backend:
@@ -844,9 +869,6 @@ async def _impact_via_code_index(
     if not index:
         return []
 
-    # Provenance from the index, not from the caller's target spelling (#5658).
-    origin_repo = index_provenance(index, repo_id)
-
     raw_definitions = index.get("symbols", []) or index.get("definitions", [])
     definitions = [_normalize_symbol(d) for d in raw_definitions]
     call_graph = index.get("call_graph", {})
@@ -877,14 +899,14 @@ async def _impact_via_code_index(
             caller_symbol = parts[1] if len(parts) > 1 else ""
 
             data: dict[str, Any] = {
-                "repo_id": origin_repo,
+                "repo_id": repo_id,
                 "file": caller_file,
                 "symbol": caller_symbol,
                 "relationship": "calls",
                 "target": key,
                 "source": "code-index-fallback",
             }
-            results.append(SearchHit(repo_name=origin_repo, data=data))
+            results.append(SearchHit(repo_name=repo_id, data=data))
 
     # Fallback: if call_graph is empty/yielded nothing, use Zoekt to find intra-repo references
     if not results and zoekt_backend:
@@ -926,11 +948,7 @@ async def _impact_via_code_index(
                     continue
                 seen_files.add(hit_file)
                 hit.data["relationship"] = "references"
-                # Report the repo Zoekt actually matched, not the caller's
-                # spelling of it — `repo_lower in hit.repo_name` is a substring
-                # test, so the two can differ. `hit.repo_name` is left untouched
-                # and remains what the ACL check authorises against.
-                hit.data["repo_id"] = hit.repo_name or repo_id
+                hit.data["repo_id"] = repo_id
                 hit.data["file"] = hit_file
                 hit.data["symbol"] = hit.data.get("symbol", "")
                 results.append(hit)

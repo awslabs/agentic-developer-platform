@@ -1,6 +1,0 @@
-{
-  "repository": "https://github.com/actions/actions-runner-controller",
-  "tag": "gha-runner-scale-set-0.14.2",
-  "commit": "9bb16ae49d0ce585d8e682aa7e2668a6e832d5d8",
-  "archive_sha256": "aa216496c857e23849251eb53f0968e57a16336e48c563ba0bf8887d6d6a942d"
-}

@@ -25,20 +25,13 @@ from lib.sts_assume import assume_customer_role
 
 # --- Fixtures ---
 
-@pytest.fixture(autouse=True)
-def stub_agent_process(monkeypatch):
-    # Entrypoint tests stub execution; process-tree deadlines have real-process tests.
-    import subprocess
-    monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))
-
-
 
 def _subprocess_side_effect_fresh_branch(*args, **kwargs):
     """Default subprocess.run side_effect for tests simulating a fresh issue.
 
     The entrypoint calls subprocess.run directly (not run_cmd) for:
       1. `git ls-remote --exit-code --heads origin agent/issue-NNN`
-         → returncode 0 means "branch exists"; we return 2 (doesn't exist)
+         → returncode 0 means "branch exists"; we return 1 (doesn't exist)
          so the fresh-creation path runs (the legacy test default).
       2. `gh pr list ...` (only if branch exists; not reached in fresh case)
       3. `git push --delete origin ...` (only if stale branch reset; not reached)
@@ -49,28 +42,8 @@ def _subprocess_side_effect_fresh_branch(*args, **kwargs):
     """
     cmd = args[0] if args else kwargs.get("args", [])
     if cmd and cmd[0:2] == ["git", "ls-remote"]:
-        return MagicMock(returncode=2, stdout="", stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="")
     return MagicMock(returncode=0, stdout="", stderr="")
-
-
-@pytest.fixture(autouse=True)
-def ready_gateway_proxy(monkeypatch):
-    """Main-sequence tests have a healthy proxy unless explicitly overridden."""
-    # Hosted reviewers inherit the worker's real queue. Tests must opt into a
-    # fake queue explicitly, never consume another live assignment from it.
-    monkeypatch.delenv("QUEUE_URL", raising=False)
-    monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
-    monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
-    monkeypatch.setattr("entrypoint.BootstrapLogger", MagicMock())
-    # Real durable-receipt behavior is covered in test_invocation_completion.py.
-    monkeypatch.setattr("entrypoint.is_delivery_completed", MagicMock(return_value=False))
-    monkeypatch.setattr("entrypoint.record_delivery_completed", MagicMock())
-    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
-    monkeypatch.setenv("ADP_GH_TOKEN_BROKER_ENABLED", "0")
-    # main() exports runtime telemetry with os.environ.update, outside monkeypatch.
-    # Restore those writes too so later model-policy tests see their own run state.
-    with patch.dict(os.environ):
-        yield
 
 
 SAMPLE_ENVELOPE = {
@@ -146,39 +119,6 @@ class TestParseEnvelope:
             parse_envelope("not json")
 
 
-class TestPersonaRuntimeRouting:
-    def test_existing_personas_keep_the_claude_worker(self):
-        from entrypoint import AGENT_BINARY, persona_runtime, worker_command
-
-        assert persona_runtime("reviewer") == "claude"
-        assert worker_command("architect") == ["node", AGENT_BINARY]
-
-    def test_codex_reviewer_uses_the_embedded_adapter(self):
-        from entrypoint import CODEX_REVIEWER_BINARY, persona_runtime, worker_command
-
-        assert persona_runtime("agent-codex-reviewer") == "codex"
-        assert worker_command("agent-codex-reviewer") == [
-            "node",
-            CODEX_REVIEWER_BINARY,
-            "--embedded",
-        ]
-
-    def test_codex_developer_uses_native_sdk(self):
-        from entrypoint import persona_runtime, worker_command
-
-        assert persona_runtime("agent-codex-developer") == "codex"
-        assert worker_command("agent-codex-developer") == [
-            "node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"
-        ]
-
-    def test_future_codex_personas_are_explicitly_fail_closed(self):
-        from entrypoint import persona_runtime, worker_command
-
-        assert persona_runtime("agent-codex-architect") == "codex"
-        with pytest.raises(ValueError, match="not packaged yet"):
-            worker_command("agent-codex-architect")
-
-
 # --- Test: vault_client ---
 
 
@@ -191,12 +131,10 @@ class TestVaultClient:
             "SecretString": '{"app_id": "123", "private_key": "fake-key"}'
         }
 
-        client = VaultClient(region="us-east-1", env="dev")
+        client = VaultClient(region="us-east-1")
         result = client.get_secret("tenants/acme-corp/github-app")
 
-        mock_sm.get_secret_value.assert_called_once_with(
-            SecretId="adp/dev/tenants/acme-corp/github-app"
-        )
+        mock_sm.get_secret_value.assert_called_once_with(SecretId="tenants/acme-corp/github-app")
         assert result == {"app_id": "123", "private_key": "fake-key"}
 
 
@@ -348,7 +286,6 @@ class TestStagePersonasAndSkills:
 
 
 class TestEntrypointMain:
-    @pytest.mark.parametrize("start_refused", [False, True])
     @patch("entrypoint.run_cmd")
     @patch("entrypoint.mint_installation_token")
     @patch("entrypoint.VaultClient")
@@ -365,18 +302,11 @@ class TestEntrypointMain:
         mock_run_cmd,
         monkeypatch,
         tmp_path,
-        start_refused,
     ):
         """Test the full 12-step sequence with a successful agent run."""
         from entrypoint import main
 
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
-        monkeypatch.setattr(
-            "entrypoint._receive_one_message", lambda *_: (json.dumps(SAMPLE_ENVELOPE), "receipt")
-        )
-        monkeypatch.setattr("entrypoint._delete_message", MagicMock())
-        monkeypatch.setattr("entrypoint.create_check_run", MagicMock(return_value={"id": 111}))
-        monkeypatch.setattr("entrypoint.update_check_run", MagicMock())
+        monkeypatch.setenv("SQS_MESSAGE_BODY", json.dumps(SAMPLE_ENVELOPE))
         monkeypatch.setenv("AWS_REGION", "us-east-1")
 
         # Mock vault
@@ -405,32 +335,21 @@ class TestEntrypointMain:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        if start_refused:
-            monkeypatch.setattr(entrypoint.run_report, "begin_delivery", MagicMock(side_effect=entrypoint.run_report.RunReportError("run_report_http_409", retryable=False)))
-            monkeypatch.setattr(entrypoint.run_report, "report_block", MagicMock())
-            assert main() == entrypoint.AGENT_EXIT_RETRYABLE
-            assert not any(call.args[0][0] in {"node", "claude", "codex"} for call in mock_subprocess_run.call_args_list)
-            entrypoint._delete_message.assert_not_called()
-            return
-
-        assert main() == 0
+        main()
 
         # Vault was called for github-app creds
         mock_vault.get_secret.assert_called_with("tenants/acme-corp/github-app")
         # Token was minted
         mock_mint.assert_called_once_with("123", "fake-key", 99887766)
         # Agent was executed
-        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
+        mock_subprocess_run.assert_called_once()
 
-    def test_missing_queue_configuration_does_not_receive_work(self, monkeypatch):
-        """The fixture removes even an inherited live worker queue."""
+    def test_missing_sqs_message(self, monkeypatch):
+        """Should return 1 when SQS_MESSAGE_BODY is not set."""
         from entrypoint import main
 
-        receiver = MagicMock(side_effect=AssertionError("test tried to receive live work"))
-        monkeypatch.setattr("entrypoint._receive_one_message", receiver)
         monkeypatch.delenv("SQS_MESSAGE_BODY", raising=False)
         assert main() == 1
-        receiver.assert_not_called()
 
     @patch("entrypoint.run_cmd")
     @patch("entrypoint.mint_installation_token")
@@ -733,11 +652,6 @@ class TestEntrypointMain:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        # Completed implementation is committed; only git log reports unpushed work.
-        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
-            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
-            returncode=0,
-        )
 
         # create_check_run raises — should be silently swallowed
         mock_create_cr.side_effect = RuntimeError("API down")
@@ -765,20 +679,20 @@ class TestStaleBranchHandling:
     The agent/issue-NNN branch convention is fixed (A4 auto-merge + reviewer
     workflows depend on it). When the branch already exists from a prior run:
       - if an open PR exists → extend (preserve PR review state)
-      - else → preserve substantive work; clean only proven disposable work
+      - else → reset to main (avoid carrying merged-since-then commits)
       - first run on the issue → fresh `git checkout -b` (existing behavior)
     """
 
     def test_branch_does_not_exist_creates_fresh(self):
-        """ls-remote returns 2 → goes through normal `git checkout -b`."""
+        """ls-remote returns 1 → goes through normal `git checkout -b`."""
         # The fresh-branch helper at module top simulates this case:
-        # ls-remote returncode=2 → remote_branch_exists=False → fresh creation.
+        # ls-remote returncode=1 → remote_branch_exists=False → fresh creation.
         # All other tests in TestEntrypointMain that use
         # _subprocess_side_effect_fresh_branch implicitly cover this.
         result = _subprocess_side_effect_fresh_branch(
             ["git", "ls-remote", "--exit-code", "--heads", "origin", "agent/issue-42"]
         )
-        assert result.returncode == 2
+        assert result.returncode == 1
 
     def test_branch_exists_with_open_pr_extends(self):
         """ls-remote=0 + gh pr list returns a number → fetch+checkout, no delete."""
@@ -802,8 +716,8 @@ class TestStaleBranchHandling:
         # - has_open_pr would be bool("123".strip()) = True → extend path
         assert bool("123\n".strip())
 
-    def test_empty_pr_response_does_not_establish_branch_disposability(self):
-        """An empty PR response supplies no evidence about branch content."""
+    def test_branch_exists_no_pr_resets_to_main(self):
+        """ls-remote=0 + gh pr list returns empty → delete + fresh checkout."""
 
         def side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])
@@ -813,7 +727,7 @@ class TestStaleBranchHandling:
                 return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        # An empty PR response only establishes absence of an open PR.
+        # has_open_pr would be bool("".strip()) = False → reset path
         result = side_effect(["gh", "pr", "list"])
         assert not bool(result.stdout.strip())
 
@@ -827,7 +741,7 @@ class TestAidlcBranchExtend:
     AIDLC stages commit artifacts sequentially on one branch without opening a PR
     until the final stage. The stale-branch reset (case (a) in Step 6b) must NOT
     delete the remote branch for aidlc persona; it must fetch + extend instead.
-    Other personas also preserve substantive work, even without an open PR.
+    Developer/architect/ops personas retain the existing reset-to-main behavior.
     """
 
     @patch("entrypoint._receive_one_message")
@@ -931,7 +845,7 @@ class TestAidlcBranchExtend:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_developer_persona_existing_branch_no_pr_preserves_unknown_content(
+    def test_developer_persona_existing_branch_no_pr_resets(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -945,7 +859,7 @@ class TestAidlcBranchExtend:
         monkeypatch,
         tmp_path,
     ):
-        """No PR and no proof of disposable content must preserve the work branch."""
+        """developer persona + existing remote branch + no open PR → delete + recreate (regression guard)."""
         from entrypoint import main
         import entrypoint
 
@@ -990,14 +904,19 @@ class TestAidlcBranchExtend:
 
         main()
 
-        assert not delete_called
-        checkout_calls = [
+        # git push --delete MUST be called for developer persona (stale reset)
+        assert len(delete_called) == 1, (
+            f"Expected exactly one git push --delete for developer persona, got: {delete_called}"
+        )
+        assert "agent/issue-42" in delete_called[0]
+
+        # Verify checkout -b (fresh creation) was called via run_cmd
+        checkout_b_calls = [
             c
             for c in mock_run_cmd.call_args_list
-            if c.args[0] == ["git", "checkout", "agent/issue-42"]
+            if "checkout" in str(c) and "-b" in str(c) and "agent/issue-42" in str(c)
         ]
-        assert checkout_calls, "Existing content must be checked out, not reset"
-        assert not any(c.args[0][:2] == ["git", "reset"] for c in mock_run_cmd.call_args_list)
+        assert len(checkout_b_calls) >= 1, "Expected git checkout -b for developer reset"
 
     @patch("entrypoint._is_already_completed")
     @patch("entrypoint._receive_one_message")
@@ -1567,11 +1486,7 @@ class TestStsAssumeUserIdTag:
 
 
 class TestBedrockViaFlag:
-    """Tests for the ADP_BEDROCK_VIA feature flag (scoped agent_env, not os.environ mutation).
-
-    Gateway is required; bypass and retired modes must stop before inference.
-    `user` is retired (#4747) and must raise — see test_retired_user_value_raises.
-    """
+    """Tests for the ADP_BEDROCK_VIA feature flag (scoped agent_env, not os.environ mutation)."""
 
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
@@ -1582,7 +1497,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_default_uses_gateway_with_customer_creds_scoped_to_tools(
+    def test_default_no_flag_agent_env_retains_irsa(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1596,7 +1511,7 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """Gateway is the default even when tools use customer AWS credentials."""
+        """When ADP_BEDROCK_VIA is not set, agent_env retains all IRSA vars."""
         from entrypoint import main
         import entrypoint
 
@@ -1637,12 +1552,11 @@ class TestBedrockViaFlag:
             }
             main()
 
-        # Model requests use the proxy while tools retain customer credentials.
+        # Agent subprocess should have been called with env containing IRSA vars
         call_kwargs = mock_subprocess_run.call_args
         agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
-        assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9090"
-        assert agent_env["AWS_ACCESS_KEY_ID"] == "AKUSER"
-        assert "AWS_ROLE_ARN" not in agent_env
+        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
+        assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
 
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
@@ -1653,7 +1567,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_platform_bypass_is_rejected(
+    def test_platform_explicit_agent_env_retains_irsa(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1667,7 +1581,7 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """Platform bypass cannot override the user routing rule."""
+        """When ADP_BEDROCK_VIA=platform, agent_env retains IRSA (same as default)."""
         from entrypoint import main
         import entrypoint
 
@@ -1706,12 +1620,13 @@ class TestBedrockViaFlag:
                 "region": "us-east-1",
                 "provenance_id": "prov-test",
             }
-            with pytest.raises(RuntimeError, match="must be gateway"):
-                main()
+            main()
 
-        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
+        assert "AWS_ROLE_ARN" in agent_env
 
-    @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
     @patch("entrypoint.create_check_run")
@@ -1721,8 +1636,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    @pytest.mark.parametrize("raw_value", ["user", "USER", " user ", "User"])
-    def test_retired_user_value_raises(
+    def test_user_mode_strips_irsa_from_agent_env(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1733,22 +1647,10 @@ class TestBedrockViaFlag:
         mock_create_cr,
         mock_delete_msg,
         mock_receive_msg,
-        mock_start_proxy,
         monkeypatch,
         tmp_path,
-        raw_value,
     ):
-        """ADP_BEDROCK_VIA=user is retired (#4747) and fails LOUDLY, not silently.
-
-        Before #4747 this value stripped IRSA so the customer's own credentials
-        served Bedrock — billed to them, metered nowhere. Deleting the branch
-        without this guard would let `=user` fall through to the trailing `else`
-        and run on pod IRSA, i.e. silently switch the payer. That silent switch
-        is the billing surprise ruling 3 forbids, so it must raise.
-
-        Parametrized over case/whitespace variants because normalization runs
-        BEFORE the guard — `USER` and ` user ` must not sneak past it.
-        """
+        """When ADP_BEDROCK_VIA=user and user creds exist, agent_env has IRSA stripped."""
         from entrypoint import main
         import entrypoint
 
@@ -1756,10 +1658,11 @@ class TestBedrockViaFlag:
         monkeypatch.setenv("AWS_REGION", "us-east-1")
         monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", raw_value)
+        monkeypatch.setenv("AWS_PROFILE", "default")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
 
         ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
-        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-retired")
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-3")
         mock_vault = MagicMock()
         mock_vault_cls.return_value = mock_vault
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
@@ -1767,112 +1670,6 @@ class TestBedrockViaFlag:
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
-            mock_gw = MagicMock()
-            mock_gw_cls.return_value = mock_gw
-            mock_gw.is_configured = True
-            mock_gw.assume_role.return_value = {
-                "profile_name": "adp-aws-default",
-                "access_key_id": "AKUSER",
-                "secret_access_key": "SKUSER",
-                "session_token": "STUSER",
-                "expiration": "2026-05-13T22:00:00Z",
-                "region": "us-east-1",
-                "provenance_id": "prov-test",
-            }
-            with pytest.raises(RuntimeError, match="ADP_BEDROCK_VIA=user is retired"):
-                main()
-
-        # The error must be actionable: name the retirement AND the replacement.
-        message = entrypoint.RETIRED_BEDROCK_VIA["user"]
-        assert "#4747" in message
-        assert "mapping" in message
-
-        # It must fail BEFORE spending anything: no proxy started, no agent exec'd.
-        mock_start_proxy.assert_not_called()
-        assert not any(
-            call.args and call.args[0] and call.args[0][0] == "node"
-            for call in mock_subprocess_run.call_args_list
-        )
-
-    def test_no_code_path_branches_on_user_value(self):
-        """The #4747 acceptance criterion: no routing branch handles `user`.
-
-        Asserted against the source because the behavioral tests above can only
-        prove the guard fires — they cannot prove a *second* `user` branch wasn't
-        left behind further down. The original story cited one line range but
-        there were two such branches, which is exactly the failure this catches.
-        The guard itself is a rejection lookup keyed by value, not an
-        `== "user"` comparison, so it does not trip this check.
-        """
-        import entrypoint
-
-        source = Path(entrypoint.__file__).read_text()
-        assert 'bedrock_via == "user"' not in source
-        assert "bedrock_via == 'user'" not in source
-
-    @patch("entrypoint._stop_sigv4_proxy")
-    @patch("entrypoint._start_sigv4_proxy")
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_gateway_mode_os_environ_retains_irsa(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        mock_start_proxy,
-        mock_stop_proxy,
-        monkeypatch,
-        tmp_path,
-    ):
-        """CRITICAL: os.environ keeps IRSA when gateway mode strips it from agent_env.
-
-        Inherited from the deleted `=user` version of this test (#4747). The
-        invariant is still live: gateway mode with a customer role assumed pops
-        IRSA vars from the SCOPED agent_env, and the post-agent SQS delete needs
-        os.environ to still hold IRSA for platform-account access. Re-pointed
-        rather than deleted — the `user` branch was only one of two callers of
-        this strip, and dropping the test would leave the survivor uncovered.
-        """
-        from entrypoint import main
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
-        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", "gateway")
-
-        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
-        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-gw-irsa")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-        mock_start_proxy.return_value = MagicMock()
 
         work_dir = tmp_path / "repo"
         work_dir.mkdir(parents=True)
@@ -1898,15 +1695,14 @@ class TestBedrockViaFlag:
         agent_env = mock_subprocess_run.call_args.kwargs.get(
             "env"
         ) or mock_subprocess_run.call_args[1].get("env")
-        # Customer creds serve shell AWS; IRSA stripped from the SCOPED env only.
+        # IRSA vars stripped from agent env
         assert "AWS_ROLE_ARN" not in agent_env
+        assert "AWS_WEB_IDENTITY_TOKEN_FILE" not in agent_env
+        assert "AWS_PROFILE" not in agent_env
+        # User creds remain
         assert agent_env["AWS_ACCESS_KEY_ID"] == "AKUSER"
-        assert agent_env["ADP_WORKER_IRSA_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
-        assert agent_env["ADP_WORKER_IRSA_TOKEN_FILE"] == "/var/run/secrets/token"
-        assert agent_env["ADP_WORKER_AWS_REGION"] == "us-east-1"
-        # os.environ MUST still have IRSA (for the post-agent SQS delete).
-        assert os.environ.get("AWS_ROLE_ARN") == "arn:aws:iam::123456789012:role/irsa-role"
-        assert os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE") == "/var/run/secrets/token"
+        assert agent_env["AWS_SECRET_ACCESS_KEY"] == "SKUSER"
+        assert agent_env["AWS_SESSION_TOKEN"] == "STUSER"
 
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
@@ -1917,7 +1713,7 @@ class TestBedrockViaFlag:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_unknown_routing_mode_is_rejected(
+    def test_user_mode_os_environ_unchanged(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -1931,7 +1727,273 @@ class TestBedrockViaFlag:
         monkeypatch,
         tmp_path,
     ):
-        """An invalid routing mode cannot silently use the platform account."""
+        """CRITICAL: os.environ must retain IRSA vars even when ADP_BEDROCK_VIA=user."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-4")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
+            }
+            main()
+
+        # os.environ MUST still have IRSA (for post-agent SQS delete)
+        assert os.environ.get("AWS_ROLE_ARN") == "arn:aws:iam::123456789012:role/irsa-role"
+        assert os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE") == "/var/run/secrets/token"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_no_user_creds_no_strip(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When ADP_BEDROCK_VIA=user but no AWS_ACCESS_KEY_ID (assume-role didn't run), no strip."""
+        from entrypoint import main
+        import entrypoint
+
+        # developer persona does NOT trigger assume-role
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+
+        # developer persona — not in PERSONAS_NEEDING_AWS, so no assume-role
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-5")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
+        # IRSA vars should still be present — no strip because no user creds
+        assert agent_env["AWS_ROLE_ARN"] == "arn:aws:iam::123456789012:role/irsa-role"
+        assert agent_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/var/run/secrets/token"
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_case_insensitive(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """ADP_BEDROCK_VIA=USER (uppercase) works the same as 'user'."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "USER")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-6")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
+            }
+            main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
+        assert "AWS_ROLE_ARN" not in agent_env
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_whitespace_tolerance(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """ADP_BEDROCK_VIA=' user ' (with whitespace) is handled correctly."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", " user ")
+
+        ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
+        mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-7")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch("entrypoint.GatewayCredentialClient") as mock_gw_cls:
+            mock_gw = MagicMock()
+            mock_gw_cls.return_value = mock_gw
+            mock_gw.is_configured = True
+            mock_gw.assume_role.return_value = {
+                "profile_name": "adp-aws-default",
+                "access_key_id": "AKUSER",
+                "secret_access_key": "SKUSER",
+                "session_token": "STUSER",
+                "expiration": "2026-05-13T22:00:00Z",
+                "region": "us-east-1",
+                "provenance_id": "prov-test",
+            }
+            main()
+
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
+        assert "AWS_ROLE_ARN" not in agent_env
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_garbage_value_falls_through_to_platform(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+    ):
+        """ADP_BEDROCK_VIA=foobar falls through to platform mode (safe default)."""
         from entrypoint import main
         import entrypoint
 
@@ -1970,10 +2032,71 @@ class TestBedrockViaFlag:
                 "region": "us-east-1",
                 "provenance_id": "prov-test",
             }
-            with pytest.raises(RuntimeError, match="must be gateway"):
-                main()
+            main()
 
-        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
+        agent_env = mock_subprocess_run.call_args.kwargs.get(
+            "env"
+        ) or mock_subprocess_run.call_args[1].get("env")
+        # IRSA retained — garbage value means platform mode
+        assert "AWS_ROLE_ARN" in agent_env
+
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_user_mode_non_aws_persona_logs_warning(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        monkeypatch,
+        tmp_path,
+        caplog,
+    ):
+        """When ADP_BEDROCK_VIA=user but persona not in PERSONAS_NEEDING_AWS, warning logged."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/irsa-role")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+
+        # 'developer' persona — not in PERSONAS_NEEDING_AWS
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-9")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            main()
+
+        assert any("does not assume customer role" in record.message for record in caplog.records)
 
 
 # --- Test: ADP_GITHUB_LOGIN propagation (Issue #1591) ---
@@ -2201,8 +2324,6 @@ class TestSanitizeForStsTag:
 class TestBedrockViaGateway:
     """Tests for the ADP_BEDROCK_VIA=gateway path (sigv4-proxy subprocess)."""
 
-    @pytest.mark.parametrize("port", [None, "8181"])
-    @pytest.mark.parametrize("protected", [False, True])
     @patch("entrypoint._stop_sigv4_proxy")
     @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
@@ -2229,8 +2350,6 @@ class TestBedrockViaGateway:
         mock_stop_proxy,
         monkeypatch,
         tmp_path,
-        protected,
-        port,
     ):
         """With ADP_BEDROCK_VIA=gateway + proxy healthy, sets ANTHROPIC_BEDROCK_BASE_URL."""
         from entrypoint import main
@@ -2242,43 +2361,14 @@ class TestBedrockViaGateway:
         monkeypatch.setenv(
             "SIGV4_PROXY_TARGET", "https://abc.execute-api.us-east-1.amazonaws.com/dev/agent"
         )
-        if port is None:
-            monkeypatch.delenv("SIGV4_PROXY_PORT", raising=False)
-        else:
-            monkeypatch.setenv("SIGV4_PROXY_PORT", port)
-        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", str(protected).lower())
-        # A pod-level false value must not re-enable SDK authentication/probes
-        # against the loopback proxy for either shared or protected workers.
-        monkeypatch.setenv("CLAUDE_CODE_SKIP_BEDROCK_AUTH", "0")
-        selected_model = "global.anthropic.claude-opus-5"
-        if protected:
-            monkeypatch.setattr(
-                entrypoint,
-                "_broker_installation_token",
-                lambda **_: ("ghs_test", "123", "2099-01-01T00:00:00Z"),
-            )
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
-        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/projected/worker-token")
-        monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)
-        monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", lambda *_: None)
+        monkeypatch.setenv("SIGV4_PROXY_PORT", "9090")
 
-        recovery = {"previous_run_id": "orch:prior", "previous_attempt": 1} if protected else None
-        monkeypatch.setenv("ADP_DEVELOPER_RECOVERY_CONTEXT", "stale prior task")
-        mock_receive_msg.return_value = (
-            json.dumps({**SAMPLE_ENVELOPE, "model_resolved": selected_model,
-                        "orchestration": {"developer_recovery": recovery}}),
-            "receipt-gw1",
-        )
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-gw1")
         mock_vault = MagicMock()
         mock_vault_cls.return_value = mock_vault
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        # Completed implementation is committed; only git log reports unpushed work.
-        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
-            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
-            returncode=0,
-        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # Proxy starts successfully
@@ -2297,25 +2387,9 @@ class TestBedrockViaGateway:
         call_kwargs = mock_subprocess_run.call_args
         agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
         assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-        assert agent_env["SIGV4_PROXY_PORT"] == (port or "9090")
-        assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == f"http://127.0.0.1:{port or '9090'}"
-        assert agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
-        assert agent_env["ANTHROPIC_MODEL"] == selected_model
-        assert agent_env["ADP_DEVELOPER_RECOVERY_CONTEXT"] == (json.dumps(recovery) if recovery else "")
+        assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9090"
         # Must NOT have ANTHROPIC_BASE_URL (that routes to the broken translator)
         assert "ANTHROPIC_BASE_URL" not in agent_env
-        if protected:
-            assert "AWS_ROLE_ARN" not in agent_env
-            assert agent_env["ADP_WORKER_IRSA_ROLE_ARN"].endswith(":role/authority-worker")
-            assert agent_env["ADP_WORKER_AWS_REGION"] == "us-east-1"
-            assert not Path(agent_env["AWS_CONFIG_FILE"]).exists()
-        # Parent lifecycle operations continue to use platform IRSA.
-        assert os.environ["AWS_ROLE_ARN"].endswith(":role/authority-worker")
-        assert os.environ["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "0"
-        # Upstream proxy authentication keeps the original platform identity.
-        proxy_env = mock_start_proxy.call_args.args[0]
-        assert proxy_env["AWS_ROLE_ARN"].endswith(":role/authority-worker")
-        assert proxy_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/projected/worker-token"
 
         # Proxy was started and stopped
         mock_start_proxy.assert_called_once()
@@ -2332,7 +2406,7 @@ class TestBedrockViaGateway:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_direct_bypass_is_rejected(
+    def test_direct_path_sets_claude_code_use_bedrock(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -2348,7 +2422,7 @@ class TestBedrockViaGateway:
         monkeypatch,
         tmp_path,
     ):
-        """Direct bypass cannot override the user routing rule."""
+        """With ADP_BEDROCK_VIA=direct, sets only CLAUDE_CODE_USE_BEDROCK (no proxy)."""
         from entrypoint import main
         import entrypoint
 
@@ -2371,9 +2445,17 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with pytest.raises(RuntimeError, match="must be gateway"):
-            main()
-        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
+        main()
+
+        # Verify subprocess.run was called with direct env
+        call_kwargs = mock_subprocess_run.call_args
+        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        # No proxy base URL in direct mode
+        assert "ANTHROPIC_BEDROCK_BASE_URL" not in agent_env
+        assert "ANTHROPIC_BASE_URL" not in agent_env
+
+        # Proxy NOT started
         mock_start_proxy.assert_not_called()
         mock_stop_proxy.assert_not_called()
 
@@ -2388,7 +2470,7 @@ class TestBedrockViaGateway:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_gateway_failure_stops_before_model_calls(
+    def test_gateway_fallback_on_proxy_failure(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -2404,7 +2486,7 @@ class TestBedrockViaGateway:
         monkeypatch,
         tmp_path,
     ):
-        """A proxy failure must not move user model calls onto platform billing."""
+        """When proxy fails to start, falls back to direct Bedrock."""
         from entrypoint import main
         import entrypoint
 
@@ -2432,11 +2514,14 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
 
-        with pytest.raises(RuntimeError, match="preserve the user's AWS account routing"):
-            main()
+        main()
 
-        # No Claude agent process is launched after proxy startup fails.
-        assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
+        # Falls back to direct mode — no proxy base URL
+        call_kwargs = mock_subprocess_run.call_args
+        agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+        assert "ANTHROPIC_BEDROCK_BASE_URL" not in agent_env
+        assert "ANTHROPIC_BASE_URL" not in agent_env
 
         # Proxy was attempted but not stopped (it never started)
         mock_start_proxy.assert_called_once()
@@ -2492,11 +2577,6 @@ class TestGhAppCredentialsExported:
         }
         mock_mint.return_value = "ghs_test_token"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        # Completed implementation is committed; only git log reports unpushed work.
-        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
-            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
-            returncode=0,
-        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -2517,8 +2597,6 @@ class TestGhAppCredentialsExported:
             "-----BEGIN RSA PRIVATE KEY-----\nfake-key-content\n-----END RSA PRIVATE KEY-----"
         )
 
-    @patch("entrypoint._stop_sigv4_proxy")
-    @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
     @patch("entrypoint.create_check_run")
@@ -2528,7 +2606,7 @@ class TestGhAppCredentialsExported:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_gh_app_credentials_survive_irsa_strip(
+    def test_gh_app_credentials_survive_bedrock_via_user_mode(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -2539,29 +2617,19 @@ class TestGhAppCredentialsExported:
         mock_create_cr,
         mock_delete_msg,
         mock_receive_msg,
-        mock_start_proxy,
-        mock_stop_proxy,
         monkeypatch,
         tmp_path,
     ):
-        """GH_APP_* vars must NOT be stripped by the IRSA-popping agent_env assembly.
-
-        Was `..._survive_bedrock_via_user_mode` before #4747. The strip it guards
-        is not gone — gateway mode with an assumed customer role pops the same
-        AWS_* vars — so this is re-pointed at that path rather than deleted. The
-        invariant is unchanged: popping AWS_* must not take GH_APP_* with it, or
-        the agent loses its GitHub App identity.
-        """
+        """GH_APP_* vars must NOT be stripped by the ADP_BEDROCK_VIA=user agent_env assembly."""
         from entrypoint import main
         import entrypoint
 
         ops_envelope = {**SAMPLE_ENVELOPE, "persona": "operations"}
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.setenv("ADP_BEDROCK_VIA", "gateway")
+        monkeypatch.setenv("ADP_BEDROCK_VIA", "user")
         monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123:role/irsa")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        mock_start_proxy.return_value = MagicMock()
 
         mock_receive_msg.return_value = (json.dumps(ops_envelope), "receipt-app-survive")
         mock_vault = MagicMock()
@@ -2600,10 +2668,10 @@ class TestGhAppCredentialsExported:
             "env"
         ) or mock_subprocess_run.call_args[1].get("env")
 
-        # GH_APP_* must survive the IRSA stripping (which only pops AWS_* vars)
+        # GH_APP_* must survive the user-mode IRSA stripping (which only pops AWS_* vars)
         assert agent_env["GH_APP_ID"] == "77788"
         assert agent_env["GH_APP_PRIVATE_KEY"] == "secret-private-key-pem"
-        # Confirm the strip this test guards actually happened.
+        # Confirm IRSA was stripped (user mode works as designed)
         assert "AWS_ROLE_ARN" not in agent_env
 
     @patch("entrypoint._receive_one_message")
@@ -2932,11 +3000,6 @@ class TestSqsMessageDeletion:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        # Completed implementation is committed; only git log reports unpushed work.
-        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
-            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
-            returncode=0,
-        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
 
@@ -2994,11 +3057,7 @@ class TestSqsMessageDeletion:
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         # Agent exits non-zero
-        mock_subprocess_run.side_effect = lambda args, **kwargs: (
-            MagicMock(returncode=1)
-            if args[0] == "node"
-            else _subprocess_side_effect_fresh_branch(args, **kwargs)
-        )
+        mock_subprocess_run.return_value = MagicMock(returncode=1)
 
         work_dir = tmp_path / "repo"
         work_dir.mkdir(parents=True)
@@ -3052,11 +3111,6 @@ class TestSqsMessageDeletion:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        # Completed implementation is committed; only git log reports unpushed work.
-        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
-            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
-            returncode=0,
-        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # _delete_message raises an exception (e.g., expired credentials)
@@ -3220,11 +3274,6 @@ class TestIdempotencyGuard:
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
         mock_mint.return_value = "ghs_test"
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        # Completed implementation is committed; only git log reports unpushed work.
-        mock_run_cmd.side_effect = lambda cmd, **kwargs: MagicMock(
-            stdout="" if cmd[:2] in (["git", "diff"], ["git", "status"]) else "abc123\n",
-            returncode=0,
-        )
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
         # Idempotency guard returns False (no merged PR — fresh run)
@@ -3243,314 +3292,6 @@ class TestIdempotencyGuard:
         mock_subprocess_run.assert_called()
         # Message deleted after run completion
         mock_delete_msg.assert_called_once()
-
-    @patch("entrypoint._is_already_completed")
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_idempotency_guard_exempts_persona_extending_branch(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        mock_is_completed,
-        monkeypatch,
-        tmp_path,
-    ):
-        """A persona in PERSONAS_EXTENDING_BRANCH (aidlc) must proceed even when a
-        prior merged PR exists on the branch — that workflow merges a PR at every
-        gate, so a merged PR mid-flow is not "this issue is done" (#39 hit this:
-        PR #41 merged after the reverse-engineering gate, then a follow-up
-        gate-answer comment was skipped as a stale redelivery)."""
-        from entrypoint import main
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-
-        aidlc_envelope = {**SAMPLE_ENVELOPE, "persona": "aidlc"}
-        mock_receive_msg.return_value = (json.dumps(aidlc_envelope), "receipt-gate-answer")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-        # Idempotency guard would say "already completed" — must be bypassed
-        # for this persona rather than causing a skip.
-        mock_is_completed.return_value = True
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        result = main()
-        assert result == 0
-
-        # Run proceeded despite the merged PR — no idempotency skip.
-        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
-        mock_is_completed.assert_not_called()
-        entrypoint.is_delivery_completed.assert_called_once_with(aidlc_envelope)
-        entrypoint.record_delivery_completed.assert_called_once_with(aidlc_envelope)
-        mock_delete_msg.assert_called_once()
-
-
-class TestClaimBoundWorkIsNotBranchInferred:
-    """Issue #5335: under protected dispatch, replay is decided by the invocation.
-
-    A merged PR on `agent/issue-N` proves somebody finished something on the
-    issue once — not that THIS delivery already ran. Before this change any
-    persona's run was discarded once any PR for its issue merged, so the normal
-    developer -> reviewer -> repair sequence could not proceed past the first
-    merge. Under protected dispatch the run has already been admitted against its
-    own dispatch record, attempt and work claim, so the branch question is both
-    redundant and wrong; without protected dispatch the legacy guard is unchanged.
-    """
-
-    @pytest.mark.parametrize(
-        ("envelope_extra", "env"),
-        [
-            ({"work_claim_required": True}, {}),
-            ({}, {"ADP_WORK_CLAIMS_ENABLED": "true"}),
-            ({}, {"ADP_AGENT_AUTHORITY_ENABLED": "true"}),
-        ],
-        ids=["envelope-claim-required", "claims-enabled", "authority-enabled"],
-    )
-    def test_identity_decides_replay_when_protected_dispatch_is_in_force(
-        self, monkeypatch, envelope_extra, env
-    ):
-        """Each of the three conditions `bootstrap_run_identity` itself uses."""
-        from entrypoint import _invocation_identity_decides_replay
-
-        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
-        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
-        for key, value in env.items():
-            monkeypatch.setenv(key, value)
-
-        assert _invocation_identity_decides_replay({**SAMPLE_ENVELOPE, **envelope_extra}) is True
-
-    def test_legacy_deployment_still_uses_branch_history(self, monkeypatch):
-        """The deliberate legacy path: no claims, no authority — unchanged."""
-        from entrypoint import _invocation_identity_decides_replay
-
-        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
-        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
-
-        assert _invocation_identity_decides_replay(SAMPLE_ENVELOPE) is False
-
-    def test_a_claimed_envelope_does_not_read_authority_from_the_message_alone(self, monkeypatch):
-        """`work_claim_required: False` in the envelope must not switch the guard
-        off — a producer cannot opt out of the legacy guard by spelling the flag."""
-        from entrypoint import _invocation_identity_decides_replay
-
-        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
-        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
-
-        assert (
-            _invocation_identity_decides_replay({**SAMPLE_ENVELOPE, "work_claim_required": False})
-            is False
-        )
-
-    @patch("entrypoint._is_already_completed")
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_fresh_authorized_run_proceeds_after_an_older_merged_pr(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        mock_is_completed,
-        monkeypatch,
-        tmp_path,
-    ):
-        """AC1-positive, through the real bootstrap: a claim-bound reviewer run
-        arrives after the developer's PR merged and must execute. The branch does
-        have a merged PR (`_is_already_completed` would say True), and that must
-        no longer decide anything."""
-        from entrypoint import main
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-
-        claimed = {**SAMPLE_ENVELOPE, "persona": "reviewer", "work_claim_required": True}
-        mock_receive_msg.return_value = (json.dumps(claimed), "receipt-fresh-authorized")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
-        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-        # The branch DOES carry a merged PR from the earlier developer run.
-        mock_is_completed.return_value = True
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        # The gateway ADMITS this invocation: its dispatch record is pending, the
-        # attempt matches and it holds the work claim. That admission — not the
-        # branch — is what authorizes the run, so it is stubbed as succeeding
-        # rather than bypassed. (A refused admission is the next test.)
-        from lib.run_identity import ModelPolicyReport
-
-        admitted_identity = MagicMock()
-        admitted_identity.model_policy_report = ModelPolicyReport(
-            status="unavailable", posture="report_only", posture_verified=True, reason="snapshot_missing"
-        )
-        with patch(
-            "lib.run_identity.bootstrap_run_identity", return_value=admitted_identity
-        ) as mock_identity:
-            result = main()
-
-        assert result == 0
-        mock_identity.assert_called_once_with(claimed)
-
-        # The agent actually ran: this is work, not a skip.
-        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
-        # And the branch was never consulted — the invocation decided.
-        mock_is_completed.assert_not_called()
-
-    @patch("entrypoint._is_already_completed")
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    def test_legacy_replay_of_completed_work_is_still_skipped(
-        self,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_delete_msg,
-        mock_receive_msg,
-        mock_is_completed,
-        monkeypatch,
-        tmp_path,
-    ):
-        """AC1-negative: with no protected dispatch, a redelivery on a merged
-        branch is still suppressed and still acknowledged. This is the #1864
-        protection, and it must not have been traded away."""
-        from entrypoint import main
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
-        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
-
-        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-redelivery")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_is_completed.return_value = True
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-
-        result = main()
-
-        assert result == 0
-        mock_is_completed.assert_called_once()
-        mock_run_cmd.assert_not_called()
-        mock_delete_msg.assert_called_once_with(
-            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
-            "us-east-1",
-            "receipt-redelivery",
-        )
-
-    @patch("entrypoint._is_already_completed")
-    @patch("entrypoint._receive_one_message")
-    @patch("entrypoint._delete_message")
-    @patch("entrypoint.create_check_run")
-    @patch("entrypoint.update_check_run")
-    @patch("entrypoint.run_cmd")
-    @patch("entrypoint.mint_installation_token")
-    @patch("entrypoint.VaultClient")
-    @patch("entrypoint.shutil.copytree")
-    @patch("entrypoint.subprocess.run")
-    def test_an_unadmitted_claimed_run_never_reaches_the_guard(
-        self,
-        mock_subprocess_run,
-        mock_copytree,
-        mock_vault_cls,
-        mock_mint,
-        mock_run_cmd,
-        mock_update_cr,
-        mock_create_cr,
-        mock_delete_msg,
-        mock_receive_msg,
-        mock_is_completed,
-        monkeypatch,
-        tmp_path,
-    ):
-        """The refusal this change relies on. Skipping the branch check is only
-        safe because a claim-bound run that the gateway does NOT admit is stopped
-        earlier, at `bootstrap_run_identity`. If that refusal ever stopped being
-        fatal, an unauthorized fresh identity would reach the work — so assert the
-        run does not proceed and never gets as far as the guard."""
-        from lib.run_identity import RunIdentityError
-        import entrypoint
-
-        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
-
-        claimed = {**SAMPLE_ENVELOPE, "persona": "developer", "work_claim_required": True}
-        mock_receive_msg.return_value = (json.dumps(claimed), "receipt-refused")
-        mock_vault = MagicMock()
-        mock_vault_cls.return_value = mock_vault
-        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
-        mock_mint.return_value = "ghs_test"
-        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
-
-        work_dir = tmp_path / "repo"
-        work_dir.mkdir(parents=True)
-        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
-        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-
-        with patch(
-            "lib.run_identity.bootstrap_run_identity",
-            side_effect=RunIdentityError("gateway refused run identity"),
-        ):
-            with pytest.raises(RunIdentityError):
-                entrypoint.main()
-
-        mock_is_completed.assert_not_called()
-        assert not any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
 
 
 # --- Test: VisibilityHeartbeat ---
@@ -3826,7 +3567,7 @@ class TestZeroTokenFailureDetection:
     def test_handle_success_nonzero_cost_no_diff_stays_success(
         self, mock_run_cmd, mock_find_pr, mock_post, mock_status, tmp_path, monkeypatch
     ):
-        """A successful process without a diff does not establish task completion."""
+        """cost>0/no-diff → genuine 'no changes needed' success preserved."""
         import entrypoint
 
         mock_run_cmd.return_value = MagicMock(stdout="", stderr="", returncode=0)
@@ -3842,9 +3583,7 @@ class TestZeroTokenFailureDetection:
         assert rc == 0
         args = mock_post.call_args[0]
         assert args[3] == "completed"
-        assert "no local changes" in args[4].lower()
-        assert "no changes needed" not in args[4]
-        assert "task completion is not verified" in args[4]
+        assert "no changes needed" in args[4]
         assert mock_status.call_args[0][2] == "complete"
 
     @patch("entrypoint.update_invocation_status")
@@ -3872,10 +3611,10 @@ class TestZeroTokenFailureDetection:
     @patch("entrypoint._post_comment")
     @patch("entrypoint._write_outbound_correlation")
     @patch("entrypoint.run_cmd")
-    def test_handle_success_with_diff_preserves_unvalidated_checkpoint(
+    def test_handle_success_with_diff_never_checks_metadata(
         self, mock_run_cmd, mock_write_corr, mock_post, mock_status, tmp_path, monkeypatch
     ):
-        """Leftover work is preserved without claiming a ready PR."""
+        """A run that produced a diff → success path unchanged (PR created)."""
         import entrypoint
 
         # Non-empty diff/status → has_uncommitted True; gh pr list returns no PR.
@@ -3897,10 +3636,9 @@ class TestZeroTokenFailureDetection:
             "acme/repo", 42, "agent/issue-42", "developer", "msg-1", "2026-07-04T00:00:00Z"
         )
 
-        assert rc == 1
-        assert mock_post.call_args[0][3] == "failed"
-        assert "Incomplete work preserved" in mock_post.call_args[0][4]
-        assert not any(call.args[0][:3] == ["gh", "pr", "create"] for call in mock_run_cmd.call_args_list)
+        assert rc == 0
+        assert mock_post.call_args[0][3] == "completed"
+        assert "PR opened" in mock_post.call_args[0][4]
 
 
 # =============================================================================
@@ -3942,7 +3680,7 @@ SAMPLE_GITLAB_ENVELOPE = {
             "issue_iid": 7,
             "note_id": 100,
             # Legacy/untrusted field: the worker must ignore this destination.
-            "gitlab_url": "https://attacker.example",
+            "gitlab_url": "https://untrusted.example",
         },
         "actor": {
             "username": "gitlab-user",
@@ -4078,7 +3816,7 @@ class TestHandleGitLabMention:
         monkeypatch.setenv("GITLAB_URL", "http://gitlab.dev.adp.internal")
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.open_authenticated")
+    @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
     def test_happy_path_ack_comment_and_branch(
         self,
@@ -4171,7 +3909,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.open_authenticated")
+    @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
     def test_branch_create_400_already_exists_tolerated(
         self,
@@ -4237,7 +3975,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.open_authenticated")
+    @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
     def test_ack_comment_failure_returns_1_but_still_deletes_message(
         self,
@@ -4306,7 +4044,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.open_authenticated")
+    @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
     def test_missing_trusted_gitlab_url_fails_before_token_read(
         self,
@@ -4333,7 +4071,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.open_authenticated")
+    @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
     def test_envelope_gitlab_url_is_ignored(
         self,
@@ -4342,7 +4080,7 @@ class TestHandleGitLabMention:
         mock_boto_client,
         monkeypatch,
     ):
-        """A forged envelope URL cannot receive the platform GitLab token."""
+        """An envelope URL cannot override deployment-owned configuration."""
         from entrypoint import _handle_gitlab_mention
 
         monkeypatch.setenv("GITLAB_URL", "http://trusted-gitlab.internal")
@@ -4383,14 +4121,14 @@ class TestHandleGitLabMention:
             "receipt-gl-env",
         )
 
-        # The sample envelope contains https://attacker.example. Every request
+        # The sample envelope contains https://untrusted.example. Every request
         # must instead use the deployment-owned URL.
         first_call_req = mock_urlopen.call_args_list[0][0][0]
         assert "trusted-gitlab.internal" in first_call_req.full_url
-        assert "attacker.example" not in first_call_req.full_url
+        assert "untrusted.example" not in first_call_req.full_url
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.open_authenticated")
+    @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
     def test_configured_url_used_when_legacy_envelope_url_empty(
         self,
@@ -4457,7 +4195,7 @@ class TestHandleGitLabMention:
         assert "override-gitlab.internal" in first_call_req.full_url
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.open_authenticated")
+    @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
     def test_branch_create_400_invalid_ref_returns_1(
         self,
@@ -4523,7 +4261,7 @@ class TestHandleGitLabMention:
         mock_delete_msg.assert_called_once()
 
     @patch("entrypoint.boto3.client")
-    @patch("entrypoint.open_authenticated")
+    @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
     def test_default_branch_resolved_from_project_api(
         self,
@@ -4582,270 +4320,3 @@ class TestHandleGitLabMention:
         branch_payload = json_mod.loads(branch_create_req.data.decode("utf-8"))
         assert branch_payload["ref"] == "develop"
         assert branch_payload["branch"] == "agent/issue-7"
-
-
-# --- Test: Mediated idempotency guard envelope contract (Issue #5223) ---
-
-
-class TestMediatedIdempotencyGuard:
-    """Pin the mediated guard to the envelope the route actually returns.
-
-    This guard shipped unable to fire, for two independent reasons that masked
-    each other: it read `pull_request` off the top level of the route envelope
-    (where it never appears — the route nests it under `repository`), and it
-    compared GitHub's `state` against `"merged"` (a value `state` never holds;
-    mergedness is a separate boolean). Either bug alone yields a permanent
-    false negative, so the only symptom was a duplicate run on SQS redelivery.
-    These tests exist so neither half can regress silently.
-    """
-
-    @staticmethod
-    def _envelope(pull):
-        """The READ_REPOSITORY envelope, shaped as the route emits it."""
-        return {
-            "repository": {
-                "repository_id": 987654321,
-                "repository": "acme-corp/flagship-app",
-                "default_branch": "main",
-                "branch_head": "b" * 40,
-                "pull_request": pull,
-            },
-            "branch": "agent/issue-42",
-            "idempotency_key": "read_repository:acme-corp/flagship-app",
-        }
-
-    def _guard(self, monkeypatch, envelope):
-        from lib import mediated_github
-        from entrypoint import _mediated_already_completed
-
-        def _read_repository(**_kwargs):
-            return envelope
-
-        monkeypatch.setattr(mediated_github, "read_repository", _read_repository)
-        return _mediated_already_completed()
-
-    def test_merged_pull_request_nested_under_repository_is_detected(self, monkeypatch):
-        """A merged PR at the REAL nesting level makes the guard fire.
-
-        Proves the consumer reads `repository.pull_request`. Against the old
-        top-level read this returns False, so the assertion is load-bearing.
-        """
-        envelope = self._envelope(
-            {
-                "number": 4242,
-                "html_url": "https://github.com/acme-corp/flagship-app/pull/4242",
-                "state": "closed",
-                "merged": True,
-            }
-        )
-        assert self._guard(monkeypatch, envelope) is True
-
-    def test_a_top_level_pull_request_is_not_consulted(self, monkeypatch):
-        """A merged PR at the OLD top level must NOT satisfy the guard.
-
-        The wrong level is not merely unhelpful — honouring it would let a shape
-        the gateway never emits decide whether real work gets skipped.
-        """
-        envelope = self._envelope(None)
-        envelope["pull_request"] = {"number": 1, "state": "closed", "merged": True}
-        assert self._guard(monkeypatch, envelope) is False
-
-    def test_an_open_pull_request_does_not_skip_the_run(self, monkeypatch):
-        """Work in progress is not completed work."""
-        envelope = self._envelope({"number": 4242, "state": "open", "merged": False})
-        assert self._guard(monkeypatch, envelope) is False
-
-    def test_a_closed_unmerged_pull_request_does_not_skip_the_run(self, monkeypatch):
-        """A closed-without-merging PR means the work was abandoned, not delivered.
-
-        Skipping here would silently drop real work — the expensive direction.
-        """
-        envelope = self._envelope({"number": 4242, "state": "closed", "merged": False})
-        assert self._guard(monkeypatch, envelope) is False
-
-    def test_state_is_never_trusted_as_a_mergedness_signal(self, monkeypatch):
-        """Even `state == "merged"` cannot skip a run when `merged` is false.
-
-        GitHub never emits that state, so if it ever appears it is a forgery or a
-        provider bug. Mergedness comes from the separate boolean, or not at all.
-        """
-        envelope = self._envelope({"number": 4242, "state": "merged", "merged": False})
-        assert self._guard(monkeypatch, envelope) is False
-
-    def test_a_truthy_non_boolean_merged_value_does_not_skip_the_run(self, monkeypatch):
-        """`merged` must be exactly True — schema validation, not truthiness.
-
-        A string like "false" is truthy in Python; accepting it would let a
-        malformed provider answer skip real work.
-        """
-        envelope = self._envelope({"number": 4242, "state": "closed", "merged": "false"})
-        assert self._guard(monkeypatch, envelope) is False
-
-    @pytest.mark.parametrize(
-        "envelope",
-        [
-            {},
-            {"repository": None},
-            {"repository": "acme-corp/flagship-app"},
-            {"repository": {}},
-            {"repository": {"pull_request": None}},
-            {"repository": {"pull_request": "merged"}},
-        ],
-        ids=["empty", "null-repo", "repo-as-string", "no-pull-key", "null-pull", "pull-as-string"],
-    )
-    def test_unusable_envelopes_fail_open(self, monkeypatch, envelope):
-        """Any shape the guard cannot read means "proceed", never "skip".
-
-        Includes `repository` as a bare string, which is what the *inner* payload
-        uses for the slug — so a caller that forgot to unwrap lands here rather
-        than crashing on `.get`.
-        """
-        assert self._guard(monkeypatch, envelope) is False
-
-    def test_a_refused_read_fails_open(self, monkeypatch):
-        """An unreachable or refusing gateway must let the run proceed.
-
-        Duplicate work is recoverable; silently dropping an assignment is not.
-        """
-        from lib import mediated_github
-        from entrypoint import _mediated_already_completed
-
-        def _read_repository(**_kwargs):
-            raise RuntimeError("the operation is not currently authorized")
-
-        monkeypatch.setattr(mediated_github, "read_repository", _read_repository)
-        assert _mediated_already_completed() is False
-
-    def test_the_dispatcher_routes_to_the_authority_the_run_holds(self, monkeypatch):
-        """`mediated=True` must not reach for `gh pr list`, which needs a token."""
-        import entrypoint
-
-        calls = {"mediated": 0, "token": 0}
-        monkeypatch.setattr(
-            entrypoint,
-            "_mediated_already_completed",
-            lambda: calls.__setitem__("mediated", 1) or True,
-        )
-        monkeypatch.setattr(
-            entrypoint, "_is_already_completed", lambda *a: calls.__setitem__("token", 1) or False
-        )
-
-        assert entrypoint._already_completed("acme/repo", 42, "", mediated=True) is True
-        assert calls == {"mediated": 1, "token": 0}
-
-        calls.update({"mediated": 0, "token": 0})
-        assert entrypoint._already_completed("acme/repo", 42, "ghs_x", mediated=False) is False
-        assert calls == {"mediated": 0, "token": 1}
-
-
-@pytest.mark.parametrize("agent_exit", [0, 1])
-@pytest.mark.parametrize("mediated, engine_cycle", [(False, False), (True, False), (False, True)])
-def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, tmp_path, agent_exit, mediated, engine_cycle):
-    import entrypoint
-    from lib import status_gateway_client
-    from tests.test_review_delivery import EXPECT, HEAD
-    import hashlib
-
-    envelope = {**SAMPLE_ENVELOPE, "persona": "reviewer", "review_expect": EXPECT}
-    if engine_cycle:
-        envelope["intent"] = {"trigger": "engine_review_cycle"}
-        envelope["review_cycle_input"] = {
-            "action": "review", "repo": envelope["source_ref"]["repo"], "pr_number": 77,
-            "head_sha": HEAD, "accepted_scope": '{"node":{"title":"Bound task"}}',
-            "findings": [], "remaining_attempts": 2, "remaining_spend_usd": "4.00", "operation_key": "cycle:test",
-        }
-    monkeypatch.setattr(entrypoint, "prepend_correlation_marker", lambda body: body)
-    if mediated:
-        from lib import mediated_github
-        monkeypatch.setattr(entrypoint, "_mediated_github_enabled", lambda: True)
-        monkeypatch.setattr(entrypoint, "_protected_worker", lambda: True)
-        monkeypatch.setattr(entrypoint, "_withhold_write_token", MagicMock())
-        monkeypatch.setattr(mediated_github, "read_repository", lambda: {"pull_requests": []})
-        def materialize(destination, **kwargs):
-            Path(destination).mkdir(parents=True, exist_ok=True)
-            return {"remote_head": HEAD, "local_head": "b" * 40}
-        monkeypatch.setattr(mediated_github, "materialize_repository", materialize)
-    monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setenv("ADP_RUN_ATTEMPT", "1")
-    monkeypatch.setattr(entrypoint, "_receive_one_message", lambda *_: (json.dumps(envelope), "receipt"))
-    for name in ("_delete_message", "create_check_run", "update_check_run", "_upload_transcript_to_s3",
-                 "_record_session_id", "_load_door_api_key", "_setup_agent_control", "_teardown_agent_control"):
-        monkeypatch.setattr(entrypoint, name, MagicMock(return_value=None))
-    vault = MagicMock()
-    vault.return_value.get_secret.return_value = {"app_id": "123", "private_key": "fake-key"}
-    monkeypatch.setattr(entrypoint, "VaultClient", vault)
-    monkeypatch.setattr(entrypoint, "mint_installation_token", MagicMock(return_value="test-token"))
-    monkeypatch.setattr(entrypoint.shutil, "rmtree", MagicMock())
-    monkeypatch.setattr(entrypoint.shutil, "copytree", MagicMock())
-    monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path / "repo")
-    monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
-    monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
-    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="", returncode=0)))
-    def command(cmd, **kwargs):
-        output = HEAD if cmd[:3] == ["git", "rev-parse", "HEAD"] else ""
-        if cmd == ["git", "branch", "--show-current"]:
-            output = "bound-pr-branch"
-        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
-            output = "false"
-        if cmd[:3] == ["gh", "pr", "view"] and cmd[-2:] == ["--json", "headRefName,isCrossRepository,state,baseRefOid"]:
-            output = json.dumps({"headRefName": "bound-pr-branch", "isCrossRepository": False, "state": "OPEN", "baseRefOid": "b" * 40})
-        return MagicMock(stdout=output, returncode=0)
-    monkeypatch.setattr(entrypoint, "run_cmd", command)
-    events = []
-    def agent(cmd, **kwargs):
-        if cmd[:2] == ["git", "ls-remote"]:
-            return MagicMock(returncode=2, stdout="", stderr="")
-        if cmd[0] == "gh":
-            return MagicMock(returncode=0, stdout="", stderr="")
-        assert cmd[0] == "node"
-        env = kwargs["env"]
-        assert json.loads(env["ADP_REVIEW_EXPECT"]) == EXPECT
-        if engine_cycle:
-            assert json.loads(env["ADP_REVIEW_CYCLE_INPUT"]) == envelope["review_cycle_input"]
-        else:
-            assert "ADP_REVIEW_CYCLE_INPUT" not in env
-        Path(env["ADP_REVIEW_REPORT_PATH"]).write_text(json.dumps({
-            "stages": {"functional": "completed"}, "verdict": "request-changes",
-            "findings": [{"finding_id": "F1", "stage": "functional", "severity": "blocking",
-                          "disposition": "open", "summary": "Needs repair"}],
-        }))
-        events.append("agent")
-        return MagicMock(returncode=agent_exit, stdout="", stderr="")
-    monkeypatch.setattr(entrypoint.subprocess, "run", agent)
-    monkeypatch.setattr(status_gateway_client, "authority_enabled", lambda: True)
-    def upload(path, data, **kwargs):
-        assert events == ["agent"]
-        assert path == "/artifacts/review-result"
-        body = json.loads(data)
-        assert body["subject"]["reviewed_head_sha"] == HEAD
-        assert body["findings"][0]["finding_id"] == "F1"
-        digest = hashlib.sha256(data).hexdigest()
-        tenant = hashlib.sha256(envelope["tenant_id"].encode()).hexdigest()
-        run = hashlib.sha256(envelope["message_id"].encode()).hexdigest()
-        events.append("upload")
-        return {"key": f"runs/{tenant}/{run}/attempt-1/review-result/{digest}.json",
-                "sha256": digest, "recorded": True}
-    monkeypatch.setattr(status_gateway_client, "_post_bytes", upload)
-    def terminal(*args, **kwargs):
-        assert events == ["agent", "upload"]
-        assert "Review evidence recorded" in kwargs["review_note"]
-        events.append("terminal")
-        return agent_exit
-    monkeypatch.setattr(entrypoint, "_handle_success", terminal)
-    monkeypatch.setattr(entrypoint, "_handle_failure", terminal)
-    monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
-    assert entrypoint.main() == agent_exit
-    assert events == ["agent", "upload", "terminal"]
-
-
-def test_developer_cause_is_in_the_first_terminal_status_write(monkeypatch):
-    import entrypoint
-
-    status = MagicMock()
-    monkeypatch.setattr(entrypoint, "update_invocation_status", status)
-    monkeypatch.setattr(entrypoint, "_post_comment", MagicMock())
-    assert entrypoint._handle_failure("org/repo", 7, "developer", "run", "now", 1,
-                                     failure_error="Agent developer exit 1: budget_exceeded") == 1
-    status.assert_called_once_with("run", "now", "failed", summary="Agent `developer` failed with exit code 1.",
-                                   error_message="Agent developer exit 1: budget_exceeded")

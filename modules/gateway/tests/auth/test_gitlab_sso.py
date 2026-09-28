@@ -298,14 +298,13 @@ class TestGitlabSSOEndpoint:
         assert decoded["tenant_id"] == "tenant-abc-123"
 
     @pytest.mark.anyio
-    @pytest.mark.parametrize("accept", ["application/json", "text/html"])
-    async def test_gitlab_not_configured_returns_404(self, app, accept):
+    async def test_gitlab_not_configured_returns_404(self, app):
         """SSM miss → 404 with GITLAB_NOT_CONFIGURED error code."""
         with (
             patch("src.auth.gitlab_sso._discover_gitlab_url", return_value=None),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.get("/auth/gitlab-sso", headers={"Accept": accept})
+                response = await client.get("/auth/gitlab-sso")
 
         assert response.status_code == 404
         body = response.json()
@@ -313,15 +312,14 @@ class TestGitlabSSOEndpoint:
         assert "not configured" in body["detail"].lower()
 
     @pytest.mark.anyio
-    @pytest.mark.parametrize("accept", ["application/json", "text/html"])
-    async def test_signing_key_missing_returns_503(self, app, accept):
+    async def test_signing_key_missing_returns_503(self, app):
         """Secret miss → 503 with GITLAB_SSO_KEY_MISSING error code."""
         with (
             patch("src.auth.gitlab_sso._discover_gitlab_url", return_value="https://gitlab.example.com"),
             patch("src.auth.gitlab_sso._load_signing_key", return_value=None),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.get("/auth/gitlab-sso", headers={"Accept": accept})
+                response = await client.get("/auth/gitlab-sso")
 
         assert response.status_code == 503
         body = response.json()
@@ -329,11 +327,10 @@ class TestGitlabSSOEndpoint:
         assert "signing key" in body["detail"].lower()
 
     @pytest.mark.anyio
-    @pytest.mark.parametrize("accept", ["application/json", "text/html"])
-    async def test_unauthenticated_returns_401(self, unauthenticated_app, accept):
+    async def test_unauthenticated_returns_401(self, unauthenticated_app):
         """Request without Bearer token → 401 from auth middleware."""
         async with AsyncClient(transport=ASGITransport(app=unauthenticated_app), base_url="http://test") as client:
-            response = await client.get("/auth/gitlab-sso", headers={"Accept": accept})
+            response = await client.get("/auth/gitlab-sso")
 
         assert response.status_code == 401
 
@@ -488,56 +485,3 @@ class TestCaching:
 
         assert result == private_pem
         mock_sm.get_secret_value.assert_called_once()
-
-
-class TestGitlabJSONHandoff:
-    @pytest.mark.anyio
-    @pytest.mark.parametrize("base_url", ["https://gitlab.example.com", "https://adp.example.com/gitlab", "http://gitlab.dev.adp.internal"])
-    async def test_json_handoff_preserves_configured_destination_and_signed_identity(self, app, rsa_key_pair, base_url):
-        private_pem, _, public_key = rsa_key_pair
-        with (
-            patch("src.auth.gitlab_sso._discover_gitlab_url", return_value=base_url),
-            patch("src.auth.gitlab_sso._load_signing_key", return_value=private_pem),
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", follow_redirects=False) as client:
-                response = await client.get(
-                    "/auth/gitlab-sso?redirect_uri=https://attacker.test&next=https://attacker.test", headers={"Accept": "application/json"}
-                )
-        assert response.status_code == 200
-        assert "location" not in response.headers
-        assert response.headers["cache-control"] == "no-store"
-        assert response.headers["vary"] == "Accept"
-        destination = response.json()["redirect_url"]
-        assert destination.startswith(f"{base_url}/users/auth/jwt/callback?jwt=")
-        claims = jwt.decode(destination.split("jwt=")[1], public_key, algorithms=["RS256"], audience="adp-gitlab-dev")
-        assert claims["sub"] == "canonical-user-uuid-999"
-        assert claims["tenant_id"] == "tenant-abc-123"
-
-    @pytest.mark.anyio
-    @pytest.mark.parametrize("accept", ["application/json", "text/html"])
-    @pytest.mark.parametrize(
-        "base_url",
-        [
-            "javascript:alert(1)",
-            "//gitlab.example.com",
-            "https://user:password@gitlab.example.com",
-            "https://gitlab.example.com?next=https://attacker.test",
-            "https://gitlab.example.com#fragment",
-            "https://gitlab.example.com:invalid",
-            "https://gitlab.example.com\\@attacker.test",
-            "https://gitlab.example.com\n",
-        ],
-    )
-    async def test_invalid_configuration_refuses_before_mint(self, app, accept, base_url):
-        with (
-            patch("src.auth.gitlab_sso._discover_gitlab_url", return_value=base_url),
-            patch("src.auth.gitlab_sso._load_signing_key") as load_key,
-            patch("src.auth.gitlab_sso._mint_gitlab_jwt") as mint,
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.get("/auth/gitlab-sso", headers={"Accept": accept})
-        assert response.status_code == 503
-        assert response.json() == {"error_code": "GITLAB_SSO_URL_INVALID"}
-        assert "location" not in response.headers
-        load_key.assert_not_called()
-        mint.assert_not_called()

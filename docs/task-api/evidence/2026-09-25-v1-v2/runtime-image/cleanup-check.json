@@ -1,8 +1,0 @@
-{
-  "pod": {
-    "absent": true
-  },
-  "networkpolicy": {
-    "absent": true
-  }
-}

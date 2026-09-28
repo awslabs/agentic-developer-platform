@@ -1,9 +1,0 @@
-{
-  "image": "security27/ingestion:normal-high",
-  "root_digest": "sha256:c007d901b84cfca58daa572d9a58185778d3ced9f6ea95a8ec5d7c471fa81202",
-  "user": "appuser",
-  "dockerfile": "modules/agent-context/images/ingestion/Dockerfile",
-  "build_passed": true,
-  "network_for_smoke": "none",
-  "scope": "Local normal-source build validation; not deployed or live closure."
-}

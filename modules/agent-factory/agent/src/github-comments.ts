@@ -9,7 +9,6 @@
  */
 
 import { validateBaseUrl } from './lib/url-guard';
-import { truncateUtf8 } from './reporting-text';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +46,7 @@ export interface LiveStatusCommentOptions {
 export interface SuccessSummary {
   prUrl?: string;
   artifacts?: string[];
-  durationMs?: number;
+  durationMs: number;
   /** Optional additional markdown to append */
   details?: string;
 }
@@ -65,7 +64,7 @@ function stageCheckbox(status: StageStatus): string {
   switch (status) {
     case 'complete': return '[x]';
     case 'in_progress': return '[~]';
-    case 'skipped': return '[ ]';
+    case 'skipped': return '[x]'; // show as done with note
     case 'pending':
     default: return '[ ]';
   }
@@ -108,13 +107,9 @@ export class LiveStatusComment {
   private pendingUpdate: ReturnType<typeof setTimeout> | null = null;
   private runStartTime: number;
   private latestMessage = '';
-  private latestExplanation = '';
-  private explanationAt = '';
   private activityLog: string[] = [];
   private static readonly MAX_ACTIVITY_LINES = 10;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
-  private finished = false;
-  private inFlightUpdates = new Set<Promise<void>>();
 
   constructor(stages: StageDefinition[], options: LiveStatusCommentOptions) {
     this.stages = stages.map(s => ({ ...s }));
@@ -136,16 +131,6 @@ export class LiveStatusComment {
   /** Returns the comment ID once posted (null before post()). */
   getCommentId(): number | null {
     return this.commentId;
-  }
-
-  getCommentUrl(): string | null {
-    return this.commentId
-      ? `https://github.com/${this.options.owner}/${this.options.repo}/issues/${this.options.issueNumber}#issuecomment-${this.commentId}`
-      : null;
-  }
-
-  getDurationMs(): number {
-    return Date.now() - this.runStartTime;
   }
 
   /** Returns a shallow copy of current stages (for testing/inspection). */
@@ -184,17 +169,6 @@ export class LiveStatusComment {
     this.scheduleUpdate();
   }
 
-  /** Keep the latest authored explanation visible, separate from tool/heartbeat activity. */
-  setExplanation(text: string): void {
-    if (this.finished || !text.trim()) return;
-    const excerpt = truncateUtf8(text.trim(), 16 * 1024,
-      '\n\n_Explanation shortened for this GitHub display._');
-    if (excerpt === this.latestExplanation) return;
-    this.latestExplanation = excerpt;
-    this.explanationAt = new Date().toISOString();
-    this.scheduleUpdate();
-  }
-
   /**
    * Transition a stage to a new status. Triggers a rate-limited comment update.
    */
@@ -223,21 +197,16 @@ export class LiveStatusComment {
    * Mark the run as successful and replace the comment with a final summary.
    */
   async finalizeSuccess(summary: SuccessSummary): Promise<void> {
-    this.finished = true;
     this.cancelPendingUpdate();
     if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
-    await Promise.allSettled([...this.inFlightUpdates]);
     const lines: string[] = [
-      '## Agent run ended',
+      '## Agent Complete',
       '',
-      `**Duration**: ${formatDuration(summary.durationMs ?? this.getDurationMs())}`,
-      '',
-      summary.details || 'No outcome report was provided. Task completion has not been verified.',
+      `**Duration**: ${formatDuration(summary.durationMs)}`,
     ];
     if (summary.prUrl) {
       lines.push(`**PR**: ${summary.prUrl}`);
     }
-    if (!summary.details) lines.push(...this.explanationLines());
     if (summary.artifacts && summary.artifacts.length > 0) {
       lines.push('', '**Artifacts**:');
       for (const a of summary.artifacts) {
@@ -245,41 +214,25 @@ export class LiveStatusComment {
       }
     }
     // Include stage summary
-    lines.push('', '<details><summary>Run stages</summary>', '');
+    lines.push('', '### Stages');
     for (const stage of this.stages) {
       const elapsed = stage.startedAt && stage.completedAt
         ? ` (${formatElapsed(stage.completedAt - stage.startedAt)})`
         : '';
-      const suffix = stage.status === 'skipped' ? ' (skipped)'
-        : stage.status === 'pending' ? ' (not run)'
-        : stage.status === 'in_progress' ? ' (completion not recorded)' : '';
-      lines.push(`- ${stageCheckbox(stage.status)} ${stage.label}${elapsed}${suffix}`);
+      lines.push(`- [x] ${stage.label}${elapsed}`);
     }
-    lines.push('', '</details>');
+    if (summary.details) {
+      lines.push('', summary.details);
+    }
     await this.updateComment(lines.join('\n'));
-  }
-
-  /** Stop progress reporting while the supervisor completes abort finalization. */
-  async finalizeAbortRequested(): Promise<void> {
-    this.finished = true;
-    this.cancelPendingUpdate();
-    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
-    await Promise.allSettled([...this.inFlightUpdates]);
-    await this.updateComment([
-      '## Agent stopping', '',
-      'An operator requested an abort. Finalization is in progress; the final run status will confirm the outcome.',
-      ...this.explanationLines(),
-    ].join('\n'));
   }
 
   /**
    * Mark the run as failed and replace the comment with a failure summary.
    */
   async finalizeFailure(summary: FailureSummary): Promise<void> {
-    this.finished = true;
     this.cancelPendingUpdate();
     if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
-    await Promise.allSettled([...this.inFlightUpdates]);
     const lines: string[] = [
       '## Agent Failed',
       '',
@@ -299,7 +252,6 @@ export class LiveStatusComment {
         lines.push(`- ${step}`);
       }
     }
-    lines.push(...this.explanationLines());
     // Include stage summary showing where it failed
     lines.push('', '### Stages');
     for (const stage of this.stages) {
@@ -317,7 +269,6 @@ export class LiveStatusComment {
    * Force an immediate update (bypasses rate limit). Use sparingly.
    */
   async flush(): Promise<void> {
-    if (this.finished) return;
     this.cancelPendingUpdate();
     if (this.commentId) {
       await this.updateComment(this.renderBody());
@@ -326,18 +277,11 @@ export class LiveStatusComment {
 
   // ─── Private ─────────────────────────────────────────────────────────────
 
-  private explanationLines(): string[] {
-    return this.latestExplanation
-      ? ['', '### Agent explanation', '', `_Reported ${this.explanationAt}_`, '', this.latestExplanation]
-      : [];
-  }
-
   private renderBody(): string {
     const now = Date.now();
     const elapsed = formatElapsed(now - this.runStartTime);
     const lines: string[] = [
       `## Agent running — ${elapsed} elapsed (updated ${new Date(now).toISOString().slice(11, 19)} UTC)`,
-      ...this.explanationLines(),
       '',
       '### Progress',
     ];
@@ -360,16 +304,16 @@ export class LiveStatusComment {
     }
 
     if (this.activityLog.length > 0) {
-      lines.push('', '<details><summary>Technical activity</summary>', '', '```');
+      lines.push('', '### Recent activity', '```');
       for (const entry of this.activityLog) lines.push(entry);
-      lines.push('```', '', '</details>');
+      lines.push('```');
     }
 
     return lines.join('\n');
   }
 
   private scheduleUpdate(): void {
-    if (!this.commentId || this.finished) return;
+    if (!this.commentId) return;
 
     const now = Date.now();
     const elapsed = now - this.lastUpdateTime;
@@ -393,11 +337,9 @@ export class LiveStatusComment {
     this.lastUpdateTime = Date.now();
     const body = this.renderBody();
     // Fire and forget — don't block stage transitions on network
-    const update = this.updateComment(body).catch(err => {
+    this.updateComment(body).catch(err => {
       this.log('WARN', `Failed to update status comment: ${(err as Error).message}`);
     });
-    this.inFlightUpdates.add(update);
-    void update.finally(() => this.inFlightUpdates.delete(update));
   }
 
   private cancelPendingUpdate(): void {
@@ -413,7 +355,7 @@ export class LiveStatusComment {
     const resp = await this.apiRequest('PATCH', url, { body });
     if (!resp.ok) {
       const text = await resp.text();
-      throw new Error(`Comment update failed: ${resp.status} ${text.substring(0, 200)}`);
+      this.log('WARN', `Comment update failed: ${resp.status} ${text.substring(0, 200)}`);
     }
   }
 
@@ -425,8 +367,6 @@ export class LiveStatusComment {
     const token = process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || this.options.token;
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — url is built from this.options.apiBaseUrl, validated at construction via validateBaseUrl() (default https://api.github.com); only static repo/issue paths are interpolated
     return fetch(url, {
-      // Keep credentials and request bodies on the configured destination (S21).
-      redirect: 'error',
       method,
       headers: {
         'Authorization': `token ${token}`,
@@ -449,18 +389,14 @@ export class LiveStatusComment {
 /**
  * Create a standard set of stages for agent-worker runs.
  */
-export function createWorkerStages(persona = 'developer'): StageDefinition[] {
-  // Only expose lifecycle events the worker can observe. Task-level progress
-  // belongs in the agent's report, not in fabricated completed checkboxes.
-  const labels: Record<string, string> = {
-    developer: 'Development run', reviewer: 'Review run', architect: 'Architecture assessment run',
-    operations: 'Operations run', aidlc: 'Inception run', pm: 'Coordination run',
-    product: 'Product planning run', 'intent-refinement': 'Intent refinement run',
-    'exception-diagnoser': 'Diagnosis run', codex: 'Supervised run',
-  };
+export function createWorkerStages(): StageDefinition[] {
   return [
     { label: 'Setup', status: 'pending' },
-    { label: labels[persona] || 'Agent run', status: 'pending' },
+    { label: 'Analyze', status: 'pending' },
+    { label: 'Plan', status: 'pending' },
+    { label: 'Implement', status: 'pending' },
+    { label: 'Verify', status: 'pending' },
+    { label: 'PR', status: 'pending' },
   ];
 }
 

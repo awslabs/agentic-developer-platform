@@ -14,23 +14,11 @@ concurrency:
 
 jobs:
   live:
-    if: github.ref == 'refs/heads/main'
-    environment: adp-checks-dev
-    runs-on: arc-runner-org
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: main
-          persist-credentials: false
-
-      - name: Assume gateway checks identity
-        uses: aws-e/adp/.github/actions/trusted-checks@main
-        with:
-          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Install Python
         run: |
@@ -49,8 +37,11 @@ jobs:
       - name: Resolve deployed gateway URL
         id: gw
         run: |
-          set -euo pipefail
-          command -v aws >/dev/null
+          # Install AWS CLI if missing (ARC pattern)
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp && sudo /tmp/aws/install
+          fi
           CF_DOMAIN=$(aws ssm get-parameter --name /adp/dev/gateway/cloudfront-domain \
             --query Parameter.Value --output text --region us-east-1)
           echo "GATEWAY_URL=https://${CF_DOMAIN}" >> "$GITHUB_ENV"

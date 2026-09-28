@@ -43,14 +43,9 @@ def token_context():
 def mock_budget_service():
     """Create a mock budget enforcement service."""
     service = MagicMock(spec=BudgetEnforcementService)
-    service.prepare_enforcement_context = AsyncMock(return_value=None)
     service.check_budget_hierarchy = AsyncMock(return_value=EnforcementResult(allowed=True))
     service.estimate_request_cost = MagicMock(return_value=Decimal("0.01"))
-    # Issue #4392: the real method now returns a "status"-tagged shape, so
-    # "no budget" is distinguishable from "the ledger is unreadable". Mirrored
-    # here deliberately — a mock that returns the old untagged dict asserts a
-    # contract the service no longer has.
-    service.get_budget_status_for_headers = AsyncMock(return_value={"status": "ok", "budget_limit": 100.0, "budget_remaining": 50.0})
+    service.get_budget_status_for_headers = AsyncMock(return_value={"budget_limit": 100.0, "budget_remaining": 50.0})
     return service
 
 
@@ -361,9 +356,6 @@ class TestResponseHeaders:
         """Test that budget headers are properly formatted."""
         mock_budget_service.get_budget_status_for_headers = AsyncMock(
             return_value={
-                # Issue #4392: "status" tags the shape; the three budget_* keys
-                # are unchanged, which is why headers.py needed no edit.
-                "status": "ok",
                 "budget_limit": 100.00,
                 "budget_remaining": 50.50,
                 "budget_reset": "2024-02-01",

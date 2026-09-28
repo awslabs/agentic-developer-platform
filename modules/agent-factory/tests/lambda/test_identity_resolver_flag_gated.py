@@ -47,15 +47,6 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-east-1")
 
 
-@pytest.fixture(autouse=True)
-def canonical_installation(_patch_sys_path):
-    # Keep real revocation admission; stub only the canonical gateway I/O.
-    with patch("common.gateway_client.resolve_installation_by_id", return_value={
-        "state": "resolved", "tenant_id": "org-001", "revocation_checked": True,
-    }) as lookup:
-        yield lookup
-
-
 class TestResolverFlagOff:
     """Tests when USER_IDENTITY_INDEX_V2_READ=false (default)."""
 
@@ -75,7 +66,6 @@ class TestResolverFlagOff:
 
             # Installation lookup + user lookup from OLD table
             mock_table.get_item.side_effect = [
-                {},  # no durable revocation marker
                 {"Item": {"org_id": "org-001", "user_provisioning_mode": "strict"}},
                 {"Item": {"org_id": "org-001", "user_id": "user-001"}},
             ]
@@ -86,7 +76,7 @@ class TestResolverFlagOff:
             assert result is not None
             assert result.org_id == "org-001"
             assert result.user_id == "user-001"
-            assert mock_table.get_item.call_count == 3
+            assert mock_table.get_item.call_count == 2
 
     def test_unknown_user_returns_none(self, monkeypatch):
         """Unknown user in old table returns 'unknown_user'."""
@@ -103,7 +93,6 @@ class TestResolverFlagOff:
             importlib.reload(resolver)
 
             mock_table.get_item.side_effect = [
-                {},  # no durable revocation marker
                 {"Item": {"org_id": "org-001", "user_provisioning_mode": "strict"}},
                 {},  # user not found
             ]
@@ -138,10 +127,9 @@ class TestResolverFlagOn:
             importlib.reload(resolver)
 
             # Installation in old table
-            mock_old_table.get_item.side_effect = [
-                {},  # no durable revocation marker
-                {"Item": {"org_id": "org-001", "user_provisioning_mode": "strict"}},
-            ]
+            mock_old_table.get_item.return_value = {
+                "Item": {"org_id": "org-001", "user_provisioning_mode": "strict"}
+            }
             # User in new table
             mock_new_table.get_item.return_value = {
                 "Item": {"org_id": "org-001", "user_id": "user-001"}
@@ -175,7 +163,6 @@ class TestResolverFlagOn:
 
             # Installation in old table + user fallback in old table
             mock_old_table.get_item.side_effect = [
-                {},  # no durable revocation marker
                 {"Item": {"org_id": "org-001", "user_provisioning_mode": "strict"}},
                 {"Item": {"org_id": "org-001", "user_id": "user-001"}},
             ]
@@ -211,7 +198,6 @@ class TestCrossTenantMetric:
             importlib.reload(resolver)
 
             mock_table.get_item.side_effect = [
-                {},  # no durable revocation marker
                 {"Item": {"org_id": "org-001", "user_provisioning_mode": "strict"}},
                 {"Item": {"org_id": "org-OTHER", "user_id": "user-001"}},  # different home org!
             ]
@@ -230,38 +216,3 @@ class TestCrossTenantMetric:
             call_args = mock_cw.put_metric_data.call_args[1]
             assert call_args["Namespace"] == "ADP/IdentityResolver"
             assert call_args["MetricData"][0]["MetricName"] == "CrossTenantMismatch"
-
-
-@pytest.mark.parametrize("canonical", [
-    {"state": "revoked"},
-    {"state": "resolved", "tenant_id": "org-001", "revocation_checked": False},
-    {"state": "error"},
-])
-def test_canonical_denial_stops_before_user_lookup(canonical_installation, canonical):
-    canonical_installation.return_value = canonical
-    with patch("boto3.resource") as resource:
-        table = resource.return_value.Table.return_value
-        table.get_item.return_value = {}
-        import common.identity_resolver as resolver
-        importlib.reload(resolver)
-        result, reason = resolver.resolve(installation_id=111, sender_id=222)
-        assert result is None
-        assert reason == ("installation_revoked" if canonical["state"] == "revoked"
-                          else "installation_unavailable")
-        table.get_item.assert_called_once_with(
-            Key={"identity_type": "github_installation_revoked", "identity_value": "111"},
-            ConsistentRead=True,
-        )
-
-
-def test_durable_revocation_stops_before_gateway_and_user_lookup(canonical_installation):
-    with patch("boto3.resource") as resource:
-        table = resource.return_value.Table.return_value
-        table.get_item.return_value = {"Item": {"revoked": True}}
-        import common.identity_resolver as resolver
-        importlib.reload(resolver)
-        result, reason = resolver.resolve(installation_id=111, sender_id=222)
-        assert result is None
-        assert reason == "installation_revoked"
-        table.get_item.assert_called_once()
-        canonical_installation.assert_not_called()

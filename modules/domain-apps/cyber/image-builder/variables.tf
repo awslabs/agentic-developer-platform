@@ -74,29 +74,3 @@ variable "idle_period_seconds" {
   description = "Duration in seconds the host must be idle before auto-termination (4 hours)"
   default     = 14400
 }
-
-variable "builder_permissions_boundary_arn" {
-  type        = string
-  description = "Operator-owned workload ceiling required by the Windows CI identity."
-  default     = null
-}
-
-variable "builder_name_suffix" {
-  type        = string
-  description = "Separate automated builders from pre-existing standalone build resources."
-  default     = ""
-  validation {
-    condition     = can(regex("^[a-z0-9-]*$", var.builder_name_suffix))
-    error_message = "Builder suffix must contain only lowercase letters, digits and hyphens."
-  }
-}
-
-variable "builder_ami_id" {
-  type        = string
-  description = "Reviewed CI base AMI; standalone builds may use the Canonical SSM default."
-  default     = ""
-  validation {
-    condition     = var.builder_ami_id == "" || can(regex("^ami-[0-9a-f]+$", var.builder_ami_id))
-    error_message = "Specify an AMI ID or leave empty for standalone discovery."
-  }
-}

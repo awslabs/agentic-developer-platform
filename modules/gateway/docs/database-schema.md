@@ -285,48 +285,12 @@ Per-request usage logging for audit and analytics.
 | `status_code` | INTEGER | NOT NULL | HTTP response status code |
 | `request_id` | VARCHAR(255) | NULLABLE | Request correlation ID |
 | `bedrock_account_id` | VARCHAR(12) | NULLABLE | Bedrock pool account used |
-| `cache_read_input_tokens` | INTEGER | NULLABLE | Prompt-cache read tokens (issue #4180). `NULL` = provider did not report; `0` = provider reported no cache reads |
-| `cache_creation_input_tokens` | INTEGER | NULLABLE | Prompt-cache write tokens (issue #4180). Same NULL-vs-zero contract |
 
 **Indexes:**
 - Primary key on `id`
 - Index on `org_id`
 - Index on `timestamp`
 - Index on `user_id`
-
-**Prompt-cache accounting (issue #4180).** The two cache columns are nullable
-with no default, deliberately: `NULL` means "the provider did not report this
-counter" (or the row predates the feature) and `0` means "the provider reported
-zero cache activity". Never give them a default — collapsing the two makes the
-hit-rate query below silently wrong.
-
-Cache hit rate per hour:
-
-```sql
-SELECT date_trunc('hour', timestamp) AS hr,
-       SUM(cache_read_input_tokens)     AS cached,
-       SUM(cache_creation_input_tokens) AS written,
-       SUM(input_tokens)                AS uncached,
-       SUM(input_tokens + COALESCE(cache_read_input_tokens, 0)
-                        + COALESCE(cache_creation_input_tokens, 0)) AS total_prompt,
-       ROUND(100.0 * SUM(COALESCE(cache_read_input_tokens, 0))
-             / NULLIF(SUM(input_tokens + COALESCE(cache_read_input_tokens, 0)
-                                       + COALESCE(cache_creation_input_tokens, 0)), 0), 1)
-         AS hit_rate_pct
-FROM usage_logs
-WHERE timestamp > now() - interval '2 hours'
-GROUP BY 1 ORDER BY 1 DESC;
-```
-
-Note the denominator: Anthropic reports `input_tokens` **excluding** cache read
-and cache-creation tokens, so total prompt tokens is the sum of all three.
-Dividing cached tokens by `input_tokens` alone yields a ratio that can exceed
-100%.
-
-**Pricing.** Cached reads are billed at ~0.1× and cache writes at ~1.25× the
-model's input rate. That decision predates these columns and lives in
-`lambda/shared/pricing_fallback.py`; the columns record the counters, they do not
-change the arithmetic.
 
 ---
 

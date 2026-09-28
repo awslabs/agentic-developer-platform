@@ -173,7 +173,7 @@ This document describes the target shape. Today, the repo has:
 
 - Platform core (gateway, agent-factory, agent-context) deployed and working.
 - Invocation surface working inside `modules/agent-factory/gateway/` (not yet promoted to a standalone module).
-- `modules/harness/` scaffolded: `contracts/` (11 planned schemas; 1 written — `hitl-ticket` v1, under the repo-root `contracts/` tree with a CI-executed golden fixture) and `mcp-hub/` (design docs only; no running service).
+- `modules/harness/` scaffolded: `contracts/` (README with 11 planned schemas, none written yet) and `mcp-hub/` (design docs only; no running service).
 - `apps/` exists with a README and pattern description; no domain packs yet.
 - `modules/user-services/` exists with a README and the ten-invariant contract; no services built yet (vault is the first planned).
 - Agents exist as GitHub Actions workflows (architect, developer, pm, ops, product, reviewer), not as uniform declarations.

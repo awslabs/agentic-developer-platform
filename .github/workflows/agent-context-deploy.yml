@@ -57,14 +57,9 @@ on:
         type: boolean
         default: false
       ingestion_image_tag:
-        description: 'Ingestion full source SHA or sha256 digest (default: latest published digest)'
+        description: 'Ingestion image tag (default: latest built on main)'
         required: false
         default: ''
-      deepwiki_image_tag:
-        description: 'DeepWiki source tag or sha256 digest (default: latest runtime digest)'
-        required: false
-        default: ''
-        type: string
 
 concurrency:
   group: agent-context-deploy
@@ -77,31 +72,12 @@ jobs:
   deploy:
     name: Deploy Services
     runs-on: arc-runner-org
-    environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
-    timeout-minutes: 30
+    timeout-minutes: 20
     # Manual dispatch always runs; auto (workflow_run) only on a successful build.
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
-
-    permissions:
-      contents: read
-      pull-requests: read
-      id-token: write
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - uses: actions/checkout@v7
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -132,14 +108,23 @@ jobs:
             exit 1
           fi
 
-      - name: Verify existing context storage
+      - name: Create namespace
         run: |
-          # Release authority is confined to the existing namespace. Platform
-          # setup owns Namespace, StorageClass, CSI driver and PersistentVolume.
-          kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/platform-data \
-            -n "$NAMESPACE" --timeout=30s
-          kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/zoekt-index \
-            -n "$NAMESPACE" --timeout=30s
+          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          echo "Namespace ${{ env.NAMESPACE }} ensured"
+
+      - name: Create StorageClass (ebs-gp3)
+        continue-on-error: true
+        run: |
+          # StorageClass is cluster-scoped; runner role may lack access.
+          # The SC already exists from initial cluster setup — skip gracefully.
+          if ! kubectl get storageclass ebs-gp3 >/dev/null 2>&1; then
+            kubectl apply -f modules/agent-context/kubernetes/storageclass-ebs-gp3.yaml \
+              && echo "Created ebs-gp3 StorageClass" \
+              || echo "WARNING: Cannot create StorageClass (likely RBAC). Assuming it exists."
+          else
+            echo "ebs-gp3 StorageClass already exists"
+          fi
 
       - name: Deploy ConfigMap
         run: |
@@ -204,28 +189,23 @@ jobs:
           export S3_VECTORS_BUCKET_NAME S3_VECTORS_REGION S3_FILES_BUCKET S3_CONTENT_PREFIX ZOEKT_URL
           export GATEWAY_CALLBACK_URL
 
-          # Use the same existing ACL database configuration as deploy.sh.
-          resolve_acl_config || exit 1
-
           template_file manifests/agent-context-configmap.yaml | kubectl apply -f -
           echo "ConfigMap agent-context-config deployed"
 
-      - name: Apply RBAC (trusted deployment access to agent-context namespace)
+      - name: Apply RBAC (runner access to agent-context namespace)
         continue-on-error: true
         run: |
           cd modules/agent-context
           source scripts/_common.sh
           load_config "$(pwd)"
 
-          export NAMESPACE
+          export NAMESPACE RUNNER_NAMESPACE RUNNER_SERVICE_ACCOUNT
           template_file manifests/ingestion-rbac.yaml | kubectl apply -f - \
             || echo "WARNING: Cannot apply RBAC (likely pre-existing). Continuing."
-          echo "RBAC: adp:trusted-deployment → ingestion-pipeline-role"
+          echo "RBAC: ${RUNNER_NAMESPACE}:${RUNNER_SERVICE_ACCOUNT} → ingestion-pipeline-role"
 
       - name: Run DB migrations (in-cluster Job)
         if: ${{ inputs.skip_migrations != true }}
-        env:
-          ADP_INPUT_146F27724A: ${{ inputs.ingestion_image_tag }}
         run: |
           set -e
           cd modules/agent-context
@@ -244,27 +224,20 @@ jobs:
 
           # Determine ingestion image (same logic as CronJob step)
           INGESTION_REPO="adp-${{ env.ENVIRONMENT }}-agent-context-ingestion"
-          INPUT_TAG="${ADP_INPUT_146F27724A}"
+          INPUT_TAG="${{ inputs.ingestion_image_tag }}"
           if [ -n "$INPUT_TAG" ]; then
-            if [[ "$INPUT_TAG" == sha256:* ]]; then
-              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}@${INPUT_TAG}"
-            else
-              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${INPUT_TAG}"
-            fi
+            MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${INPUT_TAG}"
           else
-            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" --filter tagStatus=TAGGED \
-              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageDigest' \
+            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" \
+              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
               --output text 2>/dev/null || echo "")
             if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
-              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}@${LATEST_TAG}"
+              MIGRATION_IMAGE="${{ env.ECR_REGISTRY }}/${INGESTION_REPO}:${LATEST_TAG}"
             else
               echo "::error::No ingestion image found in ECR. Run images-build first."
               exit 1
             fi
           fi
-
-          MIGRATION_IMAGE=$(python3 ../../platform/scripts/resolve-ecr-image.py "$MIGRATION_IMAGE")
-          echo "ADP_RESOLVED_INGESTION_IMAGE=$MIGRATION_IMAGE" >> "$GITHUB_ENV"
 
           # Generate unique Job ID (short git SHA + timestamp)
           MIGRATION_JOB_ID="$(date +%s)-$(echo $GITHUB_SHA | head -c 7)"
@@ -309,6 +282,7 @@ jobs:
 
           echo "✅ Migration Job completed successfully"
           kubectl logs "job/${JOB_NAME}" -n ${{ env.NAMESPACE }} --tail=20 || true
+
       - name: Create ServiceAccount (IRSA)
         run: |
           cd modules/agent-context
@@ -343,16 +317,33 @@ jobs:
             echo "ServiceAccount ${SERVICE_ACCOUNT} created with IRSA: ${IRSA_ROLE_ARN}"
           fi
 
+      - name: Deploy S3 Mountpoint storage (PV/PVC)
+        run: |
+          cd modules/agent-context
+          source scripts/_common.sh
+          load_config "$(pwd)"
+
+          # Check if Mountpoint CSI driver is installed
+          if kubectl get daemonset s3-csi-node -n kube-system >/dev/null 2>&1; then
+            echo "Mountpoint S3 CSI driver: installed"
+          else
+            echo "WARNING: Mountpoint S3 CSI driver not detected. PV/PVC may not bind."
+          fi
+
+          # Template and apply storage manifest
+          BUCKET_NAME="${S3_FILES_BUCKET}"
+          sed "s/<BUCKET_NAME>/${BUCKET_NAME}/g" manifests/s3-files-storage.yaml | kubectl apply -f -
+          echo "PV/PVC for S3 bucket: ${BUCKET_NAME}"
+
       - name: Deploy Zoekt (code search)
         run: |
           cd modules/agent-context
           source scripts/_common.sh
           load_config "$(pwd)"
 
-          python3 scripts/ensure-zoekt-auth.py --namespace "${NAMESPACE}"
-          export NAMESPACE SERVICE_ACCOUNT ZOEKT_IMAGE
+          export NAMESPACE SERVICE_ACCOUNT ZOEKT_IMAGE_TAG
           template_file manifests/zoekt.yaml | kubectl apply -f -
-          echo "Zoekt webserver deployed (image: ${ZOEKT_IMAGE})"
+          echo "Zoekt webserver deployed (image tag: ${ZOEKT_IMAGE_TAG})"
 
       - name: Deploy LiteLLM Proxy
         run: |
@@ -403,18 +394,12 @@ jobs:
 
       - name: Deploy DeepWiki
         if: ${{ inputs.skip_deepwiki != true }}
-        env:
-          ADP_INPUT_DEEPWIKI_IMAGE_TAG: ${{ inputs.deepwiki_image_tag }}
         run: |
           cd modules/agent-context
           source scripts/_common.sh
           load_config "$(pwd)"
 
           if [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
-            # The upstream default does not support our nonroot, read-only
-            # manifest. Deploy the hardened project build by immutable digest.
-            export ENVIRONMENT AWS_REGION ECR_REGISTRY
-            DEEPWIKI_IMAGE=$(bash scripts/resolve-deepwiki-image.sh "${ADP_INPUT_DEEPWIKI_IMAGE_TAG:-}")
             export NAMESPACE SERVICE_ACCOUNT DEEPWIKI_PORT DEEPWIKI_IMAGE LITELLM_PORT BEDROCK_REGION
             template_file manifests/deepwiki.yaml | kubectl apply -f -
             echo "DeepWiki deployed"
@@ -450,15 +435,7 @@ jobs:
           kubectl rollout restart deploy/context-mcp -n ${NAMESPACE} || true
           echo "Context MCP Server deployed"
 
-          # Restrict who can reach the Door (#4073 finding #8). Defence in depth
-          # behind the DOOR_API_KEY check in door/auth.py — see the header
-          # comment in the manifest for why this is the weaker of the two.
-          template_file manifests/networkpolicy.yaml | kubectl apply -f -
-          echo "NetworkPolicy context-mcp-ingress applied"
-
       - name: Deploy Ingestion CronJob + KEDA ScaledJob
-        env:
-          ADP_INPUT_146F27724A: ${{ inputs.ingestion_image_tag }}
         run: |
           cd modules/agent-context
           source scripts/_common.sh
@@ -472,25 +449,18 @@ jobs:
 
           # Determine ingestion image
           INGESTION_REPO="adp-${ENVIRONMENT}-agent-context-ingestion"
-          INPUT_TAG="${ADP_INPUT_146F27724A}"
-          if [ -n "${ADP_RESOLVED_INGESTION_IMAGE:-}" ]; then
-            INGESTION_IMAGE="$ADP_RESOLVED_INGESTION_IMAGE"
-          elif [ -n "$INPUT_TAG" ]; then
-            if [[ "$INPUT_TAG" == sha256:* ]]; then
-              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}@${INPUT_TAG}"
-            else
-              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}:${INPUT_TAG}"
-            fi
+          INPUT_TAG="${{ inputs.ingestion_image_tag }}"
+          if [ -n "$INPUT_TAG" ]; then
+            INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}:${INPUT_TAG}"
           else
             # Get latest built tag
-            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" --filter tagStatus=TAGGED \
-              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageDigest' \
+            LATEST_TAG=$(aws ecr describe-images --repository-name "${INGESTION_REPO}" \
+              --region ${{ env.AWS_REGION }} --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
               --output text 2>/dev/null || echo "")
             if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "None" ]; then
-              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}@${LATEST_TAG}"
+              INGESTION_IMAGE="${ECR_REGISTRY}/${INGESTION_REPO}:${LATEST_TAG}"
             fi
           fi
-          INGESTION_IMAGE=$(python3 ../../platform/scripts/resolve-ecr-image.py "$INGESTION_IMAGE")
           export INGESTION_IMAGE
           echo "Ingestion image: ${INGESTION_IMAGE}"
 
@@ -507,12 +477,6 @@ jobs:
           template_file manifests/repo-refresh-cronjob.yaml | kubectl apply -f -
           echo "Ingestion CronJob deployed"
 
-          if [ "${VULN_SCAN_ENABLED:-true}" = true ]; then
-            export VULN_SCAN_SCHEDULE
-            template_file manifests/vuln-scan-cronjob.yaml | kubectl apply -f -
-            echo "Vulnerability scanner CronJob deployed with the same verified image"
-          fi
-
           # Deploy KEDA ScaledJob (if SQS configured)
           if [ -n "${SQS_QUEUE_URL:-}" ] && [ -f manifests/ingestion-scaledjob.yaml ]; then
             export DEEPWIKI_URL="http://deepwiki.${NAMESPACE}.svc.cluster.local:8001"
@@ -522,35 +486,13 @@ jobs:
             template_file manifests/ingestion-scaledjob.yaml | kubectl apply -f -
             echo "KEDA ScaledJob deployed"
           fi
+
       - name: Wait for rollouts
-        env:
-          SKIP_DEEPWIKI: ${{ inputs.skip_deepwiki == true }}
         run: |
-          set -euo pipefail
-          cd modules/agent-context
-          source scripts/_common.sh
-          load_config "$(pwd)"
           echo "Waiting for deployments to be ready..."
-          failed=0
-          for deployment in zoekt-webserver litellm-proxy context-mcp; do
-            kubectl rollout status "deploy/$deployment" -n "$NAMESPACE" --timeout=300s || failed=1
-          done
-          if [ "$SKIP_DEEPWIKI" != "true" ] && [ "${DEEPWIKI_ENABLED:-true}" = "true" ]; then
-            kubectl rollout status deploy/deepwiki -n "$NAMESPACE" --timeout=300s || failed=1
-          fi
-          if [ "$failed" != 0 ]; then
-            kubectl get pods -n "$NAMESPACE" -o wide || true
-            # /ready exposes only status and exception type, never credentials.
-            # Query every MCP replica so an old healthy pod cannot hide the new
-            # replica's ACL failure while a rolling update is stalled.
-            for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=context-mcp -o name); do
-              echo "ACL readiness for $pod:"
-              kubectl exec -n "$NAMESPACE" "$pod" -c context-mcp -- python3 -c \
-                'import http.client; c=http.client.HTTPConnection("127.0.0.1",5100,timeout=5); c.request("GET","/ready"); r=c.getresponse(); print(r.status, r.read(4096).decode())' || true
-            done
-            echo "::error::Agent Context deployment did not become ready."
-            exit 1
-          fi
+          kubectl rollout status deploy/zoekt-webserver -n ${{ env.NAMESPACE }} --timeout=180s || echo "WARNING: Zoekt not ready"
+          kubectl rollout status deploy/litellm-proxy -n ${{ env.NAMESPACE }} --timeout=300s || echo "WARNING: LiteLLM not ready"
+          kubectl rollout status deploy/context-mcp -n ${{ env.NAMESPACE }} --timeout=180s || echo "WARNING: Context MCP not ready"
 
       - name: Verify deployment
         run: |

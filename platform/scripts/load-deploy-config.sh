@@ -17,9 +17,10 @@
 #   ADP_GITHUB_ORG         — GitHub org owning the repo
 #   ADP_STATE_BUCKET       — Terraform state bucket name (derived from ADP_ACCOUNT_ID)
 #
-# Cross-account customer bootstrap is deliberately rejected. Dashboard-linked
-# AWS roles are steady-state inspection/routing credentials and must never be
-# selected as deployment credentials.
+# Exports (only when customer_account is set):
+#   ADP_CUSTOMER_ACCOUNT_ID    — the linked customer account to deploy into
+#   ADP_CUSTOMER_AWS_LABEL     — vaulted credential label
+#   ADP_DEPLOY_TARGET_ACCOUNT  — alias for ADP_CUSTOMER_ACCOUNT_ID (else ADP_ACCOUNT_ID)
 #
 # Each value follows this resolution order:
 #   1. Existing env var (so callers can override per-invocation)
@@ -29,7 +30,7 @@
 set -e
 
 _LDC_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-_LDC_CONFIG_FILE="${ADP_DEPLOY_CONFIG_FILE:-${_LDC_REPO_ROOT}/config/deployment.yml}"
+_LDC_CONFIG_FILE="${_LDC_REPO_ROOT}/config/deployment.yml"
 
 # -----------------------------------------------------------------------------
 # Read a single field from config/deployment.yml using Python (universally
@@ -136,26 +137,92 @@ if [ -n "$ADP_ACCOUNT_ID" ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Retired cross-account block
+# Optional cross-account block
 # -----------------------------------------------------------------------------
 ADP_CUSTOMER_ACCOUNT_ID=$(_ldc_resolve ADP_CUSTOMER_ACCOUNT_ID customer_account.account_id "")
 ADP_CUSTOMER_AWS_LABEL=$(_ldc_resolve ADP_CUSTOMER_AWS_LABEL customer_account.aws_label "")
 ADP_CUSTOMER_USER_ID=$(_ldc_resolve ADP_CUSTOMER_USER_ID customer_account.user_id "")
-ADP_GATEWAY_URL=$(_ldc_resolve ADP_GATEWAY_URL customer_account.gateway_url "")
+ADP_GATEWAY_URL=$(_ldc_resolve ADP_GATEWAY_URL customer_account.gateway_url "echo http://bedrockgateway.adp-gateway")
 
-if [ -n "$ADP_CUSTOMER_ACCOUNT_ID" ] || [ -n "$ADP_CUSTOMER_AWS_LABEL" ] || \
-   [ -n "$ADP_CUSTOMER_USER_ID" ] || [ -n "$ADP_GATEWAY_URL" ]; then
-  echo "ERROR: cross-account customer bootstrap is disabled." >&2
-  echo "  customer_account and ADP_CUSTOMER_* values cannot select a deploy target." >&2
-  echo "  Use top-level account_id with customer-controlled temporary credentials." >&2
-  unset ADP_CUSTOMER_ACCOUNT_ID ADP_CUSTOMER_AWS_LABEL ADP_CUSTOMER_USER_ID ADP_GATEWAY_URL
-  unset _LDC_REPO_ROOT _LDC_CONFIG_FILE
-  unset -f _ldc_read_field _ldc_resolve
-  return 1
+if [ -n "$ADP_CUSTOMER_ACCOUNT_ID" ]; then
+  export ADP_CUSTOMER_ACCOUNT_ID
+  export ADP_CUSTOMER_AWS_LABEL
+  export ADP_CUSTOMER_USER_ID
+  export ADP_GATEWAY_URL
+  export ADP_DEPLOY_TARGET_ACCOUNT="$ADP_CUSTOMER_ACCOUNT_ID"
+
+  # Resolve the platform-account API Gateway invoke URL BEFORE the assume
+  # swaps creds — once we hold customer-account creds, this SSM read would
+  # hit the customer's SSM (wrong account). assume-customer-creds.py uses
+  # this to SigV4-sign /internal/v1/credential-assume-role against the
+  # platform's API GW (per EPIC #1107 Phase 2).
+  #
+  # FAIL FAST if missing: per EPIC #1107 the SigV4 path is now the only
+  # supported auth. Falling back to shared-secret would mask IAM
+  # misconfiguration and silently use a deprecated path.
+  if [ -z "${ADP_GATEWAY_API_URL:-}" ]; then
+    ADP_GATEWAY_API_URL=$(aws ssm get-parameter \
+      --name "/adp/${ADP_ENVIRONMENT}/gateway/apigw-invoke-url" \
+      --query Parameter.Value --output text 2>/dev/null || echo "")
+    if [ -z "$ADP_GATEWAY_API_URL" ]; then
+      echo "ERROR: SSM /adp/${ADP_ENVIRONMENT}/gateway/apigw-invoke-url is empty." >&2
+      echo "  This SSM param is published by gateway-infra terraform; if missing," >&2
+      echo "  re-apply gateway-infra against the platform account, OR override" >&2
+      echo "  ADP_GATEWAY_API_URL in env. See EPIC #1107." >&2
+      return 1
+    fi
+    export ADP_GATEWAY_API_URL
+  fi
+
+  # In cross-account mode, Terraform state lives in the CUSTOMER's bucket,
+  # not the platform's. The customer's bootstrap phase created this bucket
+  # in their account, and the assumed credentials have access to it.
+  export ADP_STATE_BUCKET="adp-terraform-state-${ADP_CUSTOMER_ACCOUNT_ID}"
+
+  # Assume the customer-linked role via the gateway.
+  #
+  # IMPORTANT: this branch is intended for the ADP-managed track only —
+  # scripts/workflows running inside ADP's platform pod that have no direct
+  # creds for the customer's account. If you're a self-hosted operator
+  # running from a laptop or your own CI with direct AWS creds, the
+  # gateway is unreachable (in-cluster service DNS) and this call will
+  # error. In that case, remove the customer_account block from
+  # config/deployment.yml and set account_id (top-level) directly.
+  # See config/deployment.yml.example for the decision matrix.
+  #
+  # FATAL if the assume fails — falling back to platform creds would silently
+  # deploy to the wrong account. If you're a self-hosted operator, remove the
+  # customer_account block from config/deployment.yml and set account_id
+  # (top-level) directly. See config/deployment.yml.example.
+  if [ -z "${ADP_SKIP_CROSS_ACCOUNT_ASSUME:-}" ]; then
+    _LDC_ASSUME_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assume-customer-creds.py"
+    if [ -x "$_LDC_ASSUME_SCRIPT" ]; then
+      _LDC_ASSUME_OUTPUT=$("$_LDC_ASSUME_SCRIPT" 2>&1 >/tmp/.ldc-creds.$$) || {
+        # Cross-account assume failed. In ADP-managed mode (ADP_CUSTOMER_ACCOUNT_ID
+        # is set), this MUST be fatal — falling back to platform creds would silently
+        # deploy to the wrong account. See issue #1031 for the cascade this caused.
+        echo "ERROR: cross-account assume to ${ADP_CUSTOMER_ACCOUNT_ID} failed." >&2
+        echo "$_LDC_ASSUME_OUTPUT" >&2
+        echo "  Refusing to fall back to platform creds — would deploy to the wrong account." >&2
+        echo "  If you're running from a laptop or non-ADP CI, remove the" >&2
+        echo "  customer_account block from config/deployment.yml and set" >&2
+        echo "  account_id (top-level) directly. See deployment.yml.example." >&2
+        rm -f /tmp/.ldc-creds.$$
+        return 1
+      }
+      if [ -s /tmp/.ldc-creds.$$ ]; then
+        # shellcheck disable=SC1090
+        . /tmp/.ldc-creds.$$
+        # Diagnostic on stderr (the python script also prints to stderr; this is here
+        # so the helper's caller can see it even when sourced from a workflow step)
+        echo "$_LDC_ASSUME_OUTPUT" >&2
+      fi
+      rm -f /tmp/.ldc-creds.$$
+    fi
+  fi
+else
+  export ADP_DEPLOY_TARGET_ACCOUNT="$ADP_ACCOUNT_ID"
 fi
 
-unset ADP_CUSTOMER_ACCOUNT_ID ADP_CUSTOMER_AWS_LABEL ADP_CUSTOMER_USER_ID ADP_GATEWAY_URL
-export ADP_DEPLOY_TARGET_ACCOUNT="$ADP_ACCOUNT_ID"
-
-unset _LDC_REPO_ROOT _LDC_CONFIG_FILE
+unset _LDC_REPO_ROOT _LDC_CONFIG_FILE _LDC_ASSUME_SCRIPT _LDC_ASSUME_OUTPUT
 unset -f _ldc_read_field _ldc_resolve

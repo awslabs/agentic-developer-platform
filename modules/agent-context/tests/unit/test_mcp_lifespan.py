@@ -156,14 +156,8 @@ class TestACLUnderLiveLifespan:
     when the session manager is actually alive.
     """
 
-    async def test_mcp_search_no_identity_returns_empty(self, live_client, acl_store_live):
-        """MCP tools/call search without identity headers -> empty results (fail-closed).
-
-        ``acl_store_live`` supplies a reachable but empty ACL store. The real
-        lifespan cannot build one here (no database in a unit test), and without
-        the fixture the Door would answer with its store-unavailable refusal
-        (#5658) — so this test would stop measuring the identity gate it names.
-        """
+    async def test_mcp_search_no_identity_returns_empty(self, live_client):
+        """MCP tools/call search without identity headers -> empty results (fail-closed)."""
         resp = await live_client.post(
             "/mcp/",
             json={
@@ -208,14 +202,8 @@ class TestLegacyRESTUnderLiveLifespan:
         tools = resp.json()
         assert len(tools) == 7
 
-    async def test_post_call_endpoint(self, live_client, acl_store_live):
-        """POST /call still routes correctly (REST path unaffected).
-
-        ``acl_store_live`` is required for the same reason as above: this test's
-        subject is REST routing surviving the MCP lifespan composition, so the
-        request has to reach the verb rather than stop at the #5658 ACL-store
-        gate.
-        """
+    async def test_post_call_endpoint(self, live_client):
+        """POST /call still routes correctly (REST path unaffected)."""
         resp = await live_client.post(
             "/call",
             content=json.dumps(

@@ -30,11 +30,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-if [ -n "${ADP_RELEASE_DIR:-}" ]; then
-  python3 "$SCRIPT_DIR/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
-  exit 0
-fi
-
 # --- Resolve deploy config (account/region/env/bucket) -----------------------
 # Prefer already-exported env (e.g. when called from deploy-all.sh) and fall
 # back to the shared loader, which reads config/deployment.yml or derives from

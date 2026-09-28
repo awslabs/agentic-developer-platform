@@ -19,7 +19,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.logging import get_logger
-from src.shared.metrics import emit_error_count
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.common import RateLimitCheckResult
 from src.shared.timing import get_timings
@@ -72,33 +71,25 @@ class RateLimitEnforcementMiddleware:
         request = Request(scope, receive, send)
 
         timings = get_timings(request)
-        try:
-            with timings.time_segment("ratelimit_check"):
-                check_result = await self.ratelimit_service.check_rate_limit(token_context)
+        with timings.time_segment("ratelimit_check"):
+            check_result = await self.ratelimit_service.check_rate_limit(token_context)
 
-                if not check_result.allowed:
-                    # Drain request body before responding
-                    while True:
-                        msg = await receive()
-                        if msg.get("type") == "http.disconnect":
-                            return
-                        if not msg.get("more_body", False):
-                            break
-                    await self._send_rate_limited(send, check_result)
-                    return
+            if not check_result.allowed:
+                # Drain request body before responding
+                while True:
+                    msg = await receive()
+                    if msg.get("type") == "http.disconnect":
+                        return
+                    if not msg.get("more_body", False):
+                        break
+                await self._send_rate_limited(send, check_result)
+                return
 
-                consume_result = await self.ratelimit_service.consume_rate_limit(token_context)
+            consume_result = await self.ratelimit_service.consume_rate_limit(token_context)
 
-                if not consume_result.allowed:
-                    await self._send_rate_limited(send, consume_result)
-                    return
-        except Exception:
-            logger.exception("Rate limit enforcement unavailable; refusing provider admission")
-            emit_error_count(org_id=token_context.attributed_org_id, model="rate_limit", error_type="backend_unavailable")
-            body = b'{"error":"rate_limit_backend_unavailable"}'
-            await send({"type": "http.response.start", "status": 503, "headers": [(b"content-type", b"application/json"), (b"retry-after", b"5")]})
-            await send({"type": "http.response.body", "body": body})
-            return
+            if not consume_result.allowed:
+                await self._send_rate_limited(send, consume_result)
+                return
 
         # Track concurrent request
         tracked = True

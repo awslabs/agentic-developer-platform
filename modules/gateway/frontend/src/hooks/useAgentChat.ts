@@ -9,8 +9,6 @@
  * Phase 2 (AG-UI) can swap the frame parser without touching UI components.
  */
 
-import { deploymentSetting } from '@/config/runtime';
-
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getIdToken, isTokenExpired, refreshToken as refreshTokenService } from '@/services/auth';
 import type {
@@ -27,7 +25,9 @@ import type {
 // Config
 // ---------------------------------------------------------------------------
 
-const CHAT_UNCONFIGURED = 'Agent chat is not configured for this deployment.';
+const WS_BASE_URL =
+  import.meta.env.VITE_AGENT_WS_URL ||
+  'wss://8ea7pg40b7.execute-api.us-east-1.amazonaws.com/v1';
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const INITIAL_BACKOFF_MS = 1_000;
@@ -344,20 +344,6 @@ export function useAgentChat({
   const connect = useCallback(async () => {
     if (!sessionIdRef.current) return;
 
-    // Gateway-only deployments have no chat endpoint. Never send their login
-    // token to another deployment's historical default endpoint.
-    const wsBaseUrl = deploymentSetting('VITE_AGENT_WS_URL')?.trim();
-    if (!wsBaseUrl) {
-      setConnectionStatus('disconnected');
-      updateMessages((msgs) => msgs.some((message) => message.content === CHAT_UNCONFIGURED)
-        ? msgs
-        : [...msgs, {
-          id: generateId(), role: 'system', content: CHAT_UNCONFIGURED,
-          status: 'error', timestamp: Date.now(),
-        }]);
-      return;
-    }
-
     const token = await getValidIdToken();
     if (!token) {
       setConnectionStatus('disconnected');
@@ -367,7 +353,7 @@ export function useAgentChat({
     setConnectionStatus('connecting');
     intentionalCloseRef.current = false;
 
-    const url = `${wsBaseUrl}?token=${encodeURIComponent(token)}`;
+    const url = `${WS_BASE_URL}?token=${encodeURIComponent(token)}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
@@ -419,7 +405,7 @@ export function useAgentChat({
 
       scheduleReconnect();
     };
-  }, [getValidIdToken, handleNotification, handleProgress, handleResponse, updateMessages]);
+  }, [getValidIdToken, handleNotification, handleProgress, handleResponse]);
 
   const scheduleReconnect = useCallback(() => {
     const attempt = reconnectAttemptRef.current;

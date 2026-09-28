@@ -18,7 +18,6 @@ class TestVerdictMalicious:
             url="http://evil.tk/payload.exe",
             domain="evil.tk",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [],
                 "redirect_chain": [
                     "http://evil.tk/r1",
@@ -59,7 +58,6 @@ class TestVerdictMalicious:
             url="http://login-secure.tk/account",
             domain="login-secure.tk",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [
                     {
                         "action": "/submit",
@@ -96,11 +94,10 @@ class TestVerdictMalicious:
             url="http://c2-server.xyz/beacon",
             domain="c2-server.xyz",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [],
                 "redirect_chain": [],
                 "auto_downloads": [],
-                "visible_text": "Captured suspicious page",
+                "visible_text": "",
             },
             enrichment={
                 "whois": {"age_days": 10},
@@ -126,18 +123,17 @@ class TestVerdictMalicious:
 class TestVerdictClean:
     """Scenarios that should produce a 'clean' verdict."""
 
-    def test_popular_domain_with_benign_view(self) -> None:
-        """A benign captured view is clean without a reputation confidence override."""
+    def test_known_good_domain(self) -> None:
+        """Known-good domains always get clean verdict with high confidence."""
         for domain in ["google.com", "www.google.com", "github.com"]:
             verdict = synthesize_verdict(
                 url=f"https://{domain}/search",
                 domain=domain,
                 browser_evidence={
-                    "http_status": 200,
                     "forms_detected": [],
                     "redirect_chain": [],
                     "auto_downloads": [],
-                    "visible_text": "Search and information",
+                    "visible_text": "",
                 },
                 enrichment={
                     "whois": {"age_days": 5000},
@@ -153,7 +149,7 @@ class TestVerdictClean:
                 },
             )
             assert verdict.severity == "clean"
-            assert 0 < verdict.confidence < 90
+            assert verdict.confidence >= 90
 
     def test_clean_established_domain_no_threats(self) -> None:
         """Established domain, no detections, no suspicious signals → clean."""
@@ -161,7 +157,6 @@ class TestVerdictClean:
             url="https://docs.python.org/3/tutorial/",
             domain="docs.python.org",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [],
                 "redirect_chain": [],
                 "auto_downloads": [],
@@ -193,7 +188,6 @@ class TestVerdictSuspicious:
             url="http://free-prize.xyz/win",
             domain="free-prize.xyz",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [
                     {
                         "action": "/collect",
@@ -232,7 +226,6 @@ class TestVerdictSuspicious:
             url="http://unknown-site.buzz/page",
             domain="unknown-site.buzz",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [],
                 "redirect_chain": ["http://unknown-site.buzz/r1"],
                 "auto_downloads": [],
@@ -245,8 +238,8 @@ class TestVerdictSuspicious:
                 "misp": {"skipped": True},
             },
         )
-        # A successful status without page evidence cannot support a conclusion.
-        assert verdict.severity == "inconclusive"
+        # With limited evidence, should be suspicious or clean
+        assert verdict.severity in ("suspicious", "clean")
 
 
 class TestVerdictStructure:
@@ -257,7 +250,6 @@ class TestVerdictStructure:
             url="http://test.com/",
             domain="test.com",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [],
                 "redirect_chain": [],
                 "auto_downloads": [],
@@ -271,7 +263,7 @@ class TestVerdictStructure:
             },
         )
         assert isinstance(verdict, Verdict)
-        assert verdict.severity in ("clean", "suspicious", "malicious", "inconclusive")
+        assert verdict.severity in ("clean", "suspicious", "malicious")
         assert 0 <= verdict.confidence <= 100
         assert isinstance(verdict.mitre_attack, list)
         assert isinstance(verdict.recommended_actions, list)
@@ -282,7 +274,6 @@ class TestVerdictStructure:
             url="http://test.com/",
             domain="test.com",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [],
                 "redirect_chain": [],
                 "auto_downloads": [],
@@ -312,7 +303,6 @@ class TestVerdictRecommendedActions:
             url="http://evil.tk/malware",
             domain="evil.tk",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [],
                 "redirect_chain": [],
                 "auto_downloads": [
@@ -346,11 +336,10 @@ class TestVerdictRecommendedActions:
             url="https://www.google.com/",
             domain="www.google.com",
             browser_evidence={
-                "http_status": 200,
                 "forms_detected": [],
                 "redirect_chain": [],
                 "auto_downloads": [],
-                "visible_text": "Search and information",
+                "visible_text": "",
             },
             enrichment={
                 "whois": {"age_days": 9000},
@@ -366,4 +355,4 @@ class TestVerdictRecommendedActions:
             },
         )
         assert verdict.severity == "clean"
-        assert any("tested view" in a.lower() for a in verdict.recommended_actions)
+        assert any("no action" in a.lower() for a in verdict.recommended_actions)

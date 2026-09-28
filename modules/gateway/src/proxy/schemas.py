@@ -152,43 +152,7 @@ class OpenAIChatCompletionChunk(BaseModel):
 # ============================================================================
 
 
-class AnthropicCacheControl(BaseModel):
-    """Anthropic prompt-cache breakpoint marker.
-
-    Issue #4180: clients mark the stable prefix of a prompt with
-    ``cache_control`` so the provider can serve it from cache at ~0.1x the
-    input rate. The models below declared no such field and pydantic's default
-    ``extra="ignore"`` silently dropped it at validation time, so every turn of
-    a long conversation was billed at full price with no error and no signal.
-
-    Deliberately a TYPED field rather than ``model_config = {"extra": "allow"}``
-    on the content-block models: blanket-allowing extras would let arbitrary
-    client keys reach the Bedrock request body, and Bedrock rejects unknown keys
-    inside content blocks with a 400 — turning today's silent overcharge into an
-    availability regression on a customer-facing route.
-
-    ``ttl`` is intentionally NOT modelled. Extended-TTL caching requires the
-    ``extended-cache-ttl-2025-04-11`` beta header, which this gateway accepts
-    and discards (see ``FormatTranslator.anthropic_to_bedrock``). Forwarding a
-    ``ttl`` without the header that legalises it would 400 requests that
-    succeed today. Adding it means forwarding ``anthropic_beta`` first.
-    """
-
-    type: Literal["ephemeral"] = "ephemeral"
-
-
-class AnthropicCacheControlMixin(BaseModel):
-    """Adds an optional prompt-cache breakpoint to a content block (#4180).
-
-    Anthropic accepts ``cache_control`` on ALL content-block types, not just
-    text. A breakpoint placed on a trailing ``tool_use`` or ``tool_result``
-    block is a completely ordinary agent shape, so every block type carries it.
-    """
-
-    cache_control: AnthropicCacheControl | None = None
-
-
-class AnthropicTextContent(AnthropicCacheControlMixin):
+class AnthropicTextContent(BaseModel):
     """Anthropic text content block."""
 
     type: Literal["text"] = "text"
@@ -203,14 +167,14 @@ class AnthropicImageSource(BaseModel):
     data: str
 
 
-class AnthropicImageContent(AnthropicCacheControlMixin):
+class AnthropicImageContent(BaseModel):
     """Anthropic image content block."""
 
     type: Literal["image"] = "image"
     source: AnthropicImageSource
 
 
-class AnthropicToolUseContent(AnthropicCacheControlMixin):
+class AnthropicToolUseContent(BaseModel):
     """Anthropic tool use content block."""
 
     type: Literal["tool_use"] = "tool_use"
@@ -219,7 +183,7 @@ class AnthropicToolUseContent(AnthropicCacheControlMixin):
     input: dict[str, Any]
 
 
-class AnthropicToolResultContent(AnthropicCacheControlMixin):
+class AnthropicToolResultContent(BaseModel):
     """Anthropic tool result content block."""
 
     type: Literal["tool_result"] = "tool_result"
@@ -255,13 +219,6 @@ class AnthropicTool(BaseModel):
     name: str
     description: str | None = None
     input_schema: AnthropicToolInput
-    # Issue #4180: tool definitions are one of the highest-value breakpoint
-    # positions (a large, stable tool list is exactly what you want cached), so
-    # the marker must survive validation here too. Note that `tools` is not yet
-    # forwarded to Bedrock at all (#790 / EPIC #745, deliberately out of scope
-    # for this PR) — preserving it here is what makes the marker already correct
-    # on the day #790 wires the field through.
-    cache_control: AnthropicCacheControl | None = None
 
 
 class AnthropicMessagesRequest(BaseModel):
@@ -301,8 +258,8 @@ class AnthropicUsage(BaseModel):
 
     input_tokens: int
     output_tokens: int
-    cache_read_input_tokens: int | None = None
-    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
     model_config = {"extra": "allow"}
 

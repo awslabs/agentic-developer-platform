@@ -6,8 +6,6 @@
  * Mirrors the pattern in services/logs.ts.
  */
 
-import { deploymentSetting } from '@/config/runtime';
-
 import { apiClient, buildQueryString } from './api';
 import type {
   ChainListResponse,
@@ -28,9 +26,9 @@ export async function getMyInvocations(
     status: params?.status,
     channel: params?.channel,
     persona: params?.persona,
-    since: params?.since,
-    until: params?.until,
-    page_size: params?.page_size || 20,
+    start_date: params?.start_date,
+    end_date: params?.end_date,
+    limit: params?.limit || 20,
     last_key: params?.last_key,
     include_non_triggering: params?.include_non_triggering,
   });
@@ -57,9 +55,9 @@ export async function getMyChains(
     status: params?.status,
     channel: params?.channel,
     persona: params?.persona,
-    since: params?.since,
-    until: params?.until,
-    page_size: params?.page_size || 20,
+    start_date: params?.start_date,
+    end_date: params?.end_date,
+    limit: params?.limit || 20,
     last_key: params?.last_key,
     include_non_triggering: params?.include_non_triggering,
   });
@@ -86,9 +84,9 @@ export async function getAllInvocations(
     status: params?.status,
     channel: params?.channel,
     persona: params?.persona,
-    since: params?.since,
-    until: params?.until,
-    page_size: params?.page_size || 20,
+    start_date: params?.start_date,
+    end_date: params?.end_date,
+    limit: params?.limit || 20,
     last_key: params?.last_key,
     include_non_triggering: params?.include_non_triggering,
   });
@@ -176,7 +174,7 @@ export async function getAdminInvocationDetail(
  */
 export async function getMyTranscript(invocationId: string): Promise<string> {
   const { getAccessToken } = await import('./auth');
-  const baseUrl = deploymentSetting('VITE_API_URL') || '/api';
+  const baseUrl = import.meta.env.VITE_API_URL || '/api';
   const token = getAccessToken();
   // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
   const response = await fetch(
@@ -200,7 +198,7 @@ export async function getAdminTranscript(
   tenantId?: string,
 ): Promise<string> {
   const { getAccessToken } = await import('./auth');
-  const baseUrl = deploymentSetting('VITE_API_URL') || '/api';
+  const baseUrl = import.meta.env.VITE_API_URL || '/api';
   const token = getAccessToken();
   const query = tenantId ? buildQueryString({ tenant_id: tenantId }) : '';
   // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability

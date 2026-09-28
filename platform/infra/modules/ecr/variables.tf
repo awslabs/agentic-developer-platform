@@ -13,24 +13,6 @@ variable "repositories" {
   description = "Names of ECR repositories to create"
 }
 
-variable "repository_encryption" {
-  description = "Per-repository encryption overrides for retaining immutable settings of existing repositories"
-  type = map(object({
-    encryption_type = string
-    kms_key         = optional(string)
-  }))
-  default = {}
-
-  validation {
-    condition = alltrue([
-      for config in values(var.repository_encryption) :
-      contains(["AES256", "KMS", "KMS_DSSE"], config.encryption_type) &&
-      (config.encryption_type == "AES256" ? config.kms_key == null : try(length(config.kms_key) > 0, false))
-    ])
-    error_message = "Encryption must be AES256 without a KMS key, or KMS/KMS_DSSE with its existing key."
-  }
-}
-
 variable "common_tags" {
   type        = map(string)
   description = "Common tags to apply to all resources"
@@ -40,7 +22,7 @@ variable "common_tags" {
 variable "image_tag_mutability" {
   type        = string
   description = "ECR image tag mutability"
-  default     = "IMMUTABLE"
+  default     = "MUTABLE"
   validation {
     condition     = contains(["MUTABLE", "IMMUTABLE"], var.image_tag_mutability)
     error_message = "ECR image tag mutability must be MUTABLE or IMMUTABLE."

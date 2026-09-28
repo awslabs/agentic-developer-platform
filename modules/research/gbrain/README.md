@@ -1,6 +1,6 @@
 # gbrain — Experimental Persona Learning Module
 
-Isolated experimental deployment of [gbrain](https://github.com/garrytan/gbrain) (v0.57.0.0) for evaluating per-persona experiential knowledge storage for ADP agents.
+Isolated experimental deployment of [gbrain](https://github.com/garrytan/gbrain) (v0.42.26.0) for evaluating per-persona experiential knowledge storage for ADP agents.
 
 ## Architecture
 

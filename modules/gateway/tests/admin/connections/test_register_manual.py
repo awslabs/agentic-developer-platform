@@ -22,7 +22,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.connections.routes import router
 from src.auth.dependencies import get_current_user
@@ -57,16 +56,6 @@ def _make_user(
     )
 
 
-@pytest.fixture(autouse=True)
-def _isolate_unit_test_audit_sink(monkeypatch):
-    # These service/response unit tests use fake database sessions. Keep the
-    # route's audit staging and permission gates; durable SQL is exercised by
-    # test_admin_audit_durability.py and test_admin_audit_postgres.py.
-    from src.admin import audit_operation
-
-    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
-
-
 @pytest.fixture
 def app():
     application = FastAPI()
@@ -76,7 +65,7 @@ def app():
 
 @pytest.fixture
 def mock_db():
-    return AsyncMock(spec=AsyncSession)
+    return MagicMock()
 
 
 def _make_client(
@@ -272,7 +261,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",
@@ -370,7 +358,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",
@@ -455,7 +442,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",
@@ -536,7 +522,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",
@@ -610,7 +595,6 @@ class TestRegisterAppManualService:
             "name": "Test",
             "permissions": {
                 "metadata": "read",
-                "members": "read",
                 # Missing contents, issues, pull_requests, checks
             },
             "events": [
@@ -692,7 +676,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",
@@ -769,7 +752,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",
@@ -851,7 +833,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",
@@ -915,7 +896,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",
@@ -981,7 +961,6 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
-                "members": "read",
             },
             "events": [
                 "issues",

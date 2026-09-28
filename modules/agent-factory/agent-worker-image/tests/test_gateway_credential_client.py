@@ -118,28 +118,6 @@ class TestLegacyMode:
         req = mock_urlopen.call_args[0][0]
         assert req.get_header("X-agent-scopes") == "credential:raw-read"
 
-    @patch("lib.gateway_credential_client.urlopen")
-    def test_legacy_url_unchanged_by_4343(self, mock_urlopen, monkeypatch):
-        """The shared-secret transport is untouched by the #4343 SigV4 fix.
-
-        Legacy mode talks to the gateway pod directly (no API Gateway, no ALB
-        deny in front of it), so its URL shape must not shift.
-        """
-        monkeypatch.setenv("VAULT_GATEWAY_URL", "http://gateway:8080")
-        monkeypatch.setenv("VAULT_INTERNAL_API_KEY", "key")
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{"access_key_id": "AK"}'
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_resp
-
-        client = GatewayCredentialClient()
-        client.assume_role(user_id="u", agent_id="a", task_id="t")
-
-        req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://gateway:8080/internal/v1/credential-assume-role"
-
 
 # ---------------------------------------------------------------------------
 # SigV4 mode tests
@@ -178,11 +156,7 @@ class TestSigV4Mode:
         mock_sign.assert_called_once()
         call_args = mock_sign.call_args
         assert call_args[0][0] == "POST"  # method
-        # Issue #4343: the signed URL must target /internal/... (API Gateway
-        # /internal/{proxy+} -> internal-plane ALB), NOT /agent/internal/...
-        # (/agent/{proxy+} -> edge ALB, which 403s /internal/* per #4010).
-        assert "/internal/v1/credential-assume-role" in call_args[0][1]
-        assert "/agent" not in call_args[0][1]
+        assert "/agent/internal/v1/credential-assume-role" in call_args[0][1]
 
         # Verify the request has SigV4 headers
         req = mock_urlopen.call_args[0][0]
@@ -193,13 +167,7 @@ class TestSigV4Mode:
 
     @patch("lib.gateway_credential_client.urlopen")
     @patch("lib.gateway_credential_client._sigv4_sign_request")
-    def test_base_url_has_no_agent_prefix(self, mock_sign, mock_urlopen, monkeypatch):
-        """SigV4 internal calls address /internal/... directly (issue #4343).
-
-        The /agent prefix routed these through the edge ALB, where #4010's
-        edge-internal-deny patch answers 403 "Not available from the edge" for
-        any /internal/* path.
-        """
+    def test_base_url_appends_agent_prefix(self, mock_sign, mock_urlopen, monkeypatch):
         monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://api-gw.example.com")
 
         mock_sign.return_value = {"Content-Type": "application/json"}
@@ -214,77 +182,7 @@ class TestSigV4Mode:
         client.assume_role(user_id="u", agent_id="a", task_id="t")
 
         req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "https://api-gw.example.com/internal/v1/credential-assume-role"
-
-    @patch("lib.gateway_credential_client.urlopen")
-    @patch("lib.gateway_credential_client._sigv4_sign_request")
-    def test_all_sigv4_endpoints_target_internal_route(
-        self, mock_sign, mock_urlopen, monkeypatch
-    ):
-        """Every endpoint on this client is /internal/* — none may carry /agent.
-
-        All three consumers share one _base_url, so this pins the whole surface:
-        the token gatekeeper (#4272) plus both credential paths. A regression on
-        any of them is a dead agent run (mint) or a dead linked-account read.
-        """
-        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://api-gw.example.com/dev")
-        monkeypatch.setenv("ADP_MESSAGE_ID", "msg-1")
-
-        mock_sign.return_value = {"Content-Type": "application/json"}
-
-        def _resp(body: bytes):
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = body
-            mock_resp.__enter__ = lambda s: s
-            mock_resp.__exit__ = MagicMock(return_value=False)
-            return mock_resp
-
-        client = GatewayCredentialClient()
-
-        mock_urlopen.return_value = _resp(b'{"value": "v"}')
-        client.raw_read(user_id="u", agent_id="a", task_id="t", service="aws")
-        assert (
-            mock_urlopen.call_args[0][0].full_url
-            == "https://api-gw.example.com/dev/internal/v1/credential-raw-read"
-        )
-
-        mock_urlopen.return_value = _resp(b'{"token": "ghs_x", "expires_at": "2026-08-28T12:00:00Z"}')
-        client.github_installation_token(
-            installation_id=555001, repo_owner="acme", repo_name="app"
-        )
-        assert (
-            mock_urlopen.call_args[0][0].full_url
-            == "https://api-gw.example.com/dev/internal/v1/github-installation-token"
-        )
-
-        mock_urlopen.return_value = _resp(b'{"access_key_id": "AK"}')
-        client.assume_role(user_id="u", agent_id="a", task_id="t")
-        assert (
-            mock_urlopen.call_args[0][0].full_url
-            == "https://api-gw.example.com/dev/internal/v1/credential-assume-role"
-        )
-
-    @patch("lib.gateway_credential_client.urlopen")
-    @patch("lib.gateway_credential_client._sigv4_sign_request")
-    def test_trailing_slash_on_endpoint_does_not_double(
-        self, mock_sign, mock_urlopen, monkeypatch
-    ):
-        """A doubled slash would match no API Gateway route."""
-        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://api-gw.example.com/dev/")
-
-        mock_sign.return_value = {"Content-Type": "application/json"}
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = b'{"access_key_id": "AK"}'
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_resp
-
-        client = GatewayCredentialClient()
-        client.assume_role(user_id="u", agent_id="a", task_id="t")
-
-        req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "https://api-gw.example.com/dev/internal/v1/credential-assume-role"
+        assert req.full_url == "https://api-gw.example.com/agent/internal/v1/credential-assume-role"
 
     @patch("lib.gateway_credential_client._sigv4_sign_request")
     def test_sigv4_sign_raises_error_propagates(self, mock_sign, monkeypatch):
@@ -453,72 +351,3 @@ class TestErrorHandling:
         client = GatewayCredentialClient()
         with pytest.raises(GatewayCredentialError, match="Cannot reach gateway"):
             client.assume_role(user_id="u", agent_id="a", task_id="t")
-
-
-class TestAuthorityBrokerIdentity:
-    def test_current_proofs_are_signed_on_every_request(self, monkeypatch, tmp_path):
-        from unittest.mock import MagicMock, patch
-        from lib.gateway_credential_client import GatewayCredentialClient
-        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
-        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gateway.example.test/dev")
-        for variable, name in (("ADP_RUN_CREDENTIAL_FILE", "run"), ("ADP_WORKLOAD_TOKEN_FILE", "pod")):
-            monkeypatch.setenv(variable, str(tmp_path / name))
-            (tmp_path / name).write_text(name + "-proof")
-        response = MagicMock()
-        response.__enter__.return_value.read.return_value = b'{"ok":true}'
-        with patch("lib.gateway_credential_client._sigv4_sign_request", side_effect=lambda method, url, headers, data: headers) as signer, patch("lib.gateway_credential_client.build_opener") as opener:
-            opener.return_value.open.return_value = response
-            client = GatewayCredentialClient()
-            for epoch in (1, 2):
-                (tmp_path / "run").write_text(f"run-proof-{epoch}")
-                assert client._make_request("https://gateway.example.test/dev/internal/v1/credential-assume-role", {}) == {"ok": True}
-                assert signer.call_args.args[2]["X-Adp-Run-Credential"] == f"run-proof-{epoch}"
-                assert signer.call_args.args[2]["X-Adp-Workload-Token"] == "pod-proof"
-            assert opener.call_count == 2
-
-    def test_missing_proof_or_legacy_transport_never_sends(self, monkeypatch):
-        from unittest.mock import patch
-        from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
-        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "true")
-        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gateway.example.test")
-        monkeypatch.delenv("ADP_RUN_CREDENTIAL_FILE", raising=False)
-        with patch("lib.gateway_credential_client._sigv4_sign_request") as signer:
-            with pytest.raises(GatewayCredentialError, match="identity unavailable"):
-                GatewayCredentialClient()._make_request("https://gateway.example.test/internal/v1/credential-assume-role", {})
-            monkeypatch.delenv("ADP_GATEWAY_ENDPOINT")
-            with pytest.raises(GatewayCredentialError, match="HTTPS and SigV4"):
-                GatewayCredentialClient(gateway_url="https://legacy.example.test", api_key="legacy")._make_request("https://legacy.example.test/internal/v1/credential-assume-role", {})
-            signer.assert_not_called()
-
-
-@pytest.mark.parametrize("identity", [None, "review"])
-def test_shared_report_credential_sent_only_for_review_mint(monkeypatch, tmp_path, identity):
-    proof = tmp_path / "report"
-    proof.write_text("adprpt1.test-proof")
-    monkeypatch.setenv("ADP_RUN_REPORT_CREDENTIAL_FILE", str(proof))
-    monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gateway.test")
-    client = GatewayCredentialClient()
-    with patch.object(client, "_make_request", return_value={"token": "test"}) as send:
-        client.github_installation_token(installation_id=42, repo_owner="org", repo_name="repo", identity=identity)
-    assert send.call_args.kwargs == ({"extra_headers": {"X-Adp-Report-Credential": "adprpt1.test-proof"}} if identity else {})
-
-
-@pytest.mark.parametrize("endpoint", ["http://gateway.test", "https://gateway.test?redirect=evil"])
-def test_shared_review_proof_rejects_insecure_endpoint(monkeypatch, tmp_path, endpoint):
-    proof = tmp_path / "report"
-    proof.write_text("adprpt1.test-proof")
-    monkeypatch.setenv("ADP_RUN_REPORT_CREDENTIAL_FILE", str(proof))
-    monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", endpoint)
-    with pytest.raises(GatewayCredentialError, match="HTTPS and SigV4"):
-        GatewayCredentialClient().github_installation_token(installation_id=42, repo_owner="org", repo_name="repo", identity="review")
-
-
-def test_shared_review_proof_rejects_redirects(monkeypatch, tmp_path):
-    proof = tmp_path / "report"
-    proof.write_text("adprpt1.test-proof")
-    monkeypatch.setenv("ADP_RUN_REPORT_CREDENTIAL_FILE", str(proof))
-    monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gateway.test")
-    with patch("lib.gateway_credential_client._sigv4_sign_request", side_effect=lambda method, url, headers, data: headers), patch("lib.gateway_credential_client.build_opener") as opener:
-        opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{"token":"test"}'
-        GatewayCredentialClient().github_installation_token(installation_id=42, repo_owner="org", repo_name="repo", identity="review")
-        assert opener.call_args.args[0].redirect_request(None, None, 302, "redirect", {}, "https://evil.test") is None

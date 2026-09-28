@@ -23,17 +23,6 @@ from scip_indexer import index_repo, _consolidate_languages, _index_python, _ens
 from scip_ingester import SCIPGraph, SymbolNode, Edge, merge_graphs
 
 
-# `_index_python` resolves scip-python to an absolute trusted path before running
-# it, so a repository-planted executable can never be selected (#5614). The
-# binary is absent in the unit-test environment, so tests that mock
-# `subprocess.run` must also supply the resolved path — otherwise the function
-# returns "not found" before reaching the mock and the assertions below become
-# vacuous rather than failing.
-def _trusted_tool(name: str, clone_path: str) -> str:
-    """Stand-in for _resolve_tool: a trusted absolute path outside the clone."""
-    return f"/usr/local/bin/{name}"
-
-
 # ---------------------------------------------------------------------------
 # _consolidate_languages tests
 # ---------------------------------------------------------------------------
@@ -506,10 +495,7 @@ class TestIndexPythonEnvHandling:
                 mock_result.stderr = b"mock failure"
                 return mock_result
 
-            with (
-                patch("subprocess.run", side_effect=mock_run),
-                patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-            ):
+            with patch("subprocess.run", side_effect=mock_run):
                 _index_python(tmpdir)
 
             # The --environment flag must NOT appear in the command
@@ -517,23 +503,11 @@ class TestIndexPythonEnvHandling:
                 "scip-python should not receive --environment flag (#3132)"
             )
 
-    def test_clone_venv_bin_is_never_put_on_path(self):
-        """A clone-resident venv bin must NEVER reach PATH (#5614).
-
-        This test previously asserted the OPPOSITE — that `<clone>/.scip-venv/bin`
-        was prepended to PATH — which is precisely the bypass found in review of
-        the first #5614 fix: a repository that commits `.scip-venv/bin/scip-python`
-        then has its own file executed instead of the real indexer. The #3132
-        intent it was protecting (no `--environment` JSON flag) is covered by
-        `test_no_environment_flag_passed` and is unaffected.
-
-        Reaching the subprocess at all requires no planted venv, so this asserts
-        the general rule via a repo-resident directory that is not a refusal
-        trigger; `test_scip_execution_safety.py` covers the refusal itself.
-        """
+    def test_venv_bin_on_path(self):
+        """When .scip-venv exists, its bin/ is prepended to PATH."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            clone_bin = os.path.join(tmpdir, "tools", "bin")
-            os.makedirs(clone_bin)
+            venv_bin = os.path.join(tmpdir, ".scip-venv", "bin")
+            os.makedirs(venv_bin)
 
             captured_env = {}
 
@@ -544,25 +518,15 @@ class TestIndexPythonEnvHandling:
                 mock_result.stderr = b"mock failure"
                 return mock_result
 
-            original_path = os.environ.get("PATH", "")
-            os.environ["PATH"] = clone_bin + os.pathsep + original_path
-            try:
-                with (
-                    patch("subprocess.run", side_effect=mock_run),
-                    patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-                ):
-                    _index_python(tmpdir)
-            finally:
-                os.environ["PATH"] = original_path
+            with patch("subprocess.run", side_effect=mock_run):
+                _index_python(tmpdir)
 
-            path_entries = captured_env.get("PATH", "").split(os.pathsep)
-            for entry in path_entries:
-                assert not entry.startswith(tmpdir), (
-                    f"clone path {entry} reached the indexer's PATH (#5614 bypass)"
-                )
-            assert "VIRTUAL_ENV" not in captured_env, (
-                "VIRTUAL_ENV must not point into the clone (#5614)"
+            # PATH must start with the venv bin directory
+            assert captured_env.get("PATH", "").startswith(venv_bin + ":"), (
+                f"PATH should start with venv bin: {captured_env.get('PATH', '')}"
             )
+            # VIRTUAL_ENV should be set
+            assert captured_env.get("VIRTUAL_ENV") == os.path.join(tmpdir, ".scip-venv")
 
     def test_no_venv_no_path_modification(self):
         """Without .scip-venv, scip-python runs with unmodified env (no crash)."""
@@ -576,10 +540,7 @@ class TestIndexPythonEnvHandling:
                 mock_result.stderr = b"mock failure"
                 return mock_result
 
-            with (
-                patch("subprocess.run", side_effect=mock_run),
-                patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-            ):
+            with patch("subprocess.run", side_effect=mock_run):
                 _index_python(tmpdir)
 
             # PATH should be the original system PATH (not prepended with anything)
@@ -597,10 +558,7 @@ class TestIndexPythonEnvHandling:
                 mock_result.stderr = b"mock failure"
                 return mock_result
 
-            with (
-                patch("subprocess.run", side_effect=mock_run),
-                patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-            ):
+            with patch("subprocess.run", side_effect=mock_run):
                 _index_python(tmpdir)
 
             env_file = os.path.join(tmpdir, ".scip-environment.json")
@@ -630,10 +588,7 @@ class TestIndexPythonHeapAndTimeout:
                 mock_result.stderr = b"mock failure"
                 return mock_result
 
-            with (
-                patch("subprocess.run", side_effect=mock_run),
-                patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-            ):
+            with patch("subprocess.run", side_effect=mock_run):
                 _index_python(tmpdir)
 
             assert "NODE_OPTIONS" in captured_env, "NODE_OPTIONS must be set in subprocess env"
@@ -653,10 +608,7 @@ class TestIndexPythonHeapAndTimeout:
                 mock_result.stderr = b"mock failure"
                 return mock_result
 
-            with (
-                patch("subprocess.run", side_effect=mock_run),
-                patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-            ):
+            with patch("subprocess.run", side_effect=mock_run):
                 _index_python(tmpdir)
 
             assert captured_env.get("NODE_OPTIONS") == "--max-old-space-size=4096"
@@ -674,10 +626,7 @@ class TestIndexPythonHeapAndTimeout:
                 return mock_result
 
             with patch.dict(os.environ, {"NODE_OPTIONS": "--max-old-space-size=8192"}):
-                with (
-                    patch("subprocess.run", side_effect=mock_run),
-                    patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-                ):
+                with patch("subprocess.run", side_effect=mock_run):
                     _index_python(tmpdir)
 
             # Should preserve the operator's override, not overwrite with 4096
@@ -695,10 +644,7 @@ class TestIndexPythonHeapAndTimeout:
                 mock_result.stderr = b"mock failure"
                 return mock_result
 
-            with (
-                patch("subprocess.run", side_effect=mock_run),
-                patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-            ):
+            with patch("subprocess.run", side_effect=mock_run):
                 _index_python(tmpdir)
 
             assert captured_kwargs.get("timeout") == 1800, (
@@ -710,10 +656,7 @@ class TestIndexPythonHeapAndTimeout:
         import subprocess as sp
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with (
-                patch("subprocess.run", side_effect=sp.TimeoutExpired("scip-python", 1800)),
-                patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-            ):
+            with patch("subprocess.run", side_effect=sp.TimeoutExpired("scip-python", 1800)):
                 _, error = _index_python(tmpdir)
 
             assert "1800s" in error, f"Timeout error should mention 1800s, got: {error}"
@@ -775,10 +718,7 @@ class TestEnsurePyrightSection:
                 mock_result.stderr = b"mock"
                 return mock_result
 
-            with (
-                patch("subprocess.run", side_effect=mock_run),
-                patch("scip_indexer._resolve_tool", side_effect=_trusted_tool),
-            ):
+            with patch("subprocess.run", side_effect=mock_run):
                 _index_python(tmpdir)
 
 

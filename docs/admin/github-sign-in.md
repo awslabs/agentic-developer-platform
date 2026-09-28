@@ -87,7 +87,7 @@ Add the following variables to your environment's gateway tfvars file (e.g., `en
 github_oauth_enabled    = true
 github_oauth_secret_arn = "arn:aws:secretsmanager:<region>:<account-id>:secret:adp/<env>/cognito/github-oauth-<suffix>"
 
-# Allowlist mode: "org", "platform", "explicit", or "open"
+# Allowlist mode: "org", "explicit", or "open"
 github_auth_allowlist_mode = "org"
 
 # For "org" mode: users must be members of this GitHub organization
@@ -128,9 +128,7 @@ callback_urls = [
 
 ## Allowlist Management
 
-Four modes are available. Note that the **auth broker** is the enforcement point
-for the "Sign in with GitHub" flow; the pre-signup trigger implements the same
-modes for parity but does not fire for this flow (see `#3986`).
+The Pre-Sign-Up Lambda controls who can sign in via GitHub. Three modes are available:
 
 ### Mode: `org` (Recommended for teams)
 
@@ -170,82 +168,17 @@ aws cognito-idp admin-disable-user \
   --username "GitHub_<github-user-id>"
 ```
 
-### Mode: `platform` (Platform-managed membership — Issue #4844)
-
-Eligibility comes from **the platform's own membership records**, not from GitHub.
-A user may sign in if their GitHub identity resolves to a user holding **at least
-one platform org membership**. GitHub stays the way people prove *who they are*;
-it stops deciding *whether they belong*.
-
-```hcl
-github_auth_allowlist_mode = "platform"
-```
-
-Use this when orgs are created and administered on the platform (admin-created
-orgs whose members have no GitHub-org relationship at all), and as the stepping
-stone to directory-sourced membership (Active Directory / Entra ID), where
-membership-based eligibility is exactly what a directory sync feeds.
-
-**What it reads.** The `member_org_ids` projection on the identity-index DynamoDB
-table, which the gateway maintains on every membership write. Both auth Lambdas
-read it directly (no VPC round-trip to the gateway — that call is prohibited on
-this path).
-
-**Eligibility is membership *existence*.** Notably it is **not** filtered on the
-"active" membership flag: that flag marks which single workspace a user currently
-has *selected*, so filtering on it would deny every member whose selected
-workspace happens to be a different org, plus everyone who has never selected
-one.
-
-**It fails closed.** No membership, an unreadable projection, and an
-unconfigured table all deny. A denial caused by an unreadable projection is
-reported as `error=membership_check_unavailable`, distinct from
-`error=not_authorized` ("checked; genuinely not a member"), so an infrastructure
-problem is never mistaken for a legitimate refusal.
-
-**Before enabling it, reconcile the projection.** Users whose memberships predate
-consistent write-through have no projected orgs and will read as ineligible. Run:
-
-```bash
-python3 modules/gateway/scripts/backfill_member_org_ids.py --dry-run   # inspect first
-python3 modules/gateway/scripts/backfill_member_org_ids.py
-```
-
 ### Mode: `open` (No restrictions)
 
 Any GitHub user can sign in. Use only for internal/demo deployments.
 
 ```hcl
-github_auth_allowlist_mode    = "open"
-github_auth_allow_open_signup = true   # required acknowledgement
+github_auth_allowlist_mode = "open"
 ```
-
-`open` **without** `github_auth_allow_open_signup = true` is treated as a
-misconfiguration and denies every sign-in, rather than silently admitting the
-entire internet. Terraform rejects the combination at plan time.
 
 ### Switching Between Modes
 
-Change the `github_auth_allowlist_mode` variable and apply. Both the broker and
-the pre-signup trigger read the mode from their environment variables, so changes
-take effect as soon as the apply completes (no user pool recreation needed). The
-two are configured from this one variable so they cannot drift apart.
-
-> ⚠️ **Enabling `platform` is a deliberate, operator-gated action — never part of
-> a merge.** Sign-in is the most outage-prone surface in this platform (see
-> `docs/runbooks/github-auth-allowlist-remediation.md`). The safe order is:
->
-> 1. Deploy the code (already shipped; every environment stays on its current mode).
-> 2. Reconcile the projection with the backfill script above.
-> 3. Confirm the shadow logs agree with live outcomes for real sign-ins:
->    `aws logs tail /aws/lambda/bedrockgw-<env>-github-auth-broker --since 1h --filter-pattern "membership-eligibility SHADOW"`
->    — a stream of `would_agree=False` means the projection is not ready.
-> 4. Flip **one non-production environment only**, apply, and immediately verify
->    that a membership-holding user can sign in and a membership-less GitHub user
->    is refused.
->
-> **Rollback:** set the variable back to the previous mode and apply. Unknown and
-> unset modes deny, so the old value is always safe to return to.
+Change the `github_auth_allowlist_mode` variable and apply. The Lambda reads the mode from its environment variables, so changes take effect immediately after deployment (no user pool recreation needed).
 
 ## Troubleshooting
 

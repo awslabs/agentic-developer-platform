@@ -32,21 +32,17 @@ export const adminHandlers = [
     return HttpResponse.json(org);
   }),
 
-  // Issue #4842 (D4=Option A): this route is deprecated and returns 410 in
-  // production. The mock mirrors that instead of the old 201 — a mock that
-  // succeeds where the real backend refuses is worse than no mock at all,
-  // because a feature built against it passes in dev mode and fails on deploy.
-  // Org creation now goes to POST /api/admin/identity/organizations, which takes
-  // a different body (caller-supplied `id`, plus `plan`/`channels`).
-  http.post('/api/admin/organizations', () => {
-    return HttpResponse.json(
-      {
-        detail:
-          'POST /admin/organizations is no longer available. Use POST /api/admin/identity/organizations, ' +
-          'which also creates the default department, default team, and channel mappings this route omitted.',
-      },
-      { status: 410 }
-    );
+  http.post('/api/admin/organizations', async ({ request }) => {
+    const body = await request.json() as { name: string };
+    const newOrg = {
+      id: `org-${Date.now()}`,
+      name: body.name,
+      aws_accounts: [],
+      role_mappings: {},
+      settings: {},
+      created_at: new Date().toISOString(),
+    };
+    return HttpResponse.json(newOrg, { status: 201 });
   }),
 
   http.patch('/api/admin/organizations/:id', async ({ params, request }) => {
@@ -165,110 +161,40 @@ export const adminHandlers = [
     });
   }),
 
-  // The platform-wide member picker's source — Issue #4827.
-  //
-  // Mocked because the Bedrock-routing panel's person rung is now a picker over every
-  // platform user, and in mock mode a picker with no options is indistinguishable from
-  // the raw-id field it replaced.
-  //
-  // `user-dept-admin-001` deliberately carries NO github_username, matching the
-  // identities mock below, so the "no GitHub linked" label branch is reachable here.
-  // A branch nothing can reach is a branch that rots.
-  http.get('/api/admin/users', ({ request }) => {
+  // User roles
+  http.get('/api/admin/users/roles', ({ request }) => {
     const url = new URL(request.url);
-    const q = (url.searchParams.get('q') || '').toLowerCase();
+    const orgId = url.searchParams.get('org_id');
     const page = parseInt(url.searchParams.get('page') || '1');
     const pageSize = parseInt(url.searchParams.get('page_size') || '50');
 
-    const people = mockUsers.map((u) => ({
-      id: u.user_id,
-      org_id: u.org_id || 'org-001',
-      email: `${u.user_id}@example.com`,
-      name: u.user_id.replace('user-', 'User '),
-      github_username: u.user_id === 'user-dept-admin-001' ? null : u.user_id.replace('user-', ''),
-    }));
+    let users = [...mockUsers];
+    if (orgId) {
+      users = users.filter((u) => u.org_id === orgId);
+    }
 
-    // Server-side search, mirroring the real endpoint's fields: a mock that ignored
-    // `q` would let a broken search box pass in mock mode.
-    const matches = q
-      ? people.filter((p) => [p.email, p.name, p.github_username].some((field) => field?.toLowerCase().includes(q)))
-      : people;
     const start = (page - 1) * pageSize;
+    const items = users.slice(start, start + pageSize);
 
     return HttpResponse.json({
-      items: matches.slice(start, start + pageSize),
-      total: matches.length,
+      items,
+      total: users.length,
       page,
       page_size: pageSize,
-      has_more: start + pageSize < matches.length,
+      has_more: start + pageSize < users.length,
     });
   }),
 
-  // A member's linked provider identities — Issue #4687.
-  //
-  // Mocked because setting somebody's person limit needs their GitHub numeric id, and
-  // this endpoint is the only server-side source of it (`user_identities`). Doubled
-  // `/api` in the path because the real router mounts at `/api/admin/identity/*` while
-  // apiClient's base is already `/api` — see the note on `getMemberGithubUserId`.
-  //
-  // The last mock user deliberately has NO github identity, so the "no linked GitHub
-  // identity" branch is reachable in mock mode: that path declines to write a cap, and a
-  // branch nothing can reach is a branch that rots.
-  http.get('/api/api/admin/identity/users/:userId/identities', ({ params }) => {
-    const userId = params.userId as string;
-    if (userId === 'user-dept-admin-001') {
-      return HttpResponse.json({ identities: [], total: 0 });
-    }
+  http.post('/api/admin/users/roles', async ({ request }) => {
+    const body = await request.json() as { user_id: string; role: string; org_id?: string; dept_id?: string };
     return HttpResponse.json({
-      identities: [
-        {
-          id: `identity-${userId}`,
-          user_id: userId,
-          org_id: 'org-001',
-          team_id: 'team-001',
-          provider: 'github',
-          // A numeric id, as `user_identities.provider_user_id` carries for GitHub — the
-          // anchor is `github:<this>`, so a non-numeric placeholder here would model a
-          // key the real resolver would reject.
-          provider_user_id: '20402445',
-          provider_username: userId.replace('user-', ''),
-          verification_method: 'oauth',
-          verified_at: '2024-01-01T00:00:00Z',
-          created_at: '2024-01-01T00:00:00Z',
-        },
-      ],
-      total: 1,
-    });
+      ...body,
+      permissions: [],
+      created_at: new Date().toISOString(),
+    }, { status: 201 });
   }),
 
-  // Assignable roles for the current caller.
-  // Issue #4019: this used to return a paginated USER list, which matches
-  // neither the real endpoint nor either caller (getAvailableRoles and
-  // chats.ts both read `{ roles: string[] }`) — the role picker rendered empty
-  // in mock mode. The real endpoint is ceiling-filtered server-side; mock mode
-  // signs in as a platform admin, so it returns the full set.
-  http.get('/api/admin/users/roles', () => {
-    return HttpResponse.json({
-      roles: ['member', 'dept_admin', 'org_admin', 'platform_admin'],
-    });
-  }),
-
-  // Role update. Issue #4019: replaces the POST/DELETE `/users/roles` stubs,
-  // which pointed at endpoints the backend never had. "Remove role" is a PUT to
-  // role=member here too — there is no delete path.
-  http.put('/api/admin/organizations/:orgId/users/:userId', async ({ params, request }) => {
-    const body = (await request.json()) as { role?: string };
-    return HttpResponse.json({
-      id: params.userId as string,
-      org_id: params.orgId as string,
-      team_id: 'team-001',
-      email: `${params.userId}@example.com`,
-      name: String(params.userId).replace('user-', 'User '),
-      role: body.role ?? null,
-      cognito_sub: null,
-      cognito_username: null,
-      created_at: '2024-01-01T00:00:00Z',
-      updated_at: new Date().toISOString(),
-    });
+  http.delete('/api/admin/users/roles/:userId', () => {
+    return HttpResponse.json({ success: true });
   }),
 ];

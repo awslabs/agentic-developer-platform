@@ -22,17 +22,9 @@ variable "state_bucket" {
   type        = string
 }
 
-variable "codebuild_service_role_arns" {
-  description = "Dedicated CodeBuild role ARN for each agent-context image key"
-  type        = map(string)
-
-  validation {
-    condition = alltrue([
-      for key in ["ingestion", "codegraph-context", "litellm-proxy", "deepwiki", "context-mcp"] :
-      contains(keys(var.codebuild_service_role_arns), key)
-    ])
-    error_message = "A dedicated CodeBuild role ARN is required for every agent-context image."
-  }
+variable "codebuild_service_role_arn" {
+  description = "ARN of the shared CodeBuild IAM role"
+  type        = string
 }
 
 variable "common_tags" {

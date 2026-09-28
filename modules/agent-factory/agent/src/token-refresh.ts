@@ -6,10 +6,10 @@
  * before expiration to avoid authentication failures.
  */
 
+import { createAppAuth } from '@octokit/auth-app';
 import { execFileSync } from 'child_process';
-import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
-import { TOKEN_FILE_PATH, writeTokenFile } from './lib/tokenFile';
-import { isMediatedRun } from './mediated-github-config';
+import { writeFileSync, renameSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 // ============================================================================
 // Types
@@ -17,24 +17,12 @@ import { isMediatedRun } from './mediated-github-config';
 
 export interface TokenManagerConfig {
   appId: string;
-  /**
-   * The App private key, for the legacy local-mint path.
-   *
-   * Issue #4272: OPTIONAL, and unset in broker mode. `generateNewToken()`
-   * refuses to run a local mint without it, which is what makes the local path
-   * provably unreachable once the key is no longer exported into this process.
-   */
-  privateKey?: string;
+  privateKey: string;
   installationId?: string;
   owner: string;
   repo?: string;
   workDir?: string;
   refreshThresholdMs?: number; // Refresh when this much time remains (default: 15 min)
-  /**
-   * Issue #4272: re-mint through the gateway gatekeeper instead of locally.
-   * Defaults from ADP_GH_TOKEN_BROKER_ENABLED at init.
-   */
-  brokerMode?: boolean;
 }
 
 export interface TokenInfo {
@@ -48,11 +36,29 @@ export interface TokenInfo {
 // ============================================================================
 
 /**
- * Re-exported from `lib/tokenFile` so every existing importer keeps working.
- * The implementation moved to a leaf module because this one pulls in
- * `@octokit/auth-app` (ESM-only, untransformable under jest) — see that file.
+ * Path to the token file read by GIT_ASKPASS and the gh wrapper at command time.
+ * Using /tmp avoids accidental git-add and keeps the token out of the workspace.
  */
-export { TOKEN_FILE_PATH, writeTokenFile };
+export const TOKEN_FILE_PATH = process.env.ADP_TOKEN_FILE || '/tmp/.adp-gh-token';
+
+/**
+ * Atomically write the current token to the file read by GIT_ASKPASS and the
+ * gh wrapper. Uses write-to-temp + rename for atomicity (no partial reads).
+ * File mode 0600 — readable only by the owning user.
+ *
+ * Non-fatal: if the write fails, the env-var fallback still works for the
+ * runtime's own commands (only the SDK subprocess path degrades).
+ */
+export function writeTokenFile(token: string): void {
+  const tmpPath = `${TOKEN_FILE_PATH}.tmp`;
+  try {
+    mkdirSync(dirname(TOKEN_FILE_PATH), { recursive: true, mode: 0o700 });
+    writeFileSync(tmpPath, token, { mode: 0o600 });
+    renameSync(tmpPath, TOKEN_FILE_PATH);
+  } catch (err) {
+    console.error(`[TokenManager] Failed to write token file: ${(err as Error).message}`);
+  }
+}
 
 // ============================================================================
 // Token Manager
@@ -60,83 +66,16 @@ export { TOKEN_FILE_PATH, writeTokenFile };
 
 let currentToken: TokenInfo | null = null;
 let config: TokenManagerConfig | null = null;
-let refreshInFlight: Promise<string> | null = null;
 
 /**
- * Can the token manager be initialised with the credentials in this environment?
- *
- * Issue #4272. Every call site historically wrote this predicate by hand as
- * `appId && owner && privateKey`. With the private key no longer exported in
- * broker mode, each of those copies silently goes false: the token manager never
- * initialises, no refresh is ever scheduled, and the run dies at the 1-hour mark
- * with a 401 that reads like a flaky agent rather than a config error.
- *
- * It lives here, exported and tested once, because the call sites (agent-worker,
- * agent-pm) run `main()` at import time and so cannot be imported by a test —
- * two hand-maintained copies of a security-relevant predicate that no test can
- * reach is exactly how the silent-outage path opens back up.
- *
- * @param env Environment to inspect (injectable for tests).
- * @returns true when initTokenManager() will have a working refresh path.
+ * Initialize the token manager with GitHub App credentials
  */
-export function canInitTokenManager(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (env.ADP_TOKEN_MODE === 'pat') return false;
-  // Mediation withheld the token on purpose (#5223). Starting the manager here
-  // would undo that within seconds: `getToken()` finds no adopted bootstrap
-  // token, mints a fresh one through the broker, and `publishToken` writes it
-  // back to both the env and the file the shell helpers read — restoring exactly
-  // the merge-capable credential the run is supposed not to have. The broker
-  // predicate cannot be relied on to stop it: `ADP_AGENT_AUTHORITY_ENABLED=true`
-  // (set for the policy-bearing cohort mediation serves) makes broker mode true
-  // on its own, and `GH_APP_ID`/`GH_APP_INSTALLATION_ID`/`REPO_OWNER` all
-  // legitimately survive withholding.
-  if (isMediatedRun(env)) return false;
-  const appId = env.GH_APP_ID || '';
-  const owner = env.REPO_OWNER || '';
-  const installationId = env.GH_APP_INSTALLATION_ID || '';
-  const privateKey = env.GH_APP_PRIVATE_KEY || env.GH_APP_KEY || '';
-
-  if (!appId) return false;
-
-  if (isBrokerEnabled(env)) {
-    // The gateway holds the key, so its absence is expected rather than
-    // disqualifying. But generateNewToken() refuses to guess the installation or
-    // the org, so without both, every refresh would throw — initialising then
-    // would only move the 1-hour death into a confusing stack trace.
-    return Boolean(owner && installationId);
-  }
-
-  // Local mint: the key is mandatory. The installation is resolved from `owner`
-  // via the App JWT when it was not passed explicitly, so either one suffices.
-  return Boolean(privateKey && (owner || installationId));
-}
-
-/** Reuse captured manager credentials after signing aliases leave process.env. */
-export function isTokenManagerInitialized(): boolean { return config !== null; }
-
-/** Initialize the token manager with GitHub App credentials. */
 export function initTokenManager(options: TokenManagerConfig): void {
-  if (process.env.ADP_TOKEN_MODE === 'pat') {
-    throw new Error('PAT execution cannot initialize GitHub App renewal');
-  }
-  if (refreshInFlight) throw new Error('Cannot reconfigure token manager during refresh');
-  currentToken = null;
-  const brokerMode = process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true' || (options.brokerMode ?? isBrokerEnabled());
   config = {
     ...options,
-    brokerMode,
-    // Issue #4272: broker mode refreshes earlier. A gatekeeper round-trip can
-    // fail and be retried; 15 minutes of headroom leaves too little room to
-    // notice and recover before the token actually dies.
-    refreshThresholdMs: options.refreshThresholdMs ?? (brokerMode ? 20 * 60 * 1000 : 15 * 60 * 1000),
-    // Never retain a key in broker mode, even if a caller passes one. This is
-    // what makes generateNewToken()'s local path unreachable.
-    privateKey: brokerMode ? undefined : options.privateKey,
+    refreshThresholdMs: options.refreshThresholdMs ?? 15 * 60 * 1000, // 15 minutes
   };
-  console.log(
-    `[TokenManager] Initialized with app ID: ${options.appId}` +
-      (brokerMode ? ' (broker mode — private key not held in this process)' : ''),
-  );
+  console.log('[TokenManager] Initialized with app ID:', options.appId);
 }
 
 /**
@@ -151,7 +90,6 @@ async function getInstallationId(): Promise<string> {
     throw new Error('Token manager not configured');
   }
 
-  const { createAppAuth } = await import('@octokit/auth-app');
   const auth = createAppAuth({
     appId: config.appId,
     privateKey: config.privateKey,
@@ -203,45 +141,6 @@ async function getInstallationId(): Promise<string> {
  * Generate a new installation access token
  */
 async function generateNewToken(): Promise<TokenInfo> {
-  // #5223: refuse before either mint path runs, so a mediated run never even pulls
-  // token material into this process. `publishToken` refuses too — that is the
-  // guard that covers callers who already hold a TokenInfo — but stopping here
-  // means there is nothing to leak into a log line or an error message on the way.
-  if (isMediatedRun()) {
-    throw new Error('Mediated run: GitHub tokens are withheld and must not be minted');
-  }
-  // Issue #4272: broker mode — the gateway holds the App private key and mints
-  // on our behalf, scoped to this run's org and repo. Checked FIRST so that the
-  // local path below is unreachable whenever the broker is on.
-  if (config?.brokerMode) {
-    if (!config.installationId || !config.owner) {
-      throw new Error(
-        '[TokenManager] Broker mode requires GH_APP_INSTALLATION_ID and REPO_OWNER; refusing to guess.',
-      );
-    }
-
-    console.log('[TokenManager] Requesting installation token from gatekeeper...');
-
-    // Loud on failure, with no fallback: a local mint would need the key we
-    // deliberately no longer have, and drifting onto a dying token is the one
-    // outcome worse than a clean, visible failure.
-    const brokered = await fetchBrokeredToken({
-      installationId: config.installationId,
-      repoOwner: config.owner,
-      repoName: config.repo || '',
-    });
-
-    const brokeredInfo: TokenInfo = {
-      token: brokered.token,
-      expiresAt: brokered.expiresAt,
-      refreshedAt: new Date(),
-    };
-
-    console.log(`[TokenManager] Brokered token received, expires at ${brokeredInfo.expiresAt.toISOString()}`);
-
-    return brokeredInfo;
-  }
-
   if (!config?.appId || !config?.privateKey) {
     throw new Error('Token manager not configured');
   }
@@ -250,17 +149,13 @@ async function generateNewToken(): Promise<TokenInfo> {
 
   const installationId = await getInstallationId();
 
-  const { createAppAuth } = await import('@octokit/auth-app');
   const auth = createAppAuth({
     appId: config.appId,
     privateKey: config.privateKey,
     installationId,
   });
 
-  const installationAuth = await auth({
-    type: 'installation',
-    ...(config.repo ? { repositoryNames: [config.repo] } : {}),
-  });
+  const installationAuth = await auth({ type: 'installation' });
 
   const tokenInfo: TokenInfo = {
     token: installationAuth.token,
@@ -295,81 +190,39 @@ export async function getToken(): Promise<string> {
     throw new Error('Token manager not initialized. Call initTokenManager() first.');
   }
 
-  if (refreshInFlight) return refreshInFlight;
-  return needsRefresh() ? forceRefresh() : currentToken!.token;
+  if (needsRefresh()) {
+    currentToken = await generateNewToken();
+
+    // Update environment variables for child processes spawned by the runtime.
+    process.env.GH_TOKEN = currentToken.token;
+    process.env.GITHUB_TOKEN = currentToken.token;
+    process.env.GH_APP_TOKEN = currentToken.token;
+
+    // Write to token file so SDK subprocess GIT_ASKPASS/gh-wrapper read fresh
+    // tokens at command-execution time (issue #1469).
+    writeTokenFile(currentToken.token);
+  }
+
+  return currentToken!.token;
 }
 
-/** Publish once for every concurrent caller, including forced refreshes. */
+/**
+ * Force refresh the token regardless of expiry
+ */
 export async function forceRefresh(): Promise<string> {
-  if (!config) throw new Error('Token manager not initialized');
-  if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = (async () => {
-    const next = await generateNewToken();
-    if (!next.token || !Number.isFinite(next.expiresAt.getTime()) || next.expiresAt.getTime() <= Date.now()) {
-      throw new Error('GitHub token is expired or invalid');
-    }
-    publishToken(next);
-    return next.token;
-  })();
-  try {
-    return await refreshInFlight;
-  } finally {
-    refreshInFlight = null;
-  }
-}
-
-function publishToken(next: TokenInfo): void {
-  // Last line of defence for #5223, and the reason it is here rather than only at
-  // the entry points: every path that restores a credential — bootstrap adoption,
-  // proactive timer, 401 watchdog, forceRefresh, a direct initTokenManager call
-  // with explicit options — converges on this function. Guarding the doors
-  // individually leaves whichever one is added next unguarded; guarding the write
-  // means a mediated run cannot end up with a token in its env or on its disk no
-  // matter how the caller got here.
-  if (isMediatedRun()) {
-    throw new Error('Mediated run: GitHub tokens are withheld and must not be restored');
-  }
-  writeTokenFile(next.token);
-  currentToken = next;
-  process.env.GH_TOKEN = next.token;
-  process.env.GITHUB_TOKEN = next.token;
-  process.env.GH_APP_TOKEN = next.token;
-  process.env.GH_APP_TOKEN_EXPIRES_AT = next.expiresAt.toISOString();
-}
-
-/** Use the same manager from posting helpers and the proactive refresh timer. */
-export async function getRuntimeGitHubToken(force = false): Promise<string> {
-  if (process.env.ADP_TOKEN_MODE === 'pat') {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    if (!token) throw new Error('PAT credential unavailable; reconnect the GitHub credential');
-    return token;
-  }
-  // #5223: refuse before any mint is attempted, with a message that names the
-  // actual path. A caller reaching here in a mediated run has code that assumes a
-  // token; that is a bug to fix, not a transient failure to retry.
-  if (isMediatedRun()) {
-    throw new Error('Mediated run: no GitHub token is available; use the gateway mediated operations');
-  }
   if (!config) {
-    if (!canInitTokenManager()) throw new Error('GitHub renewal configuration unavailable');
-    initTokenManager({
-      appId: process.env.GH_APP_ID!,
-      privateKey: process.env.GH_APP_PRIVATE_KEY || process.env.GH_APP_KEY,
-      installationId: process.env.GH_APP_INSTALLATION_ID,
-      owner: process.env.REPO_OWNER || '',
-      repo: process.env.REPO_NAME,
-    });
-    adoptBootstrapToken();
+    throw new Error('Token manager not initialized');
   }
-  return force ? forceRefresh() : getToken();
-}
 
-/** Unknown bootstrap expiry triggers a mint; it never becomes a guessed hour. */
-export function adoptBootstrapToken(env: NodeJS.ProcessEnv = process.env): void {
-  if (env.ADP_TOKEN_MODE === 'pat' || !env.GH_APP_TOKEN || !env.GH_APP_TOKEN_EXPIRES_AT) return;
-  const expiresAt = new Date(env.GH_APP_TOKEN_EXPIRES_AT);
-  if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) return;
-  publishToken({ token: env.GH_APP_TOKEN, expiresAt, refreshedAt: new Date() });
+  currentToken = await generateNewToken();
+  process.env.GH_TOKEN = currentToken.token;
+  process.env.GITHUB_TOKEN = currentToken.token;
+  process.env.GH_APP_TOKEN = currentToken.token;
+
+  // Write to token file so SDK subprocess picks up fresh token (issue #1469).
+  writeTokenFile(currentToken.token);
+
+  return currentToken.token;
 }
 
 /**
@@ -387,12 +240,7 @@ export function setToken(token: string, expiresInMs: number = 60 * 60 * 1000): v
 /**
  * Get token status for logging/debugging
  */
-export function getTokenStatus(): {
-  valid: boolean;
-  expiresIn: number;
-  needsRefresh: boolean;
-  refreshedAt: Date;
-} | null {
+export function getTokenStatus(): { valid: boolean; expiresIn: number; needsRefresh: boolean } | null {
   if (!currentToken) {
     return null;
   }
@@ -403,11 +251,6 @@ export function getTokenStatus(): {
     valid: expiresIn > 0,
     expiresIn,
     needsRefresh: needsRefresh(),
-    // Issue #4369: exposed so a proactive-refresh tick can tell an actual re-mint
-    // from a no-op. The worker's timer used to log "Token refreshed proactively"
-    // on every tick regardless, which read as proof the refresh was working while
-    // the token was in fact expiring — that lie cost real diagnostic time.
-    refreshedAt: currentToken.refreshedAt,
   };
 }
 
@@ -426,7 +269,7 @@ export function getTokenStatus(): {
 export async function execWithFreshToken(
   file: string,
   args: readonly string[],
-  opts?: { cwd?: string; env?: NodeJS.ProcessEnv; retryOnAuthFailure?: boolean }
+  opts?: { cwd?: string; env?: NodeJS.ProcessEnv }
 ): Promise<string> {
   // Ensure we have a fresh token
   await getToken();
@@ -448,9 +291,8 @@ export async function execWithFreshToken(
   } catch (error) {
     const err = error as { message?: string; stderr?: string };
 
-    // Composite commands can write before a later request gets 401. Replay only
-    // when the caller explicitly declares the command safe to retry.
-    if (opts?.retryOnAuthFailure && (err.message?.includes('401') || err.stderr?.includes('Bad credentials'))) {
+    // If we get a 401, try refreshing token and retrying once
+    if (err.message?.includes('401') || err.stderr?.includes('Bad credentials')) {
       console.log('[TokenManager] Got 401, forcing token refresh and retrying...');
       await forceRefresh();
 
@@ -477,26 +319,13 @@ if (require.main === module) {
   const appId = process.env.GH_APP_ID;
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
   const owner = process.env.REPO_OWNER;
-  // Issue #4272: in broker mode there is no private key to require — asking for
-  // one here would teach the pattern this change removes.
-  const brokerMode = isBrokerEnabled();
 
-  if (!appId || !owner || (!brokerMode && !privateKey)) {
-    console.error(
-      brokerMode
-        ? 'Required in broker mode: GH_APP_ID, REPO_OWNER, GH_APP_INSTALLATION_ID (+ ADP_GATEWAY_ENDPOINT)'
-        : 'Required: GH_APP_ID, GH_APP_PRIVATE_KEY, REPO_OWNER',
-    );
+  if (!appId || !privateKey || !owner) {
+    console.error('Required: GH_APP_ID, GH_APP_PRIVATE_KEY, REPO_OWNER');
     process.exit(1);
   }
 
-  initTokenManager({
-    appId,
-    privateKey,
-    owner,
-    repo: process.env.REPO_NAME,
-    installationId: process.env.GH_APP_INSTALLATION_ID,
-  });
+  initTokenManager({ appId, privateKey, owner });
 
   getToken()
     .then(token => {

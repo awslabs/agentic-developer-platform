@@ -1,9 +1,0 @@
-{
-  "image": "security27/deepwiki:normal-high",
-  "root_digest": "sha256:d99cc0bce9886984fd9d93132f155c5a575ad00a3ec4936b222969e93160397d",
-  "user": "appuser",
-  "dockerfile": "modules/agent-context/images/deepwiki/Dockerfile",
-  "build_passed": true,
-  "network_for_smoke": "none",
-  "scope": "Local normal-source build validation; not deployed or live closure."
-}

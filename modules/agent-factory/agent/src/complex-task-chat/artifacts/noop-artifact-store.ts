@@ -36,7 +36,6 @@ export class NoopArtifactStore implements ArtifactStore {
   async fetch(
     _artifactId: string,
     _destPath: string,
-    _sessionId: string,
     _identity?: CallerIdentity,
   ): Promise<void> {
     // no-op

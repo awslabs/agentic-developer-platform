@@ -15,34 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from src.shared.models.base import Base, new_uuid
 from src.shared.models.onboarding import TenantAccessRequest
 from src.shared.models.organization import Department, Organization, Team, User
-from src.shared.models.vault import ChannelTenantMap
 from src.shared.schemas.auth import TokenContext
 
-# Ordinary handler fixtures model the server-side Cognito read explicitly.
-# The unsigned bearer below exercises request plumbing, never identity authority.
-_provider_claims = {}
-
-
-@pytest.fixture(autouse=True)
-def subject_bound_cognito_record(monkeypatch):
-    from src.admin.onboarding import handler
-
-    _provider_claims.clear()
-    monkeypatch.setattr(handler, "_fetch_github_identity_from_cognito", lambda sub: handler._extract_from_claims(_provider_claims))
-
-
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
-
-@pytest.fixture(autouse=True)
-def inert_membership_projection():
-    # Preserve the real membership/proof SQL; only the external DDB write is inert.
-    with patch(
-        "src.admin.identity.identity_index_writer.IdentityIndexWriter.update_user_membership_orgs",
-        new_callable=AsyncMock,
-        return_value=True,
-    ) as writer:
-        yield writer
 
 
 @pytest.fixture
@@ -106,8 +81,6 @@ async def app_client(db_engine, new_user_context):
 
 def _fake_bearer(claims: dict) -> str:
     """Build an unsigned Bearer token whose base64 payload decodes to claims."""
-    _provider_claims.clear()
-    _provider_claims.update(claims)
     import base64 as _b64
     import json as _json
 
@@ -158,7 +131,7 @@ async def test_first_user_from_new_org_creates_tenant(app_client, db_engine):
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
-async def test_second_user_from_same_org_attaches_to_existing(app_client, db_engine, inert_membership_projection):
+async def test_second_user_from_same_org_attaches_to_existing(app_client, db_engine):
     """Sign-in flow when org has installation -> user joins existing tenant as member."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
@@ -186,16 +159,7 @@ async def test_second_user_from_same_org_attaches_to_existing(app_client, db_eng
     mock_client.get_installation_token = AsyncMock(return_value="fake-token")
     mock_client.aclose = AsyncMock()
     mock_client._http_client = MagicMock()
-    mock_client._http_client.get = AsyncMock(
-        return_value=MagicMock(
-            status_code=200,
-            json=lambda: {
-                "role": "member",
-                "state": "active",
-                "user": {"id": _provider_claims.get("cognito:username", "github_12345").split("_", 1)[1]},
-            },
-        )
-    )
+    mock_client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": "member"}))
 
     with (
         patch(
@@ -217,7 +181,6 @@ async def test_second_user_from_same_org_attaches_to_existing(app_client, db_eng
     data = resp.json()
     assert data["status"] == "approved"
     assert data["tenant_id"] == "acme"
-    inert_membership_projection.assert_any_await(provider_user_id="20002", member_org_ids=["acme"], provider="github")
 
     # Verify user row was created with org_id = "acme"
     async with factory() as session:
@@ -242,7 +205,7 @@ async def test_second_user_from_same_org_attaches_to_existing(app_client, db_eng
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true"})
-async def test_match_by_install_id_not_slug(app_client, db_engine, inert_membership_projection):
+async def test_match_by_install_id_not_slug(app_client, db_engine):
     """Match succeeds even though user's slug != org name. Proves algorithm uses install_id."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
 
@@ -268,16 +231,7 @@ async def test_match_by_install_id_not_slug(app_client, db_engine, inert_members
     mock_client.get_installation_token = AsyncMock(return_value="fake-token")
     mock_client.aclose = AsyncMock()
     mock_client._http_client = MagicMock()
-    mock_client._http_client.get = AsyncMock(
-        return_value=MagicMock(
-            status_code=200,
-            json=lambda: {
-                "role": "member",
-                "state": "active",
-                "user": {"id": _provider_claims.get("cognito:username", "github_12345").split("_", 1)[1]},
-            },
-        )
-    )
+    mock_client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": "member"}))
 
     with (
         patch(
@@ -300,7 +254,6 @@ async def test_match_by_install_id_not_slug(app_client, db_engine, inert_members
     # "alice" slug != "acme-corp" org name, but match succeeded via install_id
     assert data["status"] == "approved"
     assert data["tenant_id"] == "acme-corp"
-    inert_membership_projection.assert_any_await(provider_user_id="30003", member_org_ids=["acme-corp"], provider="github")
 
 
 # ---------------------------------------------------------------------------
@@ -389,13 +342,8 @@ async def test_require_admin_approval_policy_creates_pending(app_client, db_engi
         await session.commit()
 
     mock_client = MagicMock()
-    mock_client.get_installation_token = AsyncMock(return_value="test-token")
+    mock_client.check_org_membership = AsyncMock(return_value=True)
     mock_client.aclose = AsyncMock()
-    mock_client._http_client.get = AsyncMock(
-        return_value=MagicMock(
-            status_code=200, json=lambda: {"role": "member", "state": "active", "user": {"id": _provider_claims["cognito:username"].split("_", 1)[1]}}
-        )
-    )
 
     with (
         patch(
@@ -455,9 +403,6 @@ async def test_install_callback_appends_to_github_installation_ids(db_engine):
             github_installation_ids=[],
         )
         session.add(org)
-        # The callback records the provider-backed mapping before appending its
-        # denormalized installation list. Keep that ownership proof on retry.
-        session.add(ChannelTenantMap(provider="github", provider_scope_id="myorg-account", installation_id="12345", org_id="myorg"))
         await session.commit()
 
     # Append an installation ID

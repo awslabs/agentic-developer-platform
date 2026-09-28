@@ -1,16 +1,3 @@
-mock_provider "aws" {}
-
-override_data {
-  target = data.terraform_remote_state.platform
-  values = {
-    outputs = {
-      vpc_id             = "vpc-00000000000000000"
-      vpc_cidr_block     = "10.0.0.0/16"
-      private_subnet_ids = ["subnet-00000000000000001", "subnet-00000000000000002"]
-    }
-  }
-}
-
 # =============================================================================
 # GitLab Secrets — Terraform Test
 # =============================================================================
@@ -21,7 +8,6 @@ override_data {
 variables {
   environment          = "dev"
   aws_region           = "us-east-1"
-  certificate_arn      = "arn:aws:acm:us-east-1:123456789012:certificate/test-cert-id"
   gitlab_domain        = "gitlab.dev.adp.internal"
   route53_zone_name    = "dev.adp.internal"
   cognito_user_pool_id = "us-east-1_test123"
@@ -60,10 +46,11 @@ run "gitlab_root_password_secret_tags" {
   }
 }
 
-run "gitlab_root_password_recovery" {
+run "gitlab_root_password_version_placeholder" {
   command = plan
+
   assert {
-    condition     = aws_secretsmanager_secret.gitlab_root_password.recovery_window_in_days == 30
-    error_message = "Break-glass secret must retain a recovery window"
+    condition     = aws_secretsmanager_secret_version.gitlab_root_password.secret_string == "ROTATE-ME-BEFORE-EXPOSURE"
+    error_message = "Secret version must contain the ROTATE-ME placeholder"
   }
 }

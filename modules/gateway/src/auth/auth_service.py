@@ -217,11 +217,6 @@ class AuthService(IAuthService):
         """
         try:
             logger.debug("Validating token")
-            if token.startswith("adpctx1~"):
-                # Scoped envelopes never fall back to legacy token authority.
-                from src.auth.middleware import validate_cognito_jwt
-
-                return await validate_cognito_jwt("Bearer " + token)
 
             # Try Cognito validation first if enabled
             if self._cognito_enabled:
@@ -324,7 +319,6 @@ class AuthService(IAuthService):
             team_id=claims.team_id or "",
             department_id=claims.department_id or "",
             account_type=account_type,
-            cognito_username=claims.username or "",
             is_admin=is_admin,
             expires_at=datetime.fromtimestamp(claims.exp, UTC),
         )
@@ -356,7 +350,7 @@ class AuthService(IAuthService):
             logger.error(f"Failed to revoke token: {e}")
             raise TokenValidationError(f"Token revocation failed: {str(e)}")
 
-    async def revoke_all_user_tokens(self, entity_id: str, org_id: str, db: AsyncSession, *, token_ids: list[str] | None = None) -> int:
+    async def revoke_all_user_tokens(self, entity_id: str, org_id: str, db: AsyncSession) -> int:
         """
         Revoke all tokens for a specific user or service account.
 
@@ -379,9 +373,7 @@ class AuthService(IAuthService):
         try:
             logger.debug(f"Revoking all tokens for entity: {entity_id}")
 
-            count = await self.token_manager.revoke_all_user_tokens(
-                entity_id, org_id, db, **({"token_ids": token_ids} if token_ids is not None else {})
-            )
+            count = await self.token_manager.revoke_all_user_tokens(entity_id, org_id, db)
 
             logger.info(f"Revoked {count} tokens for entity: {entity_id}")
             return count

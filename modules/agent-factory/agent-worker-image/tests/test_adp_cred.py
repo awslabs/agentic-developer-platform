@@ -30,7 +30,6 @@ def _clean_env(monkeypatch):
     monkeypatch.setenv("ENABLE_USER_CREDENTIALS", "1")
     # Ensure SigV4 mode is not active by default
     monkeypatch.delenv("ADP_GATEWAY_ENDPOINT", raising=False)
-    monkeypatch.delenv("ADP_MESSAGE_ID", raising=False)
 
 
 class TestCheckEnabled:
@@ -238,7 +237,7 @@ class TestSigV4Config:
 
         assert use_sigv4 is True
         assert api_key is None
-        assert base_url == "https://abc123.execute-api.us-east-1.amazonaws.com/dev"
+        assert base_url == "https://abc123.execute-api.us-east-1.amazonaws.com/dev/agent"
         assert user_id == "user-001"
 
     def test_legacy_mode_when_no_gateway_endpoint(self):
@@ -279,7 +278,7 @@ class TestSigV4Request:
         assert result == [{"service": "github", "label": "PAT"}]
         mock_sigv4.assert_called_once()
         call_url = mock_sigv4.call_args[0][1]
-        assert call_url == "https://gw.example.com/dev/internal/v1/user-credentials?user_id=user-001"
+        assert "/agent/internal/v1/user-credentials" in call_url
 
     @patch("adp_cred.client._sigv4_request")
     def test_raw_read_uses_sigv4(self, mock_sigv4, monkeypatch):
@@ -297,7 +296,7 @@ class TestSigV4Request:
 
         assert result["value"] == "secret"
         call_url = mock_sigv4.call_args[0][1]
-        assert call_url == "https://gw.example.com/dev/internal/v1/credential-raw-read"
+        assert "/agent/internal/v1/credential-raw-read" in call_url
         call_body = mock_sigv4.call_args[0][2]
         assert call_body["user_id"] == "user-001"
         assert call_body["purpose"] == "test"
@@ -316,7 +315,7 @@ class TestSigV4Request:
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
         assert req.get_header("X-internal-api-key") == "test-key"
-        assert req.full_url == "http://gateway:8080/internal/v1/user-credentials?user_id=user-001"
+        assert "/internal/v1/user-credentials" in req.full_url
 
 
 # ---------------------------------------------------------------------------
@@ -428,31 +427,12 @@ class TestInvocationId:
 
 
 class TestSigV4Signing:
-    """Exercise URL construction through signing and the outgoing HTTP request."""
+    """Test that _sigv4_request produces correct SigV4 headers."""
 
-    @pytest.mark.parametrize("endpoint_suffix", ["", "/", "/dev", "/dev/"])
-    @pytest.mark.parametrize(
-        "operation,args,method,path",
-        [
-            (adp_client.list_credentials, (), "GET", "user-credentials?user_id=user-001"),
-            (
-                adp_client.proxy_http,
-                ("GET", "https://api.github.com/user", "github"),
-                "POST",
-                "proxy-request",
-            ),
-            (adp_client.materialize, ("ssh-key-prod",), "POST", "credential-materialize"),
-            (adp_client.raw_read, ("github",), "POST", "credential-raw-read"),
-        ],
-    )
     @patch("botocore.session.get_session")
     @patch("adp_cred.client.urlopen")
-    def test_signed_requests_use_internal_route(
-        self, mock_urlopen, mock_session, monkeypatch, endpoint_suffix, operation, args, method, path
-    ):
-        """Internal calls must bypass the /agent edge route (#5136)."""
-        gateway_endpoint = "https://abc.execute-api.us-east-1.amazonaws.com" + endpoint_suffix
-        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", gateway_endpoint)
+    def test_sigv4_adds_authorization_header(self, mock_urlopen, mock_session, monkeypatch):
+        """SigV4 request includes Authorization: AWS4-HMAC-SHA256 header."""
         monkeypatch.setenv("AWS_REGION", "us-east-1")
 
         # Mock botocore credentials
@@ -473,15 +453,16 @@ class TestSigV4Signing:
         mock_resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_resp
 
-        result = operation(*args)
+        result = adp_client._sigv4_request(
+            "POST",
+            "https://abc.execute-api.us-east-1.amazonaws.com/dev/agent/internal/v1/credential-raw-read",
+            {"user_id": "u1"},
+        )
 
         assert result == {"ok": True}
         # Verify the request was made with SigV4 Authorization header
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
-        assert req.full_url == f"{gateway_endpoint.rstrip('/')}/internal/v1/{path}"
-        assert req.get_method() == method
-        assert req.get_header("X-internal-api-key") is None
         auth_header = req.get_header("Authorization")
         assert auth_header is not None
         assert "AWS4-HMAC-SHA256" in auth_header

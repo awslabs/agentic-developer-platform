@@ -236,13 +236,13 @@ describe('token-propagation (issue #320, hardened by #1164)', () => {
       );
       // Should write to temp file with restrictive permissions
       expect(mockedWriteFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/\.tmp$/),
+        `${TOKEN_FILE_PATH}.tmp`,
         'ghs_refreshed_test_token_123',
-        { mode: 0o600, flag: 'wx' }
+        { mode: 0o600 }
       );
       // Should atomically rename
       expect(mockedRenameSync).toHaveBeenCalledWith(
-        expect.stringMatching(/\.tmp$/),
+        `${TOKEN_FILE_PATH}.tmp`,
         TOKEN_FILE_PATH
       );
     });
@@ -260,12 +260,12 @@ describe('token-propagation (issue #320, hardened by #1164)', () => {
       await forceRefresh();
 
       expect(mockedWriteFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/\.tmp$/),
+        `${TOKEN_FILE_PATH}.tmp`,
         'ghs_refreshed_test_token_123',
-        { mode: 0o600, flag: 'wx' }
+        { mode: 0o600 }
       );
       expect(mockedRenameSync).toHaveBeenCalledWith(
-        expect.stringMatching(/\.tmp$/),
+        `${TOKEN_FILE_PATH}.tmp`,
         TOKEN_FILE_PATH
       );
     });
@@ -292,17 +292,17 @@ describe('token-propagation (issue #320, hardened by #1164)', () => {
       expect(mockedWriteFileSync).toHaveBeenCalledWith(
         expect.stringContaining('.tmp'),
         'my_token_value',
-        { mode: 0o600, flag: 'wx' }
+        { mode: 0o600 }
       );
     });
 
-    it('should throw when file write fails (graceful degradation)', () => {
+    it('should not throw when file write fails (graceful degradation)', () => {
       mockedMkdirSync.mockImplementation(() => {
         throw new Error('Permission denied');
       });
 
-      // Publication failure must reach the refresh caller
-      expect(() => writeTokenFile('test_token')).toThrow('Failed to publish');
+      // Should not throw — logs error but continues
+      expect(() => writeTokenFile('test_token')).not.toThrow();
     });
   });
 });

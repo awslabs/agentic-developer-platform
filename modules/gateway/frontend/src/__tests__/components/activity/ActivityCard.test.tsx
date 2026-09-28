@@ -41,7 +41,6 @@ function makeItem(overrides: Partial<InvocationItem> = {}): InvocationItem {
     total_tokens: 15000,
     call_count: 3,
     error_message: null,
-    skip_reason: null,
     run_log_url: null,
     transcript_key: 's3://transcripts/inv-test-001.jsonl',
     ...overrides,
@@ -211,62 +210,5 @@ describe('ActivityCard', () => {
     await user.click(toggle);
 
     expect(screen.getByText('Agent-triggered')).toBeInTheDocument();
-  });
-
-  // Issue #4020: the narrow-viewport card had the same unexplained-badge problem
-  // as the table, and is the primary view on mobile.
-  describe('skip reason (Issue #4020)', () => {
-    it.each([
-      ['no_op' as const, 'no_mention', 'No-op'],
-      ['blocked' as const, 'self_re_trigger', 'Blocked'],
-      ['skipped' as const, 'idempotency_merged_pr', 'Skipped'],
-    ])('renders the reason for %s runs', (status, skipReason, label) => {
-      renderCard({ item: makeItem({ status, skip_reason: skipReason, summary: null }) });
-
-      expect(screen.getByText(label)).toBeInTheDocument();
-      expect(
-        screen.getByTestId('activity-card-skip-reason-inv-test-001'),
-      ).toBeInTheDocument();
-    });
-
-    it('shows the reason without expanding the card', () => {
-      // On mobile the card IS the board. Putting the reason behind "More" would
-      // mean the operator still has to tap every no-op to learn anything, which
-      // is the cost this issue set out to remove.
-      renderCard({ item: makeItem({ status: 'no_op', skip_reason: 'label_unmapped' }) });
-
-      const reason = screen.getByTestId('activity-card-skip-reason-inv-test-001');
-      expect(reason).toHaveTextContent(/not mapped to any agent persona/);
-    });
-
-    it('includes the reason in the aria-label', () => {
-      // The badge glyph is aria-hidden, so without this a screen-reader user gets
-      // "Status: No-op" and nothing else.
-      renderCard({ item: makeItem({ status: 'blocked', skip_reason: 'chain_depth_exceeded' }) });
-
-      const label = screen.getByTestId('activity-card-inv-test-001').getAttribute('aria-label')!;
-      expect(label).toContain('Blocked');
-      expect(label).toMatch(/depth limit/);
-    });
-
-    it('renders no reason line for runs that actually ran', () => {
-      // Regression: a reason on a completed run would explain why nothing ran on
-      // a row where something did.
-      renderCard({ item: makeItem({ status: 'complete', skip_reason: 'no_mention' }) });
-
-      expect(
-        screen.queryByTestId('activity-card-skip-reason-inv-test-001'),
-      ).not.toBeInTheDocument();
-    });
-
-    it('renders no reason line when a non-run has no recorded reason', () => {
-      // Rows predating this change carry nothing; the card must not render an
-      // empty paragraph.
-      renderCard({ item: makeItem({ status: 'no_op', skip_reason: null }) });
-
-      expect(
-        screen.queryByTestId('activity-card-skip-reason-inv-test-001'),
-      ).not.toBeInTheDocument();
-    });
   });
 });

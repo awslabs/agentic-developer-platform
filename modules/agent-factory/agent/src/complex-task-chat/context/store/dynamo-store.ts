@@ -20,7 +20,6 @@ import {
   StoredMessage,
   StoredSummary,
   ContextItem,
-  TranscriptEntry,
   SessionHeader,
   HeaderAlreadyExistsError,
 } from './port';
@@ -208,98 +207,6 @@ export class DynamoContextStore implements ContextStore {
     }));
   }
 
-  /**
-   * Every context item for a session, in ordinal order, with NO page cap.
-   *
-   * `readContextItems` above issues a single Query and drops
-   * `LastEvaluatedKey`, so it silently stops at DynamoDB's 1 MB page boundary.
-   * That is fine for context assembly (which is token-bounded anyway) but wrong
-   * for a hand-off that must see the whole conversation, so this drains every
-   * page (#4208).
-   *
-   * Ordering: the SK is `item#` + an 8-digit zero-padded ordinal, so DDB's
-   * lexicographic sort IS numeric order and pages arrive already sorted.
-   */
-  async readAllContextItems(sessionId: string): Promise<ContextItem[]> {
-    const items: ContextItem[] = [];
-    let exclusiveStartKey: Record<string, unknown> | undefined;
-
-    do {
-      const result = await this.ddb.send(
-        new QueryCommand({
-          TableName: this.tableName,
-          KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
-          ExpressionAttributeValues: {
-            ':pk': `session#${sessionId}`,
-            ':prefix': 'item#',
-          },
-          ExclusiveStartKey: exclusiveStartKey,
-        }),
-      );
-
-      for (const item of result.Items ?? []) {
-        items.push({
-          ordinal: item.ordinal as number,
-          type: item.type as 'msg' | 'sum',
-          ref: item.ref as string,
-          tokens: typeof item.tokens === 'number' ? (item.tokens as number) : undefined,
-        });
-      }
-
-      exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
-    } while (exclusiveStartKey);
-
-    // Defensive: DDB returns SK order, but a hand-off consumer depends on
-    // ordinal order specifically. Sorting costs nothing at these sizes.
-    items.sort((a, b) => a.ordinal - b.ordinal);
-    return items;
-  }
-
-  /**
-   * The full ordered transcript for a session (#4208).
-   *
-   * Hydrates every context item into its underlying record: `msg` refs via
-   * `getMessagesByIds` (batched) and `sum` refs via `getSummaryById`. Summaries
-   * appear inline at the ordinal they occupy, because `replaceRangeWithSummary`
-   * destructively evicts the turns it summarizes — dropping summaries would
-   * leave a silent hole in the conversation rather than a compressed one.
-   *
-   * Deliberately NOT capped: this is the input to the inception hand-off, and a
-   * truncated hand-off means inception re-asks everything the intake already
-   * established.
-   */
-  async getFullTranscript(sessionId: string): Promise<TranscriptEntry[]> {
-    const items = await this.readAllContextItems(sessionId);
-    if (items.length === 0) return [];
-
-    // Batch-fetch all messages in one pass rather than per-item round trips.
-    // Keyed, NOT positional: `getMessagesByIds` omits rows it cannot find, so
-    // zipping its array against the ID list would shift every message after an
-    // evicted one onto the wrong ordinal and role.
-    const messageIds = items.filter(i => i.type === 'msg').map(i => i.ref);
-    const messageById = await this.getMessageMapByIds(sessionId, messageIds);
-
-    const entries: TranscriptEntry[] = [];
-    for (const item of items) {
-      if (item.type === 'msg') {
-        const message = messageById.get(item.ref);
-        // A missing message means the row was evicted or TTL'd out from under
-        // us. Skip it rather than emitting a hole the consumer must handle.
-        if (message) {
-          entries.push({ ordinal: item.ordinal, type: 'msg', ref: item.ref, message });
-        }
-        continue;
-      }
-
-      const summary = await this.getSummaryById(sessionId, item.ref);
-      if (summary) {
-        entries.push({ ordinal: item.ordinal, type: 'sum', ref: item.ref, summary });
-      }
-    }
-
-    return entries;
-  }
-
   async replaceRangeWithSummary(
     sessionId: string,
     fromOrd: number,
@@ -409,34 +316,12 @@ export class DynamoContextStore implements ContextStore {
   }
 
   async getMessagesByIds(sessionId: string, ids: string[]): Promise<StoredMessage[]> {
-    const byId = await this.getMessageMapByIds(sessionId, ids);
-
-    const results: StoredMessage[] = [];
-    for (const id of ids) {
-      const m = byId.get(id);
-      if (m) results.push(m);
-    }
-    return results;
-  }
-
-  /**
-   * Batch-fetch messages, keyed by ID.
-   *
-   * `getMessagesByIds` returns a positional array with missing rows OMITTED, so
-   * callers cannot zip it back against their input IDs — one evicted message
-   * shifts every later message onto the wrong ID. Anything that needs the
-   * ID→message association (e.g. transcript hydration) must use this instead.
-   */
-  private async getMessageMapByIds(
-    sessionId: string,
-    ids: string[],
-  ): Promise<Map<string, StoredMessage>> {
-    const byId = new Map<string, StoredMessage>();
-    if (ids.length === 0) return byId;
+    if (ids.length === 0) return [];
 
     const pk = `session#${sessionId}`;
 
-    // BatchGetItem has a 100-item limit.
+    // BatchGetItem has a 100-item limit; preserve input order via a map.
+    const byId = new Map<string, StoredMessage>();
     for (let i = 0; i < ids.length; i += 100) {
       const batchIds = ids.slice(i, i + 100);
       const keys = batchIds.map(id => ({ PK: pk, SK: `msg#${id}` }));
@@ -458,7 +343,12 @@ export class DynamoContextStore implements ContextStore {
       }
     }
 
-    return byId;
+    const results: StoredMessage[] = [];
+    for (const id of ids) {
+      const m = byId.get(id);
+      if (m) results.push(m);
+    }
+    return results;
   }
 
   async getSummaryById(sessionId: string, summaryId: string): Promise<StoredSummary | null> {

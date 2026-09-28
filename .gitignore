@@ -45,10 +45,6 @@ htmlcov/
 coverage.xml
 modules/gateway/frontend/coverage/
 modules/gateway/frontend/playwright-report/
-# jest --coverage output for the agent module (agent-control-ci.yml runs it)
-modules/agent-factory/agent/coverage/
-# pytest --cov-report=json output for the worker control gate (#3960)
-modules/agent-factory/agent-worker-image/coverage-control.json
 
 # Environment
 .env
@@ -60,7 +56,6 @@ modules/agent-factory/agent-worker-image/coverage-control.json
 logs/
 
 # Build artifacts
-/modules/agent-factory/infra/.build/
 *.zip
 *.tar.gz
 
@@ -69,17 +64,3 @@ agent_learning/
 .adp-scratch/
 docs/bedrock-agentcore-dg.pdf
 config/deployment.yml
-
-# Live-control evaluation evidence (#3960). The harness's default --evidence-dir;
-# result.json can carry environment identifiers and must never be committed.
-test-results/
-
-# #5199 CLI uplift evaluation: private run state (passwords/tokens until cleanup).
-# Never commit or attach these; report.json/results.xml are the sanitized outputs.
-.adp-eval/
-
-# #5146: the shared contracts tree staged into the gateway's docker build context by
-# modules/gateway/scripts/stage-contracts.sh. The repository-root contracts/ tree is
-# the single source of truth; this is a per-build copy, gated inside the built image
-# by `python -m src.orchestration.review_contract_selfcheck`.
-modules/gateway/contracts/

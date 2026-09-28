@@ -15,7 +15,6 @@ Verb logic lives in importable functions for later gateway re-route.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -26,16 +25,8 @@ from typing import Any
 import boto3
 from fastapi import FastAPI, Request, Response
 
-from .acl import (
-    CallerPrincipal,
-    SearchHit,
-    extract_caller_principal,
-    filter_results,
-    is_shared_content_path,
-    record_acl_denial,
-    _normalize_repo_name,
-)
-from .browse_backend import browse, _safe_name_index
+from .acl import CallerPrincipal, SearchHit, extract_caller_principal, filter_results
+from .browse_backend import browse
 from .config import config
 from .metrics import record_query, setup_door_metrics
 from .project_filter import (
@@ -50,7 +41,6 @@ from .structural_backend import impact, understand
 from .tracing import get_tracer, setup_tracing, shutdown_tracing
 
 log = logging.getLogger(__name__)
-ACL_READINESS_TIMEOUT_SECONDS = 1.5
 
 # ---------------------------------------------------------------------------
 # Tool definitions (matches tests/conftest.py EXPECTED_MCP_TOOLS contract)
@@ -183,23 +173,6 @@ class AppState:
         self.neptune_driver: Any = None
         self.semantic_code_store: Any = None
         self.semantic_http_client: Any = None
-        # Why the Door refused to become ready, or "" when the ACL store is up.
-        # Reads consult this: no ACL store means no reads, never unfiltered
-        # reads (#5658).
-        #
-        # Full detail (message included) is for logs. `acl_store_error_kind`
-        # holds just the exception class name, which is what the unauthenticated
-        # /ready body may disclose — a connection-failure message carries the
-        # RDS host, port and user.
-        self.acl_store_error: str = ""
-        self.acl_store_error_kind: str = ""
-        self.acl_probe_task: asyncio.Task | None = None
-        self.acl_probe_store: Any = None
-
-    @property
-    def acl_ready(self) -> bool:
-        """True when the ACL store is live and reads may be authorised."""
-        return self.acl_store is not None and not self.acl_store_error
 
 
 state = AppState()
@@ -214,21 +187,6 @@ async def lifespan(app: FastAPI):
     # Tracing setup (must be early, before middleware registration)
     setup_tracing(app)
 
-    # Required-configuration check, logged once and up front (#5658).
-    #
-    # This is reported BEFORE any backend is constructed so the reason a Door
-    # will never become ready is the first thing in the pod log, rather than
-    # something to be inferred from a connection traceback further down.
-    # Reporting it does not abort startup — the readiness probe is what keeps
-    # traffic away, and a live process keeps the explanation observable.
-    missing = config.missing_required()
-    if missing:
-        log.error(
-            "MISSING REQUIRED CONFIGURATION: %s. The Door cannot authorise reads "
-            "without its ACL store and will report NOT READY on /ready.",
-            ", ".join(missing),
-        )
-
     # Zoekt backend (always available)
     state.zoekt = ZoektSearchBackend(config.zoekt_url, timeout=config.zoekt_timeout)
 
@@ -240,31 +198,14 @@ async def lifespan(app: FastAPI):
     # Uses IAM auth tokens in production (DB_USE_IAM_AUTH=true) — mints a
     # fresh token per new connection since RDS IAM tokens expire ~15 min.
     # Falls back to static DATABASE_URL for local/CI.
-    #
-    # REQUIRED, not optional (#5658). This database holds the ACL rows that are
-    # the Door's whole tenant boundary. If it is missing or unreachable we
-    # record why, leave acl_store as None and fail the readiness probe — the
-    # pod is pulled from service rather than serving unfiltered reads. The
-    # process still starts so the probe and its error message are observable
-    # (a crash loop hides the cause behind a restart counter).
-    state.acl_store_error = ""
-    state.acl_store_error_kind = ""
     try:
         from .db import create_db_pool
 
         state.db_pool = create_db_pool(config)
-        log.info("Database pool initialized (iam=%s)", config.db_use_iam_auth)
-    except Exception as exc:
-        state.db_pool = None
-        state.acl_store_error = f"{type(exc).__name__}: {exc}"
-        state.acl_store_error_kind = type(exc).__name__
-        log.error(
-            "FATAL CONFIGURATION: the Door could not connect to its ACL database "
-            "and will report itself NOT READY. No knowledge reads will be served. "
-            "Provision the agent-context database connection (DB_USE_IAM_AUTH+DB_HOST, "
-            "or DATABASE_URL) for this environment. Cause: %s",
-            state.acl_store_error,
-        )
+        if state.db_pool:
+            log.info("Database pool initialized (iam=%s)", config.db_use_iam_auth)
+    except Exception:
+        log.warning("Failed to initialize database pool", exc_info=True)
 
     # ACL store (Postgres-backed)
     if state.db_pool:
@@ -273,12 +214,6 @@ async def lifespan(app: FastAPI):
         state.acl_store = PostgresACLStore(
             state.db_pool, tenant_scope_enabled=config.tenant_scope_enabled
         )
-    else:
-        state.acl_store = None
-        if not state.acl_store_error:
-            state.acl_store_error = "database pool unavailable"
-        if not state.acl_store_error_kind:
-            state.acl_store_error_kind = "database pool unavailable"
 
     # Neptune driver (for structural queries — impact/understand)
     if config.neptune_enabled:
@@ -420,36 +355,6 @@ async def enrich_span_with_identity(request: Request, call_next):
     return response
 
 
-# ---------------------------------------------------------------------------
-# Authentication middleware (issue #4073, finding #8)
-# ---------------------------------------------------------------------------
-# Registered LAST on purpose. Starlette builds the middleware stack in reverse
-# registration order, so the last-registered decorator is the OUTERMOST layer and
-# therefore runs FIRST. Auth must be outermost for two reasons: unauthenticated
-# identity claims must not be stamped onto an OTel span as though they were real
-# (enrich_span_with_identity above reads exactly the headers an attacker forges),
-# and a rejected request must not reach any verb logic.
-#
-# Moving this decorator above enrich_span_with_identity silently inverts that —
-# the guard still returns 401, but only after the forged identity has been
-# recorded on the trace. tests/unit/test_door_auth.py pins the ordering.
-#
-# This must be middleware, not a route dependency: app.mount("/mcp", ...) at the
-# bottom of this module is a separate ASGI app, and FastAPI Depends() declared on
-# the parent app does NOT run for mounted sub-apps. /mcp is the surface agent
-# workers actually use (and the one with DNS-rebinding protection relaxed), so a
-# Depends()-based guard would leave the principal hole wide open.
-@app.middleware("http")
-async def authenticate_request(request: Request, call_next):
-    """Reject requests that do not present the Door's shared secret."""
-    from .auth import check_request_auth
-
-    denial = check_request_auth(request)
-    if denial is not None:
-        return denial
-    return await call_next(request)
-
-
 @app.get("/tools")
 async def list_tools() -> list[dict[str, Any]]:
     """List available MCP tools with their descriptions and parameters."""
@@ -458,69 +363,8 @@ async def list_tools() -> list[dict[str, Any]]:
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
-    """Liveness: the process is up. Says nothing about read authorisation."""
+    """Health check endpoint."""
     return {"status": "ok"}
-
-
-def _probe_acl_store(store: Any) -> str:
-    """Return only a fault type, including for a probe that outlives its request."""
-    try:
-        store.check_health()
-    except Exception as exc:
-        return type(exc).__name__
-    return ""
-
-
-@app.get("/ready")
-async def readiness_check() -> Response:
-    """Readiness: reflects ACL-store availability (#5658).
-
-    Returns 503 when the ACL store is not live. The Door cannot authorise a
-    read without it, so a pod in that state must be taken out of service
-    instead of answering.
-
-    This endpoint is UNAUTHENTICATED (the kubelet cannot present the shared
-    secret — see ``door/auth.py::_PUBLIC_PATHS``), so the body carries only the
-    exception *type*, never its message. A psycopg2 failure string contains the
-    RDS hostname, port and database user. Startup detail is in the pod log;
-    ongoing probes report only the fault type. A bounded live schema query
-    checks availability on every request, including recovery after a failure.
-    """
-    reason = state.acl_store_error_kind or "acl store not initialized"
-    ready = False
-    if state.acl_ready:
-        store = state.acl_store
-        # Keep one in-flight probe after a timeout: a broken socket must not
-        # consume another executor thread on every unauthenticated request.
-        if state.acl_probe_task is None or state.acl_probe_task.done():
-            state.acl_probe_store = store
-            state.acl_probe_task = asyncio.create_task(asyncio.to_thread(_probe_acl_store, store))
-        try:
-            reason = await asyncio.wait_for(
-                asyncio.shield(state.acl_probe_task), timeout=ACL_READINESS_TIMEOUT_SECONDS
-            )
-            if state.acl_probe_store is not store or state.acl_store is not store:
-                reason = "acl store changed"
-            ready = not reason
-        except Exception as exc:
-            reason = type(exc).__name__
-    if ready:
-        return Response(
-            content=json.dumps({"status": "ready", "acl_store": "available"}),
-            status_code=200,
-            media_type="application/json",
-        )
-    return Response(
-        content=json.dumps(
-            {
-                "status": "not_ready",
-                "acl_store": "unavailable",
-                "reason": reason,
-            }
-        ),
-        status_code=503,
-        media_type="application/json",
-    )
 
 
 @app.post("/call")
@@ -607,65 +451,13 @@ async def call_tool(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
-# Every verb on the dispatch surface, and how each is authorised.
-#
-# "enforced" = the handler routes its results through _apply_acl (or, for the
-# secure verb, the equivalent _filter_by_acl in secure_backend), which needs the
-# resolved caller and the live ACL store.
-#
-# "owner_scoped" = personal-context verbs that carry no repo provenance and are
-# authorised by owner identity inside the experience tool instead.
-#
-# tests/unit/test_door_enforcement_coverage.py walks this table against the
-# real dispatch function and fails if a verb is reachable without an entry, so
-# adding a verb without deciding how it is authorised breaks the build rather
-# than silently opening a read path (#5658).
-ACL_ENFORCED_VERBS: frozenset[str] = frozenset(
-    {"search", "understand", "impact", "browse", "secure"}
-)
-OWNER_SCOPED_VERBS: frozenset[str] = frozenset({"remember", "experience"})
-DISPATCH_VERBS: frozenset[str] = ACL_ENFORCED_VERBS | OWNER_SCOPED_VERBS
-
-
-def _acl_unavailable_response(name: str) -> dict[str, Any]:
-    """Uniform refusal when the ACL store is not live.
-
-    Returned before any backend is touched, so an unconfigured Door cannot leak
-    even the existence of indexed content.
-    """
-    log.error(
-        "Refusing verb %s: ACL store unavailable (%s). The Door serves no reads "
-        "without its access-control database.",
-        name,
-        state.acl_store_error or "not initialized",
-    )
-    return {
-        "error": "Knowledge access control is unavailable; no results can be authorised.",
-        "code": "acl_store_unavailable",
-    }
-
-
 async def _dispatch_tool(
     name: str,
     arguments: dict[str, Any],
     headers: dict[str, str],
     caller: CallerPrincipal | None,
 ) -> dict[str, Any]:
-    """Route a tool call to the appropriate verb handler.
-
-    Authorisation preconditions are checked HERE, once, for every verb — not
-    per handler. A handler that forgets its own check is therefore not a
-    cross-tenant read, because it cannot be reached without the ACL store live
-    and the caller resolved.
-    """
-    if name not in DISPATCH_VERBS:
-        return {"error": f"Unknown tool: {name}"}
-
-    # Gate 1: the ACL store must be live for any verb that authorises against
-    # it. No store → no reads (#5658), checked before any backend call.
-    if name in ACL_ENFORCED_VERBS and state.acl_store is None:
-        return _acl_unavailable_response(name)
-
+    """Route a tool call to the appropriate verb handler."""
     # Resolve project scope for retrieval verbs (search/understand/impact/browse)
     project_scope = _resolve_project_scope(arguments, caller)
     if isinstance(project_scope, dict):
@@ -686,11 +478,8 @@ async def _dispatch_tool(
         return await _handle_experience(arguments, headers)
     elif name == "secure":
         return await _handle_secure(arguments, caller, project_scope, headers=headers)
-
-    # Unreachable: DISPATCH_VERBS is validated above. Kept as a fail-closed
-    # backstop so a verb added to the table but not to this chain returns an
-    # error rather than falling through to None.
-    return {"error": f"Unhandled tool: {name}", "code": "internal_error"}
+    else:
+        return {"error": f"Unknown tool: {name}"}
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +565,7 @@ async def _handle_search(
 
     if scope == "docs" and config.semantic_enabled:
         # Semantic search via S3 Vectors — scoped per caller (#1774)
-        return await _handle_semantic_search(query, limit, caller, project_scope)
+        return await _handle_semantic_search(query, limit, caller)
 
     # Default: exact code search via Zoekt
     if state.zoekt is None:
@@ -859,7 +648,6 @@ async def _handle_semantic_search(
     query: str,
     limit: int,
     caller: CallerPrincipal | None,
-    project_scope: ProjectScope | None = None,
 ) -> dict[str, Any]:
     """Scoped semantic search via S3 Vectors (Story 5, #1774).
 
@@ -894,59 +682,25 @@ async def _handle_semantic_search(
             top_k=limit,
         )
 
-        # Index selection bounds the tenant but does not authorize every private
-        # repository inside that index. Apply the same current repository ACL
-        # and project scope used by exact search, using ingestion's provenance.
-        hits = []
+        # Transform S3 Vectors results to search result format
+        formatted = []
         for r in results:
             metadata = r.get("metadata", {})
-            hits.append(
-                SearchHit(repo_name=metadata.get("repo", ""), data={
+            formatted.append(
+                {
                     "key": r.get("key", ""),
                     "distance": r.get("distance", 1.0),
                     "repo": metadata.get("repo", ""),
                     "source_type": metadata.get("source_type", ""),
                     "section_heading": metadata.get("section_heading", ""),
                     "chunk_text": metadata.get("chunk_text", ""),
-                })
+                }
             )
-        filtered = apply_project_filter(_apply_acl(hits, caller), project_scope)
-        formatted = [hit.data for hit in filtered]
+
         return {"results": formatted[:limit], "total": len(formatted), "query": query}
     except Exception:
         log.warning("Semantic search failed", exc_info=True)
         return {"results": [], "total": 0, "query": query}
-
-
-def _authorized_structural_request(target: str, caller: CallerPrincipal | None) -> tuple[str, str] | None:
-    """Resolve a fully qualified permitted repo before any graph or object read."""
-    if caller is None or not caller.is_resolved or state.acl_store is None:
-        return None
-    try:
-        allowed = state.acl_store.get_allowed_repos(caller)
-    except Exception:
-        return None
-    normalized_target = _normalize_repo_name(target)
-    matches = [repo for repo in allowed if len(_normalize_repo_name(repo).split("/")) == 2
-               and (normalized_target.casefold() == _normalize_repo_name(repo).casefold()
-                    or normalized_target.casefold().startswith(_normalize_repo_name(repo).casefold() + "::")
-                    or normalized_target.casefold().startswith(_normalize_repo_name(repo).casefold() + "/"))]
-    if len(matches) != 1:
-        return None
-    repo = _normalize_repo_name(matches[0])
-    suffix = normalized_target[len(repo):]
-    suffix = suffix[2:] if suffix.startswith("::") else suffix.lstrip("/")
-    # The explicit separator avoids the legacy parser guessing where org/repo
-    # ends when a repository-relative file path contains more slashes.
-    resolved_target = f"{repo}::{suffix}" if suffix else repo
-    prefix = config.code_index_s3_prefix
-    tenant, owner = _safe_name_index(state.db_pool).ownership.get(matches[0], (None, None))
-    leaf = prefix.removeprefix("content/")
-    if owner:
-        prefix = f"users/{owner}/{leaf}"
-    elif tenant:
-        prefix = f"tenants/{tenant}/{leaf}"
-    return resolved_target, prefix
 
 
 async def _handle_understand(
@@ -964,15 +718,37 @@ async def _handle_understand(
     if state.s3_client is None or not config.s3_bucket:
         return {"target": target, "summary": "Structural index not available", "definitions": []}
 
-    request = _authorized_structural_request(target, caller)
-    if request is None:
-        return {"target": target, "summary": f"Found 0 definition(s) for '{target}'", "definitions": []}
-    resolved_target, index_prefix = request
+    # Debug: try to load the code-index directly to diagnose S3 issues
+    from .structural_backend import _parse_target, load_code_index
+
+    repo_id, query_target = _parse_target(target)
+    debug_info: dict[str, Any] = {
+        "repo_id": repo_id,
+        "query_target": query_target,
+        "bucket": config.s3_bucket,
+        "prefix": config.code_index_s3_prefix,
+    }
+    try:
+        raw_index = await load_code_index(
+            repo_id,
+            s3_client=state.s3_client,
+            bucket=config.s3_bucket,
+            prefix=config.code_index_s3_prefix,
+        )
+        debug_info["index_keys"] = list(raw_index.keys()) if raw_index else []
+        symbols = raw_index.get("symbols", []) or raw_index.get("definitions", [])
+        debug_info["symbols_count"] = len(symbols)
+        debug_info["call_graph_count"] = len(raw_index.get("call_graph", {}))
+        if symbols:
+            debug_info["first_symbol"] = symbols[0] if symbols else None
+    except Exception as e:
+        debug_info["load_error"] = str(e)
+
     hits = await understand(
-        resolved_target,
+        target,
         s3_client=state.s3_client,
         bucket=config.s3_bucket,
-        prefix=index_prefix,
+        prefix=config.code_index_s3_prefix,
         depth=depth,
         zoekt_backend=state.zoekt,
     )
@@ -986,6 +762,9 @@ async def _handle_understand(
     definitions = [hit.data for hit in filtered]
     summary = f"Found {len(definitions)} definition(s) for '{target}'"
     result: dict[str, Any] = {"target": target, "summary": summary, "definitions": definitions}
+    # Include debug info when no results found (helps diagnose S3 issues)
+    if not definitions:
+        result["_debug"] = debug_info
     return result
 
 
@@ -1013,15 +792,11 @@ async def _handle_impact(
             "blast_radius": 0,
         }
 
-    request = _authorized_structural_request(target, caller)
-    if request is None:
-        return {"verdict": "no_impact", "target": target, "affected": [], "blast_radius": 0}
-    resolved_target, index_prefix = request
     hits = await impact(
-        resolved_target,
+        target,
         s3_client=state.s3_client,
         bucket=config.s3_bucket,
-        prefix=index_prefix,
+        prefix=config.code_index_s3_prefix,
         cross_repo=cross_repo,
         zoekt_backend=state.zoekt,
     )
@@ -1104,14 +879,6 @@ async def _handle_browse(
     depth = arguments.get("depth", 1)
     repo_scope = arguments.get("project") or None
 
-    if caller is None or not caller.is_resolved or state.acl_store is None:
-        return {"action": action, "uri": uri, "entries": []}
-    try:
-        allowed_repos = state.acl_store.get_allowed_repos(caller)
-    except Exception:
-        record_acl_denial(caller=caller, requested=[repo_scope or uri], reason="acl_store_unavailable")
-        return {"action": action, "uri": uri, "entries": []}
-
     hits = await browse(
         action,
         uri,
@@ -1122,7 +889,6 @@ async def _handle_browse(
         depth=depth,
         zoekt_url=config.zoekt_url,
         repo_scope=repo_scope,
-        allowed_repos=allowed_repos,
     )
 
     # ACL filter (Step 2: #1721 isolation)
@@ -1273,8 +1039,6 @@ async def _handle_secure(
             cve=cve,
             repo=repo or "",
             db_pool=state.db_pool,
-            caller=caller,
-            acl_store=state.acl_store,
         )
 
     return {"error": f"Unhandled action: {action}", "code": "internal_error"}
@@ -1286,22 +1050,16 @@ async def _handle_secure(
 
 
 def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[SearchHit]:
-    """The single authorisation step every Door read passes through.
+    """Apply ACL filtering to search hits.
 
-    FAIL-CLOSED on all three of its preconditions (#5658):
+    FAIL-CLOSED: If caller is None (no identity headers), always returns [].
+    When no ACL store is configured (Postgres unavailable in dev), uses an
+    AllowIndexedRepos store that permits access to all indexed repos but still
+    enforces the identity-header requirement.
 
-    1. No resolved caller identity → no results.
-    2. No ACL store → no results. This previously returned ``hits`` unfiltered
-       as a "dev mode" convenience, which — because the shipped manifest marked
-       the database connection optional — made unfiltered cross-tenant reads the
-       as-deployed default rather than a local-only affordance.
-    3. A hit with no provenance → denied, unless its storage key is in the
-       enumerated shared-platform set. The old rule was the inverse ("no repo
-       label means shared content"), which published anything whose origin was
-       lost in transit, including personal-context memory.
-
-    The repo identity compared here is the one the producing layer stamped on
-    the hit, never a caller-supplied argument.
+    Content-path hits (repo_name == "") represent shared platform content
+    (wikis, indexes) that are not repo-scoped. They pass through ACL once
+    the caller is authenticated — the identity gate at the top is sufficient.
     """
     # FAIL-CLOSED: no identity headers → empty results regardless of ACL store
     if caller is None:
@@ -1312,39 +1070,18 @@ def _apply_acl(hits: list[SearchHit], caller: CallerPrincipal | None) -> list[Se
         return []
 
     if state.acl_store is None:
-        # No ACL store → nothing can be authorised, so nothing is served.
-        # /ready already reports 503 in this state; this is the belt to that
-        # brace, so a future regression in startup wiring cannot reopen the
-        # unfiltered read path.
-        record_acl_denial(
-            caller=caller,
-            requested=[h.repo_name or "<no-provenance>" for h in hits][:10],
-            reason="acl_store_unavailable",
-        )
-        return []
+        # No Postgres ACL store — use AllowIndexedRepos (dev-mode only).
+        # This allows any authenticated caller to see all indexed repos,
+        # while still enforcing the fail-closed rule for unauthenticated requests.
+        return hits
 
-    # Split on provenance. Unattributed hits are only served when their storage
-    # key is positively identified as shared platform content.
-    shared_hits: list[SearchHit] = []
-    unattributed: list[SearchHit] = []
-    repo_hits: list[SearchHit] = []
-    for hit in hits:
-        if hit.repo_name:
-            repo_hits.append(hit)
-        elif is_shared_content_path(str(hit.data.get("path", ""))):
-            shared_hits.append(hit)
-        else:
-            unattributed.append(hit)
-
-    if unattributed:
-        record_acl_denial(
-            caller=caller,
-            requested=[str(h.data.get("path", "")) or "<no-path>" for h in unattributed][:10],
-            reason="no_provenance_not_shared_content",
-        )
+    # Separate content-path hits (no repo scope) from repo-scoped hits.
+    # Content-path hits are shared assets visible to any authenticated caller.
+    content_hits = [h for h in hits if not h.repo_name]
+    repo_hits = [h for h in hits if h.repo_name]
 
     filtered_repo = filter_results(repo_hits, caller, state.acl_store)
-    return shared_hits + filtered_repo
+    return content_hits + filtered_repo
 
 
 # ---------------------------------------------------------------------------

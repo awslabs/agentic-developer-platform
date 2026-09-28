@@ -6,10 +6,8 @@ all authentication components with proper mocking and isolation.
 """
 
 import asyncio
-import sys
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,22 +26,6 @@ from src.shared.models.token import Token
 
 # Test database URL (in-memory SQLite for fast tests)
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
-# Issue #5044: `libs/python/adp-common` is a separate distribution and is not
-# installed into the gateway's environment, so add its source root the way
-# tests/internal/test_provenance_policy_lockstep.py adds the Lambda tree. Runs
-# here rather than above the imports because conftest is imported before any test
-# module in this package, so the path is in place by collection time and the
-# module's import block stays lint-clean.
-#
-# The import package is `adp_platform_common`, NOT `adp_common` — see the
-# collision note in that library's pyproject.toml and test_adp_common_packaging.py.
-# APPENDED rather than inserted: tests/cli/ prepends `modules/gateway/cli/` for
-# its own flat `import adp_common`, and prepending here would order this library
-# ahead of paths the rest of the suite relies on for no benefit.
-_ADP_COMMON_SRC = Path(__file__).resolve().parents[4] / "libs" / "python" / "adp-common" / "src"
-if str(_ADP_COMMON_SRC) not in sys.path:
-    sys.path.append(str(_ADP_COMMON_SRC))
 
 
 @pytest.fixture(scope="session")
@@ -370,9 +352,3 @@ async def create_sample_token(
     await db_session.commit()
     await db_session.refresh(token)
     return token
-
-
-# Superplane policy is packaged separately from the shared platform library.
-_SUPERPLANE_AUTH = Path(__file__).resolve().parents[3] / "domain-apps/superplane/auth"
-if str(_SUPERPLANE_AUTH) not in sys.path:
-    sys.path.append(str(_SUPERPLANE_AUTH))

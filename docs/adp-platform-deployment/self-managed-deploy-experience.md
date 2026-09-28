@@ -170,7 +170,7 @@ Once the stack is up, day-to-day work shouldn't touch `deploy-all.sh` again. Use
 
 | Task | How |
 |---|---|
-| Change gateway infra (e.g. add an SSM param) | Review and merge `modules/gateway/infra/` changes, then run `gateway-infra-apply.yml` on main with `reviewed_source_sha` set to the exact reviewed run commit |
+| Change gateway infra (e.g. add an SSM param) | Edit `modules/gateway/infra/`, push, click "Run workflow" on `gateway-infra-apply.yml` in Actions |
 | Ship a new gateway backend image | Push changes to `modules/gateway/src/`, the `gateway-deploy.yml` workflow auto-runs |
 | Ship a new frontend build | Same as above — `gateway-deploy.yml` covers frontend too |
 | Tear down one module for a rebuild | Actions → `<module>-infra-destroy.yml` → type the module name to confirm |

@@ -52,7 +52,7 @@ modules/domain-apps/<domain>/
 
 ## Current Domain Apps
 
-### [`cyber/`](cyber/README.md) — Threat Research Assistant
+### `cyber/` — Threat Research Assistant
 
 A research assistant for threat researchers that performs automated malware analysis and URL triage.
 

@@ -1,9 +1,7 @@
-import { WorkspaceSelector } from '@/components/WorkspaceSelector';
 import { Outlet } from 'react-router-dom';
 import { Navigation } from '@/components/Navigation';
 import { MobileNav } from '@/components/MobileNav';
 import { NoOrgBanner } from '@/components/NoOrgBanner';
-import { TryNewUiLink } from '@/components/TryNewUiLink';
 import { useAuth } from '@/hooks/useAuth';
 
 /** Well-known org ID for the adp-default free-tier tenant. */
@@ -14,7 +12,7 @@ export function MainLayout() {
   const isNoOrg = user?.orgId === ADP_DEFAULT_ORG_ID;
 
   return (
-    <div className="blueprint-ui min-h-screen">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       {/* Skip link for accessibility */}
       <a
         href="#main-content"
@@ -24,27 +22,21 @@ export function MainLayout() {
       </a>
 
       {/* Header */}
-      <header className="blueprint-header sticky top-0 z-30">
-        <div className="px-4 sm:px-6">
-          <div className="flex min-h-16 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2">
+      <header className="bg-white dark:bg-gray-800 shadow-sm sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
             {/* Logo and mobile menu */}
-            <div className="flex min-w-0 flex-wrap items-center gap-4">
+            <div className="flex items-center gap-4">
               <MobileNav />
-              <h1 className="blueprint-brand text-xl font-bold">
-                <span className="blueprint-brand-mark" aria-hidden="true">ADP</span>
+              <h1 className="text-xl font-bold text-gray-900 dark:text-white">
                 Agentic Developer Platform
               </h1>
             </div>
 
             {/* User menu */}
-            <div className="flex min-w-0 flex-wrap items-center gap-4">
-              {/* Issue #5079: opt-in entry into the /next preview. Renders null
-                  unless the fail-closed `new_ui` flag is on, so this header is
-                  byte-identical to before in every environment that has not
-                  enabled the preview. */}
-              <TryNewUiLink />
+            <div className="flex items-center gap-4">
               {user && (
-                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-3">
+                <div className="flex items-center gap-3">
                   {user.avatarUrl && (
                     <img
                       src={user.avatarUrl}
@@ -53,7 +45,7 @@ export function MainLayout() {
                       data-testid="user-avatar"
                     />
                   )}
-                  <span className="min-w-0 break-all text-sm text-gray-600 dark:text-gray-400">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">
                     {user.githubLogin || user.name || user.email || user.id}
                   </span>
                   {user.role && (
@@ -71,26 +63,23 @@ export function MainLayout() {
               </button>
             </div>
           </div>
-          {user && <WorkspaceSelector />}
         </div>
       </header>
 
-      <div className="blueprint-content">
-        <div className="flex min-h-[calc(100vh-5rem)]">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="flex gap-8">
           {/* Sidebar navigation (desktop only) */}
-          <aside className="blueprint-sidebar hidden lg:block flex-shrink-0">
-            <div className="sticky top-24 py-5 px-3">
+          <aside className="hidden lg:block w-64 flex-shrink-0">
+            <div className="sticky top-24">
               <Navigation />
             </div>
           </aside>
 
           {/* Main content */}
-          <main id="main-content" className="blueprint-main flex-1 min-w-0">
-            <div className="blueprint-main-inner">
-              {/* Issue #2984: No-org banner for personal/free-tier tenant users */}
-              {isNoOrg && <NoOrgBanner />}
-              <Outlet />
-            </div>
+          <main id="main-content" className="flex-1 min-w-0">
+            {/* Issue #2984: No-org banner for personal/free-tier tenant users */}
+            {isNoOrg && <NoOrgBanner />}
+            <Outlet />
           </main>
         </div>
       </div>

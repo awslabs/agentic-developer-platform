@@ -51,7 +51,7 @@ variable "output_dir" {
 
 variable "disk_size" {
   type    = string
-  default = "65536"
+  default = "61440"
 }
 
 variable "memory" {
@@ -87,16 +87,10 @@ source "qemu" "windows-11" {
   iso_url      = var.iso_url
   iso_checksum = var.iso_checksum
 
-  # qemuargs replaces every default for a repeated option. Preserve the target
-  # disk and Windows installer when adding the VirtIO CD-ROM (drive E:).
-  # build-pipeline.sh supplies local paths for both cached ISO inputs.
+  # VirtIO drivers ISO as secondary CD-ROM (drive E: in Autounattend.xml)
   cd_files = []
   qemuargs = [
-    # Windows 11 24H2 requires instructions absent from QEMU's default CPU.
-    ["-cpu", "host"],
-    ["-drive", "file={{ .OutputDir }}/{{ .Name }},if=virtio,format=qcow2,cache=writeback"],
-    ["-drive", "file=${var.iso_url},media=cdrom,index=2,readonly=on,format=raw"],
-    ["-drive", "file=${var.virtio_iso_url},media=cdrom,index=3,readonly=on,format=raw"]
+    ["-drive", "file=${var.virtio_iso_url},media=cdrom,index=3"]
   ]
 
   # Floppy drive — Autounattend.xml + bootstrap scripts (StefanScherer pattern)
@@ -108,7 +102,6 @@ source "qemu" "windows-11" {
     "../scripts/fixnetwork.ps1",
     "../scripts/disable-screensaver.ps1",
     "../scripts/disable-winrm.ps1",
-    "../scripts/finalize-image.ps1",
     "../scripts/enable-winrm.ps1",
     "../scripts/cape-configure-winrm.ps1",
     "../scripts/microsoft-updates.bat",
@@ -136,13 +129,13 @@ source "qemu" "windows-11" {
   winrm_password = var.winrm_password
   winrm_timeout  = var.winrm_timeout
 
-  # Answer the Windows ISO boot prompt before it falls through to the empty
-  # disk/floppy. Repeat briefly across BIOS startup; then Autounattend takes over.
-  boot_command = ["<spacebar><wait2><spacebar><wait2><spacebar><wait2><spacebar>"]
-  boot_wait    = "2s"
+  # Boot — empty boot_command is intentional (StefanScherer pattern).
+  # Windows installer reads Autounattend.xml from floppy automatically.
+  boot_command = [""]
+  boot_wait    = "2m"
 
   # Shutdown
-  shutdown_command = "powershell -NoProfile -ExecutionPolicy Bypass -File A:\\finalize-image.ps1"
+  shutdown_command = "shutdown /s /t 10 /f /d p:4:1 /c \"Packer Shutdown\""
   shutdown_timeout = "15m"
 
   # VNC for debugging (disabled in headless mode but available if needed)
@@ -162,5 +155,8 @@ build {
     script = "../scripts/provision-cape.ps1"
   }
 
-  # shutdown_command schedules transport cleanup outside the active WinRM session.
+  # Disable WinRM before final image (security best practice)
+  provisioner "powershell" {
+    script = "../scripts/disable-winrm.ps1"
+  }
 }

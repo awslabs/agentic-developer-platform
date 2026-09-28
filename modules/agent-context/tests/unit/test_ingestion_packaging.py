@@ -30,22 +30,7 @@ _DOCKERFILE = _INGESTION_DIR / "Dockerfile"
 # Modules that publish-ingestion.py imports lazily on the --from-registry path
 # (or that sqs-worker/ingest-repo import) and that MUST be COPYed into /app.
 # Each one is a top-level module in the image, not an installed package.
-#
-# The url_* / s3_source_guard entries are the #5658 SSRF and source-ownership
-# guards. They are listed here for a stronger reason than convenience: if a guard
-# module is missing from the image, the script that imports it fails at import,
-# and the pressure to "fix" that quickly is pressure to drop the import — i.e. to
-# ship the unguarded fetch path. Packaging them is part of the control.
-_REQUIRED_APP_MODULES = [
-    "registry_reader",
-    "scope",
-    "status_callback",
-    "url_denylist",
-    "url_fetch",
-    "browser_fetch",
-    "s3_source_guard",
-    "repo_acl",
-]
+_REQUIRED_APP_MODULES = ["registry_reader", "scope", "status_callback"]
 
 
 # ---------------------------------------------------------------------------

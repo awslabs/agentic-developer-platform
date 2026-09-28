@@ -14,7 +14,6 @@ from botocore.exceptions import ClientError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-import src.admin.connections.service as svc
 from src.admin.connections.github_app_provider import _reset_provider_for_testing
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
@@ -120,7 +119,7 @@ async def org_in_db(db_session: AsyncSession) -> Organization:
 def _mock_github_client(
     *,
     installation_id: int = 124731131,
-    account_login: str = "acme-test",
+    account_login: str = "sophos-test",
     account_type: str = "Organization",
     account_github_id: int = 98765,
 ) -> MagicMock:
@@ -137,7 +136,6 @@ def _mock_github_client(
             "created_at": "2026-05-01T10:00:00Z",
         }
     )
-    client.has_org_admin_membership = AsyncMock(return_value=True)
     client.delete_installation = AsyncMock(return_value=None)
     client.list_installation_repositories = AsyncMock(return_value=2)
     client.list_installation_repository_names = AsyncMock(return_value=["acme/repo-one", "acme/repo-two"])
@@ -149,31 +147,7 @@ def _mock_github_client(
 # ---------------------------------------------------------------------------
 
 
-async def _proven_installer(db, user_id, org_id):
-    from src.shared.models.vault import UserIdentity
-
-    db.add(
-        UserIdentity(
-            user_id=user_id,
-            org_id=org_id,
-            team_id="team-test-001",
-            provider="github",
-            provider_user_id="98765",
-            verification_method="oauth",
-            verified_at=datetime.now(UTC),
-        )
-    )
-    await db.commit()
-
-
 class TestInstallStart:
-    @pytest.fixture(autouse=True)
-    async def _registered_initiator(self, db_session):
-        from src.shared.models.organization import User
-
-        db_session.add(User(id="user-001", org_id="org-test-001", team_id="team-test-001", email="start@test.local", cognito_sub="sub-abc"))
-        await db_session.commit()
-
     async def test_writes_nonce_with_correct_provider(self, db_session: AsyncSession):
         result = await install_start(
             cognito_sub="sub-abc",
@@ -280,13 +254,11 @@ class TestInstallCallback:
                     )
                 )
                 await db.commit()
-        if seed_user:
-            await _proven_installer(db, target_user_id, user_org_id)
         nonce = MagicLinkNonce(
             jti=jti,
             provider=_PROVIDER_GITHUB_INSTALL,
             provider_user_id="sub-abc",
-            channel_context=svc._setup_context(kind="install", org_id=user_org_id),
+            channel_context=None,
             target_user_id=target_user_id,
             expires_at=now - timedelta(minutes=1) if expired else now + timedelta(minutes=15),
             consumed_at=now if consumed else None,
@@ -334,12 +306,7 @@ class TestInstallCallback:
 
     async def test_rejects_nonce_with_no_matching_user(self, db_session: AsyncSession, org_in_db):
         """The nonce is the authenticator; if it points at a user that no longer
-        exists, the caller can't be resolved → reject.
-
-        Issue #5664: this used to fall back to a `cognito_sub` lookup keyed on the
-        nonce's own `provider_user_id`. See
-        ``TestInstallCallbackTenantProvenance`` for why that fallback is gone.
-        """
+        exists (and no cognito_sub match), the caller can't be resolved → reject."""
         await self._write_nonce(db_session, jti="orphan-jti", target_user_id="ghost-user", seed_user=False)
 
         from src.auth.magic_link import TargetUserMismatchError
@@ -365,7 +332,7 @@ class TestInstallCallback:
         )
 
         assert result["success"] is True
-        assert result["account_login"] == "acme-test"
+        assert result["account_login"] == "sophos-test"
         assert result["account_type"] == "Organization"
 
     async def test_nonce_consumed_after_success(self, db_session: AsyncSession, org_in_db):
@@ -422,7 +389,7 @@ class TestInstallCallback:
     async def test_personal_account_does_not_raise(self, db_session: AsyncSession, org_in_db):
         """Personal account installs are handed off to #466; must not raise."""
         await self._write_nonce(db_session, jti="personal-jti")
-        gh = _mock_github_client(installation_id=999, account_type="User", account_login="alice")
+        gh = _mock_github_client(account_type="User", account_login="alice")
 
         result = await install_callback(
             installation_id=999,
@@ -433,185 +400,6 @@ class TestInstallCallback:
         )
         assert result["success"] is True
         assert result["account_type"] == "User"
-
-
-# ---------------------------------------------------------------------------
-# install_callback — tenant provenance (#5664, A10)
-# ---------------------------------------------------------------------------
-
-
-class TestInstallCallbackTenantProvenance:
-    """The owning tenant must come from the authenticated initiator only.
-
-    `caller_org_id` decides which tenant owns the installation: it keys the
-    ChannelTenantMap routing row, the per-tenant App key seed, the org_admin
-    membership grant and the identity-index row. It used to be resolvable from the
-    nonce's own `provider_user_id` column whenever `target_user_id` did not match a
-    user — so the one-time credential could nominate its own subject, and with it
-    the tenant that ends up owning a GitHub installation.
-    """
-
-    async def _seed_user(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: str,
-        org_id: str,
-        cognito_sub: str,
-        create_org: bool = False,
-    ) -> None:
-        from src.shared.models.organization import User
-
-        if create_org:
-            db.add(
-                Organization(
-                    id=org_id,
-                    name=f"Org {org_id}",
-                    aws_accounts=[],
-                    role_mappings={},
-                    settings={},
-                )
-            )
-            await db.commit()
-        db.add(
-            User(
-                id=user_id,
-                org_id=org_id,
-                team_id="team-5664",
-                email=f"{user_id}@test.local",
-                cognito_sub=cognito_sub,
-            )
-        )
-        await db.commit()
-
-    async def _write_nonce(
-        self,
-        db: AsyncSession,
-        *,
-        jti: str,
-        target_user_id: str | None,
-        provider_user_id: str,
-    ) -> None:
-        db.add(
-            MagicLinkNonce(
-                jti=jti,
-                provider=_PROVIDER_GITHUB_INSTALL,
-                target_user_id=target_user_id,
-                provider_user_id=provider_user_id,
-                channel_context=svc._setup_context(kind="install", org_id="org-test-001"),
-                expires_at=datetime.now(UTC) + timedelta(minutes=15),
-                consumed_at=None,
-            )
-        )
-        await db.commit()
-
-    async def _write_nonce_naming_another_user(
-        self,
-        db: AsyncSession,
-        *,
-        jti: str,
-        victim_org_id: str,
-    ) -> None:
-        """A nonce whose target_user_id is unresolvable but whose provider_user_id
-        points at a real user in another tenant — the old fallback's input."""
-        await self._seed_user(
-            db,
-            user_id="victim-user",
-            org_id=victim_org_id,
-            cognito_sub="sub-victim",
-            create_org=True,
-        )
-        await self._write_nonce(
-            db,
-            jti=jti,
-            # Unresolvable initiator...
-            target_user_id="ghost-initiator",
-            # ...but a resolvable cognito_sub for a user in ANOTHER tenant.
-            provider_user_id="sub-victim",
-        )
-
-    async def test_tenant_is_never_derived_from_the_credential(self, db_session: AsyncSession, org_in_db):
-        """With no resolvable authenticated initiator the callback must refuse,
-        not fall back to whoever the credential names."""
-        from src.auth.magic_link import TargetUserMismatchError
-
-        await self._write_nonce_naming_another_user(db_session, jti="prov-jti", victim_org_id="org-victim-5664")
-        gh = _mock_github_client()
-
-        with pytest.raises(TargetUserMismatchError):
-            await install_callback(
-                installation_id=124731131,
-                setup_action="install",
-                state="prov-jti",
-                db=db_session,
-                github_client=gh,
-            )
-
-    async def test_refusal_attaches_the_installation_to_nobody(self, db_session: AsyncSession, org_in_db):
-        """A refusal must leave no routing row behind — otherwise the install is
-        still attached to a tenant that never authorised it."""
-        from sqlalchemy import select
-
-        from src.auth.magic_link import TargetUserMismatchError
-
-        await self._write_nonce_naming_another_user(db_session, jti="prov-jti-2", victim_org_id="org-victim-5664b")
-        gh = _mock_github_client()
-
-        with pytest.raises(TargetUserMismatchError):
-            await install_callback(
-                installation_id=124731131,
-                setup_action="install",
-                state="prov-jti-2",
-                db=db_session,
-                github_client=gh,
-            )
-
-        rows = (await db_session.execute(select(ChannelTenantMap).where(ChannelTenantMap.provider == "github"))).scalars().all()
-        assert rows == [], f"refused install still wrote a routing row: {[r.org_id for r in rows]}"
-
-        nonce = await db_session.get(MagicLinkNonce, "prov-jti-2")
-        assert nonce is not None and nonce.consumed_at is None, "refusal consumed the single-use credential"
-
-    async def test_disagreeing_subject_and_canonical_initiator_are_refused(self, db_session: AsyncSession, org_in_db):
-        """A versioned setup binds both identifiers. A contradictory subject
-        must not attach the installation to either user's tenant."""
-        from sqlalchemy import select
-
-        await self._seed_user(
-            db_session,
-            user_id="other-user",
-            org_id="org-other-5664",
-            cognito_sub="sub-other",
-            create_org=True,
-        )
-        # The initiator lives in org-test-001 (the org_in_db fixture)...
-        await self._seed_user(
-            db_session,
-            user_id="user-initiator",
-            org_id="org-test-001",
-            cognito_sub="sub-initiator",
-        )
-        # ...while the credential names sub-other, who lives in org-other-5664.
-        await self._write_nonce(
-            db_session,
-            jti="prov-jti-3",
-            target_user_id="user-initiator",
-            provider_user_id="sub-other",
-        )
-
-        from src.auth.magic_link import TargetUserMismatchError
-
-        with pytest.raises(TargetUserMismatchError):
-            await install_callback(
-                installation_id=124731131,
-                setup_action="install",
-                state="prov-jti-3",
-                db=db_session,
-                github_client=_mock_github_client(),
-            )
-
-        rows = (await db_session.execute(select(ChannelTenantMap).where(ChannelTenantMap.provider == "github"))).scalars().all()
-        assert rows == [], "contradictory setup binding attached an installation"
 
 
 # ---------------------------------------------------------------------------
@@ -683,14 +471,9 @@ class TestDeleteConnection:
             settings={},
         )
         db_session.add(other_org)
-        # #5664 (A10): `installation_id` is the canonical installation -> tenant
-        # column (#4070, migration 026). Setting it is what makes this row
-        # visible to `resolve_installation_owner`; keyed on `provider_scope_id`
-        # alone the row represented an installation nobody owned.
         mapping = ChannelTenantMap(
             provider="github",
             provider_scope_id="98765",
-            installation_id="124731131",
             org_id="org-other-003",
         )
         db_session.add(mapping)
@@ -721,7 +504,6 @@ class TestDeleteConnection:
         mapping = ChannelTenantMap(
             provider="github",
             provider_scope_id="98765",
-            installation_id="124731131",
             org_id="org-test-001",
         )
         db_session.add(mapping)
@@ -750,7 +532,6 @@ class TestDeleteConnection:
         mapping = ChannelTenantMap(
             provider="github",
             provider_scope_id="98765",
-            installation_id="124731131",
             org_id="org-test-001",
         )
         db_session.add(mapping)
@@ -930,12 +711,11 @@ class TestSeedTenantGitHubAppSecret:
             )
         )
         await db_session.commit()
-        await _proven_installer(db_session, "user-seed-test", "org-test-001")
         nonce = MagicLinkNonce(
             jti="seed-jti",
             provider=_PROVIDER_GITHUB_INSTALL,
             provider_user_id="sub-seed",
-            channel_context=svc._setup_context(kind="install", org_id="org-test-001"),
+            channel_context=None,
             target_user_id="user-seed-test",
             expires_at=datetime.now(UTC) + timedelta(minutes=15),
             consumed_at=None,
@@ -993,12 +773,11 @@ class TestInstallCallbackWritesDDB:
                 )
             )
             await db.commit()
-        await _proven_installer(db, user_id, org_id)
         nonce = MagicLinkNonce(
             jti=jti,
             provider=_PROVIDER_GITHUB_INSTALL,
             provider_user_id="sub-ddb",
-            channel_context=svc._setup_context(kind="install", org_id=org_id),
+            channel_context=None,
             target_user_id=user_id,
             expires_at=datetime.now(UTC) + timedelta(minutes=15),
             consumed_at=None,
@@ -1061,12 +840,8 @@ class TestInstallCallbackWritesDDB:
 
         # Issue #3134 fix: installation rows now use UpdateItem (SET semantics)
         # so trigger_policy/min_author_association set elsewhere are preserved.
-        assert sum("Update" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
-        call_kwargs = next(
-            call.kwargs["TransactItems"][1]["Update"]
-            for call in mock_ddb_client.transact_write_items.call_args_list
-            if "Update" in call.kwargs["TransactItems"][1]
-        )
+        mock_ddb_client.update_item.assert_called_once()
+        call_kwargs = mock_ddb_client.update_item.call_args[1]
         assert call_kwargs["TableName"] == "adp-dev-identity-index"
         key = call_kwargs["Key"]
         assert key["identity_type"] == {"S": "github_installation_id"}
@@ -1086,7 +861,7 @@ class TestInstallCallbackWritesDDB:
 
         mock_ddb_client = MagicMock()
         error_response = {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "throttled"}}
-        mock_ddb_client.transact_write_items.side_effect = ClientError(error_response, "UpdateItem")
+        mock_ddb_client.update_item.side_effect = ClientError(error_response, "UpdateItem")
 
         with patch(
             "src.admin.identity_index.boto3.client",
@@ -1096,160 +871,6 @@ class TestInstallCallbackWritesDDB:
             await real_fn(
                 installation_id=144415968,
                 org_id="platform-admin",
-            )
-
-
-# ---------------------------------------------------------------------------
-# Reverse row write (Issue #3860)
-# ---------------------------------------------------------------------------
-
-
-class TestInstallCallbackWritesReverseRow:
-    """Issue #3860: install_callback must write the REVERSE row (org_installation)
-    so that resolve_installation_for_tenant() (used by adp-trigger) works for
-    UI-installed tenants."""
-
-    async def test_write_function_writes_reverse_row(self, monkeypatch):
-        """_write_installation_identity_index writes both forward AND reverse rows."""
-        import importlib
-
-        import src.admin.connections.service as svc_mod
-
-        importlib.reload(svc_mod)
-        real_fn = svc_mod._write_installation_identity_index
-
-        mock_ddb_client = MagicMock()
-        # get_item for the reverse-row guard returns empty (no existing row)
-        mock_ddb_client.get_item.return_value = {}
-
-        with patch(
-            "src.admin.identity_index.boto3.client",
-            return_value=mock_ddb_client,
-        ):
-            await real_fn(
-                installation_id=146123525,
-                org_id="acme-hackathon",
-            )
-
-        # Forward row: update_item call
-        assert sum("Update" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
-        update_kwargs = next(
-            call.kwargs["TransactItems"][1]["Update"]
-            for call in mock_ddb_client.transact_write_items.call_args_list
-            if "Update" in call.kwargs["TransactItems"][1]
-        )
-        assert update_kwargs["Key"]["identity_type"] == {"S": "github_installation_id"}
-        assert update_kwargs["Key"]["identity_value"] == {"S": "146123525"}
-
-        # Reverse row: put_item call (org_installation)
-        put_calls = [
-            call.kwargs["TransactItems"][1]["Put"]
-            for call in mock_ddb_client.transact_write_items.call_args_list
-            if "Put" in call.kwargs["TransactItems"][1]
-        ]
-        assert len(put_calls) == 1
-        put_kwargs = put_calls[0]
-        assert put_kwargs["Item"]["identity_type"] == {"S": "org_installation"}
-        assert put_kwargs["Item"]["identity_value"] == {"S": "acme-hackathon"}
-        assert put_kwargs["Item"]["installation_id"] == {"N": "146123525"}
-        assert put_kwargs["Item"]["auto_registered"] == {"BOOL": True}
-
-    async def test_reverse_row_guard_respects_postgres_owned(self, monkeypatch):
-        """If a non-auto_registered reverse row exists, do NOT clobber it."""
-        import importlib
-
-        import src.admin.connections.service as svc_mod
-
-        importlib.reload(svc_mod)
-        real_fn = svc_mod._write_installation_identity_index
-
-        mock_ddb_client = MagicMock()
-        # get_item returns a Postgres-owned row (no auto_registered flag)
-        mock_ddb_client.get_item.return_value = {
-            "Item": {
-                "identity_type": {"S": "org_installation"},
-                "identity_value": {"S": "managed-tenant"},
-                "installation_id": {"N": "999999"},
-                "updated_at": {"S": "2026-07-01T00:00:00Z"},
-            }
-        }
-
-        with patch(
-            "src.admin.identity_index.boto3.client",
-            return_value=mock_ddb_client,
-        ):
-            await real_fn(
-                installation_id=146123525,
-                org_id="managed-tenant",
-            )
-
-        # Forward row update_item should still fire
-        assert sum("Update" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
-        # Reverse row put_item should NOT fire (guard respected)
-        assert all("Put" not in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list)
-
-    async def test_reverse_row_overwrites_auto_registered(self, monkeypatch):
-        """If an auto_registered reverse row exists, overwrite it (idempotent refresh)."""
-        import importlib
-
-        import src.admin.connections.service as svc_mod
-
-        importlib.reload(svc_mod)
-        real_fn = svc_mod._write_installation_identity_index
-
-        mock_ddb_client = MagicMock()
-        # get_item returns an auto_registered row → safe to overwrite
-        mock_ddb_client.get_item.return_value = {
-            "Item": {
-                "identity_type": {"S": "org_installation"},
-                "identity_value": {"S": "acme-hackathon"},
-                "installation_id": {"N": "146123525"},
-                "updated_at": {"S": "2026-07-12T00:00:00Z"},
-                "auto_registered": {"BOOL": True},
-            }
-        }
-
-        with patch(
-            "src.admin.identity_index.boto3.client",
-            return_value=mock_ddb_client,
-        ):
-            await real_fn(
-                installation_id=146123525,
-                org_id="acme-hackathon",
-            )
-
-        # Both forward and reverse writes should fire
-        assert sum("Update" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
-        assert sum("Put" in call.kwargs["TransactItems"][1] for call in mock_ddb_client.transact_write_items.call_args_list) == 1
-
-    async def test_reverse_row_failure_does_not_propagate(self, monkeypatch):
-        """Reverse-row write failure is best-effort — does not raise."""
-        import importlib
-
-        from botocore.exceptions import ClientError
-
-        import src.admin.connections.service as svc_mod
-
-        importlib.reload(svc_mod)
-        real_fn = svc_mod._write_installation_identity_index
-
-        mock_ddb_client = MagicMock()
-        # get_item succeeds (no existing row)
-        mock_ddb_client.get_item.return_value = {}
-        # update_item (forward row) succeeds
-        mock_ddb_client.update_item.return_value = {}
-        # put_item (reverse row) fails
-        error_response = {"Error": {"Code": "InternalServerError", "Message": "boom"}}
-        mock_ddb_client.transact_write_items.side_effect = [{}, *[ClientError(error_response, "TransactWriteItems")] * 3]
-
-        with patch(
-            "src.admin.identity_index.boto3.client",
-            return_value=mock_ddb_client,
-        ):
-            # Should not raise — best-effort
-            await real_fn(
-                installation_id=146123525,
-                org_id="acme-hackathon",
             )
 
 

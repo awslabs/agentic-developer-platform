@@ -29,12 +29,6 @@ from tests.knowledge.conftest import (
 class TestRegisterAssetAccessibility:
     """Tests for register-time accessibility validation in POST /assets."""
 
-    @pytest.fixture(autouse=True)
-    def inert_dispatch(self):
-        # Keep registration/tenant checks real without scheduling an ingestion job.
-        with patch("src.knowledge.routes.dispatch_ingestion", new_callable=AsyncMock) as dispatch:
-            yield dispatch
-
     @pytest.mark.anyio
     async def test_public_repo_accepted_as_shared(self, make_client, fake_user):
         """Public repo → ACCEPT shared scope, tenant_id=NULL, no installation call."""
@@ -945,19 +939,12 @@ class TestMembershipFallbackRouteIntegration:
         ]
 
         # The gateway_db handles: verify_installation_ownership + check_membership_for_installation
-        #
-        # Issue #4070: verify_installation_ownership now delegates to the canonical
-        # resolver, which issues three queries instead of one — quarantine check,
-        # channel_tenant_map claims, then organizations (unioned so ownership
-        # recorded in either representation is found). All three come back empty
-        # here: the caller's personal tenant genuinely does not own the install,
-        # which is what makes the membership fallback the path under test.
+        # - verify_installation_ownership: SELECT 1 FROM channel_tenant_map → NOT found (personal tenant doesn't own)
+        # - check_membership_for_installation query 1: SELECT id FROM users WHERE cognito_sub → found
+        # - check_membership_for_installation query 2: JOIN → returns owning org_id
         gateway_db = FakeAsyncSession()
-        gateway_db.get = AsyncMock(return_value=None)  # No durable installation revocation.
         gateway_db.execute_results = [
-            FakeResult(rows=[]),  # resolver: no quarantined conflict
-            FakeResult(rows=[]),  # resolver: no channel_tenant_map claim
-            FakeResult(rows=[]),  # resolver: no organizations claim → NOT_FOUND
+            FakeResult(rows=[]),  # verify_installation_ownership → no match (personal tenant)
             FakeResult(rows=[("pg-user-id-1",)]),  # users lookup → found
             FakeResult(rows=[("aws-e",)]),  # membership JOIN → org tenant owns installation
         ]
@@ -1024,17 +1011,9 @@ class TestMembershipFallbackRouteIntegration:
         ]
 
         # Gateway DB: verify_installation_ownership → FOUND (tenant owns it)
-        #
-        # Issue #4070: the delegate resolves through the canonical resolver, so the
-        # scripted sequence is quarantine → channel_tenant_map → organizations.
-        # The caller's own tenant is the sole claimant, so ownership is granted
-        # and the membership fallback is never reached — the point of this test.
         gateway_db = FakeAsyncSession()
-        gateway_db.get = AsyncMock(return_value=None)  # No durable installation revocation.
         gateway_db.execute_results = [
-            FakeResult(rows=[]),  # resolver: no quarantined conflict
-            FakeResult(rows=[("acme-corp",)]),  # resolver: channel_tenant_map claim → caller's tenant
-            FakeResult(rows=[]),  # resolver: no additional organizations claim
+            FakeResult(rows=[(1,)]),  # verify_installation_ownership → match found
         ]
 
         with patch(
@@ -1069,18 +1048,12 @@ class TestMembershipFallbackRouteIntegration:
 
         assert resp.status_code == 201
 
-        # The ownership decision was made against gateway_db (where
-        # channel_tenant_map lives), not the agent-context db — the point of
-        # this test.
-        #
-        # Issue #4070: this used to assert on the query's bound parameters
-        # (`params["tenant_id"] == "acme-corp"`). That is the #4046 plumbing
-        # antipattern — it still passes with the deny branch deleted. Assert the
-        # routing and the decision instead.
-        assert gateway_db.executed_statements, "ownership check did not touch gateway_db"
-        # The membership fallback was not reached: it issues further gateway
-        # queries beyond the ones the resolver consumes.
-        assert len(gateway_db.executed_statements) == len(gateway_db.execute_results)
+        # Gateway DB should have been queried (ownership check)
+        assert len(gateway_db.executed_statements) == 1
+        # The ownership query should target channel_tenant_map
+        ownership_params = gateway_db.executed_statements[0][1]
+        assert ownership_params["tenant_id"] == "acme-corp"
+        assert ownership_params["installation_id"] == "98765"
 
 
 # ---------------------------------------------------------------------------

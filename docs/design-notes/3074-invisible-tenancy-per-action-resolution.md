@@ -321,14 +321,14 @@ The switch-tenant endpoint (#2982, ships as #3071) issues gateway JWTs with the 
 ### 5.2 Org Name as Label, Not Mode
 
 Connections and agents display their owning org as a **label/badge** (e.g.,
-`[aws-innovate]` or `[acme-research]`). This is informational grouping, not a
+`[aws-innovate]` or `[sophos-research]`). This is informational grouping, not a
 filtering mode. The user sees everything they have access to in one scroll.
 
 ```
 Connections
 ├── [aws-innovate] aws-innovate/repo-alpha    ✓ Connected    [Disconnect]
 ├── [aws-innovate] aws-innovate/repo-beta     ✓ Connected    [Disconnect]
-├── [acme-dev]     acme-dev/platform          ✓ Connected    [Manage]
+├── [sophos-dev]   sophos-dev/platform        ✓ Connected    [Manage]
 └── [personal]     myuser/side-project        ✓ Connected    [Disconnect]
 ```
 
@@ -364,41 +364,13 @@ addressed in any PR under this design:
 
 | Non-goal | Rationale |
 |---|---|
-| **Billing semantics changes** | Billing remains per-tenant. The invisible UI doesn't change how costs are attributed — each request's resolved tenant is the billing unit. Billing UI may need a multi-tenant aggregation view eventually, but that's a separate product decision. **The person-scoped slice of that deferral has since been decided — see §6.1.** Billing semantics themselves are unchanged by it. |
+| **Billing semantics changes** | Billing remains per-tenant. The invisible UI doesn't change how costs are attributed — each request's resolved tenant is the billing unit. Billing UI may need a multi-tenant aggregation view eventually, but that's a separate product decision. |
 | **Teammate auto-join (T3.2)** | Auto-join semantics (#2951 D3) are unchanged. Users still join tenants via the org-membership matcher at login. Invisible tenancy doesn't change WHO gets access, only how access is EXERCISED once granted. |
 | **Rule 1 changes (tenant creation at registration)** | The three-rule model (#2951) is unchanged. Tenants are still created at App registration. Invisible tenancy only changes how users interact with existing tenants. |
 | **Cross-tenant data migration** | If two tenants merge (#2954 Rule 3), data migration is a separate atomic operation. Invisible tenancy doesn't create new merge semantics. |
-| **Multi-tenant billing dashboard** | A future product feature (see all orgs' spend in one view). Not required for invisible tenancy to ship — the per-org dashboard with "all workspaces" toggle is sufficient. **Partially decided — see §6.1:** the *person-scoped* view (a person's own spend across their member tenants) is now designed; the org-admin-facing "all orgs' spend" view remains a non-goal and is explicitly ruled out. |
+| **Multi-tenant billing dashboard** | A future product feature (see all orgs' spend in one view). Not required for invisible tenancy to ship — the per-org dashboard with "all workspaces" toggle is sufficient. |
 | **Agent runtime changes** | Agent workers (`adp-dev-agent-scaledjob-role`) already receive their target tenant via the webhook event payload. Per-action resolution is a gateway-layer change; the agent runtime is unaffected. |
 | **Platform-admin endpoint changes** | Endpoints gated by `require_platform_admin` have no tenant dimension — they're deployment-wide. No migration needed. |
-
-### 6.1 Deferrals since resolved: the person-scoped billing view (#4620)
-
-The two billing rows above deferred "a multi-tenant aggregation view" to a separate
-product decision. **That decision has been made for the person-scoped slice only**, in
-[`4620-cross-org-person-budgets.md`](4620-cross-org-person-budgets.md) (issue #4620,
-2026-09-01). Recorded here so the deferral is not re-litigated.
-
-| Question deferred here | Decided in note 4620 |
-|---|---|
-| Does a cross-tenant billing *read* exist at all? | **Yes, for one consumer:** a person may see their own settled spend across the tenants they are a member of (`/api/me/budget` gains per-org lines plus one labelled cross-org aggregate — 4620 §7.1). |
-| Does that change billing semantics? | **No.** The per-tenant ledger stays the unit of record; the person view is a **derived read** that sums existing per-tenant rows. No aggregate accumulator table (4620 §4.1). This note's "billing remains per-tenant" holds unchanged. |
-| Who may see across tenants? | Only **the person themselves** and **platform admin**, and only settled dollar *totals* — never run detail. A home-org admin gets **no** foreign-org figures, not even aggregated (4620 §7.2). |
-| Is the org-admin "all orgs' spend" dashboard now in scope? | **No — still a non-goal.** 4620 §7.2 rules it out on disclosure grounds: it would be another tenant's cost data with no membership basis, failing §8.1's invariant. Any change there needs its own ruling. |
-
-Why this is consistent with, not a contradiction of, invisible tenancy: note 4620 §6
-derives the requirement *from* this design — because §5.4 demotes the switcher, a budget
-page that answers "how much have I spent?" only for the active workspace contradicts the
-direction, so aggregation becomes necessary. Its read shape reuses §1.4's membership
-fan-out and §5.3's "all workspaces" toggle rather than introducing a new convention, and
-it preserves §8.1's invariant: every tenant contributing to a person's aggregate is one
-that person is a member of.
-
-One 4620 question was open when its note merged and has since been RULED (issue #4620,
-2026-09-02, Option C): a person-authored cap MAY hard-deny spend executing in a foreign
-tenant — authored only by the person or platform admin, never an org admin; settled-ledger
-denominator with a documented overshoot bound. Enforcement-only; the read model recorded
-above is unchanged by it.
 
 ---
 
@@ -479,8 +451,6 @@ This is richer than the current audit trail (which only logs the session org_id)
 - **#2982** — Switch-tenant endpoint + switcher UI (demoted to admin under invisible tenancy)
 - **#3071** — "Viewing" chip + switch endpoint (produces token-claim inventory for §4.2)
 - **#2981** — EPIC (delivery tracking)
-- **#4620** — Cross-org person-scoped budgets; answers §6's deferred billing decision for the person-scoped slice (see §6.1)
-- **`docs/design-notes/4620-cross-org-person-budgets.md`** — that decision's design note
 - **`modules/gateway/src/auth/org_id_resolver.py`** — Current `resolve_effective_org_id`
 - **`modules/gateway/src/admin/connections/routes.py:218-246`** — Multi-tenant fan-out pattern
 - **`modules/gateway/src/admin/connections/routes.py:254-286`** — Disconnect endpoint (M1 target)

@@ -5,8 +5,6 @@ Issue #144: Phase 1 - Verify timing headers appear on proxy responses
 and contain all expected segments with reasonable values.
 """
 
-from uuid import UUID
-
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -186,11 +184,9 @@ class TestRequestIdAndTimingCoexistence:
         assert "X-Gateway-Timing" in response.headers
 
     def test_custom_request_id_with_timing(self, timing_client):
-        """Test server identity and timing coexist with a client correlation header."""
+        """Test that custom X-Request-ID works alongside timing."""
         response = timing_client.get("/test", headers={"X-Request-ID": "custom-123"})
-        request_id = response.headers["X-Request-ID"]
-        assert str(UUID(request_id)) == request_id
-        assert request_id != "custom-123"
+        assert response.headers["X-Request-ID"] == "custom-123"
         assert "X-Gateway-Timing" in response.headers
 
 

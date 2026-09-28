@@ -2,17 +2,16 @@
 # IAM Roles and Policies for Budget Lambda Functions (Issue #234)
 # =============================================================================
 
-# Get the current partition. Account and region are explicit module inputs so
-# module-level dependencies cannot defer them to apply time.
-data "aws_partition" "current" {}
+# Get current AWS account ID and region
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
 
 # =============================================================================
 # Usage Tracker Lambda IAM Role
 # =============================================================================
 
 resource "aws_iam_role" "usage_tracker" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-budget-usage-tracker-role"
+  name = "${var.name_prefix}-budget-usage-tracker-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -59,7 +58,7 @@ resource "aws_iam_role_policy" "usage_tracker" {
         Action = [
           "rds-db:connect"
         ]
-        Resource = var.rds_resource_id != "" ? "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:${var.rds_resource_id}/${var.db_username}" : "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:*/${var.db_username}"
+        Resource = var.rds_resource_id != "" ? "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:${var.rds_resource_id}/${var.db_username}" : "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:*/${var.db_username}"
       },
       # CloudWatch Logs
       {
@@ -70,30 +69,7 @@ resource "aws_iam_role_policy" "usage_tracker" {
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/lambda/${var.name_prefix}-budget-usage-tracker:*"
-      },
-      # CloudWatch custom metrics (Issue #4592)
-      #
-      # pricing_fallback.get_model_pricing() publishes ADP/Gateway ·
-      # UnknownModelPricing on every fallback-priced model, but this role never
-      # had PutMetricData. The emit is wrapped in `except Exception: pass`, so
-      # every publish failed silently — the log WARNING landed and the metric
-      # never did. Without this the #4592 alarm can never fire.
-      #
-      # PutMetricData takes no resource-level permissions; scope it with the
-      # namespace condition instead of leaving it fully open.
-      {
-        Sid    = "CloudWatchPutMetrics"
-        Effect = "Allow"
-        Action = [
-          "cloudwatch:PutMetricData"
-        ]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "cloudwatch:namespace" = "ADP/Gateway"
-          }
-        }
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.name_prefix}-budget-usage-tracker:*"
       },
       # VPC ENI Management
       {
@@ -117,8 +93,7 @@ resource "aws_iam_role_policy" "usage_tracker" {
 # =============================================================================
 
 resource "aws_iam_role" "pricing_refresh" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-pricing-refresh-role"
+  name = "${var.name_prefix}-pricing-refresh-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -148,21 +123,6 @@ resource "aws_iam_role_policy" "pricing_refresh" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Sid      = "PricingExecutionFailureDestination"
-        Effect   = "Allow"
-        Action   = ["sqs:SendMessage"]
-        Resource = aws_sqs_queue.pricing_execution_failure.arn
-      },
-      {
-        Sid      = "PricingOperationalMetrics"
-        Effect   = "Allow"
-        Action   = ["cloudwatch:PutMetricData"]
-        Resource = "*"
-        Condition = {
-          StringEquals = { "cloudwatch:namespace" = "ADP/Gateway" }
-        }
-      },
       # AWS Pricing API Access (only available in us-east-1 and ap-south-1)
       {
         Sid    = "PricingAPIAccess"
@@ -181,7 +141,7 @@ resource "aws_iam_role_policy" "pricing_refresh" {
         Action = [
           "rds-db:connect"
         ]
-        Resource = var.rds_resource_id != "" ? "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:${var.rds_resource_id}/${var.db_username}" : "arn:aws:rds-db:${var.aws_region}:${var.account_id}:dbuser:*/${var.db_username}"
+        Resource = var.rds_resource_id != "" ? "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:${var.rds_resource_id}/${var.db_username}" : "arn:aws:rds-db:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:dbuser:*/${var.db_username}"
       },
       # CloudWatch Logs
       {
@@ -192,7 +152,7 @@ resource "aws_iam_role_policy" "pricing_refresh" {
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/lambda/${var.name_prefix}-pricing-refresh:*"
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.name_prefix}-pricing-refresh:*"
       },
       # VPC ENI Management
       {

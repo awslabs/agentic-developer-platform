@@ -56,8 +56,6 @@ export interface ArtifactStore {
   fetch(
     artifactId: string,
     destPath: string,
-    /** Trusted active session, supplied by the orchestrator rather than tool input. */
-    sessionId: string,
     /** Stage B (#185): caller identity for team-level access check. */
     identity?: CallerIdentity,
   ): Promise<void>;

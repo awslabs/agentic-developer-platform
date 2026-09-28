@@ -1,4 +1,4 @@
-"""Service/response unit tests for department, team, user and service-account routes."""
+"""Integration tests for onboarding routes (departments, teams, users, service accounts)."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.routes import (
     get_access_control,
@@ -15,30 +14,17 @@ from src.admin.routes import (
     get_current_user,
     router,
 )
-from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
+
 # Create a minimal FastAPI app for testing
-
-
-@pytest.fixture(autouse=True)
-def _isolate_unit_test_audit_sink(monkeypatch):
-    # These service/response unit tests use fake database sessions. Keep the
-    # route's audit staging and permission gates; durable SQL is exercised by
-    # test_admin_audit_durability.py and test_admin_audit_postgres.py.
-    from src.admin import audit_operation
-
-    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
-
-
 @pytest.fixture
-def test_app(mock_db_session):
+def test_app():
     """Create a test FastAPI application."""
     from fastapi import FastAPI
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_db] = lambda: mock_db_session
     return app
 
 
@@ -73,16 +59,14 @@ def non_admin_user():
 @pytest.fixture
 def mock_db_session():
     """Create a mock database session."""
-    session = AsyncMock(spec=AsyncSession)
-    session.get.return_value = None
+    session = AsyncMock()
     return session
 
 
 @pytest.fixture
-def mock_admin_service(mock_db_session):
+def mock_admin_service():
     """Create a mock admin service."""
     service = MagicMock()
-    service.db = mock_db_session
     return service
 
 
@@ -481,11 +465,6 @@ class TestUserEndpoints:
     @pytest.mark.asyncio
     async def test_remove_user(self, test_app, mock_admin_service, mock_access_control, admin_user):
         """Test removing a user."""
-        from src.admin.service import UserAuthzState
-
-        mock_admin_service.get_user_authz_state = AsyncMock(
-            return_value=UserAuthzState(user_id="user-123", org_id="test-org", cognito_sub="sub-123", users_role="member", membership_role="member")
-        )
         mock_admin_service.remove_user = AsyncMock(return_value=True)
 
         test_app.dependency_overrides[get_admin_service] = lambda: mock_admin_service

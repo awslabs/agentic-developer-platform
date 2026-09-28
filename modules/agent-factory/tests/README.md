@@ -93,3 +93,4 @@ Fails fast if required live config is missing.
 ## Notes
 
 - Live tests 19, 21-24 require the **long-running worker image in ECR** and the **KEDA ScaledJob deployed**. These skip gracefully when absent.
+- `scripts/verify-e2e.sh` is a legacy MCP Agent Mail script (not agent-gateway). The pytest suite here covers the agent-gateway pipeline.

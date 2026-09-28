@@ -1,5 +1,3 @@
-import { TaskActivity } from '@/components/activity/TaskActivity';
-import './AgentActivity.css';
 /**
  * Agent Activity page — paginated list of agent invocations.
  *
@@ -19,40 +17,20 @@ import './AgentActivity.css';
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Input, Select } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import { FilterChips } from '@/components/activity/FilterChips';
 import { ActivityCardList } from '@/components/activity/ActivityCardList';
-import { LivenessBadge } from '@/components/activity/LivenessBadge';
-import { useRevalidatingFeaturesQuery } from '@/hooks/useFeatures';
-import { LiveStreamLink } from '@/components/activity/LiveStreamLink';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import type { ActiveFilter } from '@/components/activity/FilterChips';
 import InvocationChain from '@/components/InvocationChain';
 import { InvocationDetail } from '@/components/InvocationDetail';
-import { LastUpdated } from '@/components/LastUpdated';
 import { TranscriptViewer } from '@/components/TranscriptViewer';
 import { usePermissions } from '@/hooks/usePermissions';
 import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationDetail } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
-// Issue #4207: CostBadge/ChainCostBadge each had their own copy of the 4/2-decimal
-// split and the null policy. Formatting is shared now; these only style it.
-// Issue #4400: and the badges themselves are shared, so the budget drill-down
-// renders cost identically instead of adding a third styling of the same policy.
-import { formatAmount } from '@/utils/cost';
-import { CostBadge, ChainCostBadge } from '@/components/shared/CostBadge';
-// Issue #4400: STATUS_CONFIG lived here and was copied into ActivityCard and
-// InvocationDetail. One map now, with `compact`/`full` label variants.
-import { describeStatus, statusLabel } from '@/utils/status';
-import {
-  describeSkipReason,
-  skipReasonLabel,
-  isNonRunStatus,
-  NON_RUN_STATUSES,
-} from '@/utils/skipReason';
-import { LIVENESS_OPTIONS } from '@/utils/liveness';
 import type {
   InvocationItem,
   InvocationStatus,
@@ -62,26 +40,26 @@ import type {
   ChainSummary,
 } from '@/types/activity';
 
-/**
- * Issue #4020: the badge now carries the reason.
- *
- * A bare "✗ No-op" told the operator only that nothing ran, which is exactly
- * what they already knew. `title` puts the explanation one hover away without
- * widening the column, and the same text goes in an sr-only span so it is not
- * hover-only for keyboard and screen-reader users.
- */
-function StatusBadge({ status, skipReason }: { status: InvocationStatus; skipReason?: string | null }) {
-  const config = describeStatus(status);
-  const reasonText = isNonRunStatus(status) ? skipReasonLabel(skipReason) : null;
+// ---------------------------------------------------------------------------
+// Status rendering config
+// ---------------------------------------------------------------------------
+
+const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; colorClass: string }> = {
+  webhook_received: { glyph: '∘', label: 'Webhook recv', colorClass: 'text-gray-500 dark:text-gray-400' },
+  in_progress: { glyph: '●', label: 'In progress', colorClass: 'text-blue-600 dark:text-blue-400' },
+  complete: { glyph: '✓', label: 'Complete', colorClass: 'text-green-600 dark:text-green-400' },
+  failed: { glyph: '✗', label: 'Failed', colorClass: 'text-red-600 dark:text-red-400' },
+  rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
+  rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
+  no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
+};
+
+function StatusBadge({ status }: { status: InvocationStatus }) {
+  const config = STATUS_CONFIG[status] ?? STATUS_CONFIG.no_op;
   return (
-    <span
-      className={`activity-status-badge inline-flex items-center gap-1 font-medium text-sm ${config.colorClass}`}
-      data-status={status}
-      title={reasonText ? `${config.label}: ${reasonText}` : undefined}
-    >
+    <span className={`inline-flex items-center gap-1 font-medium text-sm ${config.colorClass}`}>
       <span aria-hidden="true">{config.glyph}</span>
       <span>{config.label}</span>
-      {reasonText && <span className="sr-only">: {reasonText}</span>}
     </span>
   );
 }
@@ -108,8 +86,7 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
   return (
     <div className="flex flex-col gap-1">
       <span
-        className={`activity-trigger-badge inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${config.colorClass}`}
-        data-trigger-kind={triggerKind}
+        className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${config.colorClass}`}
         data-testid={`trigger-badge-${triggerKind}`}
       >
         <span aria-hidden="true">{config.icon}</span>
@@ -139,6 +116,48 @@ function TriggerBadge({ item, onViewChain }: TriggerBadgeProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Cost rendering (Issue #1616)
+// ---------------------------------------------------------------------------
+
+function CostBadge({ item }: { item: InvocationItem }) {
+  if (item.total_cost_usd === null || item.total_cost_usd === undefined) {
+    // Not metered (non-gateway-mode run) or no usage_logs rows yet
+    return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
+  }
+  if (item.total_cost_usd === 0 && item.status === 'in_progress') {
+    // Run in progress, cost not yet backfilled
+    return <span className="text-gray-400 dark:text-gray-500 text-sm italic">pending</span>;
+  }
+  // Format cost: show 4 decimal places for small amounts, 2 for larger
+  const formatted = item.total_cost_usd < 0.01
+    ? `$${item.total_cost_usd.toFixed(4)}`
+    : `$${item.total_cost_usd.toFixed(2)}`;
+  return (
+    <span className="text-sm text-gray-900 dark:text-white font-mono" title={`${item.call_count ?? 0} calls, ${item.total_tokens ?? 0} tokens`}>
+      {formatted}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chain cost badge (aggregate for a chain)
+// ---------------------------------------------------------------------------
+
+function ChainCostBadge({ cost }: { cost: number | null }) {
+  if (cost === null || cost === undefined) {
+    return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
+  }
+  const formatted = cost < 0.01
+    ? `$${cost.toFixed(4)}`
+    : `$${cost.toFixed(2)}`;
+  return (
+    <span className="text-sm text-gray-900 dark:text-white font-mono">
+      {formatted}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Chain row component (Issue #1662)
 // ---------------------------------------------------------------------------
 
@@ -149,18 +168,18 @@ interface ChainRowProps {
   onDetailClick: (item: InvocationItem) => void;
   onNodeClick: (invocationId: string) => void;
   onTranscriptClick: (invocationId: string) => void;
-  liveStreamEnabled?: boolean;
 }
 
-function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick, liveStreamEnabled }: ChainRowProps) {
+function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onTranscriptClick }: ChainRowProps) {
   const { root } = chain;
+  const statusConfig = STATUS_CONFIG[root.status as InvocationStatus] ?? STATUS_CONFIG.no_op;
   const isSingleton = chain.descendant_count === 0;
 
   return (
-    <div className="activity-chain-row border-b border-gray-200 dark:border-gray-700 last:border-b-0">
+    <div className="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
       {/* Chain row header */}
       <div
-        className="activity-chain-main flex items-center gap-3 px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
+        className="flex items-center gap-3 px-6 py-4 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer"
         onClick={() => {
           if (isSingleton) {
             onDetailClick(root);
@@ -211,14 +230,15 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
         </span>
 
         {/* Status */}
-        <StatusBadge status={root.status} skipReason={root.skip_reason} />
+        <span className={`flex-shrink-0 ${statusConfig.colorClass}`}>
+          <span className="text-sm font-medium">{statusConfig.glyph}</span>
+          <span className="text-xs ml-1">{statusConfig.label}</span>
+        </span>
 
         {/* Chain total cost */}
         <div className="flex-shrink-0 text-right min-w-[60px]">
           <ChainCostBadge cost={chain.chain_total_cost_usd} />
         </div>
-
-        <LiveStreamLink enabled={liveStreamEnabled} status={root.status} onOpen={() => onDetailClick(root)} />
 
         {/* Transcript link (Issue #3069) */}
         {root.transcript_key && (
@@ -248,59 +268,55 @@ function ChainRow({ chain, isExpanded, onToggle, onDetailClick, onNodeClick, onT
       {isExpanded && !isSingleton && (
         <div className="bg-gray-50 dark:bg-gray-900/50 border-t border-gray-100 dark:border-gray-700 px-6 py-2">
           {chain.descendants.map((desc) => {
-            const descStatus = describeStatus(desc.status);
+            const descStatus = STATUS_CONFIG[desc.status as InvocationStatus] ?? STATUS_CONFIG.no_op;
             return (
-              <div key={desc.invocation_id} className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => onNodeClick(desc.invocation_id)}
-                  className="w-full text-left flex items-center gap-2 py-2 px-3 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
-                >
-                  <span className="text-gray-300 dark:text-gray-600 text-sm" aria-hidden="true">
-                    └─
+              <button
+                key={desc.invocation_id}
+                type="button"
+                onClick={() => onNodeClick(desc.invocation_id)}
+                className="w-full text-left flex items-center gap-2 py-2 px-3 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+              >
+                <span className="text-gray-300 dark:text-gray-600 text-sm" aria-hidden="true">
+                  └─
+                </span>
+                <span className={`${descStatus.colorClass} text-sm font-medium`} aria-hidden="true">
+                  {descStatus.glyph}
+                </span>
+                <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
+                  {desc.topic || <span className="italic text-gray-400">untitled</span>}
+                </span>
+                {desc.total_cost_usd != null && (
+                  <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
+                    ${desc.total_cost_usd < 0.01 ? desc.total_cost_usd.toFixed(4) : desc.total_cost_usd.toFixed(2)}
                   </span>
-                  <span className={`${descStatus.colorClass} text-sm font-medium`} aria-hidden="true">
-                    {descStatus.glyph}
-                  </span>
-                  <span className="text-sm text-gray-900 dark:text-white truncate flex-1">
-                    {desc.topic || <span className="italic text-gray-400">untitled</span>}
-                  </span>
-                  {desc.total_cost_usd != null && (
-                    <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
-                      {formatAmount(desc.total_cost_usd)}
-                    </span>
-                  )}
-                  {desc.transcript_key && (
-                    <span
-                      role="link"
-                      tabIndex={0}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onTranscriptClick(desc.invocation_id);
-                      }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onTranscriptClick(desc.invocation_id); } }}
-                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                      title="View full run transcript"
-                    >
-                      Transcript
-                    </span>
-                  )}
-                  {desc.persona && (
-                    <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
-                      {desc.persona}
-                    </span>
-                  )}
+                )}
+                {desc.transcript_key && (
                   <span
-                    className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap"
-                    title={formatDateTime(desc.invoked_at)}
+                    role="link"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTranscriptClick(desc.invocation_id);
+                    }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onTranscriptClick(desc.invocation_id); } }}
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                    title="View full run transcript"
                   >
-                    {formatRelativeTime(desc.invoked_at)}
+                    Transcript
                   </span>
-                </button>
-                <LiveStreamLink enabled={liveStreamEnabled} status={desc.status} onOpen={() => {
-                  void getMyInvocationDetail(desc.invocation_id).then(onDetailClick).catch(() => onNodeClick(desc.invocation_id));
-                }} />
-              </div>
+                )}
+                {desc.persona && (
+                  <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
+                    {desc.persona}
+                  </span>
+                )}
+                <span
+                  className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap"
+                  title={formatDateTime(desc.invoked_at)}
+                >
+                  {formatRelativeTime(desc.invoked_at)}
+                </span>
+              </button>
             );
           })}
         </div>
@@ -325,7 +341,6 @@ function SourceLink({ item }: { item: InvocationItem }) {
         href={item.source_url}
         target="_blank"
         rel="noopener noreferrer"
-        title={label}
         className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 text-sm hover:underline"
       >
         {label} ↗
@@ -348,16 +363,6 @@ const STATUS_OPTIONS = [
   { value: 'rejected', label: 'Rejected' },
   { value: 'rate_limited', label: 'Rate limited' },
   { value: 'no_op', label: 'No-op' },
-  // Issue #4020: filterable so an operator can answer "show me everything a
-  // guard stopped" directly, instead of eyeballing the full event trail.
-  { value: 'blocked', label: 'Blocked' },
-  { value: 'skipped', label: 'Skipped' },
-  // Issue #4187: filterable so "what did the spend caps stop?" is one click.
-  { value: 'budget_stopped', label: 'Budget stopped' },
-  // Issue #3964: filterable so "which runs did we stop on purpose?" is one click —
-  // the question an operator asks when reconciling a spike in ended runs against
-  // deliberate intervention rather than breakage (AC-A11).
-  { value: 'aborted', label: 'Aborted' },
 ];
 
 const CHANNEL_OPTIONS = [
@@ -371,7 +376,6 @@ const CHANNEL_OPTIONS = [
 const PERSONA_OPTIONS = [
   { value: '', label: 'All personas' },
   { value: 'developer', label: 'Developer' },
-  { value: 'agent-codex-developer', label: 'Codex Developer' },
   { value: 'architect', label: 'Architect' },
   { value: 'reviewer', label: 'Reviewer' },
   { value: 'ops', label: 'Ops' },
@@ -386,8 +390,6 @@ export default function AgentActivity() {
   const isAdmin = isPlatformAdmin() || isOrgAdmin();
 
   // Issue #3770: Responsive layout — card view below lg breakpoint
-  const explanationFlags = useRevalidatingFeaturesQuery();
-  const liveStreamEnabled = !explanationFlags.isPending && !explanationFlags.isError && explanationFlags.data?.agent_explanations === true;
   const isNarrowViewport = useMediaQuery('(max-width: 1023px)');
 
   // Issue #3632: URL query-param deep-linking
@@ -430,17 +432,6 @@ export default function AgentActivity() {
   });
   const [channelFilter, setChannelFilter] = useState('');
   const [personaFilter, setPersonaFilter] = useState('');
-  /**
-   * Issue #4176: liveness filter.
-   *
-   * Applied CLIENT-SIDE to the current page, unlike every other filter here.
-   * `liveness` is derived at serialization time and is not stored, so there is
-   * no DynamoDB attribute to build a FilterExpression against — the backend
-   * cannot filter on it. Narrowing the page in the browser is therefore the
-   * honest implementation; the UI says "on this page" so the operator is not
-   * misled into reading it as a fleet-wide query.
-   */
-  const [livenessFilter, setLivenessFilter] = useState('');
   const [startDate, setStartDate] = useState(() => {
     const paramSince = searchParams.get('since');
     if (paramSince === 'today') {
@@ -472,14 +463,6 @@ export default function AgentActivity() {
   // Issue #3632: Deep-link — auto-open detail modal when ?id= param is present.
   // Fetches the invocation detail on mount; silently ignores 404/errors.
   useEffect(() => {
-    // Story cards link descendants through the authorized chain. A child may
-    // lack direct user attribution even though its parent belongs to the caller.
-    const deepLinkChain = searchParams.get('chain');
-    if (deepLinkChain) {
-      setActiveChainId(deepLinkChain);
-      setChainHighlightId(searchParams.get('highlight') || undefined);
-      return;
-    }
     const deepLinkId = searchParams.get('id');
     if (!deepLinkId) return;
 
@@ -508,20 +491,16 @@ export default function AgentActivity() {
   // Issue #3723: A normal status filter (in_progress/complete/failed) must NOT
   // set include_non_triggering — otherwise chain descendants are unfiltered,
   // causing phantom children (the dashboard tile click sends ?status=in_progress).
-  // Issue #4020: `blocked` and `skipped` join no_op as non-runs. Composed from
-  // the shared NON_RUN_STATUSES rather than re-listed, so this stays in step with
-  // the backend's NON_TRIGGERING_STATUSES — a drift here would leave the operator
-  // filtering by a status the board then refuses to fetch.
-  const NON_TRIGGERING_STATUSES: InvocationStatus[] = ['webhook_received', ...NON_RUN_STATUSES];
+  const NON_TRIGGERING_STATUSES: InvocationStatus[] = ['no_op', 'webhook_received'];
   const shouldIncludeNonTriggering = showAllEvents ||
     (statusFilter ? NON_TRIGGERING_STATUSES.includes(statusFilter as InvocationStatus) : false);
   const queryParams: InvocationQueryParams = {
     status: (statusFilter || undefined) as InvocationStatus | undefined,
     channel: (channelFilter || undefined) as InvocationChannel | undefined,
     persona: personaFilter || undefined,
-    since: startDate || undefined,
-    until: endDate || undefined,
-    page_size: 20,
+    start_date: startDate || undefined,
+    end_date: endDate || undefined,
+    limit: 20,
     last_key: currentCursor,
     include_non_triggering: shouldIncludeNonTriggering ? true : undefined,
   };
@@ -530,34 +509,11 @@ export default function AgentActivity() {
   const isChainView = groupBy === 'chain' && viewMode === 'mine';
   const flatFetchFn = viewMode === 'all' && isAdmin ? getAllInvocations : getMyInvocations;
 
-  // Issue #4022: shared polling options. This page was the only list view in
-  // the app with no refresh path, so users watching a live run saw a static
-  // page and assumed the workflow had stalled.
-  // - 30 s matches PlatformDashboard's fastest tile.
-  // - `refetchIntervalInBackground` is left at its `false` default, so hidden
-  //   tabs do not poll.
-  // - `refetchOnWindowFocus: 'always'` rather than a per-page `staleTime: 0`:
-  //   the global 5-minute staleTime (main.tsx) would otherwise suppress
-  //   focus-refetch, and `'always'` expresses that intent without making
-  //   every remount/key-change a guaranteed network hit.
-  // - `placeholderData` keeps the previous page on screen across a tick
-  //   instead of blanking the table. NOTE: `keepPreviousData` must be the
-  //   named v5 import — the v4 `keepPreviousData: true` boolean is a silent
-  //   no-op on the pinned 5.62.0. It also makes `data` never `undefined`
-  //   mid-fetch, which is why the paginators gate on `isPlaceholderData`
-  //   below (see `isPageTransitioning`).
-  const POLL_OPTIONS = {
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: 'always',
-    placeholderData: keepPreviousData,
-  } as const;
-
   // Flat list query (active when NOT in chain view)
   const flatQuery = useQuery({
     queryKey: ['agent-activity', viewMode, 'runs', queryParams],
     queryFn: () => flatFetchFn(queryParams),
     enabled: !isChainView,
-    ...POLL_OPTIONS,
   });
 
   // Chain list query (active when in chain view)
@@ -565,7 +521,6 @@ export default function AgentActivity() {
     queryKey: ['agent-activity', viewMode, 'chains', queryParams],
     queryFn: () => getMyChains(queryParams),
     enabled: isChainView,
-    ...POLL_OPTIONS,
   });
 
   // Unified state from whichever query is active
@@ -573,19 +528,6 @@ export default function AgentActivity() {
   const isLoading = isChainView ? chainQuery.isLoading : flatQuery.isLoading;
   const error = isChainView ? chainQuery.error : flatQuery.error;
   const refetch = isChainView ? chainQuery.refetch : flatQuery.refetch;
-  const isFetching = isChainView ? chainQuery.isFetching : flatQuery.isFetching;
-  const dataUpdatedAt = isChainView ? chainQuery.dataUpdatedAt : flatQuery.dataUpdatedAt;
-
-  // Issue #4022: with `placeholderData` in play, `data` is never `undefined`
-  // during a cursor change — it holds the PREVIOUS page, so `data.last_key` is
-  // a stale cursor until the new page lands. Before this flag, `hasNextPage`
-  // being false mid-fetch (because `data` was undefined) was the only thing
-  // stopping a double-click on Next from pushing two entries onto
-  // `cursorStack` while advancing a single page. Every paginator control gates
-  // on this so that guard survives.
-  const isPageTransitioning = isChainView
-    ? chainQuery.isPlaceholderData
-    : flatQuery.isPlaceholderData;
 
   // Pagination handlers
   const handleNextPage = useCallback(() => {
@@ -641,14 +583,6 @@ export default function AgentActivity() {
     },
     [resetPagination],
   );
-
-  // Issue #4176: liveness filter. No resetPagination — unlike the server-side
-  // filters this only narrows the page already in hand, so the cursor stack
-  // stays valid and discarding it would needlessly send the operator back to
-  // page 1.
-  const handleLivenessChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
-    setLivenessFilter(e.target.value);
-  }, []);
 
   const handleStartDateChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -717,27 +651,7 @@ export default function AgentActivity() {
 
   // Issue #1662: Derive typed data from whichever query is active
   const chainData = isChainView ? chainQuery.data : undefined;
-  const rawFlatData = !isChainView ? flatQuery.data : undefined;
-
-  /**
-   * Issue #4176: narrow the page by liveness verdict.
-   *
-   * Applied here, once, so every downstream consumer (table, card list, empty
-   * states, the deep-link lookup) sees the same set — filtering at each render
-   * site would let them disagree about whether the page is empty.
-   *
-   * Client-side by necessity: `liveness` is derived at serialization time and
-   * never persisted, so there is no DynamoDB attribute for the backend to filter
-   * on. Rows lacking a verdict (pre-#4176) are excluded whenever a specific
-   * verdict is requested — an unknown verdict is not a match for any of them.
-   */
-  const flatData = useMemo(() => {
-    if (!rawFlatData || !livenessFilter) return rawFlatData;
-    return {
-      ...rawFlatData,
-      items: rawFlatData.items.filter((item: InvocationItem) => item.liveness === livenessFilter),
-    };
-  }, [rawFlatData, livenessFilter]);
+  const flatData = !isChainView ? flatQuery.data : undefined;
 
   // Issue #3768: Derive active filter chips for visual indication
   const activeFilters: ActiveFilter[] = useMemo(() => {
@@ -754,17 +668,6 @@ export default function AgentActivity() {
       const opt = PERSONA_OPTIONS.find((o) => o.value === personaFilter);
       chips.push({ key: 'persona', label: 'Persona', displayValue: opt?.label ?? personaFilter });
     }
-    // Issue #4176: the chip says "on this page" because this filter, alone among
-    // these, is client-side — the operator must not read a narrowed page as a
-    // fleet-wide answer.
-    if (livenessFilter) {
-      const opt = LIVENESS_OPTIONS.find((o) => o.value === livenessFilter);
-      chips.push({
-        key: 'liveness',
-        label: 'Liveness (this page)',
-        displayValue: opt?.label ?? livenessFilter,
-      });
-    }
     if (startDate) {
       chips.push({ key: 'startDate', label: 'Since', displayValue: startDate });
     }
@@ -772,7 +675,7 @@ export default function AgentActivity() {
       chips.push({ key: 'endDate', label: 'Until', displayValue: endDate });
     }
     return chips;
-  }, [statusFilter, channelFilter, personaFilter, livenessFilter, startDate, endDate]);
+  }, [statusFilter, channelFilter, personaFilter, startDate, endDate]);
 
   const handleRemoveFilter = useCallback(
     (key: string) => {
@@ -785,10 +688,6 @@ export default function AgentActivity() {
           break;
         case 'persona':
           setPersonaFilter('');
-          break;
-        // Issue #4176
-        case 'liveness':
-          setLivenessFilter('');
           break;
         case 'startDate':
           setStartDate('');
@@ -806,16 +705,15 @@ export default function AgentActivity() {
     setStatusFilter('');
     setChannelFilter('');
     setPersonaFilter('');
-    setLivenessFilter('');
     setStartDate('');
     setEndDate('');
     resetPagination();
   }, [resetPagination]);
 
   return (
-    <div className="blueprint-activity space-y-4">
+    <div className="space-y-6">
       {/* Header + view toggle */}
-      <div className="activity-header flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
             Agent Activity
@@ -834,13 +732,10 @@ export default function AgentActivity() {
           </p>
         </div>
 
-        <div className="activity-header-actions flex items-center gap-3">
-          {/* Issue #4022: freshness caption — makes the 30 s poll visible */}
-          <LastUpdated dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
-
+        <div className="flex items-center gap-3">
           {/* Issue #1662: Group-by toggle (by run / by chain) */}
           {viewMode === 'mine' && (
-            <div className="activity-segmented flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="Group by">
+            <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="Group by">
               <button
                 role="tab"
                 aria-selected={groupBy === 'chain'}
@@ -869,7 +764,7 @@ export default function AgentActivity() {
           )}
 
           {isAdmin && (
-            <div className="activity-segmented flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist" aria-label="View scope">
+            <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1" role="tablist">
               <button
                 role="tab"
                 aria-selected={viewMode === 'mine'}
@@ -899,11 +794,9 @@ export default function AgentActivity() {
         </div>
       </div>
 
-      {viewMode === 'mine' && <TaskActivity onOpen={setDetailItem} />}
-
       {/* Filters */}
-      <div className="blueprint-card activity-filters bg-white dark:bg-gray-800 rounded-lg shadow p-4">
-        <div className="activity-filter-grid grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Status
@@ -915,26 +808,6 @@ export default function AgentActivity() {
               aria-label="Filter by status"
             />
           </div>
-          {/* Issue #4176: liveness filter — only offered on the flat run view.
-              The verdict is per-run and derived; chain grouping filters by ROOT,
-              so offering it there would silently hide chains whose root is fine
-              but whose child is the unverifiable one. */}
-          {!isChainView && (
-            <div>
-              <label
-                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-                title="Derived per run: live (recent signal), unverifiable (no signal and no observed ending), exited (ending observed)."
-              >
-                Liveness
-              </label>
-              <Select
-                value={livenessFilter}
-                onChange={handleLivenessChange}
-                options={LIVENESS_OPTIONS}
-                aria-label="Filter by liveness verdict (applies to this page only)"
-              />
-            </div>
-          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Source
@@ -979,7 +852,7 @@ export default function AgentActivity() {
           </div>
         </div>
         {/* Issue #1658: Show all events toggle */}
-        <div className="activity-all-events mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+        <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
           <label className="inline-flex items-center gap-2 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
             <input
               type="checkbox"
@@ -1028,28 +901,6 @@ export default function AgentActivity() {
         isOpen={detailItem !== null}
         onClose={() => setDetailItem(null)}
         isAdmin={viewMode === 'all' && isAdmin}
-        /*
-          Issue #3966: re-read the open run after a live control command.
-
-          `detailItem` is a snapshot taken when the row was clicked, so a
-          pause/resume/abort would otherwise leave the modal's status row
-          contradicting the control panel beside it. Failures are ignored on
-          purpose: the panel already reports the command's own outcome, and a
-          refresh error is not evidence about the command.
-        */
-        onRefreshItem={() => {
-          const openId = detailItem?.invocation_id;
-          if (!openId) return;
-          getMyInvocationDetail(openId)
-            .then((item) => {
-              // Only apply if the same run is still open — the operator may have
-              // closed or switched runs while this was in flight.
-              setDetailItem((current) =>
-                current && current.invocation_id === openId ? item : current,
-              );
-            })
-            .catch(() => {});
-        }}
       />
 
       {/* Issue #3069: Transcript viewer — opened from table row transcript links */}
@@ -1076,7 +927,7 @@ export default function AgentActivity() {
 
       {/* Table / Chain list */}
       {!error && (
-        <div className="blueprint-card activity-results bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
           {isLoading ? (
             <TableSkeleton rows={10} />
           ) : isChainView && chainData && chainData.chains.length > 0 ? (
@@ -1087,7 +938,6 @@ export default function AgentActivity() {
                   <ChainRow
                     key={chain.chain_id}
                     chain={chain}
-                    liveStreamEnabled={liveStreamEnabled}
                     isExpanded={expandedChains.has(chain.chain_id)}
                     onToggle={() => toggleChainExpand(chain.chain_id)}
                     onDetailClick={(item) => setDetailItem(item)}
@@ -1115,7 +965,7 @@ export default function AgentActivity() {
               </div>
 
               {/* Pagination */}
-              <div className="activity-pagination px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
+              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
                 <div className="text-sm text-gray-500 dark:text-gray-400">
                   Page {pageNumber}
                 </div>
@@ -1123,7 +973,7 @@ export default function AgentActivity() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasPrevPage || isPageTransitioning}
+                    disabled={!hasPrevPage}
                     onClick={handlePrevPage}
                   >
                     Previous
@@ -1131,7 +981,7 @@ export default function AgentActivity() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasNextPage || isPageTransitioning}
+                    disabled={!hasNextPage}
                     onClick={handleNextPage}
                   >
                     Next
@@ -1146,14 +996,13 @@ export default function AgentActivity() {
                 /* Card layout for narrow viewports (<1024px) — Issue #3770 */
                 <ActivityCardList
                   items={flatData.items}
-                  liveStreamEnabled={liveStreamEnabled}
                   onDetailClick={(item) => setDetailItem(item)}
                   onTranscriptClick={(id) => setTranscriptInvocationId(id)}
                 />
               ) : (
               /* Table layout for wide viewports (>=1024px) */
               <div className="overflow-x-auto">
-                <table className="activity-table min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                   <thead className="bg-gray-50 dark:bg-gray-900">
                     <tr>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1198,7 +1047,7 @@ export default function AgentActivity() {
                             setDetailItem(item);
                           }
                         }}
-                        aria-label={`Run: ${item.topic || 'untitled'}, Status: ${statusLabel(item.status)}, ${formatRelativeTime(item.invoked_at)}`}
+                        aria-label={`Run: ${item.topic || 'untitled'}, Status: ${STATUS_CONFIG[item.status]?.label || item.status}, ${formatRelativeTime(item.invoked_at)}`}
                       >
                         <td
                           className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white"
@@ -1212,43 +1061,22 @@ export default function AgentActivity() {
                             onViewChain={(cid) => handleViewChain(cid, item.invocation_id)}
                           />
                         </td>
-                        <td className="activity-source px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                           <span className="capitalize">{item.channel}</span>
                           {item.persona && (
-                            <span className="activity-source-persona text-xs text-gray-400 dark:text-gray-500">
-                              {item.persona}
+                            <span className="ml-2 text-xs text-gray-400 dark:text-gray-500">
+                              ({item.persona})
                             </span>
                           )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="flex flex-col items-start gap-1">
-                            <StatusBadge status={item.status} skipReason={item.skip_reason} />
-                            {/* Issue #4176: the verdict sits BESIDE the status, not
-                                instead of it — a stalled run still reads
-                                "In progress" (what it last told us) but now also
-                                reads "Unverifiable" (that we no longer believe it).
-                                attentionOnly keeps the dense table quiet: labelling
-                                every healthy row "Live" would bury the one row that
-                                is not. */}
-                            <LivenessBadge
-                              verdict={item.liveness}
-                              attentionOnly
-                              testIdSuffix={item.invocation_id}
-                            />
-                          </div>
+                          <StatusBadge status={item.status} />
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-900 dark:text-white max-w-xs truncate">
                           {item.topic || <span className="text-gray-400 italic">—</span>}
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-500 dark:text-gray-400 max-w-xs truncate">
-                          {/* Issue #4020: a non-run has no summary of work done, so the
-                              cell used to be a bare em-dash. The skip reason is the most
-                              useful thing we can put there — it makes the board scannable
-                              without opening every row. */}
-                          {item.summary ||
-                            describeSkipReason(isNonRunStatus(item.status) ? item.skip_reason : null) || (
-                              <span className="text-gray-400 italic">—</span>
-                            )}
+                          {item.summary || <span className="text-gray-400 italic">—</span>}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right">
                           <CostBadge item={item} />
@@ -1257,7 +1085,6 @@ export default function AgentActivity() {
                           <SourceLink item={item} />
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <LiveStreamLink enabled={liveStreamEnabled} status={item.status} onOpen={() => setDetailItem(item)} />
                           {item.transcript_key ? (
                             <button
                               type="button"
@@ -1282,7 +1109,7 @@ export default function AgentActivity() {
               )}
 
               {/* Pagination */}
-              <div className="activity-pagination px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
+              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
                 <div className="text-sm text-gray-500 dark:text-gray-400">
                   Page {pageNumber}
                 </div>
@@ -1290,7 +1117,7 @@ export default function AgentActivity() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasPrevPage || isPageTransitioning}
+                    disabled={!hasPrevPage}
                     onClick={handlePrevPage}
                   >
                     Previous
@@ -1298,7 +1125,7 @@ export default function AgentActivity() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!hasNextPage || isPageTransitioning}
+                    disabled={!hasNextPage}
                     onClick={handleNextPage}
                   >
                     Next
@@ -1333,12 +1160,7 @@ export default function AgentActivity() {
               <p className="text-gray-500 dark:text-gray-400 mb-4">
                 No matching results on this page. More results may exist.
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={isPageTransitioning}
-                onClick={handleNextPage}
-              >
+              <Button variant="outline" size="sm" onClick={handleNextPage}>
                 Load next page
               </Button>
             </div>

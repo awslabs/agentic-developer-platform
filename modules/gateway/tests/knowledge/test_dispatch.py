@@ -92,7 +92,6 @@ def fake_db():
 @pytest.fixture(autouse=True)
 def set_queue_url(monkeypatch):
     """Set INGESTION_QUEUE_URL env var for all tests."""
-    monkeypatch.setenv("AGENT_RUN_CREDENTIAL_KEY", "test-dispatch-signing-key" * 3)
     monkeypatch.setenv("INGESTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789012/test-ingestion")
 
 
@@ -226,9 +225,7 @@ class TestDispatchIngestion:
         )
 
         assert result is False
-        assert fake_db.committed is True
-        assert len(fake_db.execute_calls) == 1
-        assert "ingestion_attempt_id IS NULL" in str(fake_db.execute_calls[0][0])
+        assert fake_db.committed is False
         set_sqs_client(None)
 
     @pytest.mark.anyio
@@ -365,106 +362,3 @@ class TestZeroAgentContextDependency:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     assert not alias.name.startswith("agent_context"), f"Found prohibited import: import {alias.name}"
-
-
-class TestCallbackGrantIsMintedAtDispatch:
-    """Issue #5663 (A09): the envelope must carry server-owned callback authority.
-
-    dispatch_ingestion is the ONLY point on the ingestion path where the
-    asset -> tenant pairing is server-owned: the gateway's own handlers derived
-    tenant_id from the authenticated user's organisation and pass it here. By the
-    time the ingestion pod calls the status callback it holds nothing but the
-    cluster-wide internal secret, so if the grant is not minted here there is no
-    server-side fact for that route to check the request against — which is exactly
-    why it used to build its WHERE clause from the caller's own tenant_id.
-    """
-
-    @pytest.fixture(autouse=True)
-    def signing_key(self, monkeypatch):
-        monkeypatch.setenv("AGENT_RUN_CREDENTIAL_KEY", "k" * 48)
-
-    @staticmethod
-    def _grant_from(fake_sqs):
-        from src.knowledge.ingestion_callback_grant import verify_ingestion_grant
-
-        token = fake_sqs.messages[-1]["MessageBody"]["callback_grant"]
-        return verify_ingestion_grant(token)
-
-    async def test_the_grant_binds_the_asset_and_the_tenant_dispatch_was_given(self, fake_sqs, fake_db):
-        """Asserting the decoded VALUES, not merely that a field is present.
-
-        A grant carrying the wrong asset or a blank tenant would satisfy a
-        presence-only check and authorize the wrong row at the other end.
-        """
-        assert await dispatch_ingestion(
-            asset_id="asset-123",
-            asset_type="repo",
-            source_ref="https://github.com/acme/svc",
-            tenant_id="tenant-abc",
-            owner_sub=None,
-            project_id=None,
-            db=fake_db,
-        )
-
-        grant = self._grant_from(fake_sqs)
-        assert grant.asset_id == "asset-123"
-        assert grant.tenant_id == "tenant-abc"
-        assert grant.is_shared_scope is False
-
-    async def test_a_shared_asset_gets_a_shared_grant_not_a_missing_one(self, fake_sqs, fake_db):
-        """A public repo dispatches with no tenant; the grant must say so explicitly.
-
-        "shared" has to be a positive fact in the token, because the route
-        distinguishes "the gateway issued shared authority" from "the caller sent no
-        tenant" — and the latter is the defect being closed.
-        """
-        assert await dispatch_ingestion(
-            asset_id="asset-public",
-            asset_type="repo",
-            source_ref="https://github.com/acme/oss",
-            tenant_id=None,
-            owner_sub=None,
-            project_id=None,
-            db=fake_db,
-        )
-
-        grant = self._grant_from(fake_sqs)
-        assert grant.asset_id == "asset-public"
-        assert grant.is_shared_scope is True
-
-    async def test_each_asset_gets_its_own_grant(self, fake_sqs, fake_db):
-        """One grant per row is what makes the binding meaningful.
-
-        If dispatch reused a token, a worker handling a shared/public asset could
-        present it for a tenant-owned one — reintroducing cross-tenant writes through
-        the mechanism meant to stop them.
-        """
-        for asset_id, tenant in (("a1", "tenant-a"), ("a2", "tenant-b")):
-            await dispatch_ingestion(
-                asset_id=asset_id,
-                asset_type="repo",
-                source_ref=f"https://github.com/acme/{asset_id}",
-                tenant_id=tenant,
-                owner_sub=None,
-                project_id=None,
-                db=fake_db,
-            )
-
-        first, second = (m["MessageBody"] for m in fake_sqs.messages[-2:])
-        assert first["callback_grant"] != second["callback_grant"]
-
-    async def test_dispatch_refuses_publication_without_signing_key(self, fake_sqs, fake_db, monkeypatch):
-        """Unsigned work must never reach the queue."""
-        monkeypatch.delenv("AGENT_RUN_CREDENTIAL_KEY", raising=False)
-
-        assert not await dispatch_ingestion(
-            asset_id="asset-nokey",
-            asset_type="repo",
-            source_ref="https://github.com/acme/svc",
-            tenant_id="tenant-abc",
-            owner_sub=None,
-            project_id=None,
-            db=fake_db,
-        )
-        assert fake_sqs.messages == []
-        assert fake_db.execute_calls == []

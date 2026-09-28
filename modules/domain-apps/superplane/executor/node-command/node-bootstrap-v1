@@ -1,4 +1,0 @@
-#!/bin/sh
-set -eu
-[ "$#" -eq 1 ] || exit 1
-exec /usr/bin/env -i PATH=/usr/bin:/usr/sbin:/bin LANG=C /opt/superplane/node-runtime/bin/python3 -I -B -S /opt/superplane/node-runtime/node_bootstrap_runner.py "$1"

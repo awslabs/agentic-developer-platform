@@ -1,22 +1,15 @@
 # Defect Issue Template
 
 > Filed by the operations persona when an evaluation check fails. Follows
-> the plain-terms opening and five technical sections. The developer persona implements
+> the repo's mandatory five-section format. The developer persona implements
 > the fix — never the operations persona or the evaluation itself.
 > Reference: defect protocol in #3334/#3335/#3336.
 
 ---
 
-````markdown
-## The problem in plain terms
-[What the user tried, what failed and the needed outcome.]
-
-**The fix in one line:** [Observable repair.]
-
+```markdown
 ## Description
-[User workflow] fails in [environment]: [observed effect and what remains usable].
-This blocks [capability] in [WAVE_LABEL]; [owner] must [next action].
-Evidence: evaluation check [N] in #[EVAL_NUMBER].
+[WAVE_LABEL] evaluation check [N] failed: [one-line summary of what broke].
 
 **Failing check command**:
 ```bash
@@ -40,7 +33,7 @@ Evidence: evaluation check [N] in #[EVAL_NUMBER].
 - **Cost / quota footprint**: no new resources; fix is code-only.
 
 ## Design
-Distinguish observed facts from uncertainty. Root-cause hypothesis: [brief analysis of why the check failed — what the
+Root-cause hypothesis: [brief analysis of why the check failed — what the
 owning story's implementation got wrong or missed].
 
 **Files to modify**: [list from owning story's Design section]
@@ -57,16 +50,11 @@ owning story's implementation got wrong or missed].
 - [ ] All OTHER checks in the evaluation (#[EVAL_NUMBER]) still pass
   (no regression).
 - [ ] CI check `[CHECK_NAME]` passes on the fix PR.
-````
+```
 
 ---
 
 ## Emitter instructions
-
-Use [the authoring guide](../../agents/issue-authoring.md): convert the Validation
-checks above into stable AC rows with evidence and phase/owner, and name the
-implementation-to-evaluation handoff. Verify the failed command, current code
-and rollout path; the root-cause hypothesis is not an observed fact.
 
 Defect issues are NOT generated at emission time — they are filed at RUNTIME
 by the operations persona when an evaluation check fails. However, this

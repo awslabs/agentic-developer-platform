@@ -18,23 +18,3 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-# Issue #5044: the distribution is `adp-common`, but the import package is
-# `adp_platform_common`, NOT `adp_common`. The obvious name is already taken by
-# `modules/gateway/cli/adp_common.py` — a flat single-module CLI helper imported
-# as `import adp_common` by eight files that prepend `cli/` to `sys.path`. With
-# both on the path the flat module shadows the package and every submodule import
-# fails:
-#
-#   ModuleNotFoundError: No module named 'adp_common.logging';
-#   'adp_common' is not a package
-#
-# Whichever entry lands on `sys.path` first wins, so the two cannot coexist under
-# one name: installing this library as `adp_common` into the gateway environment
-# would break `adp login`. Renaming the CLI helper instead was rejected as
-# out-of-scope — it has eight call sites, an entry in the cli_download allowlist
-# (`src/cli_download/routes.py`) and a row in the installed-file manifest
-# (`scripts/test-cli-bootstrap.py`), so a rename is a CLI delivery change, not
-# packaging. `tests/auth/test_adp_common_packaging.py` is the drift guard.
-[tool.hatch.build.targets.wheel]
-packages = ["src/adp_platform_common"]

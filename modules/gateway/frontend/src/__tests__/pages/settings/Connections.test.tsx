@@ -22,10 +22,8 @@ vi.mock('@/services/connections', () => ({
   rotateGitHubAppKey: vi.fn(),
   disconnectGitHubApp: vi.fn(),
   registerManualGitHubApp: vi.fn(),
+  switchTenant: vi.fn(),
 }));
-
-vi.mock('@/services/workspaces', () => ({ switchWorkspace: vi.fn() }));
-import { switchWorkspace } from '@/services/workspaces';
 
 // Connections calls useAuth() to read the current user (free-tier banner gating)
 // and hasRole for platform_admin check. Mock both.
@@ -219,13 +217,6 @@ describe('Connections Page', () => {
     });
   });
 
-  it('uses the full workspace transition for the installation callback switch-back', async () => {
-    vi.mocked(switchWorkspace).mockResolvedValue();
-    renderConnections(['/settings/connections?success=1&installed=SOPHOS-IT&switched_from=home']);
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch back' }));
-    expect(switchWorkspace).toHaveBeenCalledWith('home');
-  });
-
   describe('Connection card rendering', () => {
     const mockConnection = {
       provider: 'github',
@@ -240,15 +231,6 @@ describe('Connections Page', () => {
 
     beforeEach(() => {
       mockListConnections.mockResolvedValue({ connections: [mockConnection] });
-    });
-
-    it('uses the full token transition from a GitHub workspace card', async () => {
-      mockListConnections.mockResolvedValue({ connections: [{ ...mockConnection, tenant_id: 'work', tenant_name: 'SOPHOS-IT', is_active_tenant: false }] });
-      vi.mocked(switchWorkspace).mockResolvedValue();
-      renderConnections();
-      await userEvent.click(await screen.findByRole('button', { name: 'Switch to this workspace' }));
-      expect(switchWorkspace).toHaveBeenCalledWith('work');
-      expect(mockListConnections).toHaveBeenCalledTimes(1);
     });
 
     it('renders org name and installation ID', async () => {
@@ -311,39 +293,6 @@ describe('Connections Page', () => {
         deleted: true,
         installation_id: 12345,
       });
-    });
-
-    it('retains pending cleanup and warning until an authorized retry completes', async () => {
-      const user = userEvent.setup();
-      const warning = 'Local access is revoked. Retry to finish the pending cleanup or provider uninstall.';
-      mockDeleteGitHubConnection.mockResolvedValue({
-        deleted: true, installation_id: 12345, local_revoked: true,
-        provider_revoked: false, residual: ['provider_uninstall'], warning,
-      });
-      renderConnections();
-      await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
-      mockListConnections.mockResolvedValue({ connections: [{ ...mockConnection, revocation_pending: true }] });
-      await user.click(screen.getByRole('button', { name: 'Confirm?' }));
-      expect(await screen.findByText(warning)).toBeInTheDocument();
-      expect(await screen.findByText('Access revoked · cleanup pending')).toBeInTheDocument();
-      expect(screen.queryByRole('link', { name: /Manage repositories/ })).not.toBeInTheDocument();
-      expect(screen.queryByText('GitHub installation disconnected.')).not.toBeInTheDocument();
-
-      mockListConnections.mockResolvedValue({ connections: [] });
-      mockDeleteGitHubConnection.mockResolvedValue({ deleted: true, installation_id: 12345, provider_revoked: true, residual: [] });
-      await user.click(screen.getByRole('button', { name: 'Retry cleanup' }));
-      await waitFor(() => expect(mockDeleteGitHubConnection).toHaveBeenCalledTimes(2));
-      await waitFor(() => expect(screen.queryByText('Access revoked · cleanup pending')).not.toBeInTheDocument());
-    });
-
-    it('reports local-only completion honestly', async () => {
-      const user = userEvent.setup();
-      mockDeleteGitHubConnection.mockResolvedValue({ deleted: true, installation_id: 12345, local_revoked: true, provider_revoked: false });
-      renderConnections();
-      await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
-      mockListConnections.mockResolvedValue({ connections: [] });
-      await user.click(screen.getByRole('button', { name: 'Confirm?' }));
-      expect(await screen.findByText('Local access revoked. The installation remains at GitHub.')).toBeInTheDocument();
     });
 
     it('shows Disconnect button on card', async () => {

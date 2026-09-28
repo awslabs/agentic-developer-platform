@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
@@ -21,16 +20,6 @@ logger = logging.getLogger(__name__)
 GITHUB_API_BASE = "https://api.github.com"
 _APP_JWT_EXPIRY_SECONDS = 600  # 10 min max per GitHub spec
 _APP_JWT_BACKDATE_SECONDS = 60  # clock-skew buffer
-
-
-def github_account_id(value: Any) -> str | None:
-    """Normalize a positive immutable GitHub account ID, never a login or boolean."""
-    if isinstance(value, bool) or not isinstance(value, str | int):
-        return None
-    raw = str(value)
-    if not raw.isascii() or not raw.isdigit() or len(raw) > 20:
-        return None
-    return str(int(raw)) if int(raw) > 0 else None
 
 
 def _mint_app_jwt(app_id: str, private_key_pem: str) -> str:
@@ -85,7 +74,7 @@ class GitHubAppClient:
         Returns the raw GitHub API response dict, e.g.:
           {
             "id": 124731131,
-            "account": {"type": "Organization", "login": "acme-test", "id": 98765},
+            "account": {"type": "Organization", "login": "sophos-test", "id": 98765},
             "repository_selection": "selected",
             "repositories_url": "...",
             "installed_at": "2026-05-01T10:00:00Z",
@@ -171,45 +160,6 @@ class GitHubAppClient:
         resp.raise_for_status()
         return resp.json().get("token", "")
 
-    async def create_issue_comment(
-        self,
-        *,
-        installation_id: int,
-        repo: str,
-        issue_number: int,
-        body: str,
-    ) -> None:
-        """Post a comment on an issue or PR. Issue #4527.
-
-        The engine-command bridge's acknowledgement path: every `@agent-engine`
-        command gets a visible confirmation or a visible refusal reason, and this is
-        how that reply is delivered.
-
-        Authenticated with an installation token rather than the App JWT, because a
-        JWT identifies the App and cannot write to a repository — the same
-        `Authorization: token` shape `check_org_membership` uses.
-
-        Args:
-            installation_id: The tenant's installation, resolved server-side. Never
-                taken from a webhook payload.
-            repo: Full name, ``owner/name``.
-            issue_number: The issue or PR the command arrived on.
-            body: The comment text.
-
-        Raises on HTTP errors, so a caller that must not fail because of an
-        undelivered comment has to contain it (the tick's flush counts it).
-        """
-        token = await self.get_installation_token(installation_id)
-        resp = await self._http_client.post(
-            f"/repos/{repo}/issues/{issue_number}/comments",
-            headers={
-                "Authorization": f"token {token}",
-                "Accept": "application/vnd.github+json",
-            },
-            json={"body": body},
-        )
-        resp.raise_for_status()
-
     async def check_org_membership(
         self,
         installation_id: int,
@@ -245,62 +195,6 @@ class GitHubAppClient:
                 installation_id,
             )
         return resp.status_code == 204
-
-    async def get_bot_user(self, bot_login: str, *, installation_id: int) -> dict[str, Any]:
-        """Fetch the numeric GitHub user id for a bot login (e.g. ``my-app[bot]``).
-
-        Every GitHub App has an associated bot user at ``<slug>[bot]``, but its
-        numeric id is not returned by the app-manifest conversion or the
-        installation callback — a follow-up lookup is unavoidable. The users
-        endpoint supports installation tokens; reserve the App JWT for the
-        app-level token exchange, as with the other installation-scoped reads.
-
-        Returns the raw GitHub API response dict, e.g. ``{"id": 317952797,
-        "login": "my-app[bot]", "type": "Bot", ...}``.
-        """
-        token = await self.get_installation_token(installation_id)
-        if not token:
-            raise ValueError("GitHub returned an empty installation token")
-        resp = await self._http_client.get(
-            f"/users/{bot_login}",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    async def has_org_admin_membership(self, *, installation_id: int, org_id: str, org_login: str, user_id: str) -> bool:
-        """Verify active org-admin control for immutable user and organization IDs.
-
-        Resolve the current login from the proven numeric ID; stored/editable
-        usernames never nominate the membership subject. The membership response
-        must name the same immutable user and org. Missing App members:read or
-        provider faults raise so callers can report an unavailable proof check.
-        """
-        if not github_account_id(user_id) or not github_account_id(org_id):
-            return False
-        token = await self.get_installation_token(installation_id)
-        if not token:
-            raise ValueError("GitHub returned an empty installation token")
-        headers = {"Authorization": f"Bearer {token}"}
-        user_response = await self._http_client.get(f"/user/{user_id}", headers=headers)
-        if user_response.status_code == 404:
-            return False
-        user_response.raise_for_status()
-        user = user_response.json()
-        login = user.get("login")
-        if github_account_id(user.get("id")) != user_id or user.get("type") != "User" or not isinstance(login, str) or not login:
-            return False
-        response = await self._http_client.get(f"/orgs/{quote(org_login, safe='')}/memberships/{quote(login, safe='')}", headers=headers)
-        if response.status_code == 404:
-            return False
-        response.raise_for_status()
-        membership = response.json()
-        return (
-            membership.get("state") == "active"
-            and membership.get("role") == "admin"
-            and github_account_id(membership.get("user", {}).get("id")) == user_id
-            and github_account_id(membership.get("organization", {}).get("id")) == org_id
-        )
 
     async def aclose(self) -> None:  # pragma: no cover
         await self._http_client.aclose()

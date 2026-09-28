@@ -24,12 +24,7 @@ def verify_github_signature(
     Returns:
         True if signature is valid, False otherwise.
     """
-    if (
-        not signature_header
-        or not secret
-        or not secret.strip()
-        or secret.strip().upper().startswith(("PLACEHOLDER", "ROTATE-ME"))
-    ):
+    if not signature_header or not secret:
         logger.warning("Missing signature header or secret")
         return False
 

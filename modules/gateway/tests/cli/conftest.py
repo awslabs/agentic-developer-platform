@@ -9,47 +9,16 @@ For tests that require AWS credential validation, we create a mock aws CLI
 that returns fake successful responses.
 """
 
-import base64
 import json
 import os
-import signal
 import stat
 import subprocess
-import sys
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-
-@pytest.fixture(autouse=True)
-def isolate_operator_configuration(tmp_path, monkeypatch):
-    """Never inherit an operator's pinned login, configuration or token stores."""
-    for key in list(os.environ):
-        if key.startswith(("ADP_", "HERMES_")) or key in {
-            "BG_CONFIG_DIR",
-            "BG_AWS_PROFILE",
-            "BG_AWS_RETIRED_PROFILES",
-            "CODEX_HOME",
-            "CLAUDE_CONFIG_DIR",
-            "KIMI_HOME",
-        }:
-            monkeypatch.delenv(key, raising=False)
-    for module in list(sys.modules.values()):
-        observations = vars(module).get("_capability_preflight") if module is not None else None
-        if isinstance(observations, dict):
-            observations.clear()
-        # In-process helpers must resolve a fresh deployment for each test.
-        if Path(getattr(module, "__file__", "") or "").name == "adp_common.py":
-            monkeypatch.setattr(module, "_deployment", module._UNRESOLVED)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    for key in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
-        directory = tmp_path / key.lower()
-        directory.mkdir(mode=0o700)
-        monkeypatch.setenv(key, str(directory))
 
 
 @pytest.fixture
@@ -68,205 +37,6 @@ def bg_auth_script(cli_dir: Path) -> Path:
 def install_script(cli_dir: Path) -> Path:
     """Return the path to install.sh script."""
     return cli_dir / "install.sh"
-
-
-@pytest.fixture
-def bg_cognito_auth_script(cli_dir: Path) -> Path:
-    """Return the path to bg-cognito-auth.sh script (Issue #4145)."""
-    return cli_dir / "bg-cognito-auth.sh"
-
-
-ADP_GATEWAY_URL = "https://gw.example.com/api"
-
-
-def write_adp_config(home: Path, **extra: str) -> None:
-    """Seed ~/.bedrock-gateway/config.json the way install.sh/login would."""
-    config_dir = home / ".bedrock-gateway"
-    config_dir.mkdir(exist_ok=True)
-    (config_dir / "config.json").write_text(json.dumps({"gateway_url": ADP_GATEWAY_URL, **extra}))
-
-
-def write_adp_session(home: Path, username: str = "github_alice", ttl: int = 3600) -> None:
-    """Seed a valid-looking token store (config + tokens), as `adp login` would.
-
-    The access token is a real (unsigned) JWT so `status` can decode the username
-    claim out of it — that decode is one of the things under test.
-    """
-    write_adp_config(home)
-
-    def b64(obj: dict[str, Any]) -> str:
-        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
-
-    access_token = f"{b64({'alg': 'none'})}.{b64({'username': username, 'sub': 'sub-123'})}.sig"
-    (home / ".bedrock-gateway" / "tokens.json").write_text(
-        json.dumps(
-            {
-                "id_token": "id-token",
-                "access_token": access_token,
-                "refresh_token": "refresh-token",
-                "expires_at": int(time.time()) + ttl,
-            }
-        )
-    )
-
-
-@pytest.fixture
-def adp_script(cli_dir: Path) -> Path:
-    """Return the path to the `adp` wrapper (Issue #4852)."""
-    return cli_dir / "adp"
-
-
-@pytest.fixture
-def adp_home(tmp_path: Path) -> Path:
-    """Sandboxed HOME for `adp` runs (Issue #4852).
-
-    Every `adp` test needs this: the wrapper writes ~/.codex/config.toml and
-    ~/.claude/settings.json, and a test that leaked into the real home dir would
-    rewrite the developer's own tool configuration.
-    """
-    home = tmp_path / "home"
-    home.mkdir()
-    return home
-
-
-@pytest.fixture
-def fake_launchd_factory(adp_home: Path):
-    """Install a launchctl substitute that starts real plist programs and cleans up."""
-
-    def install(stub_tools: Path) -> Path:
-        uname = stub_tools / "uname"
-        uname.write_text("#!/bin/sh\necho Darwin\n")
-        uname.chmod(0o755)
-        launchctl = stub_tools / "launchctl"
-        launchctl.write_text(
-            """#!/usr/bin/env python3
-import os
-import plistlib
-import signal
-import subprocess
-import sys
-import time
-from pathlib import Path
-
-action, plist_path = sys.argv[1:3]
-with open(plist_path, "rb") as source:
-    plist = plistlib.load(source)
-state_dir = Path.home() / ".fake-launchd"
-state_dir.mkdir(exist_ok=True)
-pidfile = state_dir / f"{plist['Label']}.pid"
-
-def stop():
-    try:
-        pid = int(pidfile.read_text())
-    except (FileNotFoundError, ValueError):
-        return
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    for _ in range(50):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.02)
-    pidfile.unlink(missing_ok=True)
-
-if action == "unload":
-    stop()
-elif action == "load":
-    stop()
-    environment = os.environ.copy()
-    environment.update(plist.get("EnvironmentVariables", {}))
-    log_path = Path(plist["StandardOutPath"])
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "ab", buffering=0) as log:
-        process = subprocess.Popen(
-            plist["ProgramArguments"],
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            env=environment,
-            start_new_session=True,
-        )
-    pidfile.write_text(str(process.pid))
-else:
-    raise SystemExit(2)
-"""
-        )
-        launchctl.chmod(0o755)
-        return stub_tools
-
-    yield install
-
-    state_dir = adp_home / ".fake-launchd"
-    for pidfile in state_dir.glob("*.pid") if state_dir.exists() else ():
-        try:
-            os.killpg(int(pidfile.read_text()), signal.SIGKILL)
-        except (OSError, ValueError):
-            pass
-
-
-@pytest.fixture
-def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
-    """An installed prefix holding `adp` + the two files it wraps.
-
-    Copies rather than symlinks: `adp` resolves its core helper and the proxy as
-    siblings of its own real path, so a symlink farm would not exercise the
-    layout install.sh actually produces.
-    """
-    bin_dir = tmp_path / "adp-bin"
-    bin_dir.mkdir()
-    for name in (
-        "adp",
-        "bg-cognito-auth.sh",
-        "bg-gateway-proxy.py",
-        "adp_common.py",
-        # Issue #5413: `adp` resolves the selected deployment through this at
-        # entry, so without it every command in an installed prefix fails.
-        "adp_deployments.py",
-        "adp-admin.py",
-        "adp-bedrock.py",
-        "adp-aws.py",
-        "adp-github.py",
-        "adp-github-admin.py",
-        "adp-superplane.py",
-        # The onboarding surface is a sibling helper that `adp-superplane.py`
-        # delegates to, so an installed prefix without it has no onboarding verbs.
-        "adp-superplane-onboarding.py",
-        "adp-models.py",
-        # Issue #5621: capability discovery and diagnosis.
-        "adp-doctor.py",
-    ):
-        target = bin_dir / name
-        target.write_bytes((cli_dir / name).read_bytes())
-        target.chmod(0o755)
-    return bin_dir
-
-
-@pytest.fixture
-def run_adp(adp_bin: Path, adp_home: Path):
-    """Run the installed `adp` with a sandboxed HOME.
-
-    PATH deliberately does NOT contain the install dir: `adp` must resolve its
-    core helper as a sibling of itself, not via a PATH lookup that could find an
-    unrelated copy.
-    """
-
-    def _run(args: list[str], extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-        env = os.environ.copy()
-        env["HOME"] = str(adp_home)
-        if extra_env:
-            env.update(extra_env)
-        return subprocess.run(
-            ["bash", str(adp_bin / "adp"), *args],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=30,
-        )
-
-    return _run
 
 
 class MockGatewayHandler(BaseHTTPRequestHandler):
@@ -315,20 +85,9 @@ class MockGatewayHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "healthy"}).encode("utf-8"))
-            return
-
-        # Issue #4145: serve configured GET responses (e.g. the
-        # /.well-known/cognito-config discovery document the CLI helper fetches).
-        response_config = self.__class__.mock_responses.get(self.path)
-        if response_config is None:
+        else:
             self.send_response(404)
             self.end_headers()
-            return
-
-        self.send_response(response_config.get("status", 200))
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(response_config.get("body", {})).encode("utf-8"))
 
 
 class MockGatewayServer:
@@ -410,36 +169,6 @@ if [[ "$1" == "configure" && "$2" == "export-credentials" ]]; then
     exit 0
 fi
 
-# Handle both public import and admin token refresh (REFRESH_TOKEN_AUTH).
-# Refresh prefers admin-initiate-auth when a pool id is configured; letting
-# that command fall through invokes real AWS with the fixture credentials.
-# Behaviour is driven by env vars so tests can force each failure mode:
-#   MOCK_COGNITO_RESULT=ok|notauthorized|other|no_tokens  (default: ok)
-#   MOCK_AWS_LOG=<path>  appends the full argv for assertions
-if [[ "$1" == "cognito-idp" && ( "$2" == "initiate-auth" || "$2" == "admin-initiate-auth" ) ]]; then
-    if [[ -n "${MOCK_AWS_LOG:-}" ]]; then
-        echo "$*" >> "${MOCK_AWS_LOG}"
-    fi
-    case "${MOCK_COGNITO_RESULT:-ok}" in
-        notauthorized)
-            echo "An error occurred (NotAuthorizedException) when calling the InitiateAuth operation: Invalid Refresh Token" >&2
-            exit 254
-            ;;
-        other)
-            echo "An error occurred (ResourceNotFoundException) when calling the InitiateAuth operation: User pool client does not exist" >&2
-            exit 254
-            ;;
-        no_tokens)
-            echo '{"ChallengeParameters": {}}'
-            exit 0
-            ;;
-        *)
-            echo '{"AuthenticationResult": {"IdToken": "mock.id.token", "AccessToken": "mock.access.token", "ExpiresIn": 3600, "TokenType": "Bearer"}}'
-            exit 0
-            ;;
-    esac
-fi
-
 # Handle configure get
 if [[ "$1" == "configure" && "$2" == "get" ]]; then
     case "$3" in
@@ -505,13 +234,8 @@ def run_script(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
     timeout: int = 30,
-    stdin_data: str | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run a shell script and capture output.
-
-    ``stdin_data`` (Issue #4145) feeds the process stdin — needed to test the
-    CLI helper's stdin refresh-token path.
-    """
+    """Run a shell script and capture output."""
     cmd = ["bash", str(script_path)]
     if args:
         cmd.extend(args)
@@ -521,46 +245,7 @@ def run_script(
     if env:
         full_env.update(env)
 
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        env=full_env,
-        timeout=timeout,
-        input=stdin_data if stdin_data is not None else "",
-    )
-
-
-@pytest.fixture
-def cognito_home(tmp_path: Path) -> Path:
-    """Sandboxed HOME for bg-cognito-auth.sh runs (Issue #4145)."""
-    home = tmp_path / "home"
-    home.mkdir()
-    return home
-
-
-@pytest.fixture
-def run_bg_cognito_auth(bg_cognito_auth_script: Path, mock_aws_cli: Path, cognito_home: Path):
-    """Run bg-cognito-auth.sh with a sandboxed HOME and the mock aws CLI.
-
-    Issue #4145. HOME is redirected into tmp_path so the helper's
-    ``~/.bedrock-gateway`` and ``~/.aws`` writes never touch the real home dir.
-    """
-
-    def _run(
-        args: list[str] | None = None,
-        extra_env: dict[str, str] | None = None,
-        stdin_data: str | None = None,
-    ) -> subprocess.CompletedProcess:
-        env = {
-            "HOME": str(cognito_home),
-            "PATH": f"{mock_aws_cli}:{os.environ.get('PATH', '')}",
-        }
-        if extra_env:
-            env.update(extra_env)
-        return run_script(bg_cognito_auth_script, args, env, stdin_data=stdin_data)
-
-    return _run
+    return subprocess.run(cmd, capture_output=True, text=True, env=full_env, timeout=timeout)
 
 
 @pytest.fixture

@@ -8,7 +8,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from src.admin.config import AdminRole, Permission
-from src.shared.schemas.budget import PeriodType
 
 
 # Organization Schemas
@@ -117,29 +116,10 @@ class BudgetConfigResponse(BaseModel):
     org_id: str
     entity_type: str
     entity_id: str
-    # Issue #4328: PeriodType, not a bare str — an unvalidated string field let any
-    # value reach budget_configs.period_type, which has no DB constraint either.
-    period_type: PeriodType
+    period_type: str
     budget_amount_usd: Decimal
     enforcement_mode: str
     updated_at: datetime
-    # Issue #4669: an ADVISORY sentence about the cap that was just written — never a
-    # reason it was refused. A `root_user` cap authored in a partition where the
-    # person's agent runs do not bill is inert: it displays, it validates, and it will
-    # never see a dollar (#4620). The operator finds that out weeks later, from spend
-    # that never stopped. So the create path says so at the moment of authoring.
-    #
-    # It is a field on the 201 rather than a 4xx on purpose. Which partition a
-    # person's runs bill to can change, an org admin may legitimately want the cap in
-    # place before it does, and this check reads a foreign tenant's ledger — a
-    # cross-tenant read must not be able to VETO a write inside this tenant.
-    #
-    # `None` by default, so every existing caller, transform and test that never saw
-    # this field is unaffected.
-    advisory: str | None = Field(
-        None,
-        description="Advisory warning about the created budget. Never a rejection — the budget was created.",
-    )
 
 
 class BudgetConfigUpdateRequest(BaseModel):
@@ -294,18 +274,7 @@ class BudgetListItem(BaseModel):
     entity_type: str
     entity_id: str
     entity_display_name: str | None = Field(None, description="Human-readable name for the entity (e.g. email, github username)")
-    # Issue #4948: "this budget's entity does not resolve to a tenancy row in this org,
-    # so nothing will ever match it". Set only for org/department/team rows, where the
-    # id namespace is checkable; person-scoped kinds keep their own resolution (#4536)
-    # and never set this. Flagged, never filtered out — the row is a spend control
-    # somebody believes is in force, and removing it from the list removes the only
-    # evidence they have.
-    entity_unresolved: bool = Field(
-        default=False,
-        description="True when the entity id matches no organization/department/team in this org; the config cannot be enforced.",
-    )
-    # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
-    period_type: PeriodType
+    period_type: str
     budget_amount_usd: Decimal
     enforcement_mode: str
     current_usage_usd: Decimal = Field(default=Decimal("0.00"))
@@ -326,29 +295,11 @@ class BudgetListResponse(BaseModel):
 class BudgetCreateRequest(BaseModel):
     """Request schema for creating a new budget."""
 
-    # Issue #4536: `root_user` is the cloud-agent ledger — spend by agent runs a
-    # person triggered, keyed by canonical `users.id` (#4300). The dashboard has
-    # always displayed its caps; without this value they could only be created by
-    # hand-crafted API calls. Presented to users as "cloud agents", never by this
-    # name. The rate-limit schema deliberately does NOT gain it: nothing enforces a
-    # `root_user` rate limit, so offering one would configure a no-op.
-    entity_type: Literal["org", "department", "team", "user", "root_user"] = Field(
-        ..., description="Entity type: org, department, team, user, root_user"
-    )
+    entity_type: Literal["org", "department", "team", "user"] = Field(..., description="Entity type: org, department, team, user")
     entity_id: str = Field(..., min_length=1, description="Entity ID")
-    # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
-    period_type: PeriodType = Field(..., description="Period type: daily, weekly, monthly")
+    period_type: str = Field(..., description="Period type: daily, weekly, monthly")
     budget_amount_usd: Decimal = Field(..., gt=0, description="Budget amount in USD")
     enforcement_mode: str = Field(default="hard", description="Enforcement mode: soft or hard")
-
-
-class BudgetPeriodSetRequest(BaseModel):
-    """Exact period upsert with a caller's inspected-state precondition."""
-
-    budget_amount_usd: Decimal = Field(..., gt=0, max_digits=10, decimal_places=2)
-    enforcement_mode: Literal["hard", "soft"] = "hard"
-    expected_revision: datetime | None = None
-    expect_absent: bool = False
 
 
 class BudgetStatusResponse(BaseModel):
@@ -360,8 +311,7 @@ class BudgetStatusResponse(BaseModel):
     budget_utilization_percent: float = Field(default=0.0)
     period_start: str
     period_end: str
-    # Issue #4328: PeriodType, not a bare str (see BudgetConfigResponse).
-    period_type: PeriodType
+    period_type: str
     enforcement_mode: str
     budget_exceeded: bool = False
     warnings: list[str] = Field(default_factory=list)
@@ -375,12 +325,6 @@ class RateLimitListItem(BaseModel):
 
     entity_type: str
     entity_id: str
-    entity_display_name: str | None = Field(None, description="Human-readable name for org/department/team entities")
-    # Issue #4948 — see BudgetListItem.entity_unresolved.
-    entity_unresolved: bool = Field(
-        default=False,
-        description="True when the entity id matches no organization/department/team in this org; the config cannot be enforced.",
-    )
     rpm: int | None
     tpm: int | None
     concurrent_requests: int | None

@@ -56,83 +56,6 @@ class IdentityIndexClient:
     def table_name(self) -> str:
         return self._table_name
 
-    async def _write_active_installation(self, installation_id: str, operation: dict) -> bool:
-        """Atomically refuse a delayed routing write once a denial marker exists."""
-        for attempt in range(MAX_RETRIES):
-            try:
-                await asyncio.to_thread(
-                    self._client.transact_write_items,
-                    TransactItems=[
-                        {
-                            "ConditionCheck": {
-                                "TableName": self._table_name,
-                                "Key": {"identity_type": {"S": "github_installation_revoked"}, "identity_value": {"S": installation_id}},
-                                "ConditionExpression": "attribute_not_exists(identity_type)",
-                            }
-                        },
-                        operation,
-                    ],
-                )
-                return True
-            except ClientError as exc:
-                code = exc.response.get("Error", {}).get("Code")
-                if code == "ConditionalCheckFailedException" or any(
-                    reason.get("Code") == "ConditionalCheckFailed" for reason in exc.response.get("CancellationReasons", [])
-                ):
-                    logger.warning("Installation routing write rejected by ownership or revocation condition: installation=%s", installation_id)
-                    return False
-                if attempt + 1 < MAX_RETRIES:
-                    await asyncio.sleep(BASE_BACKOFF_SECONDS * (2**attempt))
-        logger.warning("Installation routing write refused or unavailable: installation=%s", installation_id)
-        return False
-
-    async def put_installation_revocation(self, installation_id: str, org_id: str) -> bool:
-        """Permanent denial, independent of forward/reverse projection cleanup."""
-        try:
-            await asyncio.to_thread(
-                self._client.put_item,
-                TableName=self._table_name,
-                Item={"identity_type": {"S": "github_installation_revoked"}, "identity_value": {"S": installation_id}, "org_id": {"S": org_id}},
-                ConditionExpression="attribute_not_exists(org_id) OR org_id = :org",
-                ExpressionAttributeValues={":org": {"S": org_id}},
-            )
-            return True
-        except ClientError:
-            logger.exception("Installation denial projection failed: installation=%s", installation_id)
-            return False
-
-    async def delete_installation_projection(self, installation_id: str, org_id: str) -> bool:
-        return await self._conditional_delete(
-            "github_installation_id", installation_id, "attribute_not_exists(org_id) OR org_id = :expected", {"S": org_id}
-        )
-
-    async def delete_reverse_installation_if_matches(self, org_id: str, installation_id: str) -> bool:
-        return await self._conditional_delete(
-            "org_installation", org_id, "attribute_not_exists(installation_id) OR installation_id = :expected", {"N": installation_id}
-        )
-
-    async def clear_installation_revocation(self, installation_id: str, org_id: str) -> bool:
-        return await self._conditional_delete(
-            "github_installation_revoked", installation_id, "attribute_not_exists(org_id) OR org_id = :expected", {"S": org_id}, mismatch_ok=False
-        )
-
-    async def _conditional_delete(self, identity_type: str, identity_value: str, condition: str, expected: dict, *, mismatch_ok: bool = True) -> bool:
-        """An unrelated replacement is already clean; never remove it after a stale read."""
-        try:
-            await asyncio.to_thread(
-                self._client.delete_item,
-                TableName=self._table_name,
-                Key={"identity_type": {"S": identity_type}, "identity_value": {"S": identity_value}},
-                ConditionExpression=condition,
-                ExpressionAttributeValues={":expected": expected},
-            )
-            return True
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                return mismatch_ok
-            logger.exception("Installation cleanup failed: type=%s value=%s", identity_type, identity_value)
-            return False
-
     async def put_identity(
         self,
         identity_type: "IdentityType | str",
@@ -170,9 +93,6 @@ class IdentityIndexClient:
         # Issue #3134: member_org_ids as a DDB List attribute
         if member_org_ids is not None:
             item["member_org_ids"] = {"L": [{"S": oid} for oid in member_org_ids]}
-
-        if identity_type == "github_installation_id":
-            return await self._write_active_installation(identity_value, {"Put": {"TableName": self._table_name, "Item": item}})
 
         for attempt in range(MAX_RETRIES):
             try:
@@ -220,24 +140,7 @@ class IdentityIndexClient:
         Always sets: org_id, updated_at.
         Conditionally sets: trigger_policy, min_author_association (only when provided).
 
-        Issue #4070 (·A0, decision D4) — uniqueness guard in the second store:
-        this write is now conditional. Previously it was an unconditional
-        UpdateItem, so a mapping claiming installation X for tenant B would
-        silently overwrite a good row that mapped X to tenant A. That is the same
-        "one installation, two tenants" invariant the Postgres unique index
-        enforces, in a different store — so it belongs to the same change rather
-        than to a later wave, otherwise the two stores get two ownership rules.
-
-        The layering is deliberate: **Postgres is the record of truth; DynamoDB
-        is a cache.** A row may therefore be created, or re-confirmed for the
-        tenant that already owns it — but never re-pointed at a different tenant.
-        Re-homing an installation legitimately (support-driven ownership change)
-        means fixing Postgres and re-running ``scripts/backfill-identity-index.py``,
-        which is an operator action with an audit trail, not a silent side effect
-        of a webhook.
-
-        Returns True if the update succeeded, False if it was rejected as a
-        cross-tenant overwrite or all retries were exhausted.
+        Returns True if update succeeded, False if all retries exhausted.
         """
         key = {
             "identity_type": {"S": "github_installation_id"},
@@ -260,22 +163,34 @@ class IdentityIndexClient:
 
         update_expression = "SET " + ", ".join(set_parts)
 
-        # Allow the row to be created, or updated in place for the SAME tenant.
-        # Reject a write that would re-point an existing row at a different one.
-        condition_expression = "attribute_not_exists(org_id) OR org_id = :org"
+        for attempt in range(MAX_RETRIES):
+            try:
+                await asyncio.to_thread(
+                    self._client.update_item,
+                    TableName=self._table_name,
+                    Key=key,
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeValues=expression_values,
+                )
+                return True
+            except ClientError as e:
+                wait = BASE_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "identity-index update_installation_identity failed (attempt %d/%d): %s. Retrying in %.1fs",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    e.response["Error"]["Message"],
+                    wait,
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(wait)
 
-        return await self._write_active_installation(
+        logger.error(
+            "identity-index update_installation_identity exhausted retries: value=%s org=%s",
             identity_value,
-            {
-                "Update": {
-                    "TableName": self._table_name,
-                    "Key": key,
-                    "UpdateExpression": update_expression,
-                    "ExpressionAttributeValues": expression_values,
-                    "ConditionExpression": condition_expression,
-                }
-            },
+            org_id,
         )
+        return False
 
     async def update_membership_orgs(
         self,
@@ -334,9 +249,6 @@ class IdentityIndexClient:
         user_id: str,
         org_id: str,
         provider_username: str | None = None,
-        user_kind: str | None = None,
-        bot_kind: str | None = None,
-        verification_method: str | None = None,
     ) -> bool:
         """Update a github_user identity row using SET semantics (UpdateItem).
 
@@ -345,19 +257,7 @@ class IdentityIndexClient:
         operation re-writes the user row.
 
         Always sets: user_id, org_id, updated_at.
-        Conditionally sets: provider_username, user_kind, bot_kind (only when
-        not None). user_kind/bot_kind (Issue #780) mark a row as a known bot
-        identity — read by the webhook Lambda's identity_resolver to route bot
-        senders through the loop guards instead of the default human path.
-
-        Issue #5664 (A10): ``verification_method`` projects the Postgres column of
-        the same name onto this row. Without it the webhook resolver reads no
-        provenance at all and cannot tell a provider-confirmed link from one the
-        user asserted about themselves — which is why the authority gate had to
-        default to allow. It is written whenever the caller knows it; a caller that
-        does not pass it leaves any existing value alone (SET semantics) rather
-        than blanking it, so a backfilled row is not un-backfilled by an unrelated
-        update.
+        Conditionally sets: provider_username (only when not None).
 
         Returns True if update succeeded, False if all retries exhausted.
         """
@@ -376,18 +276,6 @@ class IdentityIndexClient:
         if provider_username is not None:
             set_parts.append("provider_username = :pun")
             expression_values[":pun"] = {"S": provider_username}
-
-        if user_kind is not None:
-            set_parts.append("user_kind = :ukind")
-            expression_values[":ukind"] = {"S": user_kind}
-
-        if bot_kind is not None:
-            set_parts.append("bot_kind = :bkind")
-            expression_values[":bkind"] = {"S": bot_kind}
-
-        if verification_method is not None:
-            set_parts.append("verification_method = :vmethod")
-            expression_values[":vmethod"] = {"S": verification_method}
 
         update_expression = "SET " + ", ".join(set_parts)
 
@@ -418,155 +306,6 @@ class IdentityIndexClient:
             identity_value,
         )
         return False
-
-    async def write_reverse_installation_identity(
-        self,
-        org_id: str,
-        installation_id: int,
-    ) -> bool:
-        """Write the reverse org_installation row (org_id → installation_id).
-
-        Issue #3860: The UI install-callback path only wrote the forward row
-        (github_installation_id → org). This method writes the reverse row so
-        that resolve_installation_for_tenant() (used by adp-trigger) can look
-        up the installation_id from the org_id.
-
-        Guard semantics (same as _auto_register_installation in webhook-ingress):
-        - If no row exists → write it (with auto_registered=True).
-        - If row exists with auto_registered=True → overwrite (idempotent refresh).
-        - If row exists WITHOUT auto_registered → Postgres-owned, do NOT clobber.
-
-        Returns True if write succeeded or was a no-op (guard respected),
-        False if all retries exhausted.
-        """
-        key = {
-            "identity_type": {"S": "org_installation"},
-            "identity_value": {"S": org_id},
-        }
-
-        # First, read the existing row to check the guard
-        for attempt in range(MAX_RETRIES):
-            try:
-                resp = await asyncio.to_thread(
-                    self._client.get_item,
-                    TableName=self._table_name,
-                    Key=key,
-                )
-                break
-            except ClientError as e:
-                wait = BASE_BACKOFF_SECONDS * (2**attempt)
-                logger.warning(
-                    "identity-index get_item (reverse guard) failed (attempt %d/%d): %s. Retrying in %.1fs",
-                    attempt + 1,
-                    MAX_RETRIES,
-                    e.response["Error"]["Message"],
-                    wait,
-                )
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(wait)
-        else:
-            logger.error(
-                "identity-index write_reverse_installation_identity: exhausted retries on get_item for org=%s",
-                org_id,
-            )
-            return False
-
-        existing = resp.get("Item")
-        if existing is not None and not existing.get("auto_registered", {}).get("BOOL", False):
-            # Postgres-owned row — do not clobber
-            logger.info(
-                "identity-index: reverse row for org=%s exists without auto_registered — not clobbering (Postgres-owned)",
-                org_id,
-            )
-            return True  # No-op is success (guard respected)
-
-        # Write (or overwrite) the reverse row
-        item = {
-            "identity_type": {"S": "org_installation"},
-            "identity_value": {"S": org_id},
-            "installation_id": {"N": str(installation_id)},
-            "updated_at": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-            "auto_registered": {"BOOL": True},
-        }
-
-        return await self._write_active_installation(
-            str(installation_id),
-            {
-                "Put": {
-                    "TableName": self._table_name,
-                    "Item": item,
-                    "ConditionExpression": "attribute_not_exists(identity_type) OR auto_registered = :auto",
-                    "ExpressionAttributeValues": {":auto": {"BOOL": True}},
-                }
-            },
-        )
-
-    async def get_installation_identity(self, installation_id: int) -> dict | None:
-        """Read the forward row (github_installation_id → org_id). READ-ONLY.
-
-        Issue #4016: this client was write-only, so nothing could *observe*
-        whether webhook routing for an installation is actually resolvable. The
-        onboarding verification card needs that signal.
-
-        Deliberately read-only and non-healing: a missing row is reported, never
-        repaired. Repair is owned by #3860 (reverse row self-heal) and #3453
-        (systemic reconcile) — a verification read that also writes would have
-        two issues fighting over the same row.
-
-        No retries and no raise: this serves a status tile, so a transient DDB
-        error must degrade to "could not determine" (None), not fail the request.
-        Note that absence is a trustworthy signal here — rows carry no TTL
-        (DEFAULT_TTL_SECONDS = 0), so a missing row means "never written".
-
-        Returns the raw DDB item, or None when absent / unreadable.
-        """
-        return await self._get_item_soft(
-            key={
-                "identity_type": {"S": "github_installation_id"},
-                "identity_value": {"S": str(installation_id)},
-            },
-            label=f"github_installation_id/{installation_id}",
-        )
-
-    async def get_reverse_installation_identity(self, org_id: str) -> dict | None:
-        """Read the reverse row (org_installation/<org> → installation_id). READ-ONLY.
-
-        Issue #4016: this is the row `resolve_installation_for_tenant()` (used by
-        adp-trigger) reads. Its absence is why UI-installed tenants 422 on
-        agent-to-agent dispatch. Surfaced as an amber check on the connections
-        card; the write + self-heal stays owned by #3860.
-
-        Returns the raw DDB item, or None when absent / unreadable.
-        """
-        return await self._get_item_soft(
-            key={
-                "identity_type": {"S": "org_installation"},
-                "identity_value": {"S": org_id},
-            },
-            label=f"org_installation/{org_id}",
-        )
-
-    async def _get_item_soft(self, *, key: dict, label: str) -> dict | None:
-        """Single-shot GetItem that fails soft to None (Issue #4016).
-
-        Shared by the read-only verification getters above. Mirrors the shape of
-        ``UserIdentityIndexClient.get_user_identity``: ``asyncio.to_thread`` +
-        return the item or None, logging and swallowing ClientError.
-        """
-        try:
-            resp = await asyncio.to_thread(
-                self._client.get_item,
-                TableName=self._table_name,
-                Key=key,
-            )
-        except ClientError as e:
-            logger.warning(
-                "identity-index get_item failed for %s (verification degrades to unknown): %s",
-                label,
-                e.response["Error"]["Message"],
-            )
-            return None
-        return resp.get("Item")
 
     async def delete_identity(
         self,

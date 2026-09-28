@@ -7,34 +7,6 @@ and that the contextvar mechanism correctly passes the value through.
 from src.proxy.service import _current_agent_run_id
 
 
-async def test_asgi_requests_keep_run_identity_in_the_request_task():
-    import asyncio
-
-    import httpx
-    from fastapi import Depends, FastAPI
-
-    from src.proxy.routes import set_agent_run_id_from_header
-
-    app = FastAPI()
-    ready = asyncio.Event()
-    entered = 0
-
-    @app.get("/run")
-    async def read_run(_run=Depends(set_agent_run_id_from_header)):
-        nonlocal entered
-        entered += 1
-        if entered == 3:
-            ready.set()
-        await asyncio.wait_for(ready.wait(), 2)
-        return {"run_id": _current_agent_run_id.get()}
-
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        responses = await asyncio.gather(
-            *(client.get("/run", headers={"x-agent-runid": run} if run else {}) for run in ["alice-run", "bob-run", None])
-        )
-    assert [response.json()["run_id"] for response in responses] == ["alice-run", "bob-run", None]
-
-
 class TestAgentRunIdContextvar:
     """Test the _current_agent_run_id contextvar mechanism."""
 
@@ -64,7 +36,7 @@ class TestAgentRunIdContextvar:
 class TestSetAgentRunIdFromHeader:
     """Test the route-level dependency that extracts the header."""
 
-    async def test_extracts_header_value(self):
+    def test_extracts_header_value(self):
         """The dependency reads x-agent-runid header and sets contextvar."""
         from unittest.mock import MagicMock
 
@@ -73,14 +45,14 @@ class TestSetAgentRunIdFromHeader:
         request = MagicMock()
         request.headers = {"x-agent-runid": "inv-from-header-456"}
 
-        result = await set_agent_run_id_from_header(request)
+        result = set_agent_run_id_from_header(request)
 
         assert result == "inv-from-header-456"
         assert _current_agent_run_id.get() == "inv-from-header-456"
         # Clean up
         _current_agent_run_id.set(None)
 
-    async def test_missing_header_sets_none(self):
+    def test_missing_header_sets_none(self):
         """No header → contextvar set to None, returns None."""
         from unittest.mock import MagicMock
 
@@ -89,12 +61,12 @@ class TestSetAgentRunIdFromHeader:
         request = MagicMock()
         request.headers = {}
 
-        result = await set_agent_run_id_from_header(request)
+        result = set_agent_run_id_from_header(request)
 
         assert result is None
         assert _current_agent_run_id.get() is None
 
-    async def test_absent_header_no_error(self):
+    def test_absent_header_no_error(self):
         """Missing header does not raise an error (graceful degrade)."""
         from unittest.mock import MagicMock
 
@@ -104,7 +76,7 @@ class TestSetAgentRunIdFromHeader:
         request.headers = {"content-type": "application/json"}
 
         # Should not raise
-        result = await set_agent_run_id_from_header(request)
+        result = set_agent_run_id_from_header(request)
         assert result is None
         _current_agent_run_id.set(None)
 

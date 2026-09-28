@@ -208,7 +208,7 @@ class TestChainAttributedTranscript:
             "topic": "Chain-attributed run",
             "persona": "developer",
             "user_id": user_id,
-            "tenant_id": "org-tenant-001",
+            "tenant_id": "org-embark1",
             "correlation_id": "corr-chain-001",
             "parent_invocation_id": "inv-parent-000",
             "transcript_key": self._TRANSCRIPT_KEY,

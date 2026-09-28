@@ -6,7 +6,6 @@ using token buckets for RPM/TPM limits and counters for concurrent requests.
 """
 
 import asyncio
-import logging
 import threading
 import time
 from collections import defaultdict
@@ -15,8 +14,6 @@ from datetime import datetime
 from ..backend import RateLimitBackend
 from ..models import EntityType, LimitType, RateLimitState
 from ..token_bucket import TokenBucket
-
-logger = logging.getLogger(__name__)
 
 
 class InMemoryBackend(RateLimitBackend):
@@ -66,7 +63,8 @@ class InMemoryBackend(RateLimitBackend):
             except asyncio.CancelledError:
                 break
             except Exception:
-                logger.warning("rate-limit cleanup cycle failed")
+                # Log and continue
+                pass
 
     def _cleanup_expired(self) -> None:
         """Remove expired entries based on TTL."""

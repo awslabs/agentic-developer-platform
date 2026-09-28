@@ -14,20 +14,18 @@ class TestProviderRegistry:
 
     def test_supported_providers_contains_required(self):
         """All required providers are in the set."""
-        required = {"cognito", "github", "gitlab", "slack", "teams", "discord", "email", "whatsapp", "directory"}
+        required = {"cognito", "github", "slack", "teams", "discord", "email", "whatsapp"}
         assert required == SUPPORTED_PROVIDERS
 
     def test_identity_provider_enum_values(self):
         """IdentityProvider enum has all expected members."""
         assert IdentityProvider.cognito == "cognito"
         assert IdentityProvider.github == "github"
-        assert IdentityProvider.gitlab == "gitlab"
         assert IdentityProvider.slack == "slack"
         assert IdentityProvider.teams == "teams"
         assert IdentityProvider.discord == "discord"
         assert IdentityProvider.email == "email"
         assert IdentityProvider.whatsapp == "whatsapp"
-        assert IdentityProvider.directory == "directory"
 
     def test_supported_providers_derived_from_enum(self):
         """SUPPORTED_PROVIDERS is derived from the enum (single source of truth)."""

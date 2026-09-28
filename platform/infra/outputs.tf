@@ -111,9 +111,9 @@ output "gateway_service_irsa_role_name" {
 # CodeBuild outputs
 # ---------------------------------------------------------------------------
 
-output "agent_context_codebuild_role_arns" {
-  description = "Map of agent-context image key to its dedicated CodeBuild role ARN"
-  value       = module.codebuild.agent_context_project_role_arns
+output "codebuild_role_arn" {
+  description = "ARN of the shared CodeBuild IAM role"
+  value       = module.codebuild.codebuild_role_arn
 }
 
 output "codebuild_project_names" {
@@ -147,9 +147,4 @@ output "security_scans_bucket_arn" {
 output "security_scans_bucket_name" {
   description = "Name of the security scans S3 bucket"
   value       = module.security_scans.bucket_name
-}
-
-output "securityagent_nightly_role_arn" {
-  description = "Least-privilege service role ARN for the nightly Security Agent jobs (#4443)"
-  value       = aws_iam_role.securityagent_nightly.arn
 }

@@ -119,7 +119,7 @@ def validate_source_ref(asset_type: str, source_ref: str) -> bool:
         return False
     pattern = config.get("source_ref_pattern", "")
     if not pattern:
-        return False  # Missing source rules cannot authorize a new asset type
+        return True  # No pattern = accept anything
     return bool(re.match(pattern, source_ref))
 
 

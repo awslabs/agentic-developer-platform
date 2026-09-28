@@ -49,7 +49,6 @@ def _emit_emf(
     dimensions: list[list[str]],
     namespace: str = NAMESPACE,
     timestamp: int | None = None,
-    properties: dict[str, Any] | None = None,
 ) -> None:
     """
     Emit metrics in CloudWatch EMF format.
@@ -59,7 +58,6 @@ def _emit_emf(
         dimensions: List of dimension sets (each is a list of dimension names)
         namespace: CloudWatch namespace
         timestamp: Optional timestamp in milliseconds
-        properties: Optional non-metric values to include in the EMF event
     """
     if timestamp is None:
         timestamp = _get_timestamp()
@@ -80,8 +78,6 @@ def _emit_emf(
 
     # Add metric values
     emf_data.update(metrics)
-    if properties:
-        emf_data.update(properties)
 
     # Add standard context
     request_id = get_request_id()
@@ -100,11 +96,6 @@ def _get_unit(metric_name: str) -> str:
     """Get the unit for a metric."""
     units = {
         "RequestCount": "Count",
-        "PricingCacheAgeSeconds": "Seconds",
-        "PricingCacheRefreshFailure": "Count",
-        "PricingUnknownVariant": "Count",
-        "PricingStaleRate": "Count",
-        "UnknownModelPricing": "Count",
         "RequestLatencyMs": "Milliseconds",
         "TokensIn": "Count",
         "TokensOut": "Count",
@@ -115,7 +106,6 @@ def _get_unit(metric_name: str) -> str:
         "BudgetUtilizationPercent": "Percent",
         "RateLimitRemaining": "Count",
         "AuthExchangeCount": "Count",
-        "CallerProvenanceRejected": "Count",
     }
     return units.get(metric_name, "None")
 
@@ -332,196 +322,6 @@ def emit_budget_utilization(
     )
 
 
-def emit_budget_grace_engaged(
-    engaged: int,
-    environment: str = "production",
-) -> None:
-    """
-    Emit BudgetCheckFailOpenGrace metric (Issue #4075).
-
-    Signals that budget enforcement is currently allowing requests it could not
-    verify, because the ledger read is failing and we are inside the bounded
-    grace window. This is the alarm that must page on-call: every second it is
-    engaged is a second of potentially uncapped spend, and when the window
-    expires all enforced paths start denying.
-
-    IMPORTANT: this is emitted with ``engaged=0`` on the healthy path too. A
-    metric that only appears during an incident leaves its alarm permanently in
-    INSUFFICIENT_DATA and it never transitions — which is the most common way
-    this class of alarm ships silently broken. The alarm pairs this with
-    ``treat_missing_data = "notBreaching"``.
-
-    Args:
-        engaged: 1 while the grace window is engaged, 0 when healthy
-        environment: Environment name
-    """
-    _emit_emf(
-        metrics={
-            "BudgetCheckFailOpenGrace": engaged,
-            "Environment": environment,
-        },
-        dimensions=[["Environment"]],
-    )
-
-
-def emit_budget_check_failure(
-    fault_class: str,
-    outcome: str,
-    count: int = 1,
-    environment: str = "production",
-) -> None:
-    """
-    Emit BudgetCheckFailure metric (Issue #4075).
-
-    Args:
-        fault_class: "infrastructure" for transient DB/IAM faults the grace
-            window is designed to absorb, or "unexpected" for exception types
-            that indicate a code bug. The distinction matters: an unexpected
-            fault is deterministic, recurs on every request, and no grace
-            window rescues it — so it fails OPEN with a high-severity signal
-            rather than permanently downing all inference.
-        outcome: "allowed_under_grace", "allowed_fail_open", or "denied"
-        count: Number of failures (default 1)
-        environment: Environment name
-    """
-    _emit_emf(
-        metrics={
-            "BudgetCheckFailure": count,
-            "fault_class": fault_class,
-            "outcome": outcome,
-            "Environment": environment,
-        },
-        dimensions=[
-            ["fault_class", "outcome", "Environment"],
-            ["fault_class", "Environment"],
-            ["Environment"],
-        ],
-    )
-
-
-def emit_person_budget_layer_skipped(
-    fault_class: str,
-    count: int = 1,
-    environment: str = "production",
-) -> None:
-    """Emit PersonBudgetLayerSkipped (Issue #4630, review fix on #4661).
-
-    A DEDICATED metric rather than a BudgetCheckFailure outcome: the
-    ``person_layer_skipped`` outcome landed in a dimension combination no alarm
-    watched, and the failure mode it marks — person caps silently unenforced
-    platform-wide while every other verdict stands — is exactly the kind that is
-    discovered from a bill unless something pages. Emitted with the plain
-    ``[Environment]`` rollup so a single-metric alarm matches every fault class.
-    """
-    _emit_emf(
-        metrics={
-            "PersonBudgetLayerSkipped": count,
-            "fault_class": fault_class,
-            "Environment": environment,
-        },
-        dimensions=[
-            ["fault_class", "Environment"],
-            ["Environment"],
-        ],
-    )
-
-
-def emit_run_binding_drift(
-    reason: str,
-    count: int = 1,
-    environment: str = "production",
-    outcome: str = "deny",
-) -> None:
-    """
-    Emit BudgetRunBindingDrift metric (Issue #4187).
-
-    Counts requests whose asserted ``X-Agent-RunId`` could NOT be bound to a live,
-    tenant-consistent run capability — an unknown run, a cross-tenant one, an
-    already-finished one, or no run id at all.
-
-    This is what makes shipping the run cap in shadow mode meaningful. In
-    ``shadow`` mode nothing is denied and this metric is the only output: it says
-    how much real traffic the deny rule would reject if enabled. In ``enforce``
-    mode the same signal becomes the denial rate, so an unexpected spike after the
-    flip is the rollback trigger.
-
-    "Enforce once it sits at zero" is necessary but NOT sufficient, and Issue #4337
-    is the reason the gate says so explicitly. This metric measures the BINDING, not
-    the reservation: while the gateway's Redis auth was broken every run/chain
-    reservation degraded to *allow*, so a zero reading here was compatible with a
-    cap that could not deny anything. The gate therefore also requires
-    ``BudgetReservationOutcome=reserved`` and positive controls — a forged run id and
-    a forged ``X-Agent-OrgId`` must both still register here in the same window, or
-    "zero drift" is indistinguishable from a guard that has stopped checking.
-
-    Args:
-        reason: "unknown_run", "tenant_mismatch", "terminal_run", or
-            "missing_run_id" — which check refused the binding. (Issue #4337
-            removed "identity_mismatch": the caller-identity equality it named was
-            comparing disjoint namespaces and could never succeed — see
-            ``budget/run_binding.py``.)
-        count: Number of occurrences (default 1)
-        environment: Environment name
-        outcome: "deny" (the default — the binding was refused) or "exempt" (Issue
-            #4337 D10a: a DECLARED policy let the request through without a
-            binding). The split exists because the no-row dispatch paths used to
-            emit nothing at all, so an exempted path was indistinguishable from a
-            path nobody had exercised. An exemption nobody can see is how a path
-            silently stops being capped.
-    """
-    _emit_emf(
-        metrics={
-            "BudgetRunBindingDrift": count,
-            "reason": reason,
-            "outcome": outcome,
-            "Environment": environment,
-        },
-        dimensions=[
-            ["reason", "outcome", "Environment"],
-            ["reason", "Environment"],
-            ["Environment"],
-        ],
-    )
-
-
-def emit_budget_reservation_outcome(
-    outcome: str,
-    count: int = 1,
-    environment: str = "production",
-) -> None:
-    """
-    Emit BudgetReservationOutcome metric (Issue #4287).
-
-    The live-denominator reservation puts Redis on the HEALTHY hot path of every
-    enforced request for the first time — Wave 1 (#4075) only touched Redis after
-    a DB read had already failed. That is a new availability surface, so it needs
-    its own signal, separate from BudgetCheckFailure: a Redis blip here is NOT a
-    ledger fault, does not consume the DB grace window, and never denies.
-
-    ``degraded`` is the one to alarm on. While it is firing, caps are being
-    enforced against the lagged settled total only — i.e. exactly the overshoot
-    #4287 exists to close is back, silently, until Redis returns.
-
-    Args:
-        outcome: "reserved" (live denominator had room), "denied" (in-flight
-            spend exhausted the cap), or "degraded" (reservation backend
-            unreachable; fell back to the settled-ledger check).
-        count: Number of occurrences (default 1)
-        environment: Environment name
-    """
-    _emit_emf(
-        metrics={
-            "BudgetReservationOutcome": count,
-            "outcome": outcome,
-            "Environment": environment,
-        },
-        dimensions=[
-            ["outcome", "Environment"],
-            ["Environment"],
-        ],
-    )
-
-
 # ============================================================================
 # Rate Limit Metrics
 # ============================================================================
@@ -597,37 +397,6 @@ def emit_auth_exchange_count(
             ["org_id", "account_type", "success", "Environment"],
             ["org_id", "account_type", "Environment"],
             ["org_id", "Environment"],
-            ["Environment"],
-        ],
-    )
-
-
-def emit_caller_provenance_rejected(
-    reason: str,
-    count: int = 1,
-    environment: str = "production",
-) -> None:
-    """Emit CallerProvenanceRejected metric.
-
-    Issue #5653: incremented whenever an X-Caller-Identity assertion is refused for
-    failing the provenance check. Deliberately carries NO org_id or principal
-    dimension — the rejected assertion is attacker-controlled, so dimensioning on it
-    would let a caller create unbounded metric cardinality and would record an
-    unverified identity as though it were established.
-
-    Args:
-        reason: Why the assertion was rejected (a fixed, non-caller-supplied value)
-        count: Number of rejections (default 1)
-        environment: Environment name
-    """
-    _emit_emf(
-        metrics={"CallerProvenanceRejected": count},
-        properties={
-            "reason": reason,
-            "Environment": environment,
-        },
-        dimensions=[
-            ["reason", "Environment"],
             ["Environment"],
         ],
     )

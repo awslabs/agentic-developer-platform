@@ -26,16 +26,6 @@ spec:
   mountOptions:
     - allow-delete
     - allow-overwrite
-    # Explicit options avoid IMDS discovery from Mountpoint pods on hop-limit-1 nodes.
-    - region=<AWS_REGION>
-    - maximum-throughput-gbps=1
-    # Synthetic FUSE ownership
-    # grants UID10001 owner writes and GID10001 read/traverse only; never chown S3.
-    - allow-other
-    - uid=10001
-    - gid=10001
-    - file-mode=0640
-    - dir-mode=0750
   csi:
     driver: s3.csi.aws.com
     volumeHandle: s3-csi-<BUCKET_NAME>

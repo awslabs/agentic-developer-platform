@@ -52,36 +52,6 @@ MAX_FRAME_BYTES = 24 * 1024  # 24 KB
 # then fill the rest with content.
 _ENVELOPE_OVERHEAD = 512
 
-# CloudWatch metric namespace for delivery-path counters (#5660).
-METRIC_NAMESPACE = "ADP/ChatDelivery"
-
-
-def _emit_metric(name: str, value: int, reason: str = "") -> None:
-    """Emit a CloudWatch metric via embedded metric format.
-
-    EMF is written to the log stream, so this needs no ``cloudwatch:PutMetricData``
-    grant on the response Lambda's role. A refused delivery redirect must be
-    alarmable: on its own it looks identical to a client that simply reconnected.
-    """
-    logger.info(
-        json.dumps(
-            {
-                "_aws": {
-                    "Timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-                    "CloudWatchMetrics": [
-                        {
-                            "Namespace": METRIC_NAMESPACE,
-                            "Dimensions": [[]],
-                            "Metrics": [{"Name": name, "Unit": "Count"}],
-                        }
-                    ],
-                },
-                name: value,
-                **({"reason": reason} if reason else {}),
-            }
-        )
-    )
-
 
 class WebSocketRouter:
     def __init__(self, ws_api_endpoint: str, sessions_table: Any = None):
@@ -108,55 +78,21 @@ class WebSocketRouter:
         - No sessions table is configured.
         - The session row doesn't exist (TTL expired / race).
         - The session row has no ``connection_id`` field.
-        - The row's owner disagrees with the task's enqueue-time owner (#5660).
-
-        Ownership on the delivery path (#5660 / A07)
-        -------------------------------------------
-        ``session_id`` originates from the client, so the row this reads can be
-        one a caller named rather than one they own. Redirecting to whatever
-        ``connection_id`` the row currently holds is what lets a tampered or
-        rebound row capture somebody else's stream. When the task carries the
-        owner it was enqueued for, that value must match the row's owner before
-        the row is allowed to move delivery; on disagreement we deliver to the
-        task's own connection and emit a metric instead.
         """
         fallback = metadata.get("connection_id", "")
         session_id = metadata.get("session_id", "")
-        task_owner = str(metadata.get("owner_principal", "") or "")
 
         if not self._sessions_table or not session_id:
-            return fallback
-        if not task_owner:
-            logger.warning(
-                "OWNERSHIP REFUSED delivery redirect session=%s: task has no owner; "
-                "using the task's own connection",
-                session_id,
-            )
-            _emit_metric("DeliveryOwnerMissing", 1, "task_owner_missing")
             return fallback
 
         try:
             resp = self._sessions_table.get_item(
                 Key={"session_id": session_id},
-                ProjectionExpression="connection_id, owner_principal",
+                ProjectionExpression="connection_id",
                 ConsistentRead=True,
             )
             item = resp.get("Item", {})
             active = item.get("connection_id", "")
-
-            row_owner = str(item.get("owner_principal", "") or "")
-            if row_owner != task_owner:
-                # Never redirect to a row we cannot attribute to this task's owner.
-                # Absent `fallback` this returns "" and route() declines to send,
-                # which is the intended refusal — not a silent drop.
-                logger.warning(
-                    "OWNERSHIP REFUSED delivery redirect session=%s: row owner=%s, "
-                    "task owner=%s; using the task's own connection",
-                    session_id, row_owner or "none", task_owner,
-                )
-                _emit_metric("DeliveryOwnerMismatch", 1, "session_owner_mismatch")
-                return fallback
-
             if active:
                 if active != fallback:
                     logger.info(

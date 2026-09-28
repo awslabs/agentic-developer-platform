@@ -26,22 +26,8 @@ Message format (client -> server):
     "action": "message",
     "text": "Hello agent",
     "session_id": "optional-session-id",
-    "attachments": [{"url": "...", "type": "image", "filename": "..."}],
-    "persona": "intent-refinement"
+    "attachments": [{"url": "...", "type": "image", "filename": "..."}]
 }
-
-`persona` (#4208) is OPTIONAL and UNTRUSTED. It pins the agent persona for the
-turn, bypassing the server-side classifier. This adapter only carries the raw
-value through to platform_data; the handler validates it against an allowlist
-and REJECTS the message if it does not match. Never treat it as safe here.
-
-`session_id` (#5660) is likewise OPTIONAL and UNTRUSTED, and is the one
-identity-bearing field in this payload that does NOT come from the verified
-`claims`. It becomes a sessions-table key and an S3 path segment downstream, so
-naming another user's conversation is an ownership question, not a lookup. This
-adapter only type-checks it; the handler enforces the shape
-(`is_valid_session_id`) and the owner (`get_or_create_session`), refusing rather
-than sanitising. Everything else identity-related below is read from `claims`.
 
 The WebSocket connection is authenticated via Cognito JWT token
 passed during the $connect route.
@@ -60,12 +46,7 @@ from .base import (
     MediaType,
     MessageRole,
     UnifiedMessage,
-    effective_tenant_id,
 )
-
-
-class InvalidWebChatRequest(ValueError):
-    """A syntactically present WebChat field cannot be safely processed."""
 
 logger = logging.getLogger(__name__)
 
@@ -141,10 +122,6 @@ class WebChatAdapter(ChannelAdapter):
             logger.debug("Ignoring WebChat action: %s", action)
             return None
 
-        if "session_id" in body and not isinstance(body["session_id"], str):
-            logger.warning("Rejected WebChat message with non-string session_id")
-            raise InvalidWebChatRequest("session_id must be a string")
-
         text = body.get("text", "").strip()
         if not text and not body.get("attachments"):
             return None
@@ -166,11 +143,6 @@ class WebChatAdapter(ChannelAdapter):
         user_name = claims.get("email", claims.get("cognito:username", user_id))
         connection_id = request_context.get("connectionId", "")
 
-        # The API authorizer uses the legacy "user" label for authenticated
-        # Cognito humans. The invocation ledger uses "human" consistently.
-        raw_account_type = claims.get("custom:account_type", "")
-        account_type = "human" if raw_account_type in ("", "user", "human") else raw_account_type
-
         # Parse attachments
         attachments = self._parse_attachments(body.get("attachments", []))
 
@@ -179,9 +151,6 @@ class WebChatAdapter(ChannelAdapter):
             channel_id=connection_id,
             user_id=user_id,
             user_name=user_name,
-            # UNTRUSTED (#5660): explicit non-strings are rejected above rather
-            # than silently redirected to a different server-derived session.
-            # Shape and ownership are enforced by the handler.
             thread_id=body.get("session_id"),
             text=text,
             role=MessageRole.USER,
@@ -199,33 +168,11 @@ class WebChatAdapter(ChannelAdapter):
                 "source_ip": request_context.get("identity", {}).get("sourceIp", ""),
                 # Stage A (#184): propagate extended identity claims for downstream
                 # ownership validation and audit logging.
-                # Issue #5268: nothing in the JWT sign-in path ever SETS
-                # `custom:tenant_id` -- the api-authorizer only reads it, with a
-                # "" default -- so for a natively signed-in user the tenant was
-                # structurally always empty. handler.handle_long_running refuses
-                # to enqueue without one, so every native user's hosted chat
-                # failed before enqueue: no inference, no invocation row, and
-                # nothing visible in the product. Slack users were unaffected,
-                # which is why the feature looked like it worked.
-                #
-                # Substitute the org, exactly as the Slack path does deliberately
-                # ("Slack supplies a workspace ID, not an ADP tenant. Use the
-                # server-resolved organization for the registered run
-                # capability.").  Both values are read from the same trusted
-                # `claims` dict here -- never from the client body -- because
-                # this ends up on the row that authorizes a worker to inherit
-                # its owner's Bedrock destination, so a wrong org would be
-                # cross-tenant spend rather than a cosmetic mislabel.
-                #
-                # An explicit tenant claim still wins, and an unusable org
-                # ("" / "default") is deliberately NOT substituted: the handler's
-                # guard must still reject those, or an empty `tenant_id` would
-                # land as the invocation row's GSI1PK and be unqueryable.
-                "tenant_id": effective_tenant_id(claims),
+                "tenant_id": claims.get("custom:tenant_id", ""),
                 "org_id": claims.get("custom:org_id", ""),
                 "team_id": claims.get("custom:team_id", ""),
                 "department_id": claims.get("custom:department_id", ""),
-                "account_type": account_type,
+                "account_type": claims.get("custom:account_type", ""),
                 "role": claims.get("custom:role", ""),
                 # Stage C (#186): artifact ID attachments from the upload flow.
                 # The frontend sends string IDs ["art_xxx", ...] in the sendMessage
@@ -235,12 +182,6 @@ class WebChatAdapter(ChannelAdapter):
                     a for a in body.get("attachments", [])
                     if isinstance(a, str) and a.startswith("art_")
                 ],
-                # Issue #4208: optional client-supplied persona pin. UNTRUSTED —
-                # carried through verbatim so the handler can validate it against
-                # the allowlist and reject. Absent/blank => classifier decides.
-                "requested_persona": (
-                    body.get("persona") if isinstance(body.get("persona"), str) else ""
-                ),
             },
         )
 

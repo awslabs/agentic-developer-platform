@@ -1,6 +1,0 @@
-boto3>=1.35,<2
-requests>=2.31,<3
-bedrock-agentcore>=0.1
-playwright>=1.45,<2
-pydantic>=2.9,<3
-Pillow>=10.0,<13

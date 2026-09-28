@@ -164,11 +164,6 @@ class TestAgentTriggerInstallationResolution:
 
         with patch("github.agent_trigger._resolve_chain") as mock_chain:
             mock_chain.return_value = {
-                # Issue #4128: event_id must match the body's
-                # parent_invocation_id and repo must match target.repo — both
-                # are now verified against the chain.
-                "event_id": "inv-1",
-                "repo": "aws-e/adp",
                 "tenant_id": "aws-e",
                 "root_human_id": "user-alice",
                 "is_human_rooted": True,
@@ -202,11 +197,6 @@ class TestAgentTriggerInstallationResolution:
 
         with patch("github.agent_trigger._resolve_chain") as mock_chain:
             mock_chain.return_value = {
-                # Issue #4128: event_id must match the body's
-                # parent_invocation_id and repo must match target.repo — both
-                # are now verified against the chain.
-                "event_id": "inv-1",
-                "repo": "aws-e/adp",
                 "tenant_id": "aws-e",
                 "root_human_id": "user-alice",
                 "is_human_rooted": True,

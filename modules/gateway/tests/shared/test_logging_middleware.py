@@ -66,8 +66,7 @@ class TestLoggingMiddleware:
         assert response.status_code == 200
 
         data = response.json()
-        assert data["request_id"] != "custom-request-123"
-        assert data["request_id"] == response.headers["X-Request-ID"]
+        assert data["request_id"] == "custom-request-123"
 
     def test_adds_request_id_to_response(self, client):
         """Test that middleware adds X-Request-ID to response headers."""
@@ -137,8 +136,7 @@ class TestRequestIdPropagation:
         response = client.get("/capture", headers={"X-Request-ID": "test-propagation-123"})
 
         assert response.status_code == 200
-        assert captured_request_id != "test-propagation-123"
-        assert captured_request_id == response.headers["X-Request-ID"]
+        assert captured_request_id == "test-propagation-123"
 
 
 class TestClientIPExtraction:

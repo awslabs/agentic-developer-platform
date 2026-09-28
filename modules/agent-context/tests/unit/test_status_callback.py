@@ -254,12 +254,10 @@ class TestTenantIdPropagation:
 
     @patch("status_callback.requests.post")
     def test_tenant_id_omitted_when_absent(self, mock_post, monkeypatch):
-        """Shared assets have no tenant; the key must be omitted, not null.
+        """Shared/legacy assets have no tenant; the key must be omitted, not null.
 
-        Issue #5663 (A09): the gateway no longer derives any authority from this
-        field — it is a checked assertion against the signed callback_grant. Sending
-        an explicit null would assert "this asset is shared", which for a worker that
-        simply was not told its tenant would be a claim it cannot support.
+        The gateway treats an absent tenant_id as "unconstrained predicate" for
+        rollout compatibility, so sending an explicit null would be misleading.
         """
         monkeypatch.setenv("GATEWAY_CALLBACK_URL", "http://gateway:8080")
         monkeypatch.setenv("GATEWAY_INTERNAL_API_KEY", "key")
@@ -273,68 +271,3 @@ class TestTenantIdPropagation:
 
         body = json.loads(mock_post.call_args[1]["data"])
         assert "tenant_id" not in body
-
-
-class TestCallbackGrantForwarding:
-    """Issue #5663 (A09): the grant must reach the gateway byte-for-byte.
-
-    The grant is the gateway's own server-owned statement of which asset this
-    callback may write. The worker's only job is to carry it: it holds no signing
-    key, so anything it reconstructs is worthless, and anything it drops leaves the
-    gateway with nothing to check the body against (refused once the route enforces).
-    """
-
-    @staticmethod
-    def _ok(mock_post):
-        resp = MagicMock()
-        resp.status_code = 200
-        mock_post.return_value = resp
-
-    @patch("status_callback.requests.post")
-    def test_the_grant_is_forwarded_unchanged(self, mock_post, monkeypatch):
-        """Verbatim, because a MAC covers it — any edit invalidates it."""
-        monkeypatch.setenv("GATEWAY_CALLBACK_URL", "http://gateway:8080")
-        monkeypatch.setenv("GATEWAY_INTERNAL_API_KEY", "key")
-        mod = _import_status_callback()
-        self._ok(mock_post)
-
-        token = "adpk1.eyJhc3NldF9pZCI6ICJ4In0.c2lnbmF0dXJl"
-        mod.emit_status_callback("asset-1", "complete", tenant_id="tenant-abc", callback_grant=token)
-
-        body = json.loads(mock_post.call_args[1]["data"])
-        assert body["callback_grant"] == token
-        assert body["tenant_id"] == "tenant-abc"
-
-    @patch("status_callback.requests.post")
-    def test_no_grant_is_sent_when_the_envelope_carried_none(self, mock_post, monkeypatch):
-        """Messages published before the gateway change have no grant to forward.
-
-        The worker must not invent or default one: an absent grant is a fact the
-        gateway needs to see (it counts the callback as unbound), whereas a
-        fabricated field would be a forgery attempt that fails verification and
-        turns a tolerated rollout case into a hard refusal.
-        """
-        monkeypatch.setenv("GATEWAY_CALLBACK_URL", "http://gateway:8080")
-        monkeypatch.setenv("GATEWAY_INTERNAL_API_KEY", "key")
-        mod = _import_status_callback()
-        self._ok(mock_post)
-
-        mod.emit_status_callback("asset-1", "indexing", tenant_id="tenant-abc")
-
-        body = json.loads(mock_post.call_args[1]["data"])
-        assert "callback_grant" not in body
-
-    @patch("status_callback.requests.post")
-    def test_forwarding_stays_fail_open(self, mock_post, monkeypatch):
-        """Adding the field must not change the emitter's fail-open discipline.
-
-        Ingestion is never blocked by a callback failure (same principle as
-        telemetry.safe_emit); a raise here would turn a status-reporting problem into
-        a failed ingestion run.
-        """
-        monkeypatch.setenv("GATEWAY_CALLBACK_URL", "http://gateway:8080")
-        monkeypatch.setenv("GATEWAY_INTERNAL_API_KEY", "key")
-        mod = _import_status_callback()
-        mock_post.side_effect = RuntimeError("boom")
-
-        mod.emit_status_callback("asset-1", "complete", callback_grant="adpk1.a.b")

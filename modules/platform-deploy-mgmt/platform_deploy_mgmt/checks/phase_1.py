@@ -3,8 +3,7 @@
 Checks 1.1–1.8 verify that the Terraform state backend (S3 bucket + DynamoDB
 lock table) is correctly configured in the customer's AWS account.
 
-Spec source: the Phase 1 section of docs/adp-platform-deployment/deploy-quickstart.md.
-(A consolidated whole-lifecycle check spec is tracked by #1138.)
+Spec source: docs/adp-platform-deployment/phase-verification.md
 """
 
 from __future__ import annotations

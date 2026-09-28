@@ -26,34 +26,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from src.activity.liveness import LivenessVerdict
-
 # Trigger kind: human (user-initiated), agent (spawned by another run), bot (cron/automated, not human-rooted)
 TriggerKind = Literal["human", "agent", "bot"]
-
-# Issue #4176: shared description for the derived liveness verdict. Defined once
-# so the two serializers that expose the field cannot describe it differently —
-# the distinction between "unverifiable" and "exited" is the whole point of the
-# field, and a client reading a drifted description would miss it.
-_LIVENESS_DESCRIPTION = (
-    "Three-value liveness verdict derived at read time (issue #4176): `live` "
-    "(recent positive signal), `exited` (a terminal status was actually "
-    "observed), or `unverifiable` (no positive evidence either way). "
-    "`unverifiable` is explicitly NOT a claim of exit — loss of contact is not "
-    "evidence that a run ended, so consumers must not treat it as terminal. "
-    "Null only for rows serialized before this field existed."
-)
 
 
 class InvocationItem(BaseModel):
     """A single agent invocation record."""
 
     invocation_id: str
-    source_type: Literal["activity", "task"] = "activity"
-    task_id: str | None = None
-    task_snapshot: dict | None = None
-    transcript_kind: Literal["task_report"] | None = None
-    transcript_status: Literal["available", "pending", "unavailable"] | None = None
     invoked_at: str
     channel: str | None = None
     status: str | None = None
@@ -66,10 +46,6 @@ class InvocationItem(BaseModel):
     issue_number: int | None = None
     correlation_id: str | None = None
     run_id: str | None = None
-
-    # Issue #4176: derived liveness verdict (see src/activity/liveness.py).
-    # Additive and optional — existing clients ignore it.
-    liveness: LivenessVerdict | None = Field(default=None, description=_LIVENESS_DESCRIPTION)
 
     # Phase 6 lineage fields (#1461)
     trigger_kind: TriggerKind = Field(
@@ -97,29 +73,6 @@ class InvocationItem(BaseModel):
     error_message: str | None = Field(
         default=None,
         description="Error message for failed invocations. Written to DDB by webhook-ingress.",
-    )
-    # Issue #4020: why a delivery produced no agent run
-    skip_reason: str | None = Field(
-        default=None,
-        description=(
-            "Static enum explaining why this delivery produced no agent run "
-            "(no_op / blocked / skipped statuses) — e.g. 'no_mention', "
-            "'self_re_trigger', 'idempotency_merged_pr'. Null for runs that "
-            "dispatched normally and for rows written before this field existed."
-        ),
-    )
-    # Issue #4187: why a spend cap stopped this run
-    stop_reason: str | None = Field(
-        default=None,
-        description=(
-            "Static enum naming the spend cap that ended this run (paired with "
-            "the 'budget_stopped' status) — 'run_cap_exceeded', "
-            "'chain_cap_exceeded', 'root_user_cap_exceeded', "
-            "'person_cap_exceeded' (#4630: the person's own platform-wide "
-            "limit), or 'hierarchy_cap_exceeded'. Separate from "
-            "'error_message' because a cap firing is the control working, not a "
-            "fault. Null for every other status."
-        ),
     )
     completed_at: str | None = Field(
         default=None,
@@ -162,9 +115,6 @@ class InvocationChainItem(BaseModel):
     persona: str | None = None
     parent_invocation_id: str | None = None
     children: list["InvocationChainItem"] = Field(default_factory=list)
-
-    # Issue #4176: derived liveness verdict (see src/activity/liveness.py).
-    liveness: LivenessVerdict | None = Field(default=None, description=_LIVENESS_DESCRIPTION)
 
     # Issue #3069: S3 transcript key
     transcript_key: str | None = None

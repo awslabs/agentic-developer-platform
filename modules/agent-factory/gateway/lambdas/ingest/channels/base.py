@@ -30,42 +30,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-# Values of org_id that name no tenant. The JWT path defaults org_id to
-# "default" when Cognito carries no custom:org_id claim, and adapters emit ""
-# when the claim is absent entirely -- neither can authorize a dispatch.
-#
-# Issue #5268: this lives here, in the module both `handler` and the adapters
-# already import, rather than being duplicated in each. `handler` cannot be
-# imported from an adapter (circular), and copying the set into the adapter
-# would recreate exactly the kind of split that caused this bug -- two places
-# deciding what counts as a usable org, drifting apart unobserved.
-UNUSABLE_ORG_IDS = frozenset({"", "default"})
-
-
-def effective_tenant_id(claims: dict[str, Any]) -> str:
-    """The tenant to attribute a run to, from TRUSTED claims only.
-
-    `custom:tenant_id` when present; otherwise the caller's org, which is what
-    the Slack path already substitutes deliberately. Nothing in the JWT sign-in
-    path ever sets `custom:tenant_id`, so without this fallback a natively
-    signed-in user has no tenant at all and hosted dispatch refuses to enqueue.
-
-    Returns "" for an unusable org rather than inventing a tenant: the caller's
-    guard must still reject, because an empty value would otherwise land as the
-    invocation row's GSI1PK and be unqueryable by tenant.
-
-    `claims` must be the authorizer/JWT claims, never client-supplied request
-    data -- this value authorizes a worker to inherit its owner's Bedrock
-    destination, so a wrong org here is cross-tenant spend.
-    """
-    tenant_id = str(claims.get("custom:tenant_id", "") or "").strip()
-    if tenant_id:
-        return tenant_id
-    org_id = str(claims.get("custom:org_id", "") or "").strip()
-    if org_id.lower() in UNUSABLE_ORG_IDS:
-        return ""
-    return org_id
-
 
 class ChannelType(str, Enum):
     """Supported messaging channels.

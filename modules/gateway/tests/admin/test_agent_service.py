@@ -393,25 +393,3 @@ class TestDeleteAgent:
 
         with pytest.raises(NotFoundError):
             await agent_service.delete_agent("nonexistent", "org-123")
-
-
-@pytest.mark.asyncio
-async def test_agent_list_paginates_dynamodb_before_slicing_api_page(agent_service, mock_dynamodb):
-    def row(number):
-        return {
-            "client_id": f"client-{number}",
-            "name": f"agent-{number}",
-            "org_id": "org-123",
-            "scopes": [],
-            "created_at": "2026-09-26T00:00:00+00:00",
-        }
-
-    table = mock_dynamodb.Table.return_value
-    table.query.side_effect = [
-        {"Items": [row(1)], "LastEvaluatedKey": {"client_id": "client-1"}},
-        {"Items": [row(2)]},
-    ]
-    result = await agent_service.list_agents("org-123", page=2, page_size=1)
-    assert result.total == 2 and result.items[0].client_id == "client-2" and not result.has_more
-    assert table.query.call_args.kwargs["ExclusiveStartKey"] == {"client_id": "client-1"}
-    assert table.query.call_args.kwargs["ExpressionAttributeValues"] == {":org_id": "org-123"}

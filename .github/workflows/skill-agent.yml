@@ -21,13 +21,6 @@ on:
         description: 'Full target repo (owner/name) to checkout and work on'
         required: true
         type: string
-    secrets:
-      WEBAPP_TEST_USERNAME:
-        description: 'Username for webapp testing (Playwright skill)'
-        required: false
-      WEBAPP_TEST_PASSWORD:
-        description: 'Password for webapp testing (Playwright skill)'
-        required: false
 
 concurrency:
   group: skill-agent-${{ inputs.issue_number || github.event.issue.number }}
@@ -36,19 +29,13 @@ concurrency:
 jobs:
   run:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'skill-agent'
-    runs-on: arc-runner-org
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     permissions:
-      id-token: write
       contents: write
       issues: write
       pull-requests: write
 
     env:
-      # Gateway-first opt-in rollout; actual policy remains report_only.
-      ADP_ARC_MODEL_POLICY_ENABLED: ${{ vars.ADP_ARC_MODEL_POLICY_ENABLED || 'false' }}
-      ADP_AGENT_CONTROL_ENDPOINT: ${{ vars.ADP_ARC_MODEL_CONTROL_ENDPOINT }}
-      # This generic skill-assisted coding entrypoint executes the developer persona.
-      AGENT_TYPE: developer
       ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
       REPO_OWNER: ${{ inputs.repo_owner || github.repository_owner }}
       REPO_NAME: ${{ inputs.repo_name || github.event.repository.name }}
@@ -142,6 +129,12 @@ jobs:
           pip install playwright 2>/dev/null || pip3 install playwright 2>/dev/null || true
           playwright install chromium 2>/dev/null || true
 
+      - name: Configure kubectl
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+          EKS_CLUSTER: ${{ vars.EKS_CLUSTER || 'bedrockgw-dev-eks-cluster' }}
+        run: |
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -158,11 +151,34 @@ jobs:
         working-directory: ./adp-agent-src/modules/agent-factory/agent
         run: npm run build
 
+      - name: Setup project-specific tools
+        run: |
+          # Auto-install CLIs for skills that exist in target repo
+          if [ -d "${{ github.workspace }}/target-repo/.claude/skills/skypilot" ]; then
+            echo "SkyPilot skill detected, installing CLI..."
+            sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip
+            pip3 install "skypilot[aws,kubernetes,lambda]" --quiet --break-system-packages
+            sky --version || echo "SkyPilot CLI installed"
 
-      - name: Verify gateway model authority before the harness
-        if: vars.ADP_ARC_MODEL_POLICY_ENABLED == 'true'
-        working-directory: ./adp-agent-src/modules/agent-factory/agent
-        run: npx ts-node src/arc-model-preflight.ts
+            # Get API server URL from AWS Parameter Store
+            SKYPILOT_API=$(aws ssm get-parameter --name /adp/skypilot/api-server-url --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -z "$SKYPILOT_API" ]; then
+              SKYPILOT_API="http://skypilot-api.skypilot.svc.cluster.local:46580"
+              echo "Using default SkyPilot API URL"
+            fi
+
+            # Get service account token from AWS Secrets Manager
+            SKYPILOT_TOKEN=$(aws secretsmanager get-secret-value --secret-id adp/skypilot/service-account-token --query SecretString --output text --region us-east-1 2>/dev/null || echo "")
+
+            echo "Connecting to SkyPilot API: $SKYPILOT_API"
+            if [ -n "$SKYPILOT_TOKEN" ]; then
+              # Authenticate with service account token
+              sky api login -e "$SKYPILOT_API" --token "$SKYPILOT_TOKEN" && echo "Connected with service account token" || echo "Token auth failed, using local mode"
+            else
+              # Try without token (may work for in-cluster access)
+              sky api login -e "$SKYPILOT_API" 2>/dev/null && echo "Connected to SkyPilot API server" || echo "Using local SkyPilot mode"
+            fi
+          fi
 
       - name: Run Skill Agent
         working-directory: ./adp-agent-src/modules/agent-factory/agent

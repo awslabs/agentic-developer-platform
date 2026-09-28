@@ -16,12 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.activity.routes import (
-    _expand_date_bound,
-    get_access_control,
-    get_activity_service,
-    router,
-)
+from src.activity.routes import get_access_control, get_activity_service, router
 from src.activity.schemas import (
     ChainListResponse,
     ChainSummary,
@@ -160,9 +155,6 @@ class TestGetMyInvocations:
 
         unresolved_db = MagicMock()
         unresolved_db.scalar = AsyncMock(return_value=None)  # no matching users row
-        no_user = MagicMock()
-        no_user.scalar_one_or_none.return_value = None
-        unresolved_db.execute = AsyncMock(return_value=no_user)
 
         async def override_db():
             return unresolved_db
@@ -418,7 +410,6 @@ class TestGetMyInvocationChain:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
-            tenant_id="org-tenant-001",
             include_non_triggering=False,
         )
 
@@ -521,7 +512,6 @@ class TestChainIncludeNonTriggering:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
-            tenant_id="org-tenant-001",
             include_non_triggering=False,
         )
 
@@ -531,7 +521,6 @@ class TestChainIncludeNonTriggering:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
-            tenant_id="org-tenant-001",
             include_non_triggering=True,
         )
 
@@ -541,7 +530,6 @@ class TestChainIncludeNonTriggering:
         mock_service.get_chain.assert_called_once_with(
             correlation_id="chain-001",
             user_id=CANONICAL_USER_ID,
-            tenant_id="org-tenant-001",
             include_non_triggering=False,
         )
 
@@ -604,7 +592,7 @@ class TestGetMyInvocationDetail:
         mock_service.get_invocation = MagicMock(return_value=None)
 
         client.get("/me/agent-invocations/inv-xyz")
-        mock_service.get_invocation.assert_called_once_with("inv-xyz", user_id=CANONICAL_USER_ID, tenant_id="org-tenant-001")
+        mock_service.get_invocation.assert_called_once_with("inv-xyz", user_id=CANONICAL_USER_ID)
 
     def test_does_not_match_chain_route(self, client, mock_service):
         """Requesting /me/agent-invocations/chain/abc hits chain route, not detail."""
@@ -843,98 +831,3 @@ class TestViewChainsParam:
         data = resp.json()
         assert data["last_key"] is not None
         assert data["count"] == 1
-
-
-class TestExpandDateBound:
-    """Issue #4390: bare YYYY-MM-DD bounds widened to full-day ISO-8601 instants.
-
-    `since`/`until` are compared lexicographically against the `arrived_at` sort
-    key, which holds a full instant — so a bare date is a broken bound.
-    """
-
-    def test_bare_date_start_becomes_midnight(self):
-        assert _expand_date_bound("2026-06-13", end=False) == "2026-06-13T00:00:00Z"
-
-    def test_bare_date_end_becomes_end_of_day(self):
-        assert _expand_date_bound("2026-06-13", end=True) == "2026-06-13T23:59:59.999Z"
-
-    def test_already_timed_value_passes_through_unchanged(self):
-        """Existing API callers that send a full instant must be unaffected."""
-        timed = "2026-06-13T22:00:00Z"
-        assert _expand_date_bound(timed, end=False) == timed
-        assert _expand_date_bound(timed, end=True) == timed
-
-    def test_none_passes_through(self):
-        assert _expand_date_bound(None, end=False) is None
-        assert _expand_date_bound(None, end=True) is None
-
-    def test_malformed_value_passes_through_unmodified(self):
-        """Malformed input is left for the existing downstream rejection — no new 500."""
-        assert _expand_date_bound("13/06/2026", end=True) == "13/06/2026"
-        assert _expand_date_bound("", end=False) == ""
-
-
-class TestDateBoundExpansionInRoutes:
-    """Issue #4390: the expanded bounds are what actually reach the service."""
-
-    def test_single_day_range_spans_the_whole_day(self, client, mock_service):
-        """since == until (the trend-strip day click) must not collapse to zero rows.
-
-        This is the headline bug: unexpanded, between("2026-06-13","2026-06-13")
-        matches nothing because every arrived_at sorts after the bare date.
-        """
-        client.get("/me/agent-invocations?since=2026-06-13&until=2026-06-13")
-        call_kwargs = mock_service.query_by_user.call_args[1]
-        assert call_kwargs["since"] == "2026-06-13T00:00:00Z"
-        assert call_kwargs["until"] == "2026-06-13T23:59:59.999Z"
-        # A row arriving late on 06-13 now falls inside the range
-        assert call_kwargs["since"] <= "2026-06-13T22:00:00Z" <= call_kwargs["until"]
-
-    def test_until_only_includes_late_in_day_rows(self, client, mock_service):
-        client.get("/me/agent-invocations?until=2026-06-13")
-        call_kwargs = mock_service.query_by_user.call_args[1]
-        assert call_kwargs["until"] == "2026-06-13T23:59:59.999Z"
-        assert "2026-06-13T22:00:00Z" <= call_kwargs["until"]
-
-    def test_view_chains_also_expands_bounds(self, client, mock_service):
-        mock_service.query_chains_by_user.return_value = ChainListResponse(chains=[], count=0, last_key=None)
-        client.get("/me/agent-invocations?view=chains&since=2026-06-13&until=2026-06-13")
-        call_kwargs = mock_service.query_chains_by_user.call_args[1]
-        assert call_kwargs["since"] == "2026-06-13T00:00:00Z"
-        assert call_kwargs["until"] == "2026-06-13T23:59:59.999Z"
-
-    def test_admin_route_expands_bounds(self, admin_client, mock_service):
-        admin_client.get("/admin/agent-invocations?since=2026-06-13&until=2026-06-13")
-        call_kwargs = mock_service.query_by_tenant.call_args[1]
-        assert call_kwargs["since"] == "2026-06-13T00:00:00Z"
-        assert call_kwargs["until"] == "2026-06-13T23:59:59.999Z"
-
-    def test_timed_bounds_reach_service_unchanged(self, client, mock_service):
-        """Regression guard for existing script/curl callers."""
-        client.get("/me/agent-invocations?since=2026-06-01T00:00:00Z&until=2026-06-10T12:30:00Z")
-        call_kwargs = mock_service.query_by_user.call_args[1]
-        assert call_kwargs["since"] == "2026-06-01T00:00:00Z"
-        assert call_kwargs["until"] == "2026-06-10T12:30:00Z"
-
-    def test_no_date_params_sends_none(self, client, mock_service):
-        """Default (unfiltered) listing is unchanged."""
-        client.get("/me/agent-invocations")
-        call_kwargs = mock_service.query_by_user.call_args[1]
-        assert call_kwargs["since"] is None
-        assert call_kwargs["until"] is None
-
-
-class TestPageSizeBounds:
-    """Issue #4390: pins the pre-existing Query(ge=1, le=100) clamp."""
-
-    @pytest.mark.parametrize("bad", [0, 101, -1])
-    def test_out_of_range_page_size_is_422(self, client, bad):
-        assert client.get(f"/me/agent-invocations?page_size={bad}").status_code == 422
-
-    @pytest.mark.parametrize("bad", [0, 101])
-    def test_admin_out_of_range_page_size_is_422(self, admin_client, bad):
-        assert admin_client.get(f"/admin/agent-invocations?page_size={bad}").status_code == 422
-
-    def test_in_range_page_size_accepted(self, client, mock_service):
-        assert client.get("/me/agent-invocations?page_size=100").status_code == 200
-        assert mock_service.query_by_user.call_args[1]["page_size"] == 100

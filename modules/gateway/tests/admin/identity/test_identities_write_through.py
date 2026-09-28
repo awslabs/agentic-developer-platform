@@ -71,18 +71,11 @@ class TestIdentitiesWriteThrough:
 
         assert result is not None
         assert result.provider_user_id == "gh-999"
-        # #5664 (A10): the projected row must carry the SAME provenance Postgres
-        # recorded. An administrator adding an identity is `admin_attested` — genuine,
-        # accountable proof — and the webhook authority gate reads this projected
-        # attribute, so a write-through that dropped it would leave the hot path
-        # seeing "unknown" and refusing a link the platform considers proven.
         mock_identity_writer.put_user_identity.assert_awaited_once_with(
             provider_user_id="gh-999",
-            provider="github",
             user_id=seeded_user.id,
             org_id="id-org",
             provider_username="testuser-gh",
-            verification_method="admin_attested",
         )
 
     @pytest.mark.asyncio
@@ -99,11 +92,9 @@ class TestIdentitiesWriteThrough:
         assert result is not None
         mock_identity_writer.put_user_identity.assert_awaited_once_with(
             provider_user_id="sl-888",
-            provider="slack",
             user_id=seeded_user.id,
             org_id="id-org",
             provider_username=None,
-            verification_method="admin_attested",
         )
 
     @pytest.mark.asyncio
@@ -146,7 +137,7 @@ class TestIdentitiesWriteThrough:
         deleted = await svc.delete_identity(seeded_user.id, created.id)
         assert deleted is True
 
-        mock_identity_writer.delete_user_identity.assert_awaited_once_with("gh-del", provider="github")
+        mock_identity_writer.delete_user_identity.assert_awaited_once_with("gh-del")
 
     @pytest.mark.asyncio
     async def test_delete_identity_not_found(self, db_session: AsyncSession, mock_identity_writer, seeded_user):

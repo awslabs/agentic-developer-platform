@@ -6,8 +6,7 @@ Playwright-based end-to-end regression tests for the ADP chat UX. Runs against t
 
 | # | File | Scenario | Regression of |
 |---|------|----------|---------------|
-| 1 | `test_auth.py` | Email login → hosted Cognito form → PKCE callback and stored tokens | - |
-| 1b | `test_auth.py` | Supplied-token session restoration, authenticated API access, and reload | - |
+| 1 | `test_auth.py` | Login round-trip (tokens in sessionStorage) | - |
 | 2 | `test_auth.py` | WebSocket opens after login (CDP observation) | - |
 | 3 | `test_auth.py` | No CSP refusal on WS connect | #117 |
 | 4-9 | `test_routing.py` | Classifier routing (direct_response / long_running) | #118, #129 |
@@ -27,24 +26,13 @@ Playwright-based end-to-end regression tests for the ADP chat UX. Runs against t
 ### Prerequisites
 
 ```bash
-pip install pytest pytest-html pytest-timeout playwright boto3 requests
+pip install pytest playwright boto3
 playwright install chromium
-```
-
-`pytest-html` produces the CI report, `pytest-timeout` supports the CI
-`--timeout=300` limit, and `requests` is required by the file-attachment test.
-To check collection and dependency setup without AWS credentials or live calls:
-
-```bash
-python -m pytest tests/e2e/chat/ --collect-only --timeout=300
 ```
 
 ### Against dev environment
 
 ```bash
-# Set AWS credentials and the deployed URL first, then resolve its live flag:
-export E2E_CHAT_EXPECTED_FLAG=$(python -m tests.e2e.chat.features)
-
 # With AWS credentials configured (profile or env vars):
 AWS_PROFILE=adp-dev E2E_CHAT_ENABLED=1 python -m pytest tests/e2e/chat/ -v
 
@@ -55,25 +43,13 @@ E2E_CLOUDFRONT_URL=https://your-cf-domain.cloudfront.net \
 
 # Run a specific scenario:
 E2E_CHAT_ENABLED=1 python -m pytest tests/e2e/chat/test_routing.py -v -k "scenario6"
-
-# Validate OAuth login and session restoration without sending chat messages:
-E2E_CHAT_ENABLED=1 python -m pytest tests/e2e/chat/test_auth.py \
-  -v -k "TestLoginRoundTrip or TestSessionRestoration" --timeout=90
 ```
-
-The OAuth test uses the visible email sign-in form and requires a successful
-authorization-code exchange. The separate restoration test seeds real Cognito
-tokens and their expiry once, then checks authenticated access before and after
-reload on `/activity`, independent of the optional chat feature flag. Both use
-`E2E_CLOUDFRONT_URL`; neither substitutes restoration for OAuth. These two tests
-validate authentication only; they do not establish that chat is enabled or works.
 
 ### Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `E2E_CHAT_ENABLED` | Yes | `0` | Must be `1` to enable tests |
-| `E2E_CHAT_EXPECTED_FLAG` | For live runs | — | `on` or `off`; verified against the actual deployment |
 | `E2E_CLOUDFRONT_URL` | No | `https://d1g6cal2ts4iis.cloudfront.net` | CloudFront URL to test |
 | `AWS_REGION` | No | `us-east-1` | AWS region |
 | `ENVIRONMENT` | No | `dev` | Environment name |
@@ -128,9 +104,3 @@ tests/e2e/chat/
   test_ack.py       # Scenario 18: immediate acknowledgement
   test_known_issues.py # Scenario 19: durability flag (xfail)
 ```
-
-When Chat is off, acceptance verifies both protected Chat routes redirect and
-Chat navigation is absent. OAuth and session-restoration checks still run.
-Chat interactions are deselected and require a separate flag-on deployment;
-a green flag-off run is not evidence that messaging works. CI discovers the
-flag before collection and independently checks it again during the suite.

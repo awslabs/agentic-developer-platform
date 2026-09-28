@@ -1,8 +1,0 @@
-{
-  "baseline-legacy.json": "e11fb719e8ffc0ca7f9c71d465508e49cdb10cffd7f4c057312bc0ddcb54d6c6",
-  "bounded-jobs.json": "4d91460be3d97b95863fe38b1cb7dbcb6cfbb7eb20e70ecfc5760ad23db89d97",
-  "cloudwatch-comparison.json": "93c2a5dc396a62409b88141de1f225d3a716e500ac5d23526cfb6be24cffac14",
-  "collect-metrics.py": "68270bda7ca86533a85272a413f01fb0c965230d0482eddf0a7437355ddb0474",
-  "during-legacy.json": "cbe54434867711a1a25a904a234c25a656519c1ae666dd4e12bf478497f53607",
-  "summary.json": "0a37cac96acfc5c8c7b9853f08f6265d87846e8aa4ff5020fbc09defef50f1c1"
-}

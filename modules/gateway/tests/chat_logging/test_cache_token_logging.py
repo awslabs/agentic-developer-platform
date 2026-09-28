@@ -11,11 +11,11 @@ from src.chat_logging.schemas import UsageInfo
 class TestUsageInfoCacheFields:
     """UsageInfo schema must carry cache token fields."""
 
-    def test_missing_cache_fields_remain_unknown(self):
-        """Unreported cache counters must not assert measured zero activity."""
+    def test_cache_fields_default_to_zero(self):
+        """Cache fields default to 0 for non-cached requests."""
         usage = UsageInfo(input_tokens=100, output_tokens=50)
-        assert usage.cache_read_input_tokens is None
-        assert usage.cache_creation_input_tokens is None
+        assert usage.cache_read_input_tokens == 0
+        assert usage.cache_creation_input_tokens == 0
 
     def test_cache_fields_populated(self):
         """Cache fields accept nonzero values."""
@@ -63,7 +63,7 @@ class TestUsageInfoCacheFields:
         """Existing code that constructs UsageInfo without cache fields still works."""
         usage = UsageInfo(input_tokens=100, output_tokens=50)
         dumped = usage.model_dump(mode="json")
-        assert dumped["cache_read_input_tokens"] is None
-        assert dumped["cache_creation_input_tokens"] is None
+        assert dumped["cache_read_input_tokens"] == 0
+        assert dumped["cache_creation_input_tokens"] == 0
         assert dumped["input_tokens"] == 100
         assert dumped["output_tokens"] == 50

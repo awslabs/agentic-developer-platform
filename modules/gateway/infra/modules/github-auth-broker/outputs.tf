@@ -18,11 +18,6 @@ output "invoke_arn" {
   value       = aws_lambda_function.broker.invoke_arn
 }
 
-output "auth_code_table_name" {
-  description = "DynamoDB table holding pending session-handoff codes (Issue #4133)"
-  value       = aws_dynamodb_table.auth_codes.name
-}
-
 output "role_arn" {
   description = "IAM role ARN for the broker Lambda"
   value       = aws_iam_role.broker.arn

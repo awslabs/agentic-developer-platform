@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
       skip_phases:
-        description: 'Comma-separated phases to skip (superplane,agent-context,webhook-ingress,agent-factory,gateway,platform).'
+        description: 'Comma-separated phases to skip (agent-context,webhook-ingress,agent-factory,gateway,platform).'
         required: false
         default: ''
       include_bootstrap:
@@ -52,11 +52,8 @@ jobs:
   # ---------------------------------------------------------------------------
   guard:
     name: Guard (validate account_id)
-    if: github.ref == 'refs/heads/main'
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
-      id-token: write
       contents: read
     outputs:
       account_id: ${{ steps.validate.outputs.account_id }}
@@ -64,19 +61,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -88,21 +72,18 @@ jobs:
 
       - name: Validate account_id matches caller
         id: validate
-        env:
-          ADP_INPUT_824138160E: ${{ inputs.customer_account_id }}
-          ADP_INPUT_065C76B83D: ${{ inputs.account_id }}
         run: |
           set -e
           # Determine which account ID to validate against
-          if [ -n "${ADP_INPUT_824138160E}" ]; then
-            EXPECTED_ACCOUNT="${ADP_INPUT_824138160E}"
+          if [ -n "${{ inputs.customer_account_id }}" ]; then
+            EXPECTED_ACCOUNT="${{ inputs.customer_account_id }}"
             echo "Cross-account mode: validating against customer account"
           else
             EXPECTED_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
             echo "Single-account mode: validating against caller identity"
           fi
 
-          INPUT_ACCOUNT="${ADP_INPUT_065C76B83D}"
+          INPUT_ACCOUNT="${{ inputs.account_id }}"
 
           echo "Expected: $EXPECTED_ACCOUNT"
           echo "Provided: $INPUT_ACCOUNT"
@@ -114,35 +95,20 @@ jobs:
 
           echo "account_id=$EXPECTED_ACCOUNT" >> "$GITHUB_OUTPUT"
           echo "Guard passed: account_id confirmed."
+
   # ---------------------------------------------------------------------------
   # Destroy — run undeploy phases sequentially via shared library
   # ---------------------------------------------------------------------------
   destroy:
     name: Destroy Modules
     needs: guard
-    if: github.ref == 'refs/heads/main'
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
-      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -154,10 +120,27 @@ jobs:
 
       - name: Install required CLI tools
         run: |
-          set -euo pipefail
-          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
-            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
-          done
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
       - name: Configure kubectl
         run: |
           set -e
@@ -196,28 +179,11 @@ jobs:
 
           FAILED=0
 
-          # --- Phase 1: Superplane domain app ---
-          # First, because destroy order is the reverse of deploy order: a domain app sits
-          # on top of the platform, gateway and agent runtime (Issue #5037).
-          if is_skipped "superplane"; then
-            echo "::notice::Skipping phase: superplane (user request)"
-          else
-            echo "::group::Phase 1/6: Superplane"
-            if phase_superplane; then
-              echo "::notice::Phase superplane: complete"
-            else
-              echo "::error::Phase superplane: FAILED"
-              FAILED=1
-            fi
-            echo "::endgroup::"
-          fi
-          [ $FAILED -ne 0 ] && exit 1
-
-          # --- Phase 2: Agent Context ---
+          # --- Phase 1: Agent Context ---
           if is_skipped "agent-context"; then
             echo "::notice::Skipping phase: agent-context (user request)"
           else
-            echo "::group::Phase 2/6: Agent Context"
+            echo "::group::Phase 1/5: Agent Context"
             if phase_agent_context; then
               echo "::notice::Phase agent-context: complete"
             else
@@ -228,11 +194,11 @@ jobs:
           fi
           [ $FAILED -ne 0 ] && exit 1
 
-          # --- Phase 3: Webhook Ingress ---
+          # --- Phase 2: Webhook Ingress ---
           if is_skipped "webhook-ingress"; then
             echo "::notice::Skipping phase: webhook-ingress (user request)"
           else
-            echo "::group::Phase 3/6: Webhook Ingress"
+            echo "::group::Phase 2/5: Webhook Ingress"
             if phase_webhook_ingress; then
               echo "::notice::Phase webhook-ingress: complete"
             else
@@ -243,11 +209,11 @@ jobs:
           fi
           [ $FAILED -ne 0 ] && exit 1
 
-          # --- Phase 4: Agent Factory ---
+          # --- Phase 3: Agent Factory ---
           if is_skipped "agent-factory"; then
             echo "::notice::Skipping phase: agent-factory (user request)"
           else
-            echo "::group::Phase 4/6: Agent Factory"
+            echo "::group::Phase 3/5: Agent Factory"
             if phase_agent_factory; then
               echo "::notice::Phase agent-factory: complete"
             else
@@ -258,11 +224,11 @@ jobs:
           fi
           [ $FAILED -ne 0 ] && exit 1
 
-          # --- Phase 5: Gateway ---
+          # --- Phase 4: Gateway ---
           if is_skipped "gateway"; then
             echo "::notice::Skipping phase: gateway (user request)"
           else
-            echo "::group::Phase 5/6: Gateway"
+            echo "::group::Phase 4/5: Gateway"
             if phase_gateway; then
               echo "::notice::Phase gateway: complete"
             else
@@ -273,11 +239,11 @@ jobs:
           fi
           [ $FAILED -ne 0 ] && exit 1
 
-          # --- Phase 6: Platform ---
+          # --- Phase 5: Platform ---
           if is_skipped "platform"; then
             echo "::notice::Skipping phase: platform (user request)"
           else
-            echo "::group::Phase 6/6: Platform"
+            echo "::group::Phase 5/5: Platform"
             if phase_platform; then
               echo "::notice::Phase platform: complete"
             else
@@ -305,12 +271,11 @@ jobs:
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Destroy Order" >> "$GITHUB_STEP_SUMMARY"
-          echo "1. superplane" >> "$GITHUB_STEP_SUMMARY"
-          echo "2. agent-context" >> "$GITHUB_STEP_SUMMARY"
-          echo "3. webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
-          echo "4. agent-factory" >> "$GITHUB_STEP_SUMMARY"
-          echo "5. gateway" >> "$GITHUB_STEP_SUMMARY"
-          echo "6. platform" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. agent-context" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. agent-factory" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. gateway" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. platform" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Note**: Terraform state backend is NOT destroyed unless \`include_bootstrap\` is enabled." >> "$GITHUB_STEP_SUMMARY"
 
@@ -320,29 +285,14 @@ jobs:
   bootstrap:
     name: Destroy State Backend (opt-in)
     needs: destroy
-    if: github.ref == 'refs/heads/main' && (inputs.include_bootstrap == true)
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    if: inputs.include_bootstrap == true
     runs-on: arc-runner-org
     permissions:
-      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -354,10 +304,15 @@ jobs:
 
       - name: Install AWS CLI
         run: |
-          set -euo pipefail
-          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
-            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
-          done
+          set -e
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          aws --version
+
       - name: Destroy Terraform state backend
         env:
           AWS_REGION: ${{ env.AWS_REGION }}

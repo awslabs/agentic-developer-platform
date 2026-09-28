@@ -2,11 +2,11 @@
 """Per-repo ingestion pipeline.
 
 Pipeline steps:
-  1. Clone repo to private per-attempt scratch
+  1. Clone repo to persistent storage (S3 Files mount)
   2. Run cgc analyze -> code-index.json -> filesystem + S3 markdown summary
   3. Call DeepWiki API -> wiki.md -> S3 + S3 Vectors (via wiki_store)
   4. GraphRAG extraction -> Neptune (with delete-before-reload for stale entity cleanup)
-  5. Remove private source; persistent reader publication is separately admitted
+  5. Keep clone on persistent storage for downstream consumers
 
 Usage:
   python ingest-repo.py --repo org/repo
@@ -20,7 +20,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,8 +38,7 @@ log = get_logger("ingest-repo")
 from config import settings
 from lang_go import extract_go_func_name as _extract_go_func_name
 from lang_go import extract_go_type as _extract_go_type
-from repo_acl import resolve_allowed_principals
-from scope import IngestionScope, ScopeValidationError, compute_s3_prefix, parse_scope_from_env
+from scope import IngestionScope, compute_s3_prefix, parse_scope_from_env
 from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
 from scip_ingester import ingest_scip, merge_graphs
 from scip_neptune_csv import (
@@ -72,10 +70,6 @@ LLM_BASE_URL = settings.llm_base_url
 
 # SCIP structural graph configuration
 SCIP_ENABLED = os.environ.get("SCIP_ENABLED", "true").lower() in ("true", "1", "yes")
-
-# Only a container backend may be selected in production. Missing admission or
-# sandbox availability reports structural_stage_unavailable; no local fallback.
-SCIP_ISOLATED_BACKEND = os.environ.get("SCIP_ISOLATED_BACKEND", "").strip().lower()
 
 # DynamoDB configuration (for state tracking — replaces repo-state.json)
 DYNAMO_TABLE = settings.dynamo_table
@@ -203,9 +197,20 @@ def update_dynamo_state(org_repo: str, result: dict[str, Any], tags: dict[str, s
     if tags:
         item["user_tags"] = tags
 
-    # Use the actual attempt's source SHA, never an old persistent clone.
-    if result.get("source_commit_sha"):
-        item["last_sha"] = result["source_commit_sha"]
+    # Get current SHA for last_sha tracking
+    clone_path = os.path.join(CLONE_BASE, org_repo)
+    if os.path.exists(os.path.join(clone_path, ".git")):
+        try:
+            sha_result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=clone_path,
+                capture_output=True,
+                timeout=10,
+            )
+            if sha_result.returncode == 0:
+                item["last_sha"] = sha_result.stdout.decode().strip()
+        except Exception:
+            pass
 
     try:
         table.put_item(Item={k: v for k, v in item.items() if v is not None})
@@ -444,23 +449,15 @@ def _build_basic_code_index(clone_path: str, org_repo: str) -> dict[str, Any]:
     }
 
 
-def _scoped_code_index_dir(scope: IngestionScope) -> str:
-    root, leaf = os.path.split(CODE_INDEX_DIR.rstrip("/"))
-    return os.path.join(root, compute_s3_prefix(scope, leaf))
-
-
-def _write_code_index_to_filesystem(
-    code_index_json: str, safe_name: str, org_repo: str, *, scope: IngestionScope | None = None
-) -> bool:
+def _write_code_index_to_filesystem(code_index_json: str, safe_name: str, org_repo: str) -> bool:
     """Write code-index JSON to the shared filesystem (platform-data PVC).
 
     This is the primary storage for structured code-index data, read by the
     MCP server's understand and impact tools.
     """
     try:
-        directory = _scoped_code_index_dir(scope or parse_scope_from_env())
-        os.makedirs(directory, exist_ok=True)
-        path = os.path.join(directory, f"{safe_name}.json")
+        os.makedirs(CODE_INDEX_DIR, exist_ok=True)
+        path = os.path.join(CODE_INDEX_DIR, f"{safe_name}.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write(code_index_json)
         log.info("Wrote code-index to filesystem: %s", path)
@@ -935,88 +932,6 @@ def _write_to_neptune(entities: list[dict], relationships: list[dict], org_repo:
     except Exception as e:
         log.warning("Neptune write failed for %s: %s", org_repo, e)
         return False
-
-
-# ---------------------------------------------------------------------------
-# Isolated SCIP parser integration (#6059 — S15 parser isolation)
-# ---------------------------------------------------------------------------
-
-
-def _run_isolated_scip(
-    clone_path: str,
-    org_repo: str,
-    s3_store: "S3ContentStore",
-    tracker: Any,
-) -> str:
-    """Run SCIP structural indexing via the isolated parser pipeline.
-
-    Returns a status string for the result dict.  Integrates with the
-    existing stage tracker.  On isolated-backend failure, falls back to
-    a truthful "structural_stage_unavailable" — never to in-process
-    credential-bearing parsing.
-    """
-    from isolated_runner import (
-        DockerBackend,
-        IsolatedParserRunner,
-    )
-
-    # Select backend
-    if SCIP_ISOLATED_BACKEND == "docker":
-        parser_image = os.environ.get("SCIP_PARSER_IMAGE", "adp-scip-parser:latest")
-        backend = DockerBackend(image=parser_image)
-    else:
-        log.warning(
-            "Unknown SCIP_ISOLATED_BACKEND=%r — structural stage unavailable",
-            SCIP_ISOLATED_BACKEND,
-        )
-        if tracker:
-            tracker.mark_skipped(
-                "scip_structural",
-                f"unknown isolated backend: {SCIP_ISOLATED_BACKEND}",
-            )
-        return "structural_stage_unavailable"
-
-    runner = IsolatedParserRunner(backend=backend)
-    iso_result = runner.run(clone_path, org_repo)
-
-    # Map isolated result to the existing status vocabulary
-    if iso_result.status in {"backend_unavailable", "authority_unavailable"}:
-        log.info(
-            "Isolated parser backend unavailable for %s: %s — "
-            "structural stage reported as unavailable",
-            org_repo,
-            iso_result.error,
-        )
-        if tracker:
-            tracker.mark_skipped(
-                "scip_structural",
-                f"isolated backend unavailable: {iso_result.error}",
-            )
-        return "structural_stage_unavailable"
-
-    if iso_result.status == "no_languages":
-        if tracker:
-            tracker.mark_skipped("scip_structural", "no SCIP-supported languages")
-        return "no_languages"
-
-    if iso_result.status == "complete" and iso_result.scip_files:
-        # The legacy ambient Neptune/S3 uploader is not a capability-aware sink.
-        # Do not treat validated parser bytes as authority to mutate graph data.
-        iso_result.cleanup()
-        if tracker:
-            tracker.mark_skipped(
-                "scip_structural", "canonical asset/graph publication authority unavailable"
-            )
-        return "publication_authority_unavailable"
-
-    # Error or indexing failure
-    if tracker:
-        try:
-            with tracker.stage("scip_structural") as ctx:
-                ctx.fail(iso_result.error or iso_result.status)
-        except Exception:
-            pass
-    return iso_result.status
 
 
 # ---------------------------------------------------------------------------
@@ -1506,15 +1421,10 @@ def _generate_source_sbom(
                 try:
                     git_url = f"https://github.com/{org_repo}"
                     # Issue #3529: propagate scope for SBOM path too
-                    # Issue #5658: and the derived ACL, for the same reason as
-                    # the main path — an omitted ACL used to default to public.
-                    derived_principals = resolve_allowed_principals(org_repo)
                     repo_id = sbom_db.ensure_repo_exists(
                         conn,
                         org_repo,
                         git_url,
-                        allowed_principals=derived_principals,
-                        public_verified=derived_principals == ["*"],
                         tenant_id=scope.tenant_id if scope else None,
                         owner_sub=scope.owner_sub if scope else None,
                     )
@@ -1621,22 +1531,6 @@ def ingest_repo(
     skip_deepwiki: bool = False,
     skip_scip: bool = False,
 ) -> dict[str, Any]:
-    from source_snapshot import source_snapshot
-
-    with source_snapshot(settings.scratch_base, (settings.state_dir, CLONE_BASE)) as clone_path:
-        return _ingest_repo_in_snapshot(
-            org_repo, skip_cgc, skip_deepwiki, skip_scip, clone_path=clone_path
-        )
-
-
-def _ingest_repo_in_snapshot(
-    org_repo: str,
-    skip_cgc: bool = False,
-    skip_deepwiki: bool = False,
-    skip_scip: bool = False,
-    *,
-    clone_path: str,
-) -> dict[str, Any]:
     """Full ingestion pipeline for one repo.
 
     Returns a result dict with status for each step.
@@ -1656,14 +1550,8 @@ def _ingest_repo_in_snapshot(
         "sbom_source": "skipped",
     }
 
-    # Read scope from environment (propagated by sqs-worker for tenant isolation).
-    # Fails the run rather than falling back to shared (#5658): if a restricted
-    # scope arrived incomplete, writing to the shared prefix would expose it.
-    try:
-        scope = parse_scope_from_env()
-    except ScopeValidationError as e:
-        log.error("Refusing ingestion with unsatisfiable scope: %s", e)
-        sys.exit(1)
+    # Read scope from environment (propagated by sqs-worker for tenant isolation)
+    scope = parse_scope_from_env()
     scoped_content_prefix = compute_s3_prefix(scope, S3_CONTENT_PREFIX)
     scoped_wiki_prefix = compute_s3_prefix(scope, WIKI_S3_PREFIX)
     scoped_code_index_prefix = compute_s3_prefix(scope, CODE_INDEX_S3_PREFIX)
@@ -1685,8 +1573,8 @@ def _ingest_repo_in_snapshot(
     )
     s3_writer = _S3WriterAdapter(s3_store)
 
-    # Register the access-control row before fetching or publishing any bytes.
-    # Stage telemetry is optional; authoritative ownership is mandatory.
+    # --- Stage tracking setup (Postgres) ---
+    # Best-effort: if DB is unavailable, fall back to legacy behavior
     tracker = None
     db_conn = None
     try:
@@ -1696,29 +1584,47 @@ def _ingest_repo_in_snapshot(
         # Issue #3529: propagate scope envelope's tenant_id/owner_sub into the
         # repositories ACL row so tenant-scoped queries include this repo for
         # the registering user (not the GitHub org name).
-        # Issue #5658: state the ACL explicitly. This call used to omit it and
-        # rely on a ["*"] default, so the row the Door filters reads on was
-        # stamped public for every repo including private ones.
-        derived_principals = resolve_allowed_principals(org_repo)
         repo_id = stage_db.ensure_repo_exists(
             db_conn,
             org_repo,
             f"https://github.com/{org_repo}",
-            allowed_principals=derived_principals,
-            public_verified=derived_principals == ["*"],
             tenant_id=scope.tenant_id,
             owner_sub=scope.owner_sub,
         )
     except Exception as e:
-        if db_conn is not None:
-            db_conn.close()
-        log.error("Repository access registration failed: %s", type(e).__name__)
-        raise RuntimeError(
-            "Repository ownership could not be registered; refusing ingestion"
-        ) from e
+        log.warning("DB unavailable for stage tracking — legacy mode: %s", e)
+        db_conn = None
+        repo_id = None
 
-    # Fresh private source; no shared Git metadata or fetch/reset reuse.
-    clone_ok = git_clone(f"https://github.com/{org_repo}", clone_path)
+    # Step 1: Clone to persistent storage (S3 Files mount) — shared across enrichment consumers
+    # If clone exists, do git fetch instead of full re-clone
+    clone_path = os.path.join(CLONE_BASE, org_repo)
+    if os.path.exists(os.path.join(clone_path, ".git")):
+        try:
+            subprocess.run(
+                ["git", "fetch", "--depth=1"],
+                cwd=clone_path,
+                check=True,
+                capture_output=True,
+                timeout=120,
+            )
+            subprocess.run(
+                ["git", "reset", "--hard", "FETCH_HEAD"],
+                cwd=clone_path,
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+            log.info("Updated existing clone: %s", clone_path)
+            clone_ok = True
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            log.warning("git fetch failed, re-cloning: %s", e)
+            shutil.rmtree(clone_path, ignore_errors=True)
+            clone_ok = git_clone(f"https://github.com/{org_repo}", clone_path)
+    else:
+        if os.path.exists(clone_path):
+            shutil.rmtree(clone_path, ignore_errors=True)
+        clone_ok = git_clone(f"https://github.com/{org_repo}", clone_path)
     if not clone_ok:
         log.warning("Clone failed for %s — enrichment steps skipped", org_repo)
         result["clone"] = "failed"
@@ -1729,8 +1635,6 @@ def _ingest_repo_in_snapshot(
 
     # Get commit SHA for skip logic (must be after clone)
     commit_sha = _get_commit_sha(clone_path)
-    result["source_commit_sha"] = commit_sha
-    result["source_reader_handoff"] = "ephemeral_only_no_persistent_snapshot_published"
 
     # Initialize the stage tracker now that we have commit_sha
     if db_conn and repo_id:
@@ -1870,7 +1774,7 @@ def _ingest_repo_in_snapshot(
 
                     # Write to filesystem (primary — for programmatic access by MCP server)
                     fs_written = _write_code_index_to_filesystem(
-                        code_index_json, safe_name, org_repo, scope=scope
+                        code_index_json, safe_name, org_repo
                     )
 
                     # Upload as markdown summary to S3 (for semantic search/understand)
@@ -1952,14 +1856,7 @@ def _ingest_repo_in_snapshot(
                 wiki = deepwiki_generate(org_repo)
                 if wiki:
                     org_id = org_repo.split("/")[0]
-
-                    # Derive the ACL from GitHub instead of stamping the public
-                    # sentinel (#5658). This line was `["*"]` unconditionally, so
-                    # every private repo's wiki was published readable to every
-                    # principal. resolve_allowed_principals returns ["*"] only when
-                    # GitHub reports the repo public, and [] (deny) on any error —
-                    # never "*" as a fallback.
-                    allowed_principals = resolve_allowed_principals(org_repo)
+                    allowed_principals = ["*"]
 
                     wiki_result = store_wiki(
                         wiki_text=wiki,
@@ -1970,9 +1867,6 @@ def _ingest_repo_in_snapshot(
                         s3_bucket=S3_BUCKET_NAME,
                         wiki_s3_prefix=scoped_wiki_prefix,
                         shard_count=S3_VECTORS_SHARD_COUNT,
-                        visibility=scope.visibility,
-                        tenant_id=scope.tenant_id,
-                        owner_sub=scope.owner_sub,
                     )
 
                     if wiki_result.s3_success:
@@ -2031,9 +1925,7 @@ def _ingest_repo_in_snapshot(
             try:
                 ci_data = None
                 if result.get("code_index") == "written":
-                    ci_path = os.path.join(
-                        _scoped_code_index_dir(scope), f"{org_repo.replace('/', '-')}.json"
-                    )
+                    ci_path = os.path.join(CODE_INDEX_DIR, f"{org_repo.replace('/', '-')}.json")
                     if os.path.isfile(ci_path):
                         with open(ci_path) as f:
                             ci_data = json.load(f)
@@ -2089,8 +1981,6 @@ def _ingest_repo_in_snapshot(
         tracker.mark_skipped("graphrag", "graphrag disabled")
 
     # Step 5a: SCIP structural graph ingestion (#1532 — Neptune deep graph)
-    # Only admitted isolated parsing is reachable. Environment values cannot
-    # restore credential-bearing local execution.
     if SCIP_ENABLED and not skip_scip:
         skip_scip_stage = tracker and tracker.should_skip("scip_structural")
         if skip_scip_stage:
@@ -2099,23 +1989,55 @@ def _ingest_repo_in_snapshot(
             )
             tracker.mark_skipped("scip_structural", "already verified at current SHA")
             result["scip_structural"] = "skipped_verified"
-        elif SCIP_ISOLATED_BACKEND:
-            # --- Isolated parser path (#6059) ---
-            result["scip_structural"] = _run_isolated_scip(clone_path, org_repo, s3_store, tracker)
         else:
-            # Fail-closed: no isolated backend and in-process not allowed (#6059)
-            log.info(
-                "SCIP structural unavailable for %s: no isolated backend configured "
-                "(production has no in-process fallback)",
-                org_repo,
-            )
-            result["scip_structural"] = "structural_stage_unavailable"
-            if tracker:
-                tracker.mark_skipped(
-                    "scip_structural",
-                    "no isolated backend configured (SCIP_ISOLATED_BACKEND empty, "
-                    "production has no in-process fallback)",
-                )
+            try:
+                scip_result = scip_structural_ingest(clone_path, org_repo, s3_store)
+                result["scip_structural"] = scip_result.get("status", "unknown")
+
+                # Stage tracking
+                if tracker:
+                    try:
+                        scip_status = scip_result.get("status", "")
+                        if scip_status == "complete":
+                            with tracker.stage("scip_structural") as ctx:
+                                edge_count = scip_result.get("edges", 0)
+                                node_count = scip_result.get("nodes", 0)
+                                metrics = {
+                                    "nodes": node_count,
+                                    "edges": edge_count,
+                                }
+                                # Include per-language failure info in metrics (#3132)
+                                failed_langs = scip_result.get("failed_languages")
+                                if failed_langs:
+                                    metrics["failed_languages"] = failed_langs
+                                    metrics["indexed_languages"] = scip_result.get(
+                                        "indexed_languages", []
+                                    )
+                                ctx.set_artifact(f"neptune:{org_repo}:edges={edge_count}")
+                                ctx.set_metrics(metrics)
+                                ctx.verify(lambda: edge_count > 0)
+                        elif scip_status == "no_languages":
+                            tracker.mark_skipped("scip_structural", "no SCIP-supported languages")
+                        elif scip_status == "no_edges":
+                            with tracker.stage("scip_structural") as ctx:
+                                ctx.fail(
+                                    "FAIL-LOUD: code-bearing repo produced 0 edges "
+                                    f"(languages: {scip_result.get('languages', {})})"
+                                )
+                        else:
+                            with tracker.stage("scip_structural") as ctx:
+                                ctx.fail(scip_result.get("error", f"status={scip_status}"))
+                    except Exception as e:
+                        log.warning("scip_structural stage tracking failed: %s", e)
+            except Exception as e:
+                log.warning("SCIP structural ingest failed for %s: %s — continuing", org_repo, e)
+                result["scip_structural"] = f"error: {e}"
+                if tracker:
+                    try:
+                        with tracker.stage("scip_structural") as ctx:
+                            ctx.fail(str(e))
+                    except Exception:
+                        pass
     elif tracker:
         reason = "skip_scip flag set" if skip_scip else "scip disabled"
         tracker.mark_skipped("scip_structural", reason)
@@ -2195,7 +2117,15 @@ def _ingest_repo_in_snapshot(
         except Exception:
             pass
 
-    # The outer source_snapshot context owns cleanup on success and every exit.
+    # Step 6: Keep clone on persistent storage (S3 Files) — don't delete
+    # Clone is reused by GraphRAG, learning artifacts, and daily refresh.
+    # Only /tmp clones should be cleaned up.
+    if CLONE_BASE.startswith("/tmp"):
+        shutil.rmtree(clone_path, ignore_errors=True)
+        log.info("Cleaned up temp clone %s", clone_path)
+    else:
+        log.info("Kept persistent clone at %s", clone_path)
+
     return result
 
 

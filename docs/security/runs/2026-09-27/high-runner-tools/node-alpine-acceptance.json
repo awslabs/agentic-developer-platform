@@ -1,7 +1,0 @@
-{
-  "image": "security27-high/arc-runner:complete",
-  "path": "/home/runner/externals/node20_alpine/bin/node",
-  "binary_sha256": "60a975d7f7aa9b4258ee94c6524ec368ac631ede9fb807f32ea179ab7c4b4922",
-  "version": "v24.19.0",
-  "passed": true
-}

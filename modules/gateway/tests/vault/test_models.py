@@ -148,13 +148,10 @@ class TestChannelTenantMapModel:
 
 class TestEnums:
     def test_identity_provider_values(self):
-        # `directory` added by #4843 (AD/Entra object ids — the person anchor's
-        # middle namespace). See migration 041: a provider addition is TWO changes,
-        # the enum and a new CHECK-constraint migration.
-        assert set(IdentityProvider) == {"cognito", "slack", "github", "gitlab", "teams", "discord", "email", "whatsapp", "directory"}
+        assert set(IdentityProvider) == {"cognito", "slack", "github", "teams", "discord", "email", "whatsapp"}
 
     def test_verification_method_values(self):
-        assert set(VerificationMethod) == {"oauth", "magic_link", "admin_manual", "admin_attested"}
+        assert set(VerificationMethod) == {"oauth", "magic_link", "admin_manual"}
 
     def test_credential_type_values(self):
         expected = {"api_key", "oauth_token", "basic_auth", "bearer", "ssh_key", "certificate", "config_file", "aws_role"}

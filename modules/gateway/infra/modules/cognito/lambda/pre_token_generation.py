@@ -1,5 +1,5 @@
 """
-Pre Token Generation Lambda Trigger (V3) for AWS Cognito.
+Pre Token Generation Lambda Trigger (V2) for AWS Cognito.
 
 This Lambda function injects custom claims into access tokens for both:
 1. Human users (TokenGeneration_Authentication): Copy custom attributes to access token
@@ -44,7 +44,7 @@ AGENT_CLIENTS_TABLE = os.environ.get("AGENT_CLIENTS_TABLE", "agent_clients")
 
 def handler(event: dict, context) -> dict:
     """
-    Pre Token Generation Lambda handler (V3 trigger).
+    Pre Token Generation Lambda handler (V2 trigger).
 
     This function is called before Cognito issues tokens and allows us to
     customize the claims in the access token.

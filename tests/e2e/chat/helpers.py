@@ -16,7 +16,6 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
 import boto3
 
@@ -27,7 +26,7 @@ import boto3
 
 CLOUDFRONT_URL = os.environ.get(
     "E2E_CLOUDFRONT_URL", "https://d1g6cal2ts4iis.cloudfront.net"
-).rstrip("/")
+)
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
 INGEST_LOG_GROUP = os.environ.get(
@@ -61,7 +60,7 @@ HISTORY_BLEED_PHRASES = [
 ]
 
 
-@dataclass(frozen=True, repr=False)
+@dataclass(frozen=True)
 class TestCredentials:
     """Cognito test user credentials resolved from Secrets Manager."""
 
@@ -137,81 +136,106 @@ def get_cognito_tokens(creds: TestCredentials) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Browser authentication helpers
+# Browser login helper (JS injection — same technique as ad-hoc probes)
 # ---------------------------------------------------------------------------
 
 
-def _wait_for_stored_session(page) -> None:
-    """Wait for complete token storage without returning secrets to diagnostics."""
-    page.wait_for_function(
-        """() => ['cognito_id_token', 'cognito_access_token', 'cognito_refresh_token']
-            .every(key => Boolean(sessionStorage.getItem(key)))
-            && Number(sessionStorage.getItem('cognito_token_expiry')) > Date.now()""",
-        timeout=15_000,
-    )
-
-
 def login_via_cognito_hosted_ui(page, creds: TestCredentials) -> None:
-    """Use the real email-login button, hosted form, and OAuth callback.
+    """Drive the Cognito hosted-UI login flow in a Playwright page.
 
-    This helper never obtains or injects tokens itself. The application's
-    callback must exchange the authorization code and store the session.
+    Navigates from CloudFront (the caller must NOT have already navigated;
+    this helper owns the full flow from landing to authed state):
+
+    1. goto CloudFront → SPA redirects to Cognito hosted UI.
+    2. Wait for the hosted-UI panel to finish animating in.
+    3. Fill credentials via direct JS (Playwright's page.fill fails — Cognito's
+       animated signin form reports its inputs as hidden).
+    4. Submit, wait for OAuth callback → redirect back to the SPA.
+    5. Wait for the callback handler to complete (sessionStorage tokens present).
+
+    Token injection alone does NOT work: the SPA's AuthContext builds user
+    state only in the OAuth callback handler.
     """
-    target = urlsplit(CLOUDFRONT_URL)
     page.goto(CLOUDFRONT_URL, wait_until="domcontentloaded", timeout=30_000)
-    page.get_by_test_id("email-login-btn").click(timeout=15_000)
-    page.wait_for_url(
-        lambda url: (urlsplit(url).hostname or "").endswith(".amazoncognito.com"),
-        timeout=15_000,
-    )
 
-    # Cognito renders duplicate mobile/desktop forms with identical IDs.
-    # Select the visible form instead of writing into the hidden copy with JS.
-    page.locator('input[name="username"]:visible').fill(creds.username)
-    page.locator('input[name="password"]:visible').fill(creds.password)
-    page.locator('input[name="signInSubmitButton"]:visible').click()
+    # Wait for the Cognito hosted UI to render (SPA redirects on mount).
+    page.wait_for_url(re.compile(r"amazoncognito\.com"), timeout=15_000)
+    # Let the hosted-UI animation settle — the inputs are genuinely invisible
+    # to Playwright during the slide-in, which is why we fill via JS.
+    page.wait_for_timeout(2500)
 
-    page.wait_for_url(
-        lambda url: (urlsplit(url).scheme, urlsplit(url).netloc)
-        == (target.scheme, target.netloc)
-        and urlsplit(url).path not in ("/login", "/auth/callback"),
-        timeout=30_000,
-    )
-    _wait_for_stored_session(page)
-
-
-def inject_tokens_and_navigate(
-    page, tokens: dict[str, str], *, path: str = "/chat"
-) -> None:
-    """Restore supplied Cognito tokens at a protected route; this is not OAuth.
-
-    Seed storage once on the application origin before reloading the SPA, so
-    AuthContext can restore the supplied session using its normal startup path.
-    The expiry uses the same milliseconds-since-epoch contract as storeTokens.
-    Chat tests retain /chat; authentication-only checks can use /activity without
-    depending on the environment's optional chat feature flag.
-    """
-    expires_in = int(tokens["expires_in"])
-    if expires_in <= 0 or not tokens.get("id_token") or not tokens.get("access_token"):
-        raise ValueError("Session restoration requires valid tokens and expires_in")
-
-    page.goto(f"{CLOUDFRONT_URL}/login", wait_until="domcontentloaded", timeout=30_000)
+    # Fill via direct JS because the form's inputs are treated as hidden
+    # by Playwright's visibility check (element has zero layout during the
+    # hosted-UI reveal animation).
+    user_esc = json.dumps(creds.username)
+    pass_esc = json.dumps(creds.password)
     page.evaluate(
-        """tokens => {
-            sessionStorage.setItem('cognito_id_token', tokens.id_token);
-            sessionStorage.setItem('cognito_access_token', tokens.access_token);
-            if (tokens.refresh_token) {
-                sessionStorage.setItem('cognito_refresh_token', tokens.refresh_token);
-            } else {
-                sessionStorage.removeItem('cognito_refresh_token');
-            }
-            sessionStorage.setItem('cognito_token_expiry',
-                String(Date.now() + Number(tokens.expires_in) * 1000));
-        }""",
-        tokens,
+        f"""
+        () => {{
+            const u = document.getElementById('signInFormUsername');
+            const p = document.getElementById('signInFormPassword');
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+            setter.call(u, {user_esc});
+            u.dispatchEvent(new Event('input', {{bubbles: true}}));
+            u.dispatchEvent(new Event('change', {{bubbles: true}}));
+            setter.call(p, {pass_esc});
+            p.dispatchEvent(new Event('input', {{bubbles: true}}));
+            p.dispatchEvent(new Event('change', {{bubbles: true}}));
+        }}
+        """
     )
-    page.goto(f"{CLOUDFRONT_URL}{path}", wait_until="domcontentloaded", timeout=30_000)
-    _wait_for_stored_session(page)
+    page.evaluate(
+        "() => document.querySelector('input[name=\"signInSubmitButton\"]').click()"
+    )
+
+    page.wait_for_url(re.compile(r"d1g6cal2ts4iis\.cloudfront\.net"), timeout=20_000)
+    # Do NOT wait for networkidle — the chat page opens a WebSocket which
+    # keeps the network "busy" indefinitely. Instead, poll sessionStorage
+    # until the OAuth callback handler has written the id token (the
+    # contract downstream tests depend on).
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            tok = page.evaluate("sessionStorage.getItem('cognito_id_token')")
+            if tok:
+                return
+        except Exception:
+            # Navigations can destroy the execution context — retry.
+            pass
+        page.wait_for_timeout(250)
+    raise RuntimeError(
+        "Hosted-UI login completed but cognito_id_token never appeared in "
+        "sessionStorage within 15s. Auth callback likely failed."
+    )
+
+
+def inject_tokens_and_navigate(page, tokens_or_creds) -> None:
+    """Authenticate the page and navigate to /chat.
+
+    HISTORY: an earlier implementation tried to bypass the hosted-UI flow by
+    injecting admin-initiated Cognito tokens directly into sessionStorage.
+    This does not work: the SPA's AuthContext builds its user state only in
+    the OAuth callback handler, so tokens-in-sessionStorage on a cold mount
+    don't produce an authed session, and any `/chat` navigation is aborted
+    back to login (ERR_ABORTED).
+
+    Current implementation: always go through the real hosted-UI login.
+    Slower (~6s) but actually works. The argument is now accepted as either
+    a `TestCredentials` (preferred) or a legacy token-dict (logged + still
+    routed through hosted-UI login if credentials are available).
+    """
+    # Resolve credentials: allow either TestCredentials directly, or
+    # fall back to fetching from Secrets Manager.
+    creds: TestCredentials
+    if isinstance(tokens_or_creds, TestCredentials):
+        creds = tokens_or_creds
+    else:
+        # Legacy callers pass a token dict. Fetch creds to do a real login.
+        creds = fetch_test_credentials()
+
+    login_via_cognito_hosted_ui(page, creds)
+    page.goto(f"{CLOUDFRONT_URL}/chat", wait_until="domcontentloaded", timeout=30_000)
+    page.wait_for_timeout(2000)  # let WS + React settle
 
 
 # ---------------------------------------------------------------------------

@@ -21,10 +21,7 @@ from typing import Any
 from urllib.parse import urlparse
 from defusedxml import ElementTree
 
-# NOTE: `requests` is deliberately NOT imported here. Every outbound fetch in this
-# module goes through url_fetch, which validates each hop and pins the socket to a
-# vetted address. Importing requests again would put an unguarded requests.get one
-# line away from any future edit (#5658).
+import requests
 
 from telemetry import configure_telemetry, get_logger
 
@@ -33,15 +30,6 @@ log = get_logger("ingest-url")
 
 from config import settings
 from s3_store import S3ContentStore
-from scope import ScopeValidationError, compute_s3_prefix, parse_scope_from_env
-
-# SSRF admission + fetch guard (#5658). Every URL this pipeline touches is
-# attacker-influenced: the crawl target comes from a registration request, and
-# sitemap <loc> entries and redirect targets come from the target itself. All
-# fetching goes through url_fetch so that each URL is validated and each
-# connection is opened only to an address that validation approved.
-from url_denylist import scrub_url_credentials
-from url_fetch import DestinationRefused, fetch as guarded_fetch, same_origin, validate_url
 
 # Stage tracking (issue #2308) — optional, fail-open if DB unavailable
 STAGE_TRACKING_AVAILABLE = False
@@ -84,7 +72,7 @@ def discover_pages(base_url: str, max_pages: int = 100) -> list[str]:
 
     for sitemap_url in sitemap_urls_to_try:
         try:
-            resp = guarded_fetch(sitemap_url, timeout=30, headers={"User-Agent": "AgentContext-Crawler/1.0"})
+            resp = requests.get(sitemap_url, timeout=30, headers={"User-Agent": "AgentContext-Crawler/1.0"})
             if resp.status_code != 200:
                 continue
 
@@ -112,26 +100,17 @@ def discover_pages(base_url: str, max_pages: int = 100) -> list[str]:
                 log.info("Discovered %d pages from %s", len(urls), sitemap_url)
                 return urls[:max_pages]
 
-        except DestinationRefused as e:
-            # Logged at warning, not debug: a refusal here means something asked
-            # the crawler to fetch an internal address, which is worth seeing.
-            log.warning("Sitemap %s refused: %s", scrub_url_credentials(sitemap_url), e.reason_code)
         except Exception as e:
-            log.debug("Sitemap %s failed: %s", scrub_url_credentials(sitemap_url), e)
+            log.debug("Sitemap %s failed: %s", sitemap_url, e)
 
     log.info("No sitemap found for %s — will crawl URL directly", base_url)
     return [base_url]
 
 
 def _parse_sitemap(sitemap_url: str, base_url: str, max_pages: int) -> list[str]:
-    """Parse a single sitemap XML and return filtered URLs.
-
-    ``sitemap_url`` is taken from a <loc> in a sitemap index, i.e. it is content
-    controlled by the crawl target, so it is fetched through the guard like any
-    other untrusted URL.
-    """
+    """Parse a single sitemap XML and return filtered URLs."""
     try:
-        resp = guarded_fetch(sitemap_url, timeout=30, headers={"User-Agent": "AgentContext-Crawler/1.0"})
+        resp = requests.get(sitemap_url, timeout=30, headers={"User-Agent": "AgentContext-Crawler/1.0"})
         if resp.status_code != 200:
             return []
         tree = ElementTree.fromstring(resp.content)
@@ -148,37 +127,13 @@ def _extract_urls_from_sitemap(tree: ElementTree.Element, ns: dict, base_url: st
 
     urls = []
     for loc in tree.findall(".//sm:loc", ns):
-        if not loc.text:
-            continue
-        url = loc.text.strip()
-        parsed = urlparse(url)
-
-        # Filter: same origin as the submitted base URL, and under its path.
-        #
-        # same_origin rather than a netloc string compare: netloc equality treats
-        # "127.0.0.1", "127.1" and "2130706433" as three distinct origins, and
-        # ignores the scheme and port entirely, so a sitemap could keep the
-        # hostname and downgrade the scheme or change the port. same_origin
-        # compares scheme, canonical host and effective port.
-        if not same_origin(url, base_url):
-            continue
-        if base_path and not parsed.path.startswith(base_path):
-            continue
-
-        # Admission-check each discovered URL here as well as at fetch time, so a
-        # hostile sitemap's entries never enter the work list. Fetch-time
-        # validation still stands; this just keeps the refusal close to the
-        # source, where the reason is attributable to the sitemap.
-        verdict = validate_url(url)
-        if not verdict.allowed:
-            log.warning(
-                "Sitemap entry refused (%s): %s",
-                verdict.reason_code,
-                scrub_url_credentials(url),
-            )
-            continue
-
-        urls.append(url)
+        if loc.text:
+            url = loc.text.strip()
+            parsed = urlparse(url)
+            # Filter: same domain and path starts with the base URL path
+            if parsed.netloc == parsed_base.netloc:
+                if not base_path or parsed.path.startswith(base_path):
+                    urls.append(url)
     return urls
 
 
@@ -188,32 +143,16 @@ def _extract_urls_from_sitemap(tree: ElementTree.Element, ns: dict, base_url: st
 
 
 async def crawl_url_crawl4ai(url: str) -> str | None:
-    """Render JavaScript while every browser request uses pinned destination checks."""
+    """Crawl a URL using crawl4ai and return clean markdown."""
     if not CRAWL4AI_AVAILABLE:
         return None
 
-    verdict = validate_url(url)
-    if not verdict.allowed:
-        log.warning(
-            "crawl4ai target refused (%s): %s", verdict.reason_code, scrub_url_credentials(url)
-        )
-        return None
-
     try:
-        from browser_fetch import BrowserFetchGuard
-
-        browser_config = BrowserConfig(
-            headless=True,
-            extra_args=["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
-        )
+        browser_config = BrowserConfig(headless=True)
         run_config = CrawlerRunConfig()
 
         async with AsyncWebCrawler(config=browser_config) as crawler:
-            guard = BrowserFetchGuard()
-            crawler.crawler_strategy.set_hook("on_page_context_created", guard.install)
             result = await crawler.arun(url=url, config=run_config)
-            if not guard.installed:
-                raise RuntimeError("crawl4ai did not install its guarded browser context")
             if result and result.markdown:
                 return result.markdown
             return None
@@ -225,7 +164,7 @@ async def crawl_url_crawl4ai(url: str) -> str | None:
 def crawl_url_requests(url: str) -> str | None:
     """Fallback: crawl a URL using requests and basic HTML-to-markdown conversion."""
     try:
-        resp = guarded_fetch(
+        resp = requests.get(
             url,
             timeout=30,
             headers={
@@ -233,7 +172,7 @@ def crawl_url_requests(url: str) -> str | None:
             },
         )
         if resp.status_code != 200:
-            log.warning("HTTP %d for %s", resp.status_code, scrub_url_credentials(url))
+            log.warning("HTTP %d for %s", resp.status_code, url)
             return None
 
         content_type = resp.headers.get("content-type", "")
@@ -245,11 +184,8 @@ def crawl_url_requests(url: str) -> str | None:
             log.warning("Unsupported content-type %s for %s", content_type, url)
             return None
 
-    except DestinationRefused as e:
-        log.warning("Crawl refused for %s: %s", scrub_url_credentials(url), e.reason_code)
-        return None
     except Exception as e:
-        log.warning("requests crawl failed for %s: %s", scrub_url_credentials(url), e)
+        log.warning("requests crawl failed for %s: %s", url, e)
         return None
 
 
@@ -348,36 +284,10 @@ async def ingest_url(
         max_pages: Maximum pages to discover via sitemap.
         registry_asset_id: UUID from knowledge_assets registry (used as stage tracking key).
     """
-    # Admission check before any work starts (#5658). The per-fetch guard would
-    # refuse this URL anyway, but refusing here means a hostile target never
-    # creates a stage-tracking run, never opens an S3 store and never produces a
-    # partially-populated result that looks like a crawl that merely found
-    # nothing.
-    admission = validate_url(url)
-    if not admission.allowed:
-        log.error(
-            "URL ingestion refused at admission (%s): %s",
-            admission.reason_code,
-            scrub_url_credentials(url),
-        )
-        return {
-            "url": scrub_url_credentials(url),
-            "pages_discovered": 0,
-            "pages_uploaded": 0,
-            "status": "refused",
-            "reason_code": admission.reason_code,
-        }
-
-    try:
-        scope = parse_scope_from_env()
-    except ScopeValidationError:
-        return {"url": scrub_url_credentials(url), "pages_discovered": 0,
-                "pages_uploaded": 0, "status": "refused", "reason_code": "invalid_scope"}
-
-    # Preserve the producer's ownership when writing crawled pages.
+    # Initialize S3 content store
     store = S3ContentStore(
         bucket_name=settings.s3_bucket_name,
-        prefix=compute_s3_prefix(scope, settings.s3_content_prefix),
+        prefix=settings.s3_content_prefix,
         region_name=settings.aws_region,
     )
 
@@ -503,9 +413,7 @@ def update_dynamo_state_url(url: str, result: dict[str, Any], tags: dict[str, st
 
         # Store ETag/Last-Modified for change detection
         try:
-            # allow_redirects=True here previously followed redirect hops with no
-            # validation of any hop past the first. guarded_fetch validates each.
-            resp = guarded_fetch(url, method="HEAD", timeout=15, headers={"User-Agent": "AgentContext-Crawler/1.0"})
+            resp = requests.head(url, timeout=15, headers={"User-Agent": "AgentContext-Crawler/1.0"}, allow_redirects=True)
             if resp.status_code < 400:
                 etag = resp.headers.get("ETag", "")
                 last_mod = resp.headers.get("Last-Modified", "")
@@ -542,13 +450,6 @@ def main():
             registry_asset_id=args.registry_asset_id,
         )
     )
-
-    # A refused URL is a rejected request, not a crawl outcome: writing state for
-    # it would record an asset that does not exist, and update_dynamo_state_url
-    # itself issues a HEAD, which is another fetch of the URL we just refused.
-    if result.get("status") == "refused":
-        print(json.dumps(result, indent=2))
-        sys.exit(2)
 
     # Update DynamoDB state
     update_dynamo_state_url(args.url, result, tags=tags)

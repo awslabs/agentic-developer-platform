@@ -4,7 +4,6 @@ Issue #780: Verifies that bot rows in DDB resolve correctly, emit the
 BotActionTriggered metric, and default to 'human' when user_kind is absent.
 """
 
-import importlib
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -33,16 +32,6 @@ def _reset_module(monkeypatch):
     ]
     for mod in mods_to_clear:
         del sys.modules[mod]
-    monkeypatch.setattr(
-        importlib.import_module("common.gateway_client"),
-        "resolve_installation_by_id",
-        lambda installation_id: {
-            "state": "resolved",
-            "revocation_checked": True,
-            "tenant_id": "acme-test",
-            "created_via": "operator",
-        },
-    )
     yield
     mods_to_clear = [
         k
@@ -67,7 +56,7 @@ HUMAN_USER_ID = "650f093f-ecd9-4ce1-a5a9-368e02c449cf"
 TENANT_ITEM = {
     "identity_type": "github_installation_id",
     "identity_value": str(INSTALLATION_ID),
-    "org_id": "acme-test",
+    "org_id": "sophos-test",
     "user_provisioning_mode": "strict",
 }
 
@@ -75,7 +64,7 @@ BOT_USER_ITEM = {
     "provider": "github",
     "provider_user_id": str(BOT_SENDER_ID),
     "user_id": BOT_USER_ID,
-    "org_id": "acme-test",
+    "org_id": "sophos-test",
     "user_kind": "bot",
     "bot_kind": "agent-developer",
 }
@@ -84,7 +73,7 @@ HUMAN_USER_ITEM = {
     "provider": "github",
     "provider_user_id": str(HUMAN_SENDER_ID),
     "user_id": HUMAN_USER_ID,
-    "org_id": "acme-test",
+    "org_id": "sophos-test",
 }
 
 # Legacy item without user_kind attribute (pre-migration)
@@ -92,7 +81,7 @@ LEGACY_USER_ITEM_NO_KIND = {
     "provider": "github",
     "provider_user_id": str(HUMAN_SENDER_ID),
     "user_id": HUMAN_USER_ID,
-    "org_id": "acme-test",
+    "org_id": "sophos-test",
     # No user_kind attribute — should default to 'human'
 }
 
@@ -102,9 +91,9 @@ def _mock_ddb_get_item(items_by_table):
     mock_resource = MagicMock()
 
     def make_table(table_name):
-        mock_table = _guarded_transaction_table(MagicMock())
+        mock_table = MagicMock()
 
-        def get_item(Key=None, **kwargs):  # noqa: N803
+        def get_item(Key=None):  # noqa: N803
             table_items = items_by_table.get(table_name, {})
             key_str = "|".join(str(v) for v in Key.values())
             item = table_items.get(key_str)
@@ -120,19 +109,6 @@ def _mock_ddb_get_item(items_by_table):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-
-
-def _guarded_transaction_table(table):
-    def transact(*, TransactItems):  # noqa: N803
-        check = TransactItems[0]["ConditionCheck"]
-        assert check["Key"]["identity_type"] == "github_installation_revoked"
-        assert check["ConditionExpression"] == "attribute_not_exists(identity_type)"
-        operation = dict(TransactItems[1]["Put"])
-        operation.pop("TableName")
-        return table.put_item(**operation)
-
-    table.meta.client.transact_write_items.side_effect = transact
-    return table
 
 
 class TestBotResolveReturnsUserKindBot:
@@ -204,7 +180,7 @@ class TestBotActionTriggeredMetricEmitted:
         assert metric["MetricName"] == "BotActionTriggered"
         dimensions = {d["Name"]: d["Value"] for d in metric["Dimensions"]}
         assert dimensions["bot_kind"] == "agent-developer"
-        assert dimensions["org_id"] == "acme-test"
+        assert dimensions["org_id"] == "sophos-test"
 
     def test_metric_not_emitted_for_human(self):
         from common import identity_resolver

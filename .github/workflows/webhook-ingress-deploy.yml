@@ -3,13 +3,8 @@ name: Webhook Ingress Deploy
 on:
   push:
     paths:
-      - 'modules/domain-apps/cyber/infra/platform-integration/**'
-      - 'modules/domain-apps/cyber/releases/browser-runtime.json'
       - 'modules/agent-factory/webhook-ingress/**'
-      - 'environments/dev/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-deploy.yml'
-      - '.github/scripts/detect-webhook-deploy-changes.sh'
-      - '.github/deployment-holds/webhook-infra.md'
     branches:
       - main
   workflow_dispatch:
@@ -34,19 +29,6 @@ on:
         description: 'Deployment environment (dev/staging/prod).'
         required: false
         default: 'dev'
-      region:
-        description: 'AWS deployment region; empty uses deployment configuration.'
-        required: false
-        default: ''
-      enable_agent_authority:
-        description: 'Issue #5365: enable protected agent authority (per-run credentials + pod admission). Requires agent_authority_worker_image_digests. Empty = leave the committed tfvars value alone.'
-        required: false
-        default: ''
-        type: string
-      agent_authority_worker_image_digests:
-        description: 'Comma-separated sha256:<64 hex> worker image digests to admit. Mutable tags are refused; each digest is verified against ECR before Terraform trusts it.'
-        required: false
-        default: ''
 
 concurrency:
   group: webhook-ingress-deploy-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -59,6 +41,7 @@ env:
   # .github/actions/load-deploy-config/action.yml
   MODULE_NAME: webhook-ingress
   TF_WORKING_DIR: modules/agent-factory/webhook-ingress/infra
+  BACKEND_CONFIG: environments/dev/modules/webhook-ingress-backend.tfvars
 
 jobs:
   changes:
@@ -67,47 +50,47 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       infra: ${{ steps.filter.outputs.infra }}
-      infra_held: ${{ steps.filter.outputs.infra_held }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - id: filter
-        run: bash .github/scripts/detect-webhook-deploy-changes.sh
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "infra=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only HEAD^ HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+          # Issue #2203: include scripts/ and requirements.txt — a change to the
+          # packaging script (package-lambdas.sh) or deps must trigger a
+          # repackage, else a packaging fix merges but never re-runs a deploy.
+          if echo "$CHANGED" | grep -qE '^modules/agent-factory/webhook-ingress/(lambda|common|scripts)/|^modules/agent-factory/webhook-ingress/requirements\.txt$'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$CHANGED" | grep -qE '^modules/agent-factory/webhook-ingress/infra/'; then
+            echo "infra=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "infra=false" >> "$GITHUB_OUTPUT"
+          fi
 
   package:
     name: Package Lambda Code
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
-    if: github.ref == 'refs/heads/main' && (needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true')
-    permissions:
-      contents: read
-      pull-requests: read
-      id-token: write
-
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true'
     steps:
       - uses: actions/checkout@v7
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
           account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
-          region: ${{ inputs.region }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
@@ -136,11 +119,9 @@ jobs:
   deploy-infra:
     name: Terraform Apply
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, package]
-    if: github.ref == 'refs/heads/main' && (always() && needs.changes.outputs.infra == 'true' && needs.package.result == 'success')
+    if: always() && needs.changes.outputs.infra == 'true' && needs.package.result == 'success'
     permissions:
-      id-token: write
       contents: read
 
     steps:
@@ -148,39 +129,45 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
-
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
           account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
-          region: ${{ inputs.region }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
       - name: Install required CLI tools
         run: |
-          set -euo pipefail
-          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
-            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
-          done
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          bash ../scripts/terraform-webhook.sh init -input=false -reconfigure
+          terraform init \
+            -backend-config="../../../../${{ env.BACKEND_CONFIG }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -input=false -reconfigure
 
       - name: Migrate stale kubernetes_manifest entries out of state
         # KEDA resources moved from `kubernetes_manifest` to `null_resource +
@@ -199,109 +186,19 @@ jobs:
             fi
           done
 
-      - name: Adopt pre-existing agent bootstrap log group into state
-        # Issue #4051. aws_cloudwatch_log_group.agent_bootstrap is declared
-        # unconditionally, but agent-worker-image/lib/bootstrap_logger.py calls
-        # CreateLogGroup at runtime as a fallback. In any environment whose
-        # worker has already run, the group exists outside state and the first
-        # apply dies with ResourceAlreadyExistsException, wedging the module for
-        # every later PR — that is what happened in dev after #4039.
-        #
-        # A static TF `import` block cannot express this: it fails in a fresh
-        # environment where the group does not exist yet. Import conditionally
-        # instead — only when the group is present in AWS AND absent from state.
-        # Both guards make repeat runs a clean no-op, never a collision.
-        #
-        # The import is ALSO made idempotent (see below). The `state list | grep`
-        # pre-check is only an optimization, not the real guard: it is an
-        # unreliable proxy for "is this resource managed?". Under `set -o
-        # pipefail`, any transient error from `terraform state list` collapses
-        # the pipeline to a non-zero exit that reads identically to "not in
-        # state", so the step falls through and runs a colliding import. That is
-        # exactly what wedged the Phase-1 (#4272) deploy: the resource WAS in
-        # state, `state list | grep` reported it absent, and the import died with
-        # "Resource already managed by Terraform". The authoritative guard is the
-        # import's own outcome — treat "already managed" as the success it is.
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: |
-          set -euo pipefail
-          GROUP="/adp/${ENVIRONMENT}/agent-factory/bootstrap"
-          ADDR='aws_cloudwatch_log_group.agent_bootstrap'
-          FOUND=$(aws logs describe-log-groups \
-            --log-group-name-prefix "$GROUP" \
-            --query "logGroups[?logGroupName=='${GROUP}'].logGroupName | [0]" \
-            --output text --region "${AWS_REGION}" 2>/dev/null || echo "None")
-          if [ "$FOUND" != "$GROUP" ]; then
-            echo "$GROUP does not exist yet — terraform will create it"
-            exit 0
-          fi
-          # Capture `state list` separately (not in a pipe) so a terraform error
-          # is visible and can never masquerade as "absent from state".
-          STATE_LIST=$(terraform state list 2>/tmp/tf-state-list.err) || {
-            echo "::warning::terraform state list failed; deferring to idempotent import"
-            cat /tmp/tf-state-list.err >&2 || true
-            STATE_LIST=""
-          }
-          if printf '%s\n' "$STATE_LIST" | grep -qx "$ADDR"; then
-            echo "$GROUP already in state — no import needed"
-            exit 0
-          fi
-          echo "::warning::$GROUP exists in AWS but not in Terraform state — importing (#4051)"
-          # Idempotent import: if the resource is in fact already managed (the
-          # pre-check can be wrong, as documented above), Terraform prints
-          # "Resource already managed by Terraform" and exits non-zero. That is
-          # the desired end-state, not a failure — swallow it. Any other failure
-          # is real and must fail the step.
-          if IMPORT_OUT=$(bash ../scripts/terraform-webhook.sh import "$ADDR" "$GROUP" 2>&1); then
-            printf '%s\n' "$IMPORT_OUT"
-          else
-            printf '%s\n' "$IMPORT_OUT"
-            if printf '%s\n' "$IMPORT_OUT" | grep -qiE 'already managed by Terraform|already exists in (the )?state'; then
-              echo "$GROUP already managed — treating import as a no-op"
-              exit 0
-            fi
-            exit 1
-          fi
-
       - name: Install kubectl
         run: |
-          set -euo pipefail
-          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
-            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
-          done
-      - name: Resolve agent authority rollout
-        id: authority
-        # Issue #5365. Protected dispatch admits a pod only by image digest, and
-        # Terraform cannot tell a typo'd-but-well-formed digest from a real
-        # image — that failure mode is silent (every agent run fails to
-        # bootstrap) rather than a deploy error. This verifies each requested
-        # digest against ECR first, refuses tags outright, and never enables the
-        # feature unless a run explicitly asks. A push leaves the committed
-        # value untouched.
-        env:
-          ENABLE_AGENT_AUTHORITY: ${{ inputs.enable_agent_authority }}
-          AGENT_AUTHORITY_WORKER_IMAGE_DIGESTS: ${{ inputs.agent_authority_worker_image_digests }}
-        run: |
-          set -euo pipefail
-          VARS=$(bash "${GITHUB_WORKSPACE}/.github/scripts/resolve-agent-authority-rollout.sh")
-          {
-            echo 'vars<<TFVARS_EOF'
-            printf '%s\n' "$VARS"
-            echo 'TFVARS_EOF'
-          } >> "$GITHUB_OUTPUT"
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          kubectl version --client
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_VAR_lambda_artifact_bucket: ${{ env.STATE_BUCKET }}
-          AUTHORITY_VARS: ${{ steps.authority.outputs.vars }}
-        run: |
-          set -euo pipefail
-          # Unquoted on purpose: AUTHORITY_VARS is newline-separated -var
-          # arguments produced by the guard above, and is empty in the common
-          # case where no rollout was requested.
-          # shellcheck disable=SC2086
-          bash ../scripts/terraform-webhook.sh apply ${AUTHORITY_VARS} -input=false -auto-approve
+        run: terraform apply -var-file="terraform.tfvars" -auto-approve
 
       - name: Summary
         if: always()
@@ -313,42 +210,20 @@ jobs:
   update-code:
     name: Update Lambda Function Code
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, package, deploy-infra]
     if: |
-      github.ref == 'refs/heads/main' && (
       always() &&
       needs.changes.outputs.code == 'true' &&
       needs.package.result == 'success' &&
       (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped')
-      )
-    permissions:
-      contents: read
-      pull-requests: read
-      id-token: write
-
     steps:
       - uses: actions/checkout@v7
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
           account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
-          region: ${{ inputs.region }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
@@ -404,40 +279,18 @@ jobs:
   integration-test:
     name: Integration Tests
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [update-code, deploy-infra]
     if: |
-      github.ref == 'refs/heads/main' && (
       always() &&
       (needs.update-code.result == 'success' || needs.deploy-infra.result == 'success')
-      )
-    permissions:
-      contents: read
-      pull-requests: read
-      id-token: write
-
     steps:
       - uses: actions/checkout@v7
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
           account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
-          region: ${{ inputs.region }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}

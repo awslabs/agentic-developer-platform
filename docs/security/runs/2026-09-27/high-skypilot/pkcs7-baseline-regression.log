@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "/tmp/regression.py", line 34, in <module>
-    assert len(set(errors)) == 1, errors
-AssertionError: ['Invalid key size (488) for AES.', 'Invalid key size (120) for AES.', 'Invalid key size (136) for AES.', 'Invalid key size (256) for AES.', 'Invalid padding bytes.']

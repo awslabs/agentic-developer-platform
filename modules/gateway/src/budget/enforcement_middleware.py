@@ -16,14 +16,10 @@ Issue #234: Removed inline usage recording — now handled by S3-triggered
 
 Issue #249: Added agent-level budget checking via X-Agent-BudgetConfigId header.
             Agent budgets are checked BEFORE team/org hierarchy (most specific wins).
-
-Issue #4287: the pre-request estimate is model- and size-aware instead of a flat
-            $0.05. Still no body read — see _estimate_cost.
 """
 
 import json
 from decimal import Decimal
-from uuid import uuid4
 
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -31,27 +27,15 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.logging import get_logger
 from src.shared.schemas.auth import TokenContext
-from src.shared.schemas.budget import DenyReason, EnforcementResult
+from src.shared.schemas.budget import EnforcementResult
 from src.shared.timing import get_timings
 
 from .enforcement_service import BudgetEnforcementService, budget_enforcement_service
 
 logger = get_logger(__name__)
 
-# Fallback pre-request estimate (USD), used only when neither the model nor the
-# request size can be determined from the ASGI scope — e.g. a chunked upload with
-# no content-length on a route that does not carry the model in its path.
-#
-# Issue #4287: this used to be the estimate for EVERY request, flat, regardless of
-# model or size. A single large call against an expensive model could therefore
-# overshoot a cap the check had just passed, because the check priced it at 5
-# cents. It is now the last resort, not the rule.
+# Conservative cost estimate for pre-request budget check (USD).
 _DEFAULT_ESTIMATE_USD = Decimal("0.05")
-
-# Retry-After for check-failure denials (Issue #4075). Short on purpose: the
-# ledger is expected back in seconds, and the whole point of using 503 over 402
-# is that the client can recover unaided.
-_CHECK_UNAVAILABLE_RETRY_AFTER = b"5"
 
 
 class BudgetEnforcementMiddleware:
@@ -64,8 +48,9 @@ class BudgetEnforcementMiddleware:
     When budget is exceeded, writes a 402 response directly via ASGI send()
     — no BaseHTTPMiddleware, no Starlette Response objects, no hanging.
 
-    Measured usage settles transactionally in UsageService. Optional transcript
-    events share its receipt through the budget-usage-tracker Lambda.
+    Note (Issue #234): Usage recording is now handled by the budget-usage-tracker
+    Lambda, which is triggered by S3 PutObject events when chat logs are written.
+    This provides accurate cost tracking from actual Bedrock response token counts.
     """
 
     def __init__(
@@ -95,14 +80,13 @@ class BudgetEnforcementMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if state.get("request_started_at") is not None:
-            token_context._budget_request_timestamp = state["request_started_at"]
-
         # Build a Request object for timing access (read-only, no body access)
         request = Request(scope, receive, send)
 
         timings = get_timings(request)
         with timings.time_segment("budget_check"):
+            estimated_cost = _DEFAULT_ESTIMATE_USD
+
             # Issue #249 read the agent-level budget config id from the
             # X-Agent-BudgetConfigId header, which the (now deprecated and
             # unattached) Lambda authorizer was meant to set. Issue #3985
@@ -115,28 +99,7 @@ class BudgetEnforcementMiddleware:
             # Re-adding per-agent budget enforcement requires resolving the
             # config id from the agent registry entry (server-side, keyed off
             # the authenticated identity), not from a request header.
-            result = await self.enforcement_service.prepare_enforcement_context(token_context, self._asserted_run_id(scope))
-            if result is None and not token_context._budget_enforcement_enabled:
-                # An uncapped call still needs a server-owned accounting identity.
-                # Caller trace IDs must never replace another request's charge.
-                token_context._policy_request_id = state.get("request_id") or token_context._policy_request_id or str(uuid4())
-                state["request_id"] = token_context._policy_request_id
-            result = result or await self.enforcement_service.check_budget_hierarchy(
-                token_context,
-                self._estimate_cost(scope, path) if token_context._budget_enforcement_enabled else Decimal(0),
-                # Issue #4287: idempotency key for the live-denominator
-                # reservation, so the proxy can adjust THIS request's reservation
-                # to its real cost once the response lands. Set by
-                # the outer RequestIdentityMiddleware.
-                request_id=state.get("request_id"),
-                # Issue #4187: the caller's ASSERTED run id. Passed on as an
-                # assertion to be verified server-side against the webhook-events
-                # registry, never used as an identity — see run_binding.py. The
-                # header is read here rather than reusing the route-level
-                # `set_agent_run_id_from_header` dependency because this
-                # middleware runs before any route is resolved.
-                run_id=self._asserted_run_id(scope),
-            )
+            result = await self.enforcement_service.check_budget_hierarchy(token_context, estimated_cost)
 
         if not result.allowed:
             # Drain the request body — some ASGI servers (Uvicorn/h11)
@@ -150,110 +113,27 @@ class BudgetEnforcementMiddleware:
                 if not msg.get("more_body", False):
                     break
 
-            # Write the denial directly via ASGI send(). Issue #4075: which
-            # denial matters — a real cap is 402, an unreadable ledger is 503.
-            if result.deny_reason == DenyReason.RESERVATIONS_PENDING:
-                await self._send_reservations_pending(send, result)
-            elif result.deny_reason == DenyReason.CHECK_UNAVAILABLE:
-                await self._send_check_unavailable(send, result)
-                logger.info("Budget check unavailable response sent successfully")
-            else:
-                await self._send_budget_exceeded(send, result)
-                logger.info("Budget exceeded response sent successfully")
+            # Write 402 directly via ASGI send()
+            await self._send_budget_exceeded(send, result)
+            logger.info("Budget exceeded response sent successfully")
             return
 
-        # Release only a request rejected before provider dispatch. Unknown
-        # provider outcomes retain their estimates, and measured charges must
-        # never be overwritten by a generic error-response cleanup.
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            if not token_context._budget_provider_started:
-                await self.enforcement_service.reconcile_reservation(
-                    context=token_context,
-                    request_id=state.get("request_id"),
-                    model_id="pre-provider-rejection",
-                    input_tokens=0,
-                    output_tokens=0,
-                    actual_cost_usd=Decimal("0"),
-                )
+        # Let the request through to the next middleware/app
+        await self.app(scope, receive, send)
+
+        # Issue #234: Usage recording removed from middleware.
+        # Actual cost tracking is now handled by the budget-usage-tracker Lambda,
+        # which is triggered when chat logs are written to S3. This provides
+        # accurate token counts from Bedrock responses rather than estimates.
 
     def _should_enforce(self, path: str) -> bool:
-        return path != "/v1/messages/count_tokens" and any(path.startswith(p) for p in ENFORCED_PATHS)
-
-    def _estimate_cost(self, scope: Scope, path: str) -> Decimal:
-        """Estimate this request's cost from the ASGI scope alone (Issue #4287).
-
-        Two inputs, both available without touching the body:
-
-        * the model, from the URL path (``/model/{model_id}/invoke``)
-        * the request size, from the ``content-length`` header
-
-        The body is deliberately NOT read. This is pure ASGI: ``receive()`` is a
-        one-shot stream, so consuming it here would starve the downstream handler
-        unless it were buffered and replayed — and the mantle route
-        (``/openai/v1/responses``) forwards the body byte-for-byte, which
-        ``src/shared/enforced_paths.py`` documents as a hard constraint. The cost
-        of that constraint is that ``max_tokens`` is invisible, so the output
-        estimate falls back to the pricing module's default.
-
-        The remaining gap is closed on the way out, not here: the reservation
-        taken against this estimate is adjusted to the request's real token cost
-        once the response lands (see
-        ``BudgetEnforcementService.reconcile_reservation``). So this only has to
-        be a reasonable pre-charge, not an accurate price.
-
-        Falls back to the flat ``_DEFAULT_ESTIMATE_USD`` only when the size is
-        unknown, which is strictly better than the pre-#4287 behavior of using it
-        for everything.
-        """
-        content_length = self._content_length(scope)
-        if content_length is None:
-            return _DEFAULT_ESTIMATE_USD
-
-        # No model in the path (e.g. /v1/chat/completions, where it lives in the
-        # unreadable body) — price it with the pricing table's conservative
-        # default rather than giving up on size-awareness too.
-        model_id = self._extract_model_id_from_path(path) or "default"
-
-        return self.enforcement_service.estimate_cost_from_payload_size(model_id, content_length)
-
-    @staticmethod
-    def _asserted_run_id(scope: Scope) -> str | None:
-        """Read the ``X-Agent-RunId`` header out of the raw ASGI scope (#4187).
-
-        Named "asserted" on purpose: this value is client-controlled and is not
-        trusted for anything here. It is a lookup key that must survive
-        verification against the run's registry row before any cap is keyed on it.
-        """
-        for name, value in scope.get("headers", []):
-            if name.lower() == b"x-agent-runid":
-                return value.decode("utf-8", errors="replace").strip() or None
-        return None
-
-    @staticmethod
-    def _content_length(scope: Scope) -> int | None:
-        """Read ``content-length`` out of the raw ASGI headers.
-
-        Same convention as ``src/admin/middleware.py``. Returns ``None`` when the
-        header is absent (chunked upload) or unparseable, so the caller can fall
-        back rather than pre-charge a request $0.
-        """
-        for name, value in scope.get("headers", []):
-            if name.lower() == b"content-length":
-                try:
-                    return max(0, int(value))
-                except (TypeError, ValueError):
-                    return None
-        return None
+        return any(path.startswith(p) for p in ENFORCED_PATHS)
 
     def _extract_model_id_from_path(self, path: str) -> str | None:
         """Extract model ID from /model/{model_id}/invoke style paths.
 
-        Issue #4287: revived. This was dead code after Issue #234 removed inline
-        usage recording, kept "for potential future per-model budget
-        enforcement" — which is exactly what the model-aware pre-request estimate
-        needs, and it is the only model signal available without reading the body.
+        Currently unused after Issue #234 removed inline usage recording.
+        Kept for potential future per-model budget enforcement.
         """
         if not path.startswith("/model/"):
             return None
@@ -281,20 +161,11 @@ class BudgetEnforcementMiddleware:
             "details": {
                 "entity_type": (result.exceeded_entity_type.value if result.exceeded_entity_type else None),
                 "entity_id": result.exceeded_entity_id,
-                "budget_usd": (float(result.budget_amount_usd) if result.budget_amount_usd is not None else None),
-                "spent_usd": (float(result.current_spend_usd) if result.current_spend_usd is not None else None),
+                "budget_usd": (float(result.budget_amount_usd) if result.budget_amount_usd else None),
+                "spent_usd": (float(result.current_spend_usd) if result.current_spend_usd else None),
                 "enforcement_mode": (result.enforcement_mode.value if result.enforcement_mode else None),
             },
         }
-
-        # Issue #4187: tell the worker WHICH cap stopped it. Still a 402 — a run
-        # cap is a real spend limit, not an unavailable check, so it must not be
-        # retried and must not be a 503. The worker keys `budget_stopped` off this
-        # discriminator; without it a run stop is indistinguishable from an org
-        # cap and the transcript records the wrong reason.
-        if result.scope:
-            error_body["details"]["scope"] = result.scope
-            error_body["details"]["scope_cap_usd"] = float(result.scope_cap_usd) if result.scope_cap_usd is not None else None
 
         body_bytes = json.dumps(error_body).encode("utf-8")
 
@@ -317,77 +188,6 @@ class BudgetEnforcementMiddleware:
             {
                 "type": "http.response.start",
                 "status": 402,
-                "headers": headers,
-            }
-        )
-        await send(
-            {
-                "type": "http.response.body",
-                "body": body_bytes,
-            }
-        )
-
-    async def _send_reservations_pending(self, send: Send, result: EnforcementResult) -> None:
-        """Throttle unadmitted policy calls while existing provider holds settle.
-
-        This is never proof that another call is affordable. SDK retries must
-        re-enter the full authorization and atomic reservation path. Actual cap
-        exhaustion remains 402; absent or unknown usage remains fail-closed.
-        """
-        body = json.dumps(
-            {
-                "error": "budget_reservations_pending",
-                "message": result.blocked_reason,
-                "details": {"scope": result.scope},
-            }
-        ).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 429,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode()),
-                    (b"retry-after", b"2"),
-                    (b"x-amzn-errortype", b"ThrottlingException"),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-
-    async def _send_check_unavailable(self, send: Send, result: EnforcementResult) -> None:
-        """Write a 503 JSON response when the budget CHECK failed (Issue #4075).
-
-        Deliberately not a 402. Under fail-closed, a DB/IAM fault would
-        otherwise present platform-wide as "budget exceeded" with a null budget
-        and null spend — which sends operators chasing a billing problem during
-        a database incident, and corrupts any dashboard built on 402 rates.
-
-        503 is also retryable where 402 is deliberately not (see the comment in
-        _send_budget_exceeded), so clients recover on their own once the ledger
-        comes back instead of needing an operator. Nothing here is known to be
-        over budget, so no budget headers are emitted.
-        """
-        body_bytes = json.dumps(
-            {
-                "error": "budget_check_unavailable",
-                "message": ("Budget enforcement is temporarily unable to verify spend for this request. Retry shortly."),
-                "details": {"reason": result.blocked_reason},
-            }
-        ).encode("utf-8")
-
-        headers: list[tuple[bytes, bytes]] = [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(body_bytes)).encode()),
-            (b"retry-after", _CHECK_UNAVAILABLE_RETRY_AFTER),
-        ]
-
-        logger.error(f"Budget check unavailable - denying request: {result.blocked_reason}")
-
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 503,
                 "headers": headers,
             }
         )

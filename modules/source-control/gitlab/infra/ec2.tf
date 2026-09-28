@@ -28,10 +28,6 @@ resource "aws_instance" "gitlab" {
     cloudfront_domain = var.cloudfront_domain
     environment       = var.environment
     aws_region        = var.aws_region
-    # Scopes GitLab's monitoring_whitelist to the VPC instead of 0.0.0.0/0
-    # (issue #5685). The ALB's own health check probes nginx's /-/health and does
-    # not consult this allowlist, so narrowing it cannot affect target health.
-    vpc_cidr_block = local.vpc_cidr_block
   })
 
   root_block_device {

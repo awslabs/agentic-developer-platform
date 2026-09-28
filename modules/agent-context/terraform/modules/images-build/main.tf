@@ -87,7 +87,7 @@ resource "aws_codebuild_project" "agent_context_images" {
   for_each     = local.images
   name         = "${var.name_prefix}-${each.key}-build"
   description  = "Build + push agent-context/${each.key} image to ECR on Dockerfile change"
-  service_role = var.codebuild_service_role_arns[each.key]
+  service_role = var.codebuild_service_role_arn
 
   artifacts {
     type = "NO_ARTIFACTS"
@@ -95,7 +95,7 @@ resource "aws_codebuild_project" "agent_context_images" {
 
   source {
     type      = "S3"
-    location  = "${var.state_bucket}/codebuild/src/${var.name_prefix}-${each.key}-build/explicit-source-required.zip"
+    location  = "${var.state_bucket}/codebuild/adp-source.zip"
     buildspec = "codebuild/bs-agent-context-image.yml"
   }
 

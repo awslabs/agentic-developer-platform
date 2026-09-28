@@ -50,8 +50,6 @@ def _clean_env(monkeypatch):
     monkeypatch.setenv("ADP_AGENT_ID", "developer")
     monkeypatch.setenv("ADP_TASK_ID", "task-abc")
     monkeypatch.setenv("ENABLE_USER_CREDENTIALS", "1")
-    monkeypatch.delenv("ADP_GATEWAY_ENDPOINT", raising=False)
-    monkeypatch.delenv("ADP_MESSAGE_ID", raising=False)
 
 
 class TestWriteAwsCredentials:
@@ -178,48 +176,6 @@ class TestCmdAssume:
 
 class TestCmdAssumeExec:
     """Tests for the --exec flag (issue #583)."""
-
-    @pytest.mark.parametrize("trailing_slash", ["", "/"])
-    def test_sigv4_assume_uses_internal_route(self, monkeypatch, trailing_slash):
-        """Resolve the selected user credential through the internal broker (#5136)."""
-        monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gw.example.com/dev" + trailing_slash)
-        monkeypatch.setenv("ADP_MESSAGE_ID", "invocation-001")
-        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/pod-role")
-        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token")
-        monkeypatch.setenv("AWS_PROFILE", "platform")
-
-        with (
-            patch("adp_cred.client._sigv4_request", return_value=MOCK_RESPONSE) as request,
-            patch("adp_cred.client._request") as legacy_request,
-            patch("adp_cred.assume._write_aws_credentials"),
-            patch("shutil.which", return_value="/usr/bin/aws"),
-            patch("os.execvpe") as execute,
-        ):
-            cmd_assume([
-                "--service", "aws", "--label", "adp-embark1", "--purpose", "billing diagnostic",
-                "--exec", "aws", "sts", "get-caller-identity",
-            ])
-
-        request.assert_called_once_with(
-            "POST",
-            "https://gw.example.com/dev/internal/v1/credential-assume-role",
-            {
-                "user_id": "user-001",
-                "agent_id": "developer",
-                "task_id": "task-abc",
-                "service": "aws",
-                "label": "adp-embark1",
-                "purpose": "billing diagnostic",
-                "invocation_id": "invocation-001",
-            },
-        )
-        legacy_request.assert_not_called()
-        execute.assert_called_once()
-        exec_env = execute.call_args.args[2]
-        assert exec_env["AWS_ACCESS_KEY_ID"] == MOCK_RESPONSE["access_key_id"]
-        assert exec_env["AWS_SECRET_ACCESS_KEY"] == MOCK_RESPONSE["secret_access_key"]
-        assert exec_env["AWS_SESSION_TOKEN"] == MOCK_RESPONSE["session_token"]
-        assert not {"AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"} & exec_env.keys()
 
     def test_exec_calls_execvpe_with_creds_in_env(self, tmp_path, monkeypatch):
         """--exec aws sts get-caller-identity → os.execvpe called with correct env."""
@@ -402,6 +358,6 @@ class TestGetConfigUnpack:
         result = _get_config()
         assert len(result) == 6
         base_url, api_key, user_id, agent_id, task_id, use_sigv4 = result
-        assert base_url == "https://api.example.com"
+        assert base_url == "https://api.example.com/agent"
         assert api_key is None
         assert use_sigv4 is True

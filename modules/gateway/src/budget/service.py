@@ -33,7 +33,6 @@ from src.shared.schemas.common import BudgetCheckResult
 
 from .config import budget_config
 from .utils import (
-    CALENDAR_PERIOD_TYPES,
     calculate_budget_utilization,
     calculate_model_cost,
     generate_budget_warnings,
@@ -290,10 +289,6 @@ class BudgetService(IBudgetService):
         # Calculate cost
         cost, _, _ = calculate_model_cost(model, tokens_in, tokens_out)
 
-        # Issue #4132: spend is recorded against the ATTRIBUTED tenant, not
-        # the authenticated one, so a hosted run bills the tenant that
-        # triggered it rather than __platform__. Attribution defaults to
-        # org_id, so non-internal callers are unaffected.
         # Record for user
         await self.record_cost(
             CostRecordRequest(
@@ -304,7 +299,7 @@ class BudgetService(IBudgetService):
                 tokens_out=tokens_out,
                 request_cost_usd=cost,
             ),
-            context.attributed_org_id,
+            context.org_id,
         )
 
         # Record for team
@@ -317,7 +312,7 @@ class BudgetService(IBudgetService):
                 tokens_out=tokens_out,
                 request_cost_usd=cost,
             ),
-            context.attributed_org_id,
+            context.org_id,
         )
 
         # Record for department
@@ -330,20 +325,20 @@ class BudgetService(IBudgetService):
                 tokens_out=tokens_out,
                 request_cost_usd=cost,
             ),
-            context.attributed_org_id,
+            context.org_id,
         )
 
         # Record for organization
         await self.record_cost(
             CostRecordRequest(
                 entity_type=EntityType.ORGANIZATION,
-                entity_id=context.attributed_org_id,
+                entity_id=context.org_id,
                 model_name=model,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 request_cost_usd=cost,
             ),
-            context.attributed_org_id,
+            context.org_id,
         )
 
     async def record_cost(self, request: CostRecordRequest, org_id: str) -> None:
@@ -397,23 +392,7 @@ class BudgetService(IBudgetService):
 
     async def calculate_cost(self, request: CostCalculationRequest) -> CostCalculationResponse:
         """Calculate the cost for a given model and token usage."""
-        from pricing_policy import canonical_billing_model_id, is_v2_priced_model
-
-        if is_v2_priced_model(canonical_billing_model_id(request.model_name)):
-            from src.budget.pricing import pricing_service
-            from src.budget.pricing_v2_reader import cached_rate_state, get_rate_state, record_connection_failure
-
-            try:
-                async with self._get_session() as session:
-                    state = await get_rate_state(session)
-            except Exception as exc:
-                record_connection_failure(exc)
-                state = cached_rate_state()
-            cost, input_cost_per_1k, output_cost_per_1k = pricing_service.quote_cost(
-                request.model_name, request.tokens_in, request.tokens_out, state=state
-            )
-        else:
-            cost, input_cost_per_1k, output_cost_per_1k = calculate_model_cost(request.model_name, request.tokens_in, request.tokens_out)
+        cost, input_cost_per_1k, output_cost_per_1k = calculate_model_cost(request.model_name, request.tokens_in, request.tokens_out)
 
         return CostCalculationResponse(
             model_name=request.model_name,
@@ -427,12 +406,7 @@ class BudgetService(IBudgetService):
     # Hierarchical Enforcement Methods
 
     async def check_hierarchical_budget(self, context: TokenContext, estimated_cost_usd: Decimal) -> EnforcementResult:
-        """Check budget constraints across the entire hierarchy (user → team → dept → org).
-
-        Issue #4132: the org level and the ledger partition both use
-        attributed_org_id, matching record_usage above — a run must be checked
-        against the same tenant ledger it will be billed to.
-        """
+        """Check budget constraints across the entire hierarchy (user → team → dept → org)."""
         async with self._get_session() as session:
             # Get entity hierarchy
             entities = get_parent_entity_info(
@@ -440,7 +414,7 @@ class BudgetService(IBudgetService):
                 user_id=context.user_id,
                 team_id=context.team_id,
                 department_id=context.department_id,
-                org_id=context.attributed_org_id,
+                org_id=context.org_id,
             )
 
             # Accumulate warnings across the hierarchy
@@ -449,9 +423,7 @@ class BudgetService(IBudgetService):
             # Check each entity in the hierarchy
             for entity_type, entity_id in entities:
                 for period_type in [PeriodType.DAILY, PeriodType.WEEKLY, PeriodType.MONTHLY]:
-                    result = await self._check_entity_budget(
-                        session, entity_type, entity_id, period_type, estimated_cost_usd, context.attributed_org_id
-                    )
+                    result = await self._check_entity_budget(session, entity_type, entity_id, period_type, estimated_cost_usd, context.org_id)
 
                     if not result.allowed:
                         return result
@@ -604,16 +576,13 @@ class BudgetService(IBudgetService):
                 "hierarchy": [],
             }
 
-            # Get all budgets for this entity. Issue #4328: calendar budgets only —
-            # a run/chain cap is lifetime-scoped and has no period to report on, and
-            # asking get_period_start_end for one raises.
+            # Get all budgets for this entity
             budgets_result = await session.execute(
                 select(BudgetConfig).where(
                     and_(
                         BudgetConfig.org_id == org_id,
                         BudgetConfig.entity_type == entity_type,
                         BudgetConfig.entity_id == entity_id,
-                        BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
                     )
                 )
             )
@@ -674,35 +643,17 @@ class BudgetService(IBudgetService):
                 "alerts": [],
             }
 
-            # Get all budgets for the organization. Issue #4328: calendar budgets
-            # only — lifetime-scoped run/chain caps have no calendar window to
-            # render here, and deriving one for them raises.
-            budgets_result = await session.execute(
-                select(BudgetConfig).where(
-                    and_(
-                        BudgetConfig.org_id == org_id,
-                        BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
-                    )
-                )
-            )
+            # Get all budgets for the organization
+            budgets_result = await session.execute(select(BudgetConfig).where(BudgetConfig.org_id == org_id))
             budgets = budgets_result.scalars().all()
             overview["total_budgets"] = len(budgets)
 
-            # Get current month usage.
-            #
-            # Issue #4328: the entity_type predicate is required for this figure to
-            # mean "this org's spend". The usage tracker writes one row per level of
-            # the hierarchy for a single request (user + org + team + agent +
-            # root_user), so summing across all entity types counted the same dollar
-            # once per level — a 2x-4x over-report, depending on hierarchy depth.
-            # The org line receives exactly the request's cost, so it alone is the
-            # org total.
+            # Get current month usage
             period_start, _ = get_period_start_end(PeriodType.MONTHLY)
             usage_result = await session.execute(
                 select(func.sum(BudgetUsage.total_cost_usd)).where(
                     and_(
                         BudgetUsage.org_id == org_id,
-                        BudgetUsage.entity_type == EntityType.ORGANIZATION.value,
                         BudgetUsage.period_type == PeriodType.MONTHLY.value,
                         BudgetUsage.period_start == period_start,
                     )
@@ -719,14 +670,7 @@ class BudgetService(IBudgetService):
                     "period_type": budget.period_type,
                     "enforcement_mode": budget.enforcement_mode,
                 }
-                # Issue #4328: setdefault, not [] — "entities" is seeded with the five
-                # hierarchy keys below, but EntityType has grown past them (agent,
-                # root_user, run, chain), and any row outside the seeded five raised
-                # KeyError here and 500'd this endpoint for the whole org. The five
-                # keys stay seeded so the response shape is unchanged for existing
-                # clients; unknown types are appended rather than dropped, because an
-                # agent budget is a real budget and must still be visible.
-                overview["entities"].setdefault(budget.entity_type, []).append(entity_data)
+                overview["entities"][budget.entity_type].append(entity_data)
 
             return overview
 
@@ -735,19 +679,8 @@ class BudgetService(IBudgetService):
         async with self._get_session() as session:
             alerts = []
 
-            # Get all budgets for the organization. Issue #4328: calendar budgets
-            # only. A lifetime-scoped run/chain cap has no calendar period, so
-            # get_period_start_end raises for it below — one such row used to turn
-            # this endpoint into an unhandled ValueError for every user in the org,
-            # which also silently stopped alert delivery on real calendar budgets.
-            budgets_result = await session.execute(
-                select(BudgetConfig).where(
-                    and_(
-                        BudgetConfig.org_id == org_id,
-                        BudgetConfig.period_type.in_(CALENDAR_PERIOD_TYPES),
-                    )
-                )
-            )
+            # Get all budgets for the organization
+            budgets_result = await session.execute(select(BudgetConfig).where(BudgetConfig.org_id == org_id))
             budgets = budgets_result.scalars().all()
 
             for budget in budgets:

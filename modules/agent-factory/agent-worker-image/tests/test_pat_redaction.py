@@ -30,7 +30,7 @@ PAT_TOKEN = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef01234"
 class TestPatNotInLogOutput:
     """PAT value must never appear in any log record emitted by the helper."""
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_successful_pat_resolve_does_not_log_token(self, mock_raw_read, mock_urlopen, caplog):
         """On successful PAT resolution, no log record contains the PAT."""
@@ -60,7 +60,7 @@ class TestPatNotInLogOutput:
                 f"PAT leaked into log: {record.getMessage()!r}"
             )
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_failed_pat_resolve_does_not_log_token(self, mock_raw_read, mock_urlopen, caplog):
         """On PAT resolution failure, error message does not contain PAT."""
@@ -82,7 +82,7 @@ class TestPatNotInLogOutput:
         # Error message must not contain any PAT-like string
         assert PAT_TOKEN not in str(exc_info.value)
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_warning_path_does_not_log_token(self, mock_raw_read, mock_urlopen, caplog):
         """Warning log when flag off does not contain any token value."""
@@ -120,7 +120,7 @@ class TestGitAskpassPreventsUrlLeak:
 class TestPatResultDoesNotExposeInRepr:
     """PatResolutionResult does not expose token in its repr/str."""
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_result_object_token_is_present_but_not_in_str(self, mock_raw_read, mock_urlopen):
         """The token IS accessible via .token but doesn't leak in __repr__."""

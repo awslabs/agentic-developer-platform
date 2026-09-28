@@ -8,7 +8,6 @@ import pytest
 # Add the skill directory to sys.path so we can import modules directly
 SKILL_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL_DIR))
-sys.path.insert(0, str(Path(__file__).resolve().parents[7] / "modules/tools/agentcore"))
 
 
 def pytest_configure(config: pytest.Config) -> None:

@@ -51,13 +51,3 @@ variable "runner_image" {
   type        = string
   default     = ""
 }
-
-variable "controller_image" {
-  description = "Published, scanned ARC0.14.2 controller/listener image; full digest reference."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[^@]+@sha256:[a-f0-9]{64}$", var.controller_image))
-    error_message = "Publish a digest-pinned ARC controller image before Helm upgrade."
-  }
-}

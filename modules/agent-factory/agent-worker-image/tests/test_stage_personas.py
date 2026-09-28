@@ -21,13 +21,14 @@ STAGE_SCRIPT = HERE.parent / "stage-personas.sh"
 def _make_skill(root: Path, rel: str, name: str, marker: str) -> None:
     d = root / rel / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {marker}\n---\n# {name}\n")
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {marker}\n---\n# {name}\n"
+    )
 
 
 def _run_stage(source_root: Path, stage_root: Path):
     return subprocess.run(
         ["bash", str(STAGE_SCRIPT), str(source_root), str(stage_root)],
-        check=False,
         capture_output=True,
         text=True,
         timeout=30,
@@ -92,31 +93,3 @@ def test_domain_skill_overrides_core_of_same_name(tmp_path: Path) -> None:
     staged = stage / "skills" / "dup" / "SKILL.md"
     assert "domain-version" in staged.read_text()
     assert "core-version" not in staged.read_text()
-
-
-def test_real_shared_policy_is_packaged(tmp_path: Path) -> None:
-    import shutil
-
-    source = tmp_path / "source"
-    stage = tmp_path / "stage"
-    originals = HERE.parents[1] / "rules/personas"
-    shutil.copytree(originals, source / "agent-factory/personas")
-    result = _run_stage(source, stage)
-    assert result.returncode == 0, result.stderr
-    policy = Path("shared/human-communication.md")
-    assert (stage / "personas" / policy).read_bytes() == (originals / policy).read_bytes()
-
-
-def test_domain_requirements_are_packaged_without_requiring_skills(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    stage = tmp_path / "stage"
-    for domain, content in [("foo", "requests==2.34.2\n"), ("bar", "pydantic>=2\n")]:
-        agent = source / "domain-apps" / domain / "agent"
-        agent.mkdir(parents=True)
-        (agent / "requirements.txt").write_text(content)
-    result = _run_stage(source, stage)
-    assert result.returncode == 0, result.stderr
-    for domain in ["foo", "bar"]:
-        assert (stage / "requirements" / f"{domain}.txt").read_bytes() == (
-            source / "domain-apps" / domain / "agent" / "requirements.txt"
-        ).read_bytes()

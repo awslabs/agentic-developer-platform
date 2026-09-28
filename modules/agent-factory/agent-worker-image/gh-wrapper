@@ -1,24 +1,17 @@
 #!/bin/sh
 # gh CLI wrapper — installed at /usr/local/bin/gh, shadowing /usr/bin/gh.
 #
-# (issue #1469) Reads a fresh GitHub App token from the token file so
-# long-running agents don't 401 after the 1h expiry.
+# 1. (issue #1469) Reads a fresh GitHub App token from the token file so
+#    long-running agents don't 401 after the 1h expiry.
+# 2. (issue #1828) Cross-issue lineage seeding: when an agent triggers ANOTHER
+#    persona by posting `@agent-<persona>` on a DIFFERENT issue, the inbound
+#    webhook would otherwise start a fresh, bot-rooted chain (the raw comment
+#    carries no correlation marker). BEFORE exec'ing the real `gh`, we write the
+#    correlation pointer for the target issue so the webhook inherits THIS run's
+#    chain. Synchronous → pointer is committed before the comment posts → no race
+#    (webhook read_pointer uses ConsistentRead). Covers every gh path.
 #
-# That is the wrapper's ONLY job. The caller's arguments and comment body are
-# passed to the real `gh` byte-for-byte.
-#
-# Issue #5120 (recurrence of #2149): this wrapper used to inspect cross-issue
-# `gh issue/pr comment` calls, grep the body for the first `@agent-<persona>`
-# token, seed a dispatch pointer for the target channel, and rewrite the body to
-# carry an `adp-dispatch:<persona>` marker. The webhook's bot-sender gate accepts
-# that marker as a deliberate dispatch, so ordinary prose that merely NAMED a
-# persona — a status update, a review header, a quoted example — started a real
-# agent run the author never requested. Minting dispatch authority is now
-# exclusively the job of `adp-trigger`, which POSTs to /agent/trigger and has its
-# lineage verified server-side. An ordinary comment stays prose.
-#
-# Do not reintroduce body rewriting here. A wrapper that infers intent from prose
-# cannot tell "please run the developer" from "the developer already ran".
+# Both steps are best-effort and must NEVER block the underlying gh command.
 
 TOKEN_FILE="${ADP_TOKEN_FILE:-/tmp/.adp-gh-token}"
 if [ -f "$TOKEN_FILE" ]; then
@@ -26,6 +19,59 @@ if [ -f "$TOKEN_FILE" ]; then
   export GH_TOKEN
 fi
 
-# ADP_REAL_GH exists so the wrapper is testable without the image layout; in the
-# image the real binary is moved to /usr/bin/gh by the Dockerfile.
-exec "${ADP_REAL_GH:-/usr/bin/gh}" "$@"
+# --- Cross-issue lineage seeding (issue #1828) ---------------------------------
+# Only act on:  gh issue comment <N> ...   or   gh pr comment <N> ...
+# where the body contains an @agent-<persona> mention AND <N> differs from this
+# run's own ISSUE_NUMBER (seeding our own channel would clobber our self-chain).
+if [ "$1" = "issue" ] || [ "$1" = "pr" ]; then
+  if [ "$2" = "comment" ] && [ -n "$3" ]; then
+    _kind="$1"
+    _target="$3"
+    # Target must be a bare number (gh issue comment <number>). If it's a URL or
+    # flag, skip — seeding only applies to the numeric form the agents use.
+    case "$_target" in
+      *[!0-9]* | "") _target="" ;;
+    esac
+    if [ -n "$_target" ] && [ "$_target" != "${ISSUE_NUMBER:-}" ]; then
+      # Extract the comment body from --body "<text>" or --body-file <path>.
+      _body=""
+      _prev=""
+      for _arg in "$@"; do
+        case "$_prev" in
+          --body) _body="$_arg" ;;
+          --body-file|-F) [ -f "$_arg" ] && _body="$(cat "$_arg" 2>/dev/null)" ;;
+        esac
+        _prev="$_arg"
+      done
+      # Persona = first @agent-<name> mention in the body, if any.
+      _persona="$(printf '%s' "$_body" | grep -oE '@agent-[a-z-]+' | head -1 | sed 's/^@agent-//')"
+      if [ -n "$_persona" ] && [ -n "${TARGET_REPO:-}" ]; then
+        # Seed the pointer BEFORE the comment posts. Fail-soft (the helper never
+        # exits non-zero; the `|| true` is belt-and-suspenders).
+        python3 -m lib.seed_trigger_pointer "$TARGET_REPO" "$_target" "$_persona" >/dev/null 2>&1 || true
+        # Issue #2149: Inject the dispatch marker into the comment body so the
+        # webhook parser (#2156) recognizes this as an intentional bot→bot trigger.
+        # Write body to a temp file, call the Python marker helper to prepend the
+        # marker (with adp-dispatch:<persona>), then rewrite gh args to use the
+        # marked file. Fail-soft: if anything goes wrong, original args pass through.
+        _marked_file="/tmp/.adp-dispatch-body-$$"
+        printf '%s' "$_body" > "$_marked_file.in" 2>/dev/null
+        ADP_DISPATCH_PERSONA="$_persona" python3 -c "
+import os, sys
+sys.path.insert(0, os.environ.get('AGENT_WORKDIR', '/app'))
+from lib.correlation_marker import prepend_correlation_marker
+body = open(sys.argv[1]).read()
+marked = prepend_correlation_marker(body, dispatch_persona=os.environ['ADP_DISPATCH_PERSONA'])
+open(sys.argv[2], 'w').write(marked)
+" "$_marked_file.in" "$_marked_file" 2>/dev/null
+        if [ -s "$_marked_file" ]; then
+          # Rebuild args: replace --body/--body-file with the marked file.
+          set -- "$_kind" "comment" "$_target" --body-file "$_marked_file"
+        fi
+        rm -f "$_marked_file.in" 2>/dev/null
+      fi
+    fi
+  fi
+fi
+
+exec /usr/bin/gh "$@"

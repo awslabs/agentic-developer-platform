@@ -37,13 +37,6 @@ class Settings(BaseSettings):
     s3_bucket_name: str = ""  # Platform data bucket (content store + personal-context)
     s3_content_prefix: str = "content"  # Key prefix for ingestion content objects
 
-    # Explicitly shared S3 document sources, comma-separated "bucket/prefix".
-    # Whole-bucket entries are refused. The platform bucket's tenants/{id} and
-    # users/{id} namespaces always require the matching validated ingestion scope;
-    # no shared-source entry overrides that boundary. Empty permits only the
-    # caller's own tenant/personal prefix in s3_bucket_name.
-    s3_source_allowlist: str = ""
-
     # --- AWS ------------------------------------------------------------------
     aws_region: str = "us-east-1"
 
@@ -88,8 +81,6 @@ class Settings(BaseSettings):
 
     # --- File paths -----------------------------------------------------------
     clone_base: str = "/platform-data/repos"
-    # Local POSIX scratch for Git clone/diff/worktree ops (never S3 Mountpoint)
-    scratch_base: str = "/tmp"
     code_index_dir: str = "/platform-data/code-indexes"
     learning_dir: str = "/platform-data/learning"
     state_dir: str = "/platform-data"

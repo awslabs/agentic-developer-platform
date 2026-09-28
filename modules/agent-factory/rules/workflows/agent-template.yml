@@ -15,7 +15,7 @@ jobs:
   work:
     # Trigger when agent's label is added
     if: github.event.label.name == 'agent-[name]'
-    runs-on: arc-runner-org
+    runs-on: arc-runner-adp
     permissions:
       contents: write
       issues: write

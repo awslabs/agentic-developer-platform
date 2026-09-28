@@ -17,19 +17,6 @@ from src.shared.models.onboarding import TenantAccessRequest, TenantMembership
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.schemas.auth import TokenContext
 
-# Ordinary handler fixtures model the server-side Cognito read explicitly.
-# The unsigned bearer below exercises request plumbing, never identity authority.
-_provider_claims = {}
-
-
-@pytest.fixture(autouse=True)
-def subject_bound_cognito_record(monkeypatch):
-    from src.admin.onboarding import handler
-
-    _provider_claims.clear()
-    monkeypatch.setattr(handler, "_fetch_github_identity_from_cognito", lambda sub: handler._extract_from_claims(_provider_claims))
-
-
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
@@ -94,8 +81,6 @@ async def app_client(db_engine, new_user_context):
 
 def _fake_bearer(claims: dict) -> str:
     """Build an unsigned Bearer token whose base64 payload decodes to claims."""
-    _provider_claims.clear()
-    _provider_claims.update(claims)
     import base64 as _b64
     import json as _json
 
@@ -129,16 +114,7 @@ def _mock_github_client(membership_map: dict[str, bool] | None = None, role: str
     mock_client.get_installation_token = AsyncMock(return_value="fake-token")
     mock_client.aclose = AsyncMock()
     mock_client._http_client = MagicMock()
-
-    async def membership_response(path, **kwargs):
-        _, _, org_login, _, username = path.split("/")
-        member = await mock_client.check_org_membership(installation_id=1, org_login=org_login, username=username)
-        return MagicMock(
-            status_code=200 if member else 404,
-            json=lambda: {"role": role, "state": "active", "user": {"id": _provider_claims.get("cognito:username", "github_12345").split("_", 1)[1]}},
-        )
-
-    mock_client._http_client.get = AsyncMock(side_effect=membership_response)
+    mock_client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": role}))
     return mock_client
 
 
@@ -372,7 +348,6 @@ async def test_relogin_skips_existing_memberships(app_client, db_engine):
                 user_id="user-existing-1",
                 matched_tenants=matched,
                 github_login="existinguser",
-                github_id="12345",
             )
             await session.commit()
 
@@ -436,14 +411,20 @@ async def test_github_api_failure_skips_failing_org(app_client, db_engine):
     await _seed_org_with_team(factory, "good-org", "good-org", ["11111"], created_at=t1)
     await _seed_org_with_team(factory, "bad-org", "bad-org", ["22222"], created_at=t2)
 
-    mock_client = _mock_github_client()
+    mock_client = MagicMock()
+    call_count = {"n": 0}
 
     async def selective_membership(installation_id, org_login, username):
+        call_count["n"] += 1
         if org_login == "bad-org":
-            raise RuntimeError("API timeout")
+            raise Exception("API timeout")
         return True
 
     mock_client.check_org_membership = AsyncMock(side_effect=selective_membership)
+    mock_client.get_installation_token = AsyncMock(return_value="fake-token")
+    mock_client.aclose = AsyncMock()
+    mock_client._http_client = MagicMock()
+    mock_client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": "member"}))
 
     with (
         patch("src.admin.connections.github_client.GitHubAppClient", return_value=mock_client),
@@ -542,7 +523,6 @@ async def test_d7_username_membership_plus_new_org(db_engine):
                 user_id="user-d7-test",
                 matched_tenants=matched,
                 github_login="myuser",
-                github_id="12345",
             )
             await session.commit()
 
@@ -591,7 +571,7 @@ async def test_find_matching_tenants_returns_all_ordered(db_engine):
         from src.admin.onboarding.handler import _find_matching_tenants_for_user
 
         async with factory() as session:
-            results = await _find_matching_tenants_for_user(session, "testuser", "12345")
+            results = await _find_matching_tenants_for_user(session, "testuser")
 
     assert len(results) == 3
     assert results[0].org_id == "first-org"
@@ -617,6 +597,6 @@ async def test_find_matching_tenants_no_credentials(db_engine):
         from src.admin.onboarding.handler import _find_matching_tenants_for_user
 
         async with factory() as session:
-            results = await _find_matching_tenants_for_user(session, "testuser", "12345")
+            results = await _find_matching_tenants_for_user(session, "testuser")
 
     assert results == []

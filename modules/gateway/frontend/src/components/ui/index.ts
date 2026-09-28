@@ -11,4 +11,3 @@ export { Spinner, type SpinnerProps } from './Spinner';
 export { Tabs, TabsList, Tab, TabPanel, type TabsProps, type TabProps, type TabPanelProps } from './Tabs';
 export { Dropdown, DropdownItem, DropdownDivider, type DropdownProps, type DropdownItemProps } from './Dropdown';
 export { Toast, type ToastProps } from './Toast';
-export { CopyButton, type CopyButtonProps } from './CopyButton';

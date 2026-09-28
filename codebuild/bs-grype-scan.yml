@@ -2,12 +2,11 @@ version: 0.2
 
 env:
   variables:
-    GRYPE_VERSION: "0.119.0"  # default; can be overridden at start-build time
+    GRYPE_VERSION: "0.80.2"  # default; can be overridden at start-build time
 
 phases:
   install:
     commands:
-      - python3 -m pip install --quiet PyYAML==6.0.3
       - curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin "v${GRYPE_VERSION}"
       - grype version
   pre_build:
@@ -25,7 +24,78 @@ phases:
       - if [ -z "${SECURITY_SCANS_BUCKET}" ]; then echo "ERROR SECURITY_SCANS_BUCKET not set" && exit 1; fi
   build:
     commands:
-      - python3 codebuild/scan_security_images.py grype
+      - |
+        set -euo pipefail
+
+        # In-buildspec discovery (CodeBuild source is independent of workflow discovery)
+        DOCKERFILES=$(find . -name 'Dockerfile' -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.terraform/*' | sort)
+        TOTAL=$(echo "$DOCKERFILES" | wc -l)
+        echo "Found ${TOTAL} Dockerfiles"
+        echo "$DOCKERFILES"
+
+        # Per-Dockerfile build context overrides. Some Dockerfiles use COPY paths
+        # outside their own directory, so dirname(Dockerfile) isn't a valid context.
+        # Each entry maps Dockerfile path -> build context directory.
+        # Defaults to dirname(Dockerfile) when not listed here.
+        resolve_context() {
+          case "$1" in
+            ./modules/agent-factory/agent-worker-image/Dockerfile) echo "." ;;
+            ./modules/agent-factory/agent/Dockerfile)              echo "./modules/agent-factory" ;;
+            *) dirname "$1" ;;
+          esac
+        }
+
+        FAIL_COUNT=0
+        UPLOAD_COUNT=0
+
+        for DF in $DOCKERFILES; do
+          SLUG=$(echo "$DF" | sed 's|^\./||;s|/Dockerfile$||;s|/|-|g')
+          IMAGE_TAG="grype-scan-target:${SLUG}"
+          BUILD_DIR=$(resolve_context "$DF")
+          KEY="sarif/${DATE}/${RUN_ID}/grype/${SLUG}.sarif"
+
+          echo "=== Scanning ${DF} (slug=${SLUG}, context=${BUILD_DIR}) ==="
+
+          # Capture docker build output without piping (avoids pipefail masking failures)
+          # Per-image 10-min timeout prevents heavy builds from starving others
+          BUILD_OUT=$(timeout 600 docker build --no-cache --pull --quiet -f "${DF}" -t "${IMAGE_TAG}" "${BUILD_DIR}" 2>&1) || {
+            echo "WARN: docker build failed/timed-out for ${DF} (rc=$?)"
+            echo "$BUILD_OUT" | tail -10
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+            continue
+          }
+
+          if ! grype "${IMAGE_TAG}" -o sarif --config "${CODEBUILD_SRC_DIR}/.grype.yaml" > "/tmp/grype-${SLUG}.sarif" 2>&1; then
+            echo "WARN: grype scan failed for ${DF} — skipping upload"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+            continue
+          fi
+
+          # Post-process: strip ignored CVEs from SARIF (grype ignore rules
+          # only suppress table/JSON output, not SARIF format)
+          python3 "${CODEBUILD_SRC_DIR}/codebuild/filter-sarif-ignores.py" \
+            --sarif "/tmp/grype-${SLUG}.sarif" \
+            --config "${CODEBUILD_SRC_DIR}/.grype.yaml" \
+            --output "/tmp/grype-${SLUG}.sarif"
+
+          aws s3 cp "/tmp/grype-${SLUG}.sarif" "s3://${SECURITY_SCANS_BUCKET}/${KEY}" \
+            --content-type application/sarif+json \
+            --metadata "commit=${CODEBUILD_RESOLVED_SOURCE_VERSION:-unknown},dockerfile=${DF}"
+
+          UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+          docker rmi "${IMAGE_TAG}" >/dev/null 2>&1 || true
+        done
+
+        echo "Summary: ${UPLOAD_COUNT}/${TOTAL} SARIFs uploaded; ${FAIL_COUNT} scans failed."
+
+        # Minimum-coverage assertion — fail loudly if scope regresses
+        if [ "${UPLOAD_COUNT}" -lt "$((TOTAL / 2))" ]; then
+          echo "ERROR: Only ${UPLOAD_COUNT}/${TOTAL} images scanned — below 50% threshold"
+          exit 1
+        fi
+        exit 0
 
 artifacts:
   files: []

@@ -34,7 +34,6 @@ class AssumeRoleResult:
     expiration: str  # ISO 8601
     region: str
     profile_name: str
-    assumed_role_arn: str | None = None
 
 
 class STSAssumeError(Exception):
@@ -56,7 +55,6 @@ def assume_role(
     task_id: str,
     label: str,
     aws_region: str = "us-east-1",
-    send_session_tags: bool = True,
 ) -> AssumeRoleResult:
     """Execute STS AssumeRole with session tagging.
 
@@ -76,14 +74,6 @@ def assume_role(
         Credential label, used in the profile name.
     aws_region : str
         Region for the STS client itself.
-    send_session_tags : bool
-        Whether to send session tags (and therefore require ``sts:TagSession``).
-        Defaults to True — every real credential delivery wants the tags for
-        CloudTrail attribution in the customer account. Issue #4742 sets it False
-        for one narrow purpose: probing whether a role's trust policy *requires*
-        the ``adp:user_id`` tag. A v1 role (pinned to one user) refuses an
-        untagged assume; a v2 routing role accepts it. Do not set it False to
-        "simplify" a real assume — that would silently drop audit attribution.
 
     Returns
     -------
@@ -112,9 +102,8 @@ def assume_role(
         "RoleArn": role_arn,
         "RoleSessionName": session_name,
         "DurationSeconds": session_duration_seconds,
+        "Tags": tags,
     }
-    if send_session_tags:
-        kwargs["Tags"] = tags
     if external_id:
         kwargs["ExternalId"] = external_id
 
@@ -155,5 +144,4 @@ def assume_role(
         expiration=expiration_str,
         region=default_region,
         profile_name=profile_name,
-        assumed_role_arn=response.get("AssumedRoleUser", {}).get("Arn"),
     )

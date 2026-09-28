@@ -28,7 +28,6 @@ import os
 import re
 from dataclasses import dataclass
 
-from common import skip_reasons
 from common.personas import LABEL_TO_PERSONA, MENTION_TO_PERSONA
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,6 @@ __all__ = [
     "CROSS_PERSONA_LOOP_THRESHOLD",
     "Intent",
     "extract_intent",
-    "extract_intent_with_reason",
 ]
 
 # Maximum chain depth before blocking bot-to-bot triggers (issue #1696).
@@ -77,10 +75,6 @@ def extract_intent(
 ) -> Intent | None:
     """Parse a GitHub webhook event into an actionable intent.
 
-    Thin backward-compatible wrapper over :func:`extract_intent_with_reason`.
-    Callers that need to know WHY a no-op happened (so it can be persisted to
-    the Activity row — issue #4020) should call that function instead.
-
     Args:
         event_type: Value of X-GitHub-Event header (e.g. "issues", "pull_request").
         payload: Parsed JSON body of the webhook.
@@ -89,41 +83,6 @@ def extract_intent(
 
     Returns:
         Intent if the event should trigger agent work, None for no-op events.
-    """
-    intent, _reason = extract_intent_with_reason(
-        event_type,
-        payload,
-        correlation_ctx=correlation_ctx,
-        resolved_identity=resolved_identity,
-    )
-    return intent
-
-
-def extract_intent_with_reason(
-    event_type: str,
-    payload: dict,
-    *,
-    correlation_ctx: dict | None = None,
-    resolved_identity=None,
-) -> tuple[Intent | None, str | None]:
-    """Parse a GitHub webhook event into an intent, or a reason for the no-op.
-
-    Issue #4020: the reason a delivery produced no run used to exist only in
-    CloudWatch. Every ``None`` return below now carries a static enum string from
-    ``common/skip_reasons.py`` so the handler can persist it on the DynamoDB row
-    that Agent Activity reads, turning a bare "✗ No-op" badge into an
-    explanation.
-
-    Args:
-        event_type: Value of X-GitHub-Event header (e.g. "issues", "pull_request").
-        payload: Parsed JSON body of the webhook.
-        correlation_ctx: Correlation context from determine_correlation() (Phase 2-c).
-        resolved_identity: ResolvedIdentity from identity resolver (Phase 2-c).
-
-    Returns:
-        ``(Intent, None)`` when the event should trigger agent work, or
-        ``(None, reason)`` for a no-op. The reason is always a static enum —
-        never interpolated payload content.
     """
     sender = payload.get("sender", {})
     action = payload.get("action", "")
@@ -150,14 +109,14 @@ def extract_intent_with_reason(
                     event_type,
                     sender.get("login", "unknown"),
                 )
-                return None, skip_reasons.NO_AIDLC_LABEL
+                return None
         else:
             logger.info(
                 "Ignoring bot-generated %s event from %s",
                 event_type,
                 sender.get("login", "unknown"),
             )
-            return None, skip_reasons.BOT_EVENT_IGNORED
+            return None
 
     # Bot pull_request events: allowed through to _handle_pr_event, which gates
     # on the agent/issue-* branch filter + the synchronize dedup (issue #1716).
@@ -183,20 +142,13 @@ def extract_intent_with_reason(
     if event_type == "issues" and action == "labeled":
         return _handle_issue_labeled(payload)
 
-    # Review completed PRs, including existing drafts marked ready by the author.
-    if event_type == "pull_request" and action in ("opened", "synchronize", "ready_for_review"):
+    # pull_request + opened|synchronize → reviewer persona (with guards)
+    if event_type == "pull_request" and action in ("opened", "synchronize"):
         return _handle_pr_event(payload, action, sender)
 
     # issue_comment + created → chain-aware handler (Phase 2-c / issue #1696)
     if event_type == "issue_comment" and action == "created":
         return _handle_issue_comment(payload, correlation_ctx, resolved_identity)
-
-    # issue_comment + edited/deleted from a bot: typically the agent editing its
-    # own comment in place (e.g. a status update). Named separately from the
-    # EVENT_TYPE_UNHANDLED catch-all so it doesn't look like an unexplained gap
-    # in coverage when reviewing webhook deliveries.
-    if event_type == "issue_comment" and action != "created" and _is_bot_sender(sender):
-        return None, skip_reasons.BOT_COMMENT_ACTION_UNHANDLED
 
     # installation + created → log only, no agent dispatch
     if event_type == "installation" and action == "created":
@@ -205,9 +157,9 @@ def extract_intent_with_reason(
             payload.get("installation", {}).get("id", 0),
             payload.get("installation", {}).get("account", {}).get("login", "unknown"),
         )
-        return None, skip_reasons.INSTALLATION_EVENT
+        return None
 
-    return None, skip_reasons.EVENT_TYPE_UNHANDLED
+    return None
 
 
 def _is_bot_sender(sender: dict) -> bool:
@@ -282,48 +234,6 @@ def _extract_aws_label_directive(body: str) -> str | None:
     return raw_label
 
 
-# Issue #4527: the orchestration engine's own comment tag. NOT in
-# MENTION_TO_PERSONA, and deliberately so — every entry in that dict names an
-# agent persona to spawn a pod for, and this tag spawns nothing. Putting it there
-# would make `spawn_persona` the consumer, which is the exact bug the issue's
-# impact table calls out ("wasted agent pod per command; command lost").
-#
-# The tag as a TOKEN: not followed by a word character or a hyphen, so
-# `@agent-engineering-team` and `@agent-engine-v2` in prose are not commands. Note
-# `\b` alone would be wrong — it treats a hyphen as a boundary, so
-# `@agent-engine-v2` would be marked here. Case-insensitive because GitHub renders
-# @-mentions case-insensitively, so a user typing `@Agent-Engine` reasonably
-# expects it to work.
-#
-# CHARACTER-FOR-CHARACTER identical to `_TAG_RE` in the gateway's
-# `orchestration/adapters/github_commands.py`, which decides which marked rows mean
-# anything. This component decides which events are marked; a disagreement between
-# the two is a command that is stored and never acted on. The two live in separate
-# deploy units and cannot import each other (same constraint that forces
-# `webhook_events._emit_row_write_dropped` to re-implement the gateway's metric
-# helper), so the pair is pinned by a test on each side rather than shared as code.
-ENGINE_TAG = "@agent-engine"
-_ENGINE_TAG_RE = re.compile(re.escape(ENGINE_TAG) + r"(?![\w-])", re.IGNORECASE)
-
-
-def _has_engine_tag(body: str) -> bool:
-    """Whether this comment addresses the orchestration engine (issue #4527).
-
-    Recognition only — this Lambda never parses the command itself. Parsing needs
-    the graph, the tenant and the approval record, none of which this component
-    can see (#4303's closed-routes table), so the body travels to the tick on the
-    event row and is parsed there.
-    """
-    if not body:
-        return False
-    return _ENGINE_TAG_RE.search(body) is not None
-
-
-def _has_persona_mention(body: str, mention: str) -> bool:
-    """Match one complete persona token without prefix collisions."""
-    return re.search(re.escape(mention) + r"(?![\w-])", body) is not None
-
-
 def _extract_mention_persona(body: str) -> str | None:
     """Extract the first @agent-X persona mention from comment body.
 
@@ -332,7 +242,7 @@ def _extract_mention_persona(body: str) -> str | None:
     if not body:
         return None
     for mention, persona in MENTION_TO_PERSONA.items():
-        if _has_persona_mention(body, mention):
+        if mention in body:
             return persona
     return None
 
@@ -347,12 +257,12 @@ def _extract_all_mention_personas(body: str) -> list[str]:
         return []
     personas = []
     for mention, persona in MENTION_TO_PERSONA.items():
-        if _has_persona_mention(body, mention):
+        if mention in body:
             personas.append(persona)
     return personas
 
 
-def _handle_issue_opened(payload: dict) -> tuple[Intent | None, str | None]:
+def _handle_issue_opened(payload: dict) -> Intent | None:
     """Handle issues.opened event — dispatch AIDLC persona if template label present.
 
     Issue #3169: Only dispatches when the issue carries the `aidlc-intent` label
@@ -372,12 +282,12 @@ def _handle_issue_opened(payload: dict) -> tuple[Intent | None, str | None]:
             "issues.opened without aidlc-intent label — no-op (issue #%s)",
             payload.get("issue", {}).get("number", "?"),
         )
-        return None, skip_reasons.NO_AIDLC_LABEL
+        return None
 
-    return Intent(persona="aidlc", trigger="issue_opened", label="aidlc-intent"), None
+    return Intent(persona="aidlc", trigger="issue_opened", label="aidlc-intent")
 
 
-def _handle_issue_labeled(payload: dict) -> tuple[Intent | None, str | None]:
+def _handle_issue_labeled(payload: dict) -> Intent | None:
     """Handle issues.labeled event — map the added label to a persona."""
     label = payload.get("label", {})
     label_name = label.get("name", "")
@@ -385,34 +295,30 @@ def _handle_issue_labeled(payload: dict) -> tuple[Intent | None, str | None]:
     persona = LABEL_TO_PERSONA.get(label_name)
     if not persona:
         logger.debug("Label '%s' has no persona mapping — no-op", label_name)
-        return None, skip_reasons.LABEL_UNMAPPED
+        return None
 
-    return Intent(persona=persona, trigger="issue_labeled", label=label_name), None
+    return Intent(persona=persona, trigger="issue_labeled", label=label_name)
 
 
-def _handle_pr_event(payload: dict, action: str, sender: dict) -> tuple[Intent | None, str | None]:
-    """Assign a reviewer only when an agent PR is ready for review.
+def _handle_pr_event(payload: dict, action: str, sender: dict) -> Intent | None:
+    """Handle pull_request opened/synchronize — assign reviewer persona.
 
     Issue #1696 guards:
     - Branch filter: only trigger for agent/issue-* branches
-    - Synchronize gate: bot senders trigger on opened/ready, not synchronize,
+    - Synchronize gate: bot senders only trigger on 'opened' (not synchronize)
       to prevent runaway reviewer spawning on every push
     """
-    pr = payload.get("pull_request", {})
-    if pr.get("draft", False):
-        return None, skip_reasons.PR_DRAFT
-
     # Branch filter: only trigger reviewer for agent PR branches (issue #1696).
     # Reproduces the behavior of the removed pr-review-trigger.yml.
-    head_ref = pr.get("head", {}).get("ref", "")
+    head_ref = payload.get("pull_request", {}).get("head", {}).get("ref", "")
     if not head_ref.startswith("agent/issue-"):
         logger.debug(
             "PR branch '%s' does not match agent/issue-* pattern — no reviewer trigger",
             head_ref,
         )
-        return None, skip_reasons.PR_BRANCH_NOT_AGENT
+        return None
 
-    # Synchronize gate: bot senders trigger on opened/ready only (issue #1696).
+    # Synchronize gate: bot senders only trigger on 'opened' (issue #1696).
     # Without this, every push to an agent PR branch (including the reviewer's
     # own fix commits) would spawn a NEW reviewer = runaway.
     if action == "synchronize" and _is_bot_sender(sender):
@@ -420,21 +326,16 @@ def _handle_pr_event(payload: dict, action: str, sender: dict) -> tuple[Intent |
             "Bot PR synchronize event from %s — blocking to prevent double-trigger",
             sender.get("login", "unknown"),
         )
-        return None, skip_reasons.BOT_SYNCHRONIZE_DEDUP
+        return None
 
-    # Automatic PR reviews are independent of explicit issue mentions/labels
-    # and of the engine's flow controls. Only an explicit opt-in enables them.
-    if os.environ.get("GITHUB_AUTO_PR_REVIEW_ENABLED", "false").strip().lower() != "true":
-        return None, skip_reasons.AUTOMATIC_PR_REVIEW_DISABLED
-
-    return Intent(persona="agent-codex-reviewer", trigger=f"pr_{action}", label=None), None
+    return Intent(persona="reviewer", trigger=f"pr_{action}", label=None)
 
 
 def _handle_issue_comment(
     payload: dict,
     correlation_ctx: dict | None,
     resolved_identity,
-) -> tuple[Intent | None, str | None]:
+) -> Intent | None:
     """Handle issue_comment.created — dispatch-marker gate for bot comments.
 
     Issue #2149: Bot comments require an explicit `adp-dispatch:<persona>` marker.
@@ -453,46 +354,17 @@ def _handle_issue_comment(
     sender = payload.get("sender", {})
     body = payload.get("comment", {}).get("body", "")
 
-    # Issue #4527: the engine tag is checked FIRST, before any persona scan.
-    #
-    # Order is load-bearing, not stylistic. `_extract_mention_persona` is a
-    # dict-order first-match substring scan, so a comment reading
-    # "@agent-engine halt — cc @agent-developer" would otherwise route to the
-    # developer persona: the command would be lost AND an agent pod would be paid
-    # for. Returning here means the handler takes its existing `intent is None`
-    # branch, which enqueues nothing and calls no gateway — the engine path's
-    # whole delivery mechanism is the marked event row, written by the caller.
-    #
-    # Bot senders included: a bot comment carrying the tag is marked the same way.
-    # That is safe because the tag alone grants nothing — the tick resolves the
-    # commenter to a platform identity server-side and applies `PLAN_APPROVE`, so
-    # a bot with no linked identity is refused there rather than trusted here.
-    if _has_engine_tag(body):
-        logger.info(
-            "issue_comment addresses @agent-engine (issue #%s) — marking for the "
-            "engine tick, spawning nothing",
-            payload.get("issue", {}).get("number", "?"),
-        )
-        return None, skip_reasons.ENGINE_COMMAND
-
     # Human sender: parse @-mention, always allow (no chain-aware gating needed)
     if not _is_bot_sender(sender):
         persona = _extract_mention_persona(body)
         if not persona:
-            return None, skip_reasons.NO_MENTION
+            return None
         # Issue #2279: Parse /model directive (human path only)
         model = _extract_model_directive(body)
         # Issue #3574: Parse /aws-label directive (human path only)
         aws_label = _extract_aws_label_directive(body)
-        return (
-            Intent(
-                persona=persona,
-                trigger="mentioned",
-                label=None,
-                model=model,
-                aws_label=aws_label,
-            ),
-            None,
+        return Intent(
+            persona=persona, trigger="mentioned", label=None, model=model, aws_label=aws_label
         )
 
     # --- Bot sender path (issue #2149) ---
@@ -514,11 +386,7 @@ def _handle_issue_comment(
                 bare_persona,
             )
             _emit_metric("BotMentionWithoutDispatchMarker", {"persona": bare_persona})
-            return None, skip_reasons.BOT_MENTION_NO_DISPATCH_MARKER
-        # No marker AND no bare mention — the bot comment simply never mentioned
-        # an agent, which is the same "nothing asked for work" case as a human
-        # comment without a mention.
-        return None, skip_reasons.NO_MENTION
+        return None
 
     # Bot sender: require correlation context (safe default blocks without it)
     if correlation_ctx is None:
@@ -527,11 +395,11 @@ def _handle_issue_comment(
             sender.get("login", "unknown"),
             persona,
         )
-        return None, skip_reasons.BOT_DISPATCH_NO_CORRELATION
+        return None
 
     # Issue #2151: Guards removed — spawn_persona() enforces them.
     # Return Intent so handler can call spawn_persona() with full context.
-    return Intent(persona=persona, trigger="mentioned", label=None), None
+    return Intent(persona=persona, trigger="mentioned", label=None)
 
 
 def _extract_dispatch_persona_from_marker(body: str) -> str | None:

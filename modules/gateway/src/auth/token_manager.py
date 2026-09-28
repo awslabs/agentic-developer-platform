@@ -240,7 +240,7 @@ class TokenManager:
             await db.rollback()
             raise TokenStorageError(f"Token revocation failed: {str(e)}")
 
-    async def revoke_all_user_tokens(self, entity_id: str, org_id: str, db: AsyncSession, *, token_ids: list[str] | None = None) -> int:
+    async def revoke_all_user_tokens(self, entity_id: str, org_id: str, db: AsyncSession) -> int:
         """
         Revoke all tokens for a specific user/service account.
 
@@ -258,12 +258,9 @@ class TokenManager:
         try:
             now = datetime.now(UTC)
 
-            statement = update(Token).where(Token.entity_id == entity_id, Token.org_id == org_id, Token.revoked_at.is_(None))
-            if token_ids is not None:
-                # Reviewed revocation affects only the captured family members.
-                # A token minted after preview must remain visible for a new review.
-                statement = statement.where(Token.id.in_(token_ids))
-            result = await db.execute(statement.values(revoked_at=now))
+            result = await db.execute(
+                update(Token).where(Token.entity_id == entity_id, Token.org_id == org_id, Token.revoked_at.is_(None)).values(revoked_at=now)
+            )
 
             await db.commit()
 

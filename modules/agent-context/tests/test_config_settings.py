@@ -41,7 +41,6 @@ EXPECTED_DEFAULTS = {
     "deepwiki_enabled": True,
     "llm_base_url": "http://litellm-proxy.agent-context.svc.cluster.local:4000/v1",
     "clone_base": "/platform-data/repos",
-    "scratch_base": "/tmp",
     "code_index_dir": "/platform-data/code-indexes",
     "learning_dir": "/platform-data/learning",
     "state_dir": "/platform-data",

@@ -1,0 +1,7 @@
+# Minimum version constraints to remediate known CVEs.
+# Applied after main package install to override upstream pins.
+#
+# GHSA-9ggr-2464-2j32, GHSA-pq5p-34cr-23v9: authlib < 1.6.0
+authlib>=1.6.0
+# GHSA-rcfx-77hg-w2wv: fastmcp < 2.14.0
+fastmcp>=2.14.0

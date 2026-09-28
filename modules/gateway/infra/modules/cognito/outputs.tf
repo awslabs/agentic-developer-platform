@@ -15,11 +15,6 @@ output "cognito_user_pool_endpoint" {
 }
 
 # Cognito User Pool Client Outputs
-output "cli_client_id" {
-  description = "Cognito app client ID for web CLI login (short refresh validity + rotation)"
-  value       = aws_cognito_user_pool_client.cli.id
-}
-
 output "cognito_user_pool_client_id" {
   description = "ID of the Cognito User Pool Client"
   value       = aws_cognito_user_pool_client.main.id
@@ -54,7 +49,7 @@ output "cognito_domain_cloudfront_distribution" {
 
 output "cognito_hosted_ui_url" {
   description = "URL for the Cognito Hosted UI"
-  value       = local.hosted_ui_base
+  value       = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com"
 }
 
 # IAM Role Outputs
@@ -81,7 +76,7 @@ output "cognito_config_summary" {
     client_id        = aws_cognito_user_pool_client.main.id
     identity_pool_id = aws_cognito_identity_pool.main.id
     region           = data.aws_region.current.id
-    hosted_ui_url    = local.hosted_ui_base
+    hosted_ui_url    = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com"
   }
 }
 
@@ -93,9 +88,9 @@ output "cognito_oauth_config" {
     client_id     = aws_cognito_user_pool_client.main.id
     domain        = aws_cognito_user_pool_domain.main.domain
     region        = data.aws_region.current.id
-    authorize_url = "${local.hosted_ui_base}/oauth2/authorize"
-    token_url     = "${local.hosted_ui_base}/oauth2/token"
-    logout_url    = "${local.hosted_ui_base}/logout"
+    authorize_url = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/authorize"
+    token_url     = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/token"
+    logout_url    = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/logout"
     jwks_url      = "https://cognito-idp.${data.aws_region.current.id}.amazonaws.com/${aws_cognito_user_pool.main.id}/.well-known/jwks.json"
     issuer        = "https://cognito-idp.${data.aws_region.current.id}.amazonaws.com/${aws_cognito_user_pool.main.id}"
   }
@@ -142,7 +137,7 @@ output "agent_client_secret_warning" {
 
 output "token_endpoint" {
   description = "OAuth2 token endpoint for client_credentials flow"
-  value       = "${local.hosted_ui_base}/oauth2/token"
+  value       = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/token"
 }
 
 # =============================================================================
@@ -184,13 +179,13 @@ output "test_admin_credentials_secret_arn" {
 
 output "github_oauth_callback_url" {
   description = "OAuth callback URL to configure in the GitHub OAuth App settings"
-  value       = var.enable_github_oauth ? "${local.hosted_ui_base}/oauth2/idpresponse" : ""
+  value       = var.enable_github_oauth ? "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/idpresponse" : ""
 }
 
 output "github_sign_in_url" {
   description = "Cognito hosted UI sign-in URL pre-selecting the GitHub identity provider"
   value = var.enable_github_oauth ? join("", [
-    "${local.hosted_ui_base}/oauth2/authorize",
+    "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/authorize",
     "?identity_provider=GitHub",
     "&response_type=code",
     "&client_id=${aws_cognito_user_pool_client.main.id}",

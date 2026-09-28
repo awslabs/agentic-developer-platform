@@ -153,9 +153,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             status = await self._service.get_status(
                 entity_type,
                 context.user_id,
-                # Issue #4132: same attributed bucket the enforcement path used,
-                # so the headers describe the limits actually applied.
-                context.attributed_org_id,
+                context.org_id,
                 context.account_type == "service",
             )
 

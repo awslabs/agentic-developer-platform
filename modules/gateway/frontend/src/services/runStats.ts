@@ -39,24 +39,9 @@ export interface RunStatsResponse {
     completed: number;
     failed: number;
     active: number;
-    /**
-     * Issue #3964: runs deliberately aborted today.
-     *
-     * Optional on purpose — the backend defaults it to 0, but this SPA is served
-     * from CloudFront and can be a build ahead of or behind the API it talks to.
-     * Typed as `number | undefined` rather than `number`, the one build that
-     * matters (an older API, no field) is a `undefined` a caller must handle,
-     * instead of a `0` TypeScript invented and no one can distinguish from
-     * "nothing was aborted".
-     *
-     * No new dashboard tile ships with this field. The counter exists so an
-     * aborted run stops being miscounted as failed; deciding how to *show* it is
-     * a separate design question and not this story's to answer.
-     */
-    aborted?: number;
   };
-  daily: Array<{ date: string; total: number; completed: number; failed: number; aborted?: number }>;
-  by_persona: Array<{ persona: string; total: number; completed: number; failed: number; aborted?: number }>;
+  daily: Array<{ date: string; total: number; completed: number; failed: number }>;
+  by_persona: Array<{ persona: string; total: number; completed: number; failed: number }>;
   recent_failures: RunStatsFailure[];
   top_repos: Array<{ repo: string; total: number }>;
   spend: RunStatsSpend | null;

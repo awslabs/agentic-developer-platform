@@ -34,23 +34,9 @@ spec:
             app: vuln-scan
         spec:
           serviceAccountName: ${SERVICE_ACCOUNT}
-          # Pod-level security context (#6038 — S15 non-root hardening).
-          securityContext:
-            runAsUser: 10001
-            runAsGroup: 10001
-            fsGroup: 10001
-            seccompProfile:
-              type: RuntimeDefault
           containers:
           - name: vuln-scan
             image: ${INGESTION_IMAGE}
-            securityContext:
-              runAsNonRoot: true
-              readOnlyRootFilesystem: true
-              allowPrivilegeEscalation: false
-              privileged: false
-              capabilities:
-                drop: ["ALL"]
             command: ["python3", "/app/scan-vulns.py"]
             envFrom:
             - configMapRef:
@@ -76,18 +62,8 @@ spec:
             - name: config
               mountPath: /config
               readOnly: true
-            - name: tmp
-              mountPath: /tmp
-            - name: home
-              mountPath: /home/appuser
           restartPolicy: OnFailure
           volumes:
           - name: config
             configMap:
               name: ingestion-content-config
-          - name: tmp
-            emptyDir:
-              sizeLimit: 2Gi
-          - name: home
-            emptyDir:
-              sizeLimit: 512Mi

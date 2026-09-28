@@ -103,11 +103,10 @@ export async function commitDirtyAidlcState(deps: EnforcerDeps): Promise<boolean
  * comment exists on the issue, post a fallback gate comment.
  */
 export async function ensureGateComment(deps: EnforcerDeps): Promise<{ posted: boolean; stage: string | null }> {
-  const { cwd, log, postComment } = deps;
+  const { cwd, issueNumber, log, execCommand, postComment } = deps;
 
   // Find the pending gate stage from aidlc state
-  const pending = findPendingGate(cwd, deps.issueNumber);
-  const pendingStage = pending?.stage;
+  const pendingStage = findPendingGateStage(cwd);
   if (!pendingStage) {
     log('INFO', '[aidlc-gate-enforcer] No pending gate stage found — no fallback comment needed');
     return { posted: false, stage: null };
@@ -124,8 +123,7 @@ export async function ensureGateComment(deps: EnforcerDeps): Promise<{ posted: b
 
   // Post fallback gate comment
   log('INFO', `[aidlc-gate-enforcer] Posting fallback gate comment for stage="${pendingStage}"`);
-  const evidence = pending ? await gateEvidence(pending.statePath, deps) : undefined;
-  const fallbackBody = buildFallbackGateComment(pendingStage, evidence);
+  const fallbackBody = buildFallbackGateComment(pendingStage);
 
   try {
     await postComment(fallbackBody);
@@ -146,10 +144,6 @@ export async function ensureGateComment(deps: EnforcerDeps): Promise<{ posted: b
  * Looks for `**Waiting For**: Human input` pattern in aidlc-state.md files.
  */
 export function findPendingGateStage(cwd: string): string | null {
-  return findPendingGate(cwd)?.stage ?? null;
-}
-
-function findPendingGate(cwd: string, issueNumber?: string): { stage: string; statePath: string } | null {
   // Search for aidlc-state.md in known locations:
   // - aidlc/spaces/**/aidlc-state.md (new multi-space layout)
   // - aidlc-docs/aidlc-state.md (legacy layout)
@@ -158,12 +152,7 @@ function findPendingGate(cwd: string, issueNumber?: string): { stage: string; st
     ...globSync('aidlc-docs/aidlc-state.md', cwd),
   ];
 
-  // A fallback must describe this issue, not another intent in the checkout.
-  const scoped = candidates.filter(p => !issueNumber || !/spaces\/issue-\d+\//.test(p)
-    || p.startsWith(`aidlc/spaces/issue-${issueNumber}/`));
-  scoped.sort((a, b) => Number(b.startsWith(`aidlc/spaces/issue-${issueNumber}/`))
-    - Number(a.startsWith(`aidlc/spaces/issue-${issueNumber}/`)));
-  for (const relPath of scoped) {
+  for (const relPath of candidates) {
     const fullPath = path.join(cwd, relPath);
     if (!fs.existsSync(fullPath)) continue;
 
@@ -178,7 +167,7 @@ function findPendingGate(cwd: string, issueNumber?: string): { stage: string; st
     if (stageMatch) {
       // Normalize stage name to kebab-case for the marker
       const rawStage = stageMatch[1].trim();
-      return { stage: normalizeStageId(rawStage), statePath: relPath };
+      return normalizeStageId(rawStage);
     }
   }
 
@@ -218,50 +207,22 @@ async function checkGateMarkerExists(stage: string, deps: EnforcerDeps): Promise
  * Build the fallback gate comment body.
  * Uses the same structure the persona would post, but clearly marked as enforcer-generated.
  */
-export const GATE_APPROVAL_EFFECTS: Record<string, string> = {
-  'intent-capture': 'Approve the problem and scope so the next planned inception stage can begin.',
-  'reverse-engineering': 'Approve the current-system assessment so requirements can be prepared.',
-  'requirements-analysis': 'Approve the requirements so delivery planning can begin.',
-  'delivery-planning': 'Approve the delivery plan so story issues and execution drafts can be prepared; execution still requires the loop-proposal gate.',
-  'loop-proposal': 'Approve the reviewed execution scope and target environment, allowing delivery-loop issues to be created and construction/deployment to start, subject to existing checks.',
-};
-
-/** Link only to a clean, tracked revision confirmed present on GitHub. */
-async function gateEvidence(statePath: string, deps: EnforcerDeps): Promise<string | undefined> {
-  try {
-    if (execGitSync('git status --porcelain aidlc/ aidlc-docs/', deps.cwd)) return undefined;
-    const sha = execGitSync('git rev-parse HEAD', deps.cwd);
-    if (!/^[a-f0-9]{40}$/.test(sha)) return undefined;
-    const tracked = execGitSync('git ls-tree -r --name-only HEAD -- aidlc/ aidlc-docs/', deps.cwd).split('\n');
-    if (!tracked.includes(statePath)) return undefined;
-    const repo = `${encodeURIComponent(deps.repoOwner)}/${encodeURIComponent(deps.repoName)}`;
-    const remoteSha = await deps.execCommand(`gh api repos/${repo}/commits/${sha} --jq .sha`);
-    if (remoteSha.trim() !== sha) return undefined;
-    const directory = path.posix.dirname(statePath).split('/').map(encodeURIComponent).join('/');
-    return `[Review artifacts at revision ${sha.slice(0, 7)}](https://github.com/${repo}/tree/${sha}/${directory}).`;
-  } catch (err) {
-    deps.log('WARN', `[aidlc-gate-enforcer] Could not verify artifact publication: ${(err as Error).message}`);
-    return undefined;
-  }
-}
-
-export function buildFallbackGateComment(stage: string, evidence?: string): string {
-  const effect = GATE_APPROVAL_EFFECTS[stage];
-  const title = stage.replace(/-/g, ' ');
+function buildFallbackGateComment(stage: string): string {
   return `<!-- aidlc-gate:${stage} -->
-## Review needed: ${title}
+## \u{1f6d1} Gate: ${stage}
 
-The ${title} stage is waiting for your decision. The run ended without a gate brief, so the AIDLC gate enforcer posted this reminder automatically.
+**This gate comment was posted automatically by the AIDLC gate enforcer** because the agent run completed without posting a gate comment for the pending stage.
 
-${evidence || 'Artifact publication has not been verified. Request a reviewable artifact link and revision before approving.'}
-Review the proposed outcome, unresolved conditions and changes since your last approval. This fallback cannot assess whether the artifacts are complete.
+### Status
+- Stage \`${stage}\` artifacts have been committed to the branch
+- Awaiting human approval before the next stage can begin
 
-${stage === 'loop-proposal' ? 'Confirm the execution scope and target environment in the proposal before approving. Skipping this final gate does not authorize construction.\n\n' : ''}### Your next action
+### Reply Options
+- **approve** — advance to the next stage
+- **feedback: [your notes]** — request revisions to this stage's output
+- **skip** — skip this stage and advance
 
-${effect ? `- \`@agent-aidlc approve\` — ${effect}` : 'The approval effect for this stage is not known to the fallback reporter; request clarification in feedback.'}
-- \`@agent-aidlc feedback: [your notes]\` — request revisions or missing evidence.
-${effect && stage !== 'loop-proposal' ? '- `@agent-aidlc skip` — skip this stage; later approval gates still apply.\n' : ''}
-Only mention-prefixed reply comments trigger the next run. Emoji reactions, checkbox ticks and bare replies do not advance the workflow.
+> ⚠️ Emoji reactions and checkbox ticks do NOT trigger advancement — only reply comments are read.
 `;
 }
 
@@ -270,12 +231,19 @@ Only mention-prefixed reply comments trigger the next run. Emoji reactions, chec
  * synchronous to avoid race conditions with process exit).
  */
 function execGitSync(command: string, cwd: string): string {
-  return execSync(command, {
-    cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 30_000,
-  }).trim();
+  try {
+    return execSync(command, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30_000,
+    }).trim();
+  } catch (err) {
+    const error = err as { stdout?: string; stderr?: string; message: string };
+    // git status returns empty string when clean (exit 0)
+    if (error.stdout !== undefined) return error.stdout.trim();
+    throw err;
+  }
 }
 
 /**

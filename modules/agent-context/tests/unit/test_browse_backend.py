@@ -106,17 +106,6 @@ def wiki_s3_client() -> FakeS3Client:
 
 
 @pytest.fixture
-def wiki_catalogue():
-    pool = MagicMock()
-    pool.getconn.return_value.cursor.return_value.__enter__.return_value.fetchall.return_value = [
-        ("HKUDS/Vibe-Trading",),
-        ("aws-e/adp",),
-        ("mattpocock/skills",),
-    ]
-    return pool
-
-
-@pytest.fixture
 def empty_s3_client() -> FakeS3Client:
     """S3 client with no objects."""
     return FakeS3Client({})
@@ -291,12 +280,11 @@ class TestReadAction:
     """Verify action='read' fetches S3 object content."""
 
     @pytest.mark.asyncio
-    async def test_read_wiki_file(self, wiki_s3_client, wiki_catalogue):
+    async def test_read_wiki_file(self, wiki_s3_client):
         """Read a wiki file by its content path."""
         results = await browse(
             "read",
             "content/wikis/HKUDS-Vibe-Trading-wiki.md",
-            db_pool=wiki_catalogue,
             s3_client=wiki_s3_client,
             bucket="test-bucket",
         )
@@ -309,12 +297,11 @@ class TestReadAction:
         assert data["size"] > 0
 
     @pytest.mark.asyncio
-    async def test_read_with_leading_slash(self, wiki_s3_client, wiki_catalogue):
+    async def test_read_with_leading_slash(self, wiki_s3_client):
         """Leading slash in read URI is stripped."""
         results = await browse(
             "read",
             "/content/wikis/HKUDS-Vibe-Trading-wiki.md",
-            db_pool=wiki_catalogue,
             s3_client=wiki_s3_client,
             bucket="test-bucket",
         )
@@ -355,12 +342,11 @@ class TestReadAction:
         assert results == []
 
     @pytest.mark.asyncio
-    async def test_read_code_index_json(self, wiki_s3_client, wiki_catalogue):
+    async def test_read_code_index_json(self, wiki_s3_client):
         """Read a code-index JSON file."""
         results = await browse(
             "read",
             "content/code-indexes/aws-e-adp.json",
-            db_pool=wiki_catalogue,
             s3_client=wiki_s3_client,
             bucket="test-bucket",
         )
@@ -426,11 +412,10 @@ class TestReadContent:
     """Direct tests for _read_content helper."""
 
     @pytest.mark.asyncio
-    async def test_reads_utf8_content(self, wiki_s3_client, wiki_catalogue):
+    async def test_reads_utf8_content(self, wiki_s3_client):
         """UTF-8 content is decoded correctly."""
         results = await _read_content(
             "content/wikis/aws-e-adp-wiki.md",
-            db_pool=wiki_catalogue,
             s3_client=wiki_s3_client,
             bucket="test-bucket",
         )
@@ -440,9 +425,9 @@ class TestReadContent:
     @pytest.mark.asyncio
     async def test_binary_content_returns_hex(self):
         """Non-UTF-8 content is returned as hex string."""
-        s3 = FakeS3Client({"content/capabilities/data.bin": b"\x00\x01\x02\xff"})
+        s3 = FakeS3Client({"content/bins/data.bin": b"\x00\x01\x02\xff"})
         results = await _read_content(
-            "content/capabilities/data.bin",
+            "content/bins/data.bin",
             s3_client=s3,
             bucket="test-bucket",
         )
@@ -450,11 +435,10 @@ class TestReadContent:
         assert results[0].data["content"] == "000102ff"
 
     @pytest.mark.asyncio
-    async def test_returns_correct_size(self, wiki_s3_client, wiki_catalogue):
+    async def test_returns_correct_size(self, wiki_s3_client):
         """Size field reflects actual byte length."""
         results = await _read_content(
             "content/wikis/aws-e-adp-wiki.md",
-            db_pool=wiki_catalogue,
             s3_client=wiki_s3_client,
             bucket="test-bucket",
         )
@@ -511,12 +495,11 @@ class TestURINormalization:
         assert "HKUDS-Vibe-Trading-wiki.md" in names
 
     @pytest.mark.asyncio
-    async def test_read_alias_with_content_path(self, wiki_s3_client, wiki_catalogue):
+    async def test_read_alias_with_content_path(self, wiki_s3_client):
         """action='read' + content path URI works end-to-end (the exact bug scenario)."""
         results = await browse(
             "read",
             "content/wikis/HKUDS-Vibe-Trading-wiki.md",
-            db_pool=wiki_catalogue,
             s3_client=wiki_s3_client,
             bucket="test-bucket",
         )
@@ -730,12 +713,11 @@ class TestRepoScopedRead:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_read_content_root_still_uses_s3(self, wiki_s3_client, wiki_catalogue):
+    async def test_read_content_root_still_uses_s3(self, wiki_s3_client):
         """A content-root read path uses S3 even with a repo scope set."""
         results = await browse(
             "read",
             "content/wikis/HKUDS-Vibe-Trading-wiki.md",
-            db_pool=wiki_catalogue,
             s3_client=wiki_s3_client,
             bucket="test-bucket",
             zoekt_url=ZOEKT_URL,

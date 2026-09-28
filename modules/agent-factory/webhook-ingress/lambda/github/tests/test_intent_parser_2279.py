@@ -206,9 +206,8 @@ class TestModelDirectiveInIntent:
         assert result.persona == "developer"
         assert result.model is None
 
-    def test_pr_event_does_not_have_model(self, monkeypatch):
+    def test_pr_event_does_not_have_model(self):
         """PR events don't parse /model (trigger is branch-based, not comment)."""
-        monkeypatch.setenv("GITHUB_AUTO_PR_REVIEW_ENABLED", "true")
         payload = {
             "action": "opened",
             "pull_request": {
@@ -222,7 +221,7 @@ class TestModelDirectiveInIntent:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "agent-codex-reviewer"
+        assert result.persona == "reviewer"
         assert result.model is None
 
 

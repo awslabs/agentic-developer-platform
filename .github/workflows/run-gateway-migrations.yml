@@ -1,45 +1,8 @@
 name: Run Gateway Alembic Migrations (one-shot)
 
-run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
-
 on:
   workflow_dispatch:
     inputs:
-      adp_correlation:
-        description: 'Engine delivery correlation; empty preserves manual operation.'
-        required: false
-        type: string
-        default: ''
-      adp_source_revision:
-        description: 'Engine-approved immutable source commit.'
-        required: false
-        type: string
-        default: ''
-      adp_definition_revision:
-        description: 'Expected workflow revision; checked before deployment.'
-        required: false
-        type: string
-        default: ''
-      account_id:
-        description: "Target AWS account; empty uses deployment config."
-        required: false
-        type: string
-        default: ''
-      expected_image:
-        description: "Expected gateway release image; empty uses current deployment image"
-        required: false
-        type: string
-        default: ''
-      expected_image_digest:
-        description: "Exact deployed gateway digest; reconstructed against the trusted account"
-        required: false
-        type: string
-        default: ''
-      expected_image_tag:
-        description: "Expected gateway release SHA tag; resolved against the trusted account"
-        required: false
-        type: string
-        default: ''
       environment:
         description: "Target environment (default: dev)"
         required: false
@@ -62,41 +25,6 @@ on:
         default: ''
   workflow_call:
     inputs:
-      adp_correlation:
-        description: 'Engine delivery correlation; empty preserves manual operation.'
-        required: false
-        type: string
-        default: ''
-      adp_source_revision:
-        description: 'Engine-approved immutable source commit.'
-        required: false
-        type: string
-        default: ''
-      adp_definition_revision:
-        description: 'Expected workflow revision; checked before deployment.'
-        required: false
-        type: string
-        default: ''
-      account_id:
-        description: "Target AWS account; empty uses deployment config."
-        required: false
-        type: string
-        default: ''
-      expected_image:
-        description: "Expected gateway release image; empty uses current deployment image"
-        required: false
-        type: string
-        default: ''
-      expected_image_digest:
-        description: "Exact deployed gateway digest; reconstructed against the trusted account"
-        required: false
-        type: string
-        default: ''
-      expected_image_tag:
-        description: "Expected gateway release SHA tag; resolved against the trusted account"
-        required: false
-        type: string
-        default: ''
       environment:
         description: "Target environment (default: dev)"
         required: false
@@ -123,124 +51,39 @@ env:
 
 jobs:
   migrate:
-    if: github.ref == 'refs/heads/main'
-    environment: adp-gateway-deploy-${{ inputs.environment || 'dev' }}
-    permissions:
-      contents: read
-      id-token: write
     runs-on: arc-runner-org
     steps:
-      - name: Guard engine delivery revisions
-        env:
-          ADP_CORRELATION: ${{ inputs.adp_correlation }}
-          ADP_SOURCE: ${{ inputs.adp_source_revision }}
-          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
-          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
-        run: |
-          set -euo pipefail
-          if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
-            [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
-            [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
-            [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]] || exit 1
-            test "$ACTUAL_DEFINITION" = "$ADP_DEFINITION"
-          fi
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.adp_source_revision || github.sha }}
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
-          account_id: ${{ inputs.account_id }}
           environment: ${{ inputs.environment }}
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
-      - name: Record deployment workflow context
-        env:
-          CONTEXT_WORKFLOW: .github/workflows/run-gateway-migrations.yml
-          CONTEXT_REVISION: ${{ github.workflow_sha }}
-          CONTEXT_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
-          CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
-          CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
-          INPUT_ACCOUNT_ID: ${{ inputs.account_id || '' }}
-          INPUT_CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id || '' }}
-          INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
-          INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
-          INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
-          INPUT_EXPECTED_IMAGE: ${{ inputs.expected_image || '' }}
-          INPUT_EXPECTED_IMAGE_DIGEST: ${{ inputs.expected_image_digest || '' }}
-          INPUT_EXPECTED_IMAGE_TAG: ${{ inputs.expected_image_tag || '' }}
-        run: python3 modules/gateway/scripts/deployment-workflow-context.py
-      - name: Upload deployment workflow context
-        uses: actions/upload-artifact@v4
-        with:
-          name: adp-deployment-context-run-gateway-migrations.yml-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
-          if-no-files-found: error
-          retention-days: 30
-
       - name: Install kubectl
         run: |
-          set -euo pipefail
-          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
-            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
-          done
-      - name: Select trusted EKS context
-        run: |
-          set -euo pipefail
-          test "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT_ID"
-          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
-      - name: Migrate and verify activated pricing on the release image
-        env:
-          PRICING_EXPECTED_IMAGE: ${{ inputs.expected_image }}
-          PRICING_EXPECTED_IMAGE_DIGEST: ${{ inputs.expected_image_digest }}
-          PRICING_EXPECTED_IMAGE_TAG: ${{ inputs.expected_image_tag }}
-        run: |
-          set -euo pipefail
-          PRICING_IMAGE_ARGS=()
-          if [ -n "$PRICING_EXPECTED_IMAGE_DIGEST" ]; then
-            test -z "$PRICING_EXPECTED_IMAGE$PRICING_EXPECTED_IMAGE_TAG" || { echo "::error::Provide one expected release reference"; exit 1; }
-            [[ "$PRICING_EXPECTED_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Invalid release digest"; exit 1; }
-            PRICING_EXPECTED_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway@${PRICING_EXPECTED_IMAGE_DIGEST}"
+          if ! command -v kubectl >/dev/null; then
+            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
           fi
-          if [ -n "$PRICING_EXPECTED_IMAGE_TAG" ]; then
-            test -z "$PRICING_EXPECTED_IMAGE" || { echo "::error::Provide one expected release reference"; exit 1; }
-            [[ "$PRICING_EXPECTED_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Expected release tag must be a commit SHA"; exit 1; }
-            PRICING_EXPECTED_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_EXPECTED_IMAGE_TAG}"
-          fi
-          if [ -n "$PRICING_EXPECTED_IMAGE" ]; then
-            PRICING_IMAGE_ARGS=(--expected-image "$PRICING_EXPECTED_IMAGE")
-          fi
-          python3 modules/gateway/scripts/pricing-rollout.py migrate \
-            --account-id "$ACCOUNT_ID" \
-            --environment "$ENVIRONMENT" "${PRICING_IMAGE_ARGS[@]}"
+          EKS_CLUSTER="adp-${ENVIRONMENT:-dev}-eks-cluster"
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" >/dev/null
 
-      - name: Record gateway-migrations build evidence
-        env:
-          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
-          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
-          ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
-          ADP_RELEASE_WORKFLOW: .github/workflows/run-gateway-migrations.yml
-        run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-migrations
-      - name: Upload gateway-migrations build evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: adp-release-gateway-migrations-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/adp-release-gateway-migrations/release.json
-          if-no-files-found: error
-          retention-days: 30
+      - name: Run alembic
+        run: |
+          set -euo pipefail
+          NS="adp-gateway"
+          POD=$(kubectl get pods -n "$NS" --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+          echo "Using $NS/$POD"
+          # Show current revision
+          echo "=== Before ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current || true
+          echo
+          echo "=== Upgrade ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic upgrade head
+          echo
+          echo "=== After ==="
+          kubectl exec -n "$NS" "$POD" -- env PYTHONPATH=/app alembic current

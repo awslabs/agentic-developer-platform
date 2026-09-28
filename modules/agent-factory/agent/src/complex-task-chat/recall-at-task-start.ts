@@ -19,8 +19,6 @@
 
 import { PersonalContextIdentity, getPersonalContextHeaders } from './personal-context-headers';
 import { validateBaseUrl } from '../lib/url-guard';
-import { getDoorBaseUrl, getDoorHeaders } from '../lib/doorAuth';
-import { isProtectedKnowledgeRun } from '../lib/knowledgeBridge';
 
 /**
  * Feature flag: enable recall-at-task-start. Default off until validated.
@@ -107,7 +105,7 @@ export async function recallAtTaskStart(
   }
 
   // Gate: identity required for recall
-  if (!identity && !isProtectedKnowledgeRun()) {
+  if (!identity) {
     return {
       attempted: false,
       learnings: [],
@@ -116,7 +114,7 @@ export async function recallAtTaskStart(
     };
   }
 
-  const headers = isProtectedKnowledgeRun() ? { 'X-Owner-Sub': '', 'X-Tenant-Id': '' } : getPersonalContextHeaders(identity);
+  const headers = getPersonalContextHeaders(identity);
   if (!headers) {
     return {
       attempted: false,
@@ -166,21 +164,13 @@ export async function callRecall(
   const timeout = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
 
   try {
-    const url = isProtectedKnowledgeRun() ? `${getDoorBaseUrl(CONTEXT_MCP_URL)}/call` : `${CONTEXT_MCP_URL}/tools/call`;
-    // Both branches are fixed destinations with a static path: CONTEXT_MCP_URL is
-    // validated once via validateBaseUrl() at load (blocks metadata/link-local, rejects
-    // inline credentials), and the protected branch is the loopback bridge on a
-    // numeric-only port. redirect:'error' stops the Door or the bridge from relocating
-    // the call, which would forward the Door key and the X-Owner-Sub/X-Tenant-Id
-    // identity headers below to the redirect target (#5603).
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
-    const response = await fetch(url, {
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — CONTEXT_MCP_URL is a module constant validated once via validateBaseUrl() at load (blocks loopback/metadata/link-local); only the static /tools/call path is interpolated
+    const response = await fetch(`${CONTEXT_MCP_URL}/tools/call`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // Authenticate to the Door before it will honour the identity headers
-        // below (#4073 finding #8). Missing key => 401 => recall returns nothing.
-        ...getDoorHeaders(headers),
+        'X-Owner-Sub': headers['X-Owner-Sub'],
+        'X-Tenant-Id': headers['X-Tenant-Id'],
       },
       body: JSON.stringify({
         name: 'experience',
@@ -191,7 +181,6 @@ export async function callRecall(
           limit: RECALL_LIMIT,
         },
       }),
-      redirect: 'error',
       signal: controller.signal,
     });
 

@@ -55,7 +55,6 @@ class CredentialUpdate(BaseModel):
     Value updates are intentionally excluded — re-register for audit clarity.
     """
 
-    expected_revision: datetime | None = None
     label: str | None = None
     expires_at: datetime | None = None
     strict: bool | None = None
@@ -66,12 +65,6 @@ class CredentialUpdate(BaseModel):
         if isinstance(data, dict) and "value" in data:
             raise ValueError("'value' cannot be updated via PATCH — delete and re-register for audit clarity")
         return data
-
-
-class CredentialMetadataUpdate(CredentialUpdate):
-    """Conflict-safe metadata adapter; old servers do not expose this route."""
-
-    expected_revision: datetime
 
 
 class CredentialResponse(BaseModel):

@@ -54,7 +54,7 @@ ok "gh CLI authenticated"
 header "Configuration"
 prompt GITHUB_ORG    "GitHub organization name"
 prompt REPO_NAME     "Repository name"                       "adp"
-ARC_LABEL="arc-runner-org"  # Project workflow routing is fixed, not configurable.
+prompt ARC_LABEL     "ARC runner label (used in runs-on:)"   "arc-runner-org"
 prompt SECRET_PREFIX "Secrets Manager prefix where you'll store GitHub App credentials" "adp/${GITHUB_ORG}"
 prompt AWS_REGION    "AWS region"                            "us-east-1"
 

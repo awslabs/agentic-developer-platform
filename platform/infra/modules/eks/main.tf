@@ -2,122 +2,6 @@
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
-# ---------------------------------------------------------------------------
-# Additional existing private capacity subnets (#5830)
-# ---------------------------------------------------------------------------
-# The cluster's original subnets can run out of private IP addresses, at which
-# point the CNI fails every new pod with "failed to assign an IP address to
-# container" and nothing new can be scheduled. Auto Mode's AWS-managed `default`
-# NodeClass draws its subnets from the cluster's own resourcesVpcConfig.subnetIds
-# (it exposes no subnetSelectorTerms and must not be edited), so widening the
-# cluster's subnet set is the supported way to give new nodes more addresses.
-# UpdateClusterConfig permits exactly that on a live cluster — same VPC, >= 2 AZs
-# — and the provider plans it as an in-place vpc_config update, not a rebuild.
-#
-# ADDITIVE by construction: var.private_subnet_ids is always the head of the
-# list, so the original subnets can never be dropped by this input, and an empty
-# map (the default) reproduces today's subnet set exactly.
-locals {
-  # Taken from the CHECKED data source, never from the raw variable. That is what
-  # puts the subnet postconditions below UPSTREAM of the cluster: the ids the
-  # cluster is planned with are produced by the read that checks them, so no plan
-  # can reach the cluster while skipping the checks. Consuming
-  # var.additional_private_subnet_ids_by_az here instead would leave both reads
-  # off the cluster's dependency graph, and a plan targeting only the cluster
-  # (which is how this change is rolled out) would prune them and accept an
-  # unchecked subnet in silence. The routing read is bound through the cluster's
-  # depends_on for the same reason.
-  additional_private_subnet_ids = [
-    for az in sort(keys(var.additional_private_subnet_ids_by_az)) :
-    data.aws_subnet.additional_private[az].id
-  ]
-
-  # Order matters for plan stability, not for behaviour: existing subnets first
-  # (so a diff reads as "+ added"), then additions in a deterministic AZ order.
-  cluster_subnet_ids = concat(var.private_subnet_ids, local.additional_private_subnet_ids)
-}
-
-# Read each supplied subnet and REFUSE the plan unless it is genuinely safe to
-# add. These are diagnostic observations in an issue until proven against the
-# live account, so every property the caller asserts is checked here rather than
-# trusted: a subnet pasted from another VPC, a public subnet, or one in an
-# unexpected zone each turn an additive capacity fix into an outage or a silent
-# loss of zone coverage. Data sources + postconditions, so this adds no managed
-# resource to the plan and fails during plan, before anything is applied.
-data "aws_subnet" "additional_private" {
-  for_each = var.additional_private_subnet_ids_by_az
-
-  id = each.value
-
-  lifecycle {
-    postcondition {
-      condition     = self.vpc_id == var.vpc_id
-      error_message = "additional_private_subnet_ids_by_az names a subnet that is not in this cluster's VPC; EKS cannot use a subnet from another VPC."
-    }
-
-    postcondition {
-      condition     = self.availability_zone == each.key
-      error_message = "additional_private_subnet_ids_by_az names a subnet that is not in the availability zone it is keyed by; fix the key or the subnet id rather than losing zone coverage."
-    }
-
-    postcondition {
-      condition     = !self.map_public_ip_on_launch
-      error_message = "additional_private_subnet_ids_by_az names a subnet that assigns public IPs on launch; cluster capacity subnets must be private."
-    }
-
-    postcondition {
-      # Empty list = check skipped (see private_subnet_availability_zones). When
-      # supplied, the added subnet must share a zone with existing capacity, so
-      # an addition widens the zones the cluster already runs in instead of
-      # introducing an unreviewed one.
-      condition     = length(var.private_subnet_availability_zones) == 0 || contains(var.private_subnet_availability_zones, self.availability_zone)
-      error_message = "additional_private_subnet_ids_by_az names a subnet in an availability zone this cluster has no existing private subnet in."
-    }
-
-    postcondition {
-      # EKS requires at least 6 available addresses in every subnet handed to a
-      # cluster (16 recommended), so a subnet below that is rejected by the API and
-      # would fail the update rather than relieve anything.
-      #
-      # POINT-IN-TIME ONLY. This is read at plan time and free addresses move on
-      # their own as pods come and go, so it catches an obviously unsuitable subnet
-      # -- it does NOT establish that capacity will still be there at apply. Recheck
-      # immediately before rollout: docs/runbooks/eks-pod-ip-exhaustion.md §5.4.
-      condition     = self.available_ip_address_count >= 6
-      error_message = "additional_private_subnet_ids_by_az names a subnet with fewer than the 6 available IP addresses EKS requires; pick one with comfortable headroom (16+)."
-    }
-  }
-}
-
-# Routing check, separate from the subnet read because it needs the subnet's
-# associated route table. A subnet whose default route is an internet gateway is
-# a public subnet however it is tagged, and a subnet with no 0.0.0.0/0 route at
-# all cannot pull images or reach the control plane, so nodes launched there
-# would fail to join instead of relieving the exhaustion.
-data "aws_route_table" "additional_private" {
-  for_each = var.additional_private_subnet_ids_by_az
-
-  subnet_id = each.value
-
-  lifecycle {
-    postcondition {
-      condition = length([
-        for route in self.routes : route
-        if route.cidr_block == "0.0.0.0/0" && route.nat_gateway_id != ""
-      ]) > 0
-      error_message = "additional_private_subnet_ids_by_az names a subnet whose route table has no 0.0.0.0/0 route via a NAT gateway; nodes there could not reach the control plane or pull images."
-    }
-
-    postcondition {
-      condition = length([
-        for route in self.routes : route
-        if route.cidr_block == "0.0.0.0/0" && route.gateway_id != ""
-      ]) == 0
-      error_message = "additional_private_subnet_ids_by_az names a subnet routed to an internet gateway; that is a public subnet and must not carry cluster capacity."
-    }
-  }
-}
-
 # KMS Key for EKS secrets encryption
 resource "aws_kms_key" "eks_secrets" {
   description             = "${var.name_prefix}-eks-secrets"
@@ -151,12 +35,9 @@ resource "aws_eks_cluster" "main" {
   }
 
   vpc_config {
-    # var.private_subnet_ids plus any reviewed additional existing capacity
-    # subnets (#5830). Additive: the original subnets always remain. See the
-    # locals block at the top of this file.
-    subnet_ids              = local.cluster_subnet_ids
-    endpoint_private_access = var.endpoint_private_access
-    endpoint_public_access  = var.endpoint_public_access
+    subnet_ids              = var.private_subnet_ids
+    endpoint_private_access = true
+    endpoint_public_access  = true
     public_access_cidrs     = var.eks_public_access_cidrs
     security_group_ids      = [var.eks_security_group_id]
   }
@@ -191,12 +72,7 @@ resource "aws_eks_cluster" "main" {
   # Enable logging
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
-  # The route-table read yields no value the cluster consumes, so unlike the
-  # subnet read it cannot enter the graph through subnet_ids. Without this edge a
-  # plan targeting only the cluster prunes it and applies an internet-gateway-routed
-  # or unrouted subnet unchecked. depends_on is what keeps its postconditions
-  # upstream of the cluster in a targeted plan (#5830).
-  depends_on = [aws_kms_key.eks_secrets, data.aws_route_table.additional_private]
+  depends_on = [aws_kms_key.eks_secrets]
 
   tags = merge(var.common_tags, {
     Name                                                   = "${var.name_prefix}-eks-cluster"
@@ -228,15 +104,6 @@ resource "aws_eks_access_entry" "admins" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = each.key
   type          = "STANDARD"
-
-  # Match agent-factory/infra's runner entry and provider default tags (#5006).
-  # Only that shared principal gets these overrides; other operator entries
-  # retain platform tags and visible drift. All access grants remain managed.
-  tags = each.key == "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-agent-runner-role" ? {
-    Module = "agent-factory"
-    Name   = "adp-${var.environment}-agent-runner-access"
-    Owner  = "agent-team"
-  } : {}
 }
 
 resource "aws_eks_access_policy_association" "admins" {
@@ -278,31 +145,6 @@ resource "kubernetes_namespace" "bedrockgw" {
   ]
 }
 
-# Root-based clean-room eval pods are isolated from the gateway namespace so
-# restricted Pod Security Admission can be enforced there without breaking the
-# stock-image provisioning those evals perform at runtime.
-resource "kubernetes_namespace" "gateway_evals" {
-  metadata {
-    name = "adp-gateway-evals"
-    labels = {
-      "app.kubernetes.io/managed-by"               = "terraform"
-      "app.kubernetes.io/part-of"                  = "adp"
-      "app.kubernetes.io/component"                = "gateway-evals"
-      "pod-security.kubernetes.io/enforce"         = "baseline"
-      "pod-security.kubernetes.io/enforce-version" = "latest"
-      "pod-security.kubernetes.io/warn"            = "restricted"
-      "pod-security.kubernetes.io/warn-version"    = "latest"
-      "pod-security.kubernetes.io/audit"           = "restricted"
-      "pod-security.kubernetes.io/audit-version"   = "latest"
-    }
-  }
-
-  depends_on = [
-    aws_eks_cluster.main,
-    time_sleep.wait_for_access_entry,
-  ]
-}
-
 # IRSA Role for Gateway Service — trusts the EKS OIDC provider
 # This role is created here (not in the IAM module) because it depends on
 # the OIDC provider which is created after the EKS cluster.
@@ -311,29 +153,16 @@ locals {
 }
 
 resource "aws_iam_role" "gateway_service_irsa" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-role-gateway-service"
+  name = "${var.name_prefix}-role-gateway-service"
 
   # Trust policy allows the gateway service account to assume this role via IRSA.
   # Issue #33: The gateway pods may run in either the "bedrockgw" namespace
   # (created by Terraform) or "adp-gateway" (created by kubectl/deploy scripts).
   # Use StringLike with both namespace patterns to support both deployments.
-  #
-  # Issue #5051 adds the second statement: the EKS Pod Identity service principal.
-  # Pod identity delivers credentials through the EKS Auth API instead of a
-  # projected OIDC token, so it needs its own trust statement — the federated
-  # statement above does not cover it. Both are present deliberately: IRSA remains
-  # the working path, and this statement makes the pod-identity path *possible*
-  # without switching to it. A trust statement grants nothing on its own; an
-  # association (below) is what actually delivers credentials. sts:TagSession is
-  # required because the EKS Auth API tags the session with the cluster/namespace/
-  # service-account it resolved, and without it every AssumeRole for pod identity
-  # is denied.
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "GatewayIrsaWebIdentity"
         Effect = "Allow"
         Principal = {
           Federated = aws_iam_openid_connect_provider.cluster.arn
@@ -348,21 +177,6 @@ resource "aws_iam_role" "gateway_service_irsa" {
               "system:serviceaccount:bedrockgw:gateway-service",
               "system:serviceaccount:adp-gateway:gateway-service"
             ]
-          }
-        }
-      },
-      {
-        Sid    = "GatewayPodIdentity"
-        Effect = "Allow"
-        Principal = {
-          Service = "pods.eks.amazonaws.com"
-        }
-        Action = ["sts:AssumeRole", "sts:TagSession"]
-        Condition = {
-          StringEquals = {
-            "aws:RequestTag/eks-cluster-arn"            = aws_eks_cluster.main.arn
-            "aws:RequestTag/kubernetes-namespace"       = ["bedrockgw", "adp-gateway"]
-            "aws:RequestTag/kubernetes-service-account" = "gateway-service"
           }
         }
       }
@@ -680,62 +494,6 @@ resource "kubernetes_service_account" "gateway_service" {
   ]
 }
 
-# =============================================================================
-# EKS Pod Identity for the gateway service account (#5051)
-# =============================================================================
-# The gateway brokers tenant workspace-role assumes. Its own credentials must
-# come from the platform, not from a stored access key — a long-lived key kept as
-# a fallback leaves the credential this design removes still reachable, which
-# makes the improvement cosmetic.
-#
-# Pod identity is the newer of the two keyless mechanisms. Where IRSA projects an
-# OIDC token into the pod and the SDK exchanges it via AssumeRoleWithWebIdentity,
-# pod identity has the node's agent call the EKS Auth API on the pod's behalf and
-# hand back credentials. The practical difference here: the association is an AWS
-# resource, so which service account may assume which role is declared in
-# Terraform rather than encoded in the role's trust-policy `sub` condition, and no
-# annotation on the service account is required.
-#
-# No `eks-pod-identity-agent` addon is declared. On EKS Auto Mode — which this
-# cluster uses (`compute_config.enabled = true` above) — the agent is built in;
-# adding the addon would fail or conflict. The node role already carries
-# AmazonEKSWorkerNodePolicy (platform/infra/modules/iam/main.tf), which grants the
-# eks-auth:AssumeRoleForPodIdentity the agent needs.
-#
-# Default-off: enabling declares associations but does not switch an existing
-# IRSA pod. The SDK checks web-identity credentials before container credentials.
-# A deliberate cutover also removes the IRSA annotation/injected web-identity
-# environment and rolls the pods; both trust paths remain available. Rollback
-# restores the IRSA annotation and rolls pods before removing associations, so a
-# running container-credential pod is never left without its delivery mechanism.
-# No credential cutover or static-key fallback is performed by this module.
-#
-# Two associations because the gateway runs in one of two namespaces depending on
-# how it was deployed (#33): "bedrockgw" when Terraform created it, "adp-gateway"
-# when the deploy workflow did. The IRSA trust policy already accepts both; these
-# match it. An association for a namespace/service-account that does not exist is
-# inert — it resolves nothing until a pod with that identity runs — so covering
-# both is not a grant to anything extra.
-resource "aws_eks_pod_identity_association" "gateway_service" {
-  for_each = var.enable_gateway_pod_identity ? toset(["bedrockgw", "adp-gateway"]) : toset([])
-
-  cluster_name    = aws_eks_cluster.main.name
-  namespace       = each.key
-  service_account = "gateway-service"
-  role_arn        = aws_iam_role.gateway_service_irsa.arn
-
-  tags = merge(var.common_tags, {
-    Name    = "${var.name_prefix}-pod-identity-gateway-${each.key}"
-    Service = "eks"
-    Purpose = "gateway-pod-identity"
-  })
-
-  depends_on = [
-    aws_eks_cluster.main,
-    aws_iam_role.gateway_service_irsa,
-  ]
-}
-
 # Security group rules for cluster communication
 resource "aws_security_group_rule" "cluster_ingress_node_https" {
   description              = "Allow pods to communicate with the cluster API Server"
@@ -758,9 +516,8 @@ resource "aws_security_group_rule" "cluster_ingress_node_https" {
 
 # IAM role for the CloudWatch Observability addon (IRSA)
 resource "aws_iam_role" "cloudwatch_observability" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  count                = var.enable_container_insights ? 1 : 0
-  name                 = "${var.name_prefix}-role-cw-observability"
+  count = var.enable_container_insights ? 1 : 0
+  name  = "${var.name_prefix}-role-cw-observability"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -795,10 +552,9 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_observability" {
 }
 
 resource "aws_eks_addon" "cloudwatch_observability" {
-  count         = var.enable_container_insights ? 1 : 0
-  cluster_name  = aws_eks_cluster.main.name
-  addon_name    = "amazon-cloudwatch-observability"
-  addon_version = "v6.7.0-eksbuild.1"
+  count        = var.enable_container_insights ? 1 : 0
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "amazon-cloudwatch-observability"
 
   service_account_role_arn = aws_iam_role.cloudwatch_observability[0].arn
 
@@ -817,104 +573,6 @@ resource "aws_eks_addon" "cloudwatch_observability" {
   })
 }
 
-# Metrics API for HPA (issue: gateway had no pod autoscaling).
-# EKS Auto Mode scales nodes, not pods — pod scale-out needs an HPA
-# (modules/gateway/k8s/hpa.yaml), and an HPA needs the Metrics API, which
-# Auto Mode does NOT bundle. This is the managed community addon; it runs
-# in-cluster and needs no IAM role.
-#
-# NOTE: first installed out-of-band via `aws eks create-addon` on 2026-08-30
-# to unblock the gateway HPA; resolve_conflicts_on_create = "OVERWRITE"
-# adopts that existing install on the next platform apply instead of erroring.
-resource "aws_eks_addon" "metrics_server" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "metrics-server"
-  # Verified EKS 1.35 security rebuild; keep a reviewed version on future applies.
-  addon_version = "v0.9.0-eksbuild.11"
-
-  resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "OVERWRITE"
-
-  depends_on = [aws_eks_cluster.main]
-
-  tags = merge(var.common_tags, {
-    Name    = "${var.name_prefix}-addon-metrics-server"
-    Service = "eks"
-    Purpose = "metrics-api-for-hpa"
-  })
-}
-
-# =============================================================================
-# NetworkPolicy enforcement — EKS Auto Mode network-policy controller (#4999)
-# =============================================================================
-# A Kubernetes NetworkPolicy is only a declaration. Something has to translate
-# it into per-pod enforcement and program the dataplane. Auto Mode ships that
-# controller but leaves it OFF, and nothing in this repo asked for it — so every
-# NetworkPolicy we have ever written has been decorative.
-#
-# That is not a theoretical gap. Evaluation #3967 (check W1-04) applied a plain
-# deny-all ingress policy to a probe pod, with labels confirmed matching the
-# podSelector, and a non-gateway caller still got HTTP 200. The namespace's
-# `default-deny-egress` and `agent-scaledjob-egress` policies had been in place
-# for months and were equally unenforced, so the worker egress restriction that
-# operators and prior security reviews believed was protecting the sandbox was
-# not restricting anything.
-#
-# Enablement is a ConfigMap, not an addon. On Auto Mode there is no managed
-# `vpc-cni` addon and no `aws-node` DaemonSet to configure — AWS documents this
-# single key instead:
-#   https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
-# Note what is deliberately NOT touched here: `compute_config` above, and the
-# default NodeClass. The NodeClass already reports `networkPolicy: DefaultAllow`
-# — that is the mode, not a disablement, so mutating it would be a cluster-wide
-# networking change with no bearing on this gap (#4999 non-goals).
-#
-# `kubernetes_config_map` (create) rather than `kubernetes_config_map_v1_data`
-# (patch) because on an Auto Mode cluster this ConfigMap does not exist at all —
-# confirmed absent on adp-dev-eks-cluster (`NotFound`). If a future environment
-# has it pre-created out-of-band, this resource will fail loudly on
-# "already exists" rather than silently diverge; import it or switch that
-# environment to the patch resource. A loud failure is the intended behaviour.
-#
-# Default-off (see variables.tf). Enabling it is the moment four existing
-# policies begin to bite at once, so it must be a deliberate per-environment
-# decision — and it must land AFTER the ADOT collector egress policy in
-# modules/agent-factory/webhook-ingress/infra/scaledjob-netpol.tf, or agent
-# telemetry stops with no error anywhere. Rollback is this variable back to
-# false plus an apply; enforcement stops and today's behaviour returns.
-resource "kubernetes_config_map" "amazon_vpc_cni" {
-  count = var.enable_network_policy_controller ? 1 : 0
-
-  metadata {
-    name      = "amazon-vpc-cni"
-    namespace = "kube-system"
-  }
-
-  data = {
-    "enable-network-policy-controller" = "true"
-  }
-
-  depends_on = [
-    aws_eks_cluster.main,
-    time_sleep.wait_for_access_entry,
-  ]
-}
-
 # CI runner EKS access is managed in the workflow pre-apply step
 # to avoid chicken-and-egg: runner needs access to run Terraform,
 # but Terraform would create the access entry
-
-# Conditional Superplane route registration. No Terraform state reads or writes.
-resource "aws_iam_role_policy" "gateway_superplane_route_read" {
-  name = "${var.name_prefix}-policy-gateway-superplane-route-read"
-  role = aws_iam_role.gateway_service_irsa.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["s3:GetObject"]
-      Resource = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/domain-routes/${var.environment}/superplane/public-route.json"
-    }]
-  })
-}

@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.connections.routes import router
 from src.admin.connections.schemas import (
@@ -28,17 +27,6 @@ from src.admin.connections.schemas import (
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
-
-
-@pytest.fixture(autouse=True)
-def _isolate_durable_audit_sink(monkeypatch):
-    # These provider/response unit tests do not test SQL. Keep their provider
-    # assertions intact; real request teardown, intent and terminal persistence
-    # are exercised without this stub in test_admin_audit_durability.py.
-    from src.admin import audit_operation
-
-    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -71,7 +59,7 @@ def app():
 
 @pytest.fixture
 def mock_db():
-    return AsyncMock(spec=AsyncSession)
+    return MagicMock()
 
 
 def _make_client(

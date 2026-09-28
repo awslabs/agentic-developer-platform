@@ -34,7 +34,7 @@ const mockUnlinkOrg = unlinkOrgFromTenant as ReturnType<typeof vi.fn>;
 
 const mockTenants = {
   items: [
-    { id: 'tenant-a', name: 'Contoso', awsAccounts: [], roleMappings: {}, settings: {}, createdAt: '2026-01-01' },
+    { id: 'tenant-a', name: 'Sophos', awsAccounts: [], roleMappings: {}, settings: {}, createdAt: '2026-01-01' },
     { id: 'tenant-b', name: 'Acme', awsAccounts: [], roleMappings: {}, settings: {}, createdAt: '2026-01-02' },
   ],
   total: 2,
@@ -46,7 +46,7 @@ const mockTenants = {
 const mockLinkedOrgs = {
   tenantId: 'tenant-a',
   linkedOrgs: [
-    { orgId: 'org-1', orgName: 'acme-research', githubOrgId: '22222' },
+    { orgId: 'org-1', orgName: 'sophos-research', githubOrgId: '22222' },
   ],
 };
 
@@ -67,7 +67,7 @@ describe('TenantOrgLinks Page', () => {
       linked: true,
       tenantId: 'tenant-a',
       githubOrgId: '22222',
-      orgName: 'acme-research',
+      orgName: 'sophos-research',
     });
     mockUnlinkOrg.mockResolvedValue({
       unlinked: true,
@@ -91,7 +91,7 @@ describe('TenantOrgLinks Page', () => {
     await waitFor(() => {
       expect(mockGetOrganizations).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByText('Contoso')).toBeInTheDocument();
+    expect(screen.getByText('Sophos')).toBeInTheDocument();
     expect(screen.getByText('Acme')).toBeInTheDocument();
   });
 
@@ -121,7 +121,7 @@ describe('TenantOrgLinks Page', () => {
     await waitFor(() => {
       expect(mockGetLinkedOrgs).toHaveBeenCalledWith('tenant-a');
     });
-    expect(screen.getByText('acme-research')).toBeInTheDocument();
+    expect(screen.getByText('sophos-research')).toBeInTheDocument();
     expect(screen.getByText('22222')).toBeInTheDocument();
   });
 
@@ -156,7 +156,7 @@ describe('TenantOrgLinks Page', () => {
     await userEvent.selectOptions(select, 'tenant-a');
 
     await waitFor(() => {
-      expect(screen.getByText('acme-research')).toBeInTheDocument();
+      expect(screen.getByText('sophos-research')).toBeInTheDocument();
     });
 
     const unlinkButton = screen.getByText('Unlink');
@@ -177,7 +177,7 @@ describe('TenantOrgLinks Page', () => {
     await userEvent.selectOptions(select, 'tenant-a');
 
     await waitFor(() => {
-      expect(screen.getByText('acme-research')).toBeInTheDocument();
+      expect(screen.getByText('sophos-research')).toBeInTheDocument();
     });
 
     // Click "Unlink" in the table

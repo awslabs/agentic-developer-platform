@@ -1,8 +1,0 @@
-{
-  "source_commit": "f8ba67f08ae986d99ea86c26d5df09b46afbf8ea",
-  "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot:security27-openssh-f8ba67f08",
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:f45198dd5cf103f72f797a1aeb13bab50d6223f950c59d63e6d671915e7cda5a",
-  "config_digest": "sha256:9789da812b3829ff601b837ea0b1ade224aa750a5cde263f127fc377fdc534dd",
-  "registry_matches_scanned_root": true,
-  "deployed": false
-}

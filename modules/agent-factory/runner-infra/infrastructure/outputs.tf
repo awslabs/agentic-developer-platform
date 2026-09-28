@@ -53,8 +53,3 @@ output "kubeconfig_command" {
   description = "Command to configure kubectl"
   value       = "aws eks update-kubeconfig --region ${var.aws_region} --name ${aws_eks_cluster.main.name}"
 }
-
-output "runner_runtime_policy" {
-  description = "Canonical bounded grants used by repository onboarding; do not maintain a separate API allowlist in shell."
-  value       = { Version = "2012-10-17", Statement = module.runtime_policy.grants }
-}

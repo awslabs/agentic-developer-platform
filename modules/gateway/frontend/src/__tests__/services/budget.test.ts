@@ -196,40 +196,6 @@ describe('Budget Service', () => {
       // Note: createBudget now generates ID from entity_type-entity_id-period_type
       expect(result.id).toBe('department-dept-1-monthly');
       expect(result.budgetAmountUsd).toBe(500);
-      // Issue #4687: absent on the response means explicitly no advisory, so callers do
-      // not have to tell "nothing to say" from "older response shape".
-      expect(result.advisory).toBeNull();
-    });
-
-    // Issue #4669 field, surfaced by #4687. A sentence about a cap that WAS created —
-    // the response is a 201, and this is the only channel through which the create tells
-    // an admin their workspace-scoped cap may never bind.
-    it('carries the advisory through to the caller', async () => {
-      const advisory =
-        "This person's agent spend currently accrues in 2 other workspaces, not here.";
-      vi.mocked(apiClient.post).mockResolvedValue({
-        id: 'budget-new',
-        entity_type: 'root_user',
-        entity_id: 'user-operator',
-        period_type: 'monthly',
-        budget_amount_usd: 500,
-        enforcement_mode: 'hard',
-        org_id: 'org-1',
-        updated_at: '2024-01-01T00:00:00Z',
-        advisory,
-      });
-
-      const result = await createBudget('org-1', {
-        entity_type: EntityType.ROOT_USER,
-        entity_id: 'user-operator',
-        period_type: PeriodType.MONTHLY,
-        budget_amount_usd: 500,
-      });
-
-      expect(result.advisory).toBe(advisory);
-      // Dropping it in the transform is the failure mode: the budget still resolves, so
-      // nothing looks broken while the warning is gone.
-      expect(result.budgetAmountUsd).toBe(500);
     });
 
     it('creates a budget with hard enforcement', async () => {

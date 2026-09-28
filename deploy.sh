@@ -21,7 +21,6 @@ set -euo pipefail
 #   --local                Use local Docker builds instead of CodeBuild
 #   --skip-agents          Deploy gateway only, skip webhook agent stack
 #   --dry-run              Show what would be done without executing
-#   --anthropic-use-case FILE  Organization first-use JSON, used only when needed
 #
 # The script automatically rewrites environments/*.tfvars to match the target
 # region and account. Works with any AWS region (us-east-1, us-west-2, eu-west-1, etc.)
@@ -50,10 +49,6 @@ while [[ $# -gt 0 ]]; do
     --local)         LOCAL_MODE=true; shift ;;
     --skip-agents)   SKIP_AGENTS=true; shift ;;
     --dry-run)       DRY_RUN=true; shift ;;
-    --anthropic-use-case)
-      [ "$#" -ge 2 ] || { echo "--anthropic-use-case requires a JSON file" >&2; exit 2; }
-      export ADP_BEDROCK_USE_CASE_FILE="$2"
-      shift 2 ;;
     -h|--help)       sed -n '4,26p' "$0"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -68,11 +63,6 @@ if [ -t 0 ] && { [ -z "$AWS_REGION" ] || [ "$AWS_REGION" = "us-east-1" ]; }; the
   [ -n "$INPUT_REGION" ] && AWS_REGION="$INPUT_REGION"
 fi
 
-# Keep a relative registration file valid when child scripts change directory.
-if [ -n "${ADP_BEDROCK_USE_CASE_FILE:-}" ]; then
-  ADP_BEDROCK_USE_CASE_FILE=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$ADP_BEDROCK_USE_CASE_FILE")
-  export ADP_BEDROCK_USE_CASE_FILE
-fi
 export AWS_REGION ENVIRONMENT
 export AWS_PAGER=""  # Disable interactive pager
 
@@ -105,9 +95,7 @@ echo ""
 
 if [ "$DRY_RUN" = true ]; then
   warn "DRY RUN — no changes will be made"
-  bash "$PLATFORM_SCRIPTS/enable-bedrock-models.sh" --dry-run
-  echo "Would prepare Anthropic registration/agreements, deploy the platform and verify default model invocations."
-  exit 0
+  echo ""
 fi
 
 # =============================================================================
@@ -187,8 +175,6 @@ DEPLOY_FLAGS="--gateway-only"
 echo "Clearing stale .terraform backend configs..."
 find "$ROOT_DIR" -path "*/.terraform/terraform.tfstate" -delete 2>/dev/null || true
 
-# The wrapper performs one verification after its final agent deployment.
-export ADP_BEDROCK_VERIFY_DEFERRED=true
 run "bash '$PLATFORM_SCRIPTS/deploy-all.sh' $DEPLOY_FLAGS"
 ok "Phases 1-8 complete (platform + gateway infra + backend + frontend + ALB wire + broker + admin bootstrap)"
 
@@ -210,10 +196,6 @@ fi
 # =============================================================================
 # Verification
 # =============================================================================
-step "Verify default Bedrock models"
-# Small provider calls under the deployment identity, not an agent/tool loop.
-run "bash '$PLATFORM_SCRIPTS/enable-bedrock-models.sh' --verify"
-
 step "Verification"
 
 if [ "$DRY_RUN" = false ]; then

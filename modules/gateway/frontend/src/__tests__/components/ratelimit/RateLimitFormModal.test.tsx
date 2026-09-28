@@ -19,17 +19,7 @@ vi.mock('@/services/ratelimit', () => ({
 }));
 
 // Mock the admin service for entity fetching - return empty results to force manual input
-// Issue #4948: the entity pickers read the platform's tenancy tables. `getOrgTeams` is
-// T1's ORG-WIDE team route (PR #4917), which replaces the department-scoped `getTeams` —
-// a rate limit may target any team in the org.
 vi.mock('@/services/admin', () => ({
-  getOrganizations: vi.fn().mockResolvedValue({
-    items: [],
-    total: 0,
-    page: 1,
-    pageSize: 100,
-    hasMore: false,
-  }),
   getDepartments: vi.fn().mockResolvedValue({
     items: [],
     total: 0,
@@ -37,14 +27,7 @@ vi.mock('@/services/admin', () => ({
     pageSize: 100,
     hasMore: false,
   }),
-  getOrgTeams: vi.fn().mockResolvedValue({
-    items: [],
-    total: 0,
-    page: 1,
-    pageSize: 100,
-    hasMore: false,
-  }),
-  getOrgUsers: vi.fn().mockResolvedValue({
+  getTeams: vi.fn().mockResolvedValue({
     items: [],
     total: 0,
     page: 1,
@@ -54,12 +37,9 @@ vi.mock('@/services/admin', () => ({
 }));
 
 import { createRatelimit, updateRatelimit } from '@/services/ratelimit';
-import { getOrganizations, getOrgTeams, getOrgUsers } from '@/services/admin';
 
 const mockCreateRatelimit = createRatelimit as ReturnType<typeof vi.fn>;
 const mockUpdateRatelimit = updateRatelimit as ReturnType<typeof vi.fn>;
-const mockGetOrganizations = getOrganizations as ReturnType<typeof vi.fn>;
-const mockGetOrgTeams = getOrgTeams as ReturnType<typeof vi.fn>;
 
 const renderComponent = (props: Partial<Parameters<typeof RateLimitFormModal>[0]> = {}) => {
   const defaultProps = {
@@ -273,146 +253,6 @@ describe('RateLimitFormModal', () => {
       await user.click(cancelButton);
 
       expect(onClose).toHaveBeenCalled();
-    });
-  });
-
-  /**
-   * Issue #4948. The entity picker now lists every org the caller administers, which
-   * makes the write partition a real choice rather than a coincidence.
-   *
-   * The limiter loads a config by `(org_id, entity_type, entity_id)`. Before this issue
-   * both columns happened to agree because the picker could only ever offer the caller's
-   * own org. Offering the full list breaks that coincidence: if the POST keeps going to
-   * the caller's own `/organizations/{orgId}/ratelimits`, the row is stored where the
-   * picked org's members are never looked up — configured on screen, inert in
-   * production. That is worse than the gap this issue reports, so it is asserted here at
-   * the wire and not only at the callback.
-   */
-  describe('Write partition follows the picked org (#4948)', () => {
-    beforeEach(() => {
-      mockGetOrganizations.mockResolvedValue({
-        items: [
-          { id: 'org-001', name: 'Acme Corp' },
-          { id: 'sophos-it', name: 'Sophos IT' },
-        ],
-        total: 2,
-        page: 1,
-        pageSize: 100,
-        hasMore: false,
-      });
-      mockGetOrgTeams.mockResolvedValue({
-        items: [{ id: 'team-sophos-1', name: 'Helpdesk', departmentId: 'dept-1' }],
-        total: 1,
-        page: 1,
-        pageSize: 100,
-        hasMore: false,
-      });
-    });
-
-    async function pickTeamInOtherOrgAndSubmit() {
-      const user = userEvent.setup();
-      renderComponent();
-
-      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-
-      const entityTypeSelect = screen.getAllByRole('combobox')[0];
-      await user.selectOptions(entityTypeSelect, EntityType.TEAM);
-
-      await waitFor(() => expect(screen.getByRole('option', { name: /Sophos IT/ })).toBeInTheDocument());
-      await user.selectOptions(screen.getAllByRole('combobox')[1], 'sophos-it');
-
-      await waitFor(() => expect(screen.getByRole('option', { name: /Helpdesk/ })).toBeInTheDocument());
-      await user.selectOptions(screen.getAllByRole('combobox')[2], 'team-sophos-1');
-
-      // The form rejects a submit with no limit set, so give it one.
-      await user.type(screen.getByPlaceholderText('e.g., 60'), '100');
-
-      await user.click(screen.getByRole('button', { name: /create rate limit/i }));
-      return user;
-    }
-
-    it('posts to the picked org, not the caller\'s own', async () => {
-      await pickTeamInOtherOrgAndSubmit();
-
-      await waitFor(() => {
-        expect(mockCreateRatelimit).toHaveBeenCalledWith(
-          'sophos-it',
-          expect.objectContaining({ entity_type: EntityType.TEAM, entity_id: 'team-sophos-1' }),
-        );
-      });
-      expect(mockCreateRatelimit).not.toHaveBeenCalledWith('org-001', expect.anything());
-    });
-
-    it('returns to the roster org after switching a foreign team limit to a user limit', async () => {
-      vi.mocked(getOrgUsers).mockResolvedValueOnce({
-        items: [{ id: 'user-operator', email: 'operator@test.com', name: 'Operator',
-          cognitoSub: 'sub-operator', role: 'member' }],
-        total: 1, page: 1, pageSize: 100, hasMore: false,
-      });
-      const user = userEvent.setup();
-      renderComponent();
-      await user.selectOptions(screen.getAllByRole('combobox')[0], EntityType.TEAM);
-      await screen.findByRole('option', { name: /Sophos IT/ });
-      await user.selectOptions(screen.getAllByRole('combobox')[1], 'sophos-it');
-      await screen.findByRole('option', { name: /Helpdesk/ });
-      await user.selectOptions(screen.getAllByRole('combobox')[0], EntityType.USER);
-      const person = await screen.findByRole('option', { name: /Operator/ });
-      await user.selectOptions(screen.getAllByRole('combobox')[1], person);
-      await user.type(screen.getByPlaceholderText('e.g., 60'), '100');
-      await user.click(screen.getByRole('button', { name: /create rate limit/i }));
-
-      await waitFor(() => expect(mockCreateRatelimit).toHaveBeenCalledWith(
-        'org-001', expect.objectContaining({ entity_type: EntityType.USER, entity_id: 'sub-operator' }),
-      ));
-    });
-
-    it('leaves a single-org admin posting to their own org', async () => {
-      // The default path must be untouched: nobody who never opens the org picker should
-      // see any change in where their config lands.
-      const user = userEvent.setup();
-      renderComponent();
-
-      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-
-      await user.selectOptions(screen.getAllByRole('combobox')[0], EntityType.TEAM);
-      await waitFor(() => expect(screen.getByRole('option', { name: /Helpdesk/ })).toBeInTheDocument());
-      await user.selectOptions(screen.getAllByRole('combobox')[2], 'team-sophos-1');
-      await user.type(screen.getByPlaceholderText('e.g., 60'), '100');
-
-      await user.click(screen.getByRole('button', { name: /create rate limit/i }));
-
-      await waitFor(() => {
-        expect(mockCreateRatelimit).toHaveBeenCalledWith('org-001', expect.anything());
-      });
-    });
-
-    it('does not carry a previously picked org into the next create', async () => {
-      // The modal is reused. A partition left over from the last create would send the
-      // next config somewhere the operator is no longer looking.
-      const user = userEvent.setup();
-      const { unmount } = render(
-        <ToastProvider>
-          <RateLimitFormModal isOpen onClose={vi.fn()} onSuccess={vi.fn()} orgId="org-001" />
-        </ToastProvider>,
-      );
-
-      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-      await user.selectOptions(screen.getAllByRole('combobox')[0], EntityType.TEAM);
-      await waitFor(() => expect(screen.getByRole('option', { name: /Sophos IT/ })).toBeInTheDocument());
-      await user.selectOptions(screen.getAllByRole('combobox')[1], 'sophos-it');
-      unmount();
-
-      renderComponent();
-      await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-      await user.selectOptions(screen.getAllByRole('combobox')[0], EntityType.TEAM);
-      await waitFor(() => expect(screen.getByRole('option', { name: /Helpdesk/ })).toBeInTheDocument());
-      await user.selectOptions(screen.getAllByRole('combobox')[2], 'team-sophos-1');
-      await user.type(screen.getByPlaceholderText('e.g., 60'), '100');
-      await user.click(screen.getByRole('button', { name: /create rate limit/i }));
-
-      await waitFor(() => {
-        expect(mockCreateRatelimit).toHaveBeenCalledWith('org-001', expect.anything());
-      });
     });
   });
 

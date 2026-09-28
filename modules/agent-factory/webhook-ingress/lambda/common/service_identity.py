@@ -38,8 +38,6 @@ class ServiceIdentityResult:
     org_id: str
     service_identity: str
     allowed_personas: list[str] = field(default_factory=list)
-    repo: str = ""
-    rule_arn: str = ""
 
 
 def _get_table():
@@ -97,8 +95,6 @@ def resolve_service_identity(
                 org_id=item["org_id"],
                 service_identity=service_identity,
                 allowed_personas=allowed_personas,
-                repo=item.get("repo", ""),
-                rule_arn=item.get("rule_arn", ""),
             ),
             "ok",
         )

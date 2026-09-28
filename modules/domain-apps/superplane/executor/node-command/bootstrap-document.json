@@ -1,1 +1,0 @@
-{"schemaVersion":"2.2","description":"Superplane approved native EKS bootstrap v1","parameters":{"Contract":{"type":"String","allowedPattern":"^[A-Za-z0-9+/=]{1,16384}$"}},"mainSteps":[{"action":"aws:runShellScript","name":"bootstrap","inputs":{"timeoutSeconds":"300","runCommand":["exec /opt/superplane/bin/node-bootstrap-v1 '{{ Contract }}'"]}}]}

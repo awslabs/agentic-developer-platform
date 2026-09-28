@@ -41,15 +41,6 @@ def _import_hyphenated(module_name: str, file_name: str):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def explicit_producer_scope(monkeypatch):
-    # These tests exercise tracking for a valid job; missing scope has separate
-    # admission coverage and is never inferred as shared in production.
-    monkeypatch.setenv("INGESTION_SCOPE_VISIBILITY", "shared")
-    monkeypatch.delenv("INGESTION_SCOPE_TENANT_ID", raising=False)
-    monkeypatch.delenv("INGESTION_SCOPE_OWNER_SUB", raising=False)
-
-
 @pytest.fixture
 def mock_conn():
     """Mock psycopg2 connection with cursor."""

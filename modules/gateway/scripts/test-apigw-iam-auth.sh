@@ -199,24 +199,10 @@ if [ "$SKIP_ASSUME" = "false" ]; then
     CURRENT_ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text)
     CURRENT_ACCOUNT=$(echo "$CURRENT_ROLE_ARN" | cut -d: -f5)
 
-    # Extract role name from ARN (handles assumed-role format).
-    #
-    # The role name is NOT enough to rebuild the ARN: an IAM role can carry a
-    # path, and an IAM Identity Center permission set always does —
-    # arn:aws:iam::<acct>:role/aws-reserved/sso.amazonaws.com/<region>/AWSReservedSSO_<name>_<hash>.
-    # Composing ":role/${NAME}" drops that path and names a principal that does
-    # not exist, so create-role fails with MalformedPolicyDocument ("Invalid
-    # principal in policy") and this script never reaches the request it exists to
-    # make. Ask IAM for the real ARN instead, and only fall back to the composed
-    # form if that lookup fails.
+    # Extract role name from ARN (handles assumed-role format)
     if [[ "$CURRENT_ROLE_ARN" == *":assumed-role/"* ]]; then
       CURRENT_ROLE_NAME=$(echo "$CURRENT_ROLE_ARN" | sed 's/.*:assumed-role\///' | cut -d/ -f1)
-      TRUST_PRINCIPAL=$(aws iam get-role --role-name "$CURRENT_ROLE_NAME" \
-        --query 'Role.Arn' --output text 2>/dev/null || echo "")
-      if [ -z "$TRUST_PRINCIPAL" ] || [ "$TRUST_PRINCIPAL" = "None" ]; then
-        echo "WARNING: could not resolve the ARN for role ${CURRENT_ROLE_NAME}; composing it without a path"
-        TRUST_PRINCIPAL="arn:aws:iam::${CURRENT_ACCOUNT}:role/${CURRENT_ROLE_NAME}"
-      fi
+      TRUST_PRINCIPAL="arn:aws:iam::${CURRENT_ACCOUNT}:role/${CURRENT_ROLE_NAME}"
     else
       TRUST_PRINCIPAL="$CURRENT_ROLE_ARN"
     fi
@@ -293,21 +279,14 @@ else
 fi
 echo ""
 
-# Step 2: Test health endpoint with SigV4 on the IAM-authenticated path.
-#
-# /agent/health, not /health: the agent prefix is the AWS_IAM route, so this is
-# the request that actually exercises SigV4 validation at the API. The bare
-# /health path matched /{proxy+}, which was NONE auth — a signed request there
-# proved nothing, and the route no longer exists where
-# enable_legacy_proxy_routes is false. The prefix is stripped before the ALB, so
-# the pod still sees /health.
-echo "Step 2: Testing /agent/health endpoint with SigV4..."
+# Step 2: Test health endpoint with SigV4
+echo "Step 2: Testing /health endpoint with SigV4..."
 
 export API_ID
 export AWS_REGION
 export ENV
 
-RESULT=$(make_sigv4_request "GET" "/agent/health")
+RESULT=$(make_sigv4_request "GET" "/health")
 HTTP_STATUS=$(echo "$RESULT" | jq -r '.status')
 BODY=$(echo "$RESULT" | jq -r '.body')
 ERROR=$(echo "$RESULT" | jq -r '.error // empty')
@@ -337,9 +316,9 @@ fi
 echo ""
 
 # Step 3: Test a protected endpoint
-echo "Step 3: Testing /agent/v1/models endpoint with SigV4..."
+echo "Step 3: Testing /v1/models endpoint with SigV4..."
 
-RESULT=$(make_sigv4_request "GET" "/agent/v1/models")
+RESULT=$(make_sigv4_request "GET" "/v1/models")
 HTTP_STATUS=$(echo "$RESULT" | jq -r '.status')
 BODY=$(echo "$RESULT" | jq -r '.body')
 HEADERS=$(echo "$RESULT" | jq -r '.headers')

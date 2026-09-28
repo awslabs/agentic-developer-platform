@@ -1,1 +1,0 @@
-{"image": "security27/monitor:fixed", "result": "passed", "checks": ["packaged-startup", "authenticated-health", "unauthorized-unhealthy", "receiver-outage", "recovery", "non-root", "trust-store", "timezone-data", "synthetic-credentials-not-logged"]}

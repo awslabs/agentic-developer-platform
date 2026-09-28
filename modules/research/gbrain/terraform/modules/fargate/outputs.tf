@@ -22,8 +22,3 @@ output "task_definition_arn" {
   description = "ECS task definition ARN"
   value       = aws_ecs_task_definition.serve.arn
 }
-
-output "dream_task_definition_arn" {
-  description = "Dedicated immutable task revision for scheduled dream runs"
-  value       = aws_ecs_task_definition.dream.arn
-}

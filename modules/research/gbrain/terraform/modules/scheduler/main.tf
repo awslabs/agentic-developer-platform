@@ -23,4 +23,10 @@ resource "aws_cloudwatch_event_target" "dream_task" {
     }
   }
 
+  input = jsonencode({
+    containerOverrides = [{
+      name    = "gbrain"
+      command = ["gbrain", "dream", "--non-interactive"]
+    }]
+  })
 }

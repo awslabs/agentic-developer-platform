@@ -164,11 +164,7 @@ CRITICAL: Read the full SKILL.md file first — it has all the details including
     }
   }
 
-  /**
-   * @param requestId Token the approver must name in their `/approve` comment
-   *   so the answer is bound to this specific plan (issue #4181).
-   */
-  formatPlanComment(plan: Plan, requestId: string): string {
+  formatPlanComment(plan: Plan): string {
     let comment = `## 🤖 MCP Onboarding Plan\n\n`;
     comment += `**Summary:** ${plan.summary}\n\n`;
 
@@ -185,10 +181,8 @@ CRITICAL: Read the full SKILL.md file first — it has all the details including
     }
 
     comment += `\n---\n`;
-    comment += `**To approve this plan:** Comment \`/approve ${requestId}\`\n`;
-    comment += `**To request changes:** Comment \`/reject ${requestId} <your feedback>\`\n`;
-    comment += `\n_The request id is required — it ties your answer to this specific plan. `;
-    comment += `You need write access to this repository to approve._\n`;
+    comment += `**To approve this plan:** Comment \`/approve\`\n`;
+    comment += `**To request changes:** Comment \`/reject <your feedback>\`\n`;
 
     return comment;
   }

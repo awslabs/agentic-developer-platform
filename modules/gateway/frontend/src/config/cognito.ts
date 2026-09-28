@@ -5,20 +5,18 @@
  * Values are read from Vite environment variables at build time.
  */
 
-import { deploymentSetting } from '@/config/runtime';
-
 import type { CognitoConfig } from '@/types';
 
 /**
  * Get Cognito configuration from environment variables.
- * Release values come from runtime-config.js; local builds use Vite settings.
+ * These values are injected at build time via Vite.
  */
 export function getCognitoConfig(): CognitoConfig {
-  const userPoolId = deploymentSetting('VITE_COGNITO_USER_POOL_ID');
-  const clientId = deploymentSetting('VITE_COGNITO_CLIENT_ID');
-  const domain = deploymentSetting('VITE_COGNITO_DOMAIN');
-  const region = deploymentSetting('VITE_COGNITO_REGION') || 'us-east-1';
-  const redirectUri = deploymentSetting('VITE_REDIRECT_URI') || `${window.location.origin}/auth/callback`;
+  const userPoolId = import.meta.env.VITE_COGNITO_USER_POOL_ID;
+  const clientId = import.meta.env.VITE_COGNITO_CLIENT_ID;
+  const domain = import.meta.env.VITE_COGNITO_DOMAIN;
+  const region = import.meta.env.VITE_COGNITO_REGION || 'us-east-1';
+  const redirectUri = import.meta.env.VITE_REDIRECT_URI || `${window.location.origin}/auth/callback`;
 
   // Validate required configuration
   if (!userPoolId) {
@@ -48,18 +46,7 @@ export function getCognitoConfig(): CognitoConfig {
  */
 export function getCognitoHostedUiUrl(): string {
   const config = getCognitoConfig();
-  // VITE_COGNITO_DOMAIN carries either form of Cognito domain:
-  //   - a prefix, e.g. "bedrockgw-dev-auth", which needs the regional suffix
-  //   - a custom domain FQDN, e.g. "auth.example.com", which is already complete
-  // A prefix domain is a single DNS label — alphanumeric and hyphens only — so a
-  // dot distinguishes the two unambiguously rather than by guesswork. Appending
-  // the suffix to an FQDN produces a hostname that does not resolve, and because
-  // this value is baked into the bundle at build time the failure ships to every
-  // user and needs another rebuild to undo.
-  const isCustomDomain = config.domain.includes('.');
-  return isCustomDomain
-    ? `https://${config.domain}`
-    : `https://${config.domain}.auth.${config.region}.amazoncognito.com`;
+  return `https://${config.domain}.auth.${config.region}.amazoncognito.com`;
 }
 
 /**

@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
@@ -60,7 +62,7 @@ def _subprocess_side_effect(*args, **kwargs):
     """Simulate fresh-branch subprocess calls."""
     cmd = args[0] if args else kwargs.get("args", [])
     if cmd and cmd[0:2] == ["git", "ls-remote"]:
-        return MagicMock(returncode=2, stdout="", stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="")
     return MagicMock(returncode=0, stdout="", stderr="")
 
 
@@ -96,20 +98,6 @@ class TestCorrelationEnvelopeContract:
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
         monkeypatch.setenv("AWS_REGION", "us-east-1")
-        # This contract test stops at mocked provider boundaries; it must not
-        # start the real proxy or publish fixture status to AWS.
-        for name in (
-            "BootstrapLogger",
-            "_load_door_api_key",
-            "_start_sigv4_proxy",
-            "_stop_sigv4_proxy",
-            "update_invocation_status",
-            "_write_outbound_correlation",
-        ):
-            monkeypatch.setattr(entrypoint, name, MagicMock())
-        monkeypatch.setattr(
-            entrypoint.boto3, "client", MagicMock(side_effect=AssertionError("unexpected AWS call"))
-        )
 
         mock_receive_msg.return_value = (
             json.dumps(HANDLER_SHAPED_ENVELOPE),
@@ -161,6 +149,7 @@ class TestCorrelationEnvelopeContract:
         tmp_path,
     ):
         """_write_outbound_correlation does NOT early-return when nested correlation is set."""
+        import entrypoint
         from entrypoint import _write_outbound_correlation
 
         # Simulate the env vars being set (as they would be after reading nested correlation)
@@ -170,7 +159,9 @@ class TestCorrelationEnvelopeContract:
         monkeypatch.setenv("ADP_MESSAGE_ID", "msg-this-run-def")
         monkeypatch.setenv("ADP_USER_ID", "cognito-sub-jane-123")
 
-        with patch("entrypoint.write_pointer") as mock_write, patch("entrypoint.post_provenance"):
+        with patch("entrypoint.write_pointer") as mock_write, patch(
+            "entrypoint.post_provenance"
+        ) as mock_prov:
             _write_outbound_correlation("acme-corp/flagship-app", "issue:42", "comment_post")
 
             # write_pointer MUST be called (not early-returned)

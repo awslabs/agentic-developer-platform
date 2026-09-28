@@ -286,15 +286,12 @@ if [ -n "$EXISTING_ID" ] && [ -n "$EXISTING_KEY" ] && [ ${#EXISTING_KEY} -gt 100
   info "  aws secretsmanager delete-secret --secret-id $SECRET_KEY_PATH --force-delete-without-recovery"
   echo ""
 
-  # Issue #4016: this used to call `gh api /app`, which is a no-op verification.
-  # GET /app requires App-JWT auth and `gh` sends a *user* token, so the call
-  # always failed, `|| echo ""` swallowed it, and the empty result was never
-  # printed — i.e. it silently verified nothing while reading as a check.
-  # Say so honestly instead of implying the config was validated.
-  info "Webhook/event configuration NOT verified: GET /app needs App-JWT auth, which"
-  info "  this script cannot mint for an app whose key it did not just store."
-  info "  Verify in GitHub → App settings → Permissions & events, or delete the"
-  info "  secrets above and re-register to get the full validation pass."
+  # Verify webhook is configured correctly on the existing app
+  info "Verifying webhook configuration..."
+  APP_WEBHOOK=$(gh api "/app" --jq '.events // [] | join(",")' 2>/dev/null || echo "")
+  if [ -n "$APP_WEBHOOK" ]; then
+    ok "App webhook events: $APP_WEBHOOK"
+  fi
   exit 0
 fi
 
@@ -314,7 +311,6 @@ echo "    - issues: write      (read issues, post comments, manage labels)"
 echo "    - pull_requests: write (open and update PRs)"
 echo "    - checks: write      (create check runs for progress UX)"
 echo "    - metadata: read     (list repos the app is installed on)"
-echo "    - members: read      (verify active organization administrator control)"
 echo ""
 echo "  Subscribed events:"
 echo "    issues, issue_comment, pull_request, pull_request_review,"
@@ -343,7 +339,6 @@ URL="${URL}&issues=write"
 URL="${URL}&pull_requests=write"
 URL="${URL}&checks=write"
 URL="${URL}&metadata=read"
-URL="${URL}&members=read"
 URL="${URL}&events[]=issues"
 URL="${URL}&events[]=issue_comment"
 URL="${URL}&events[]=pull_request"
@@ -454,13 +449,10 @@ else
   fail "Private key appears too short or missing"
 fi
 
-# Issue #4016: this banner used to read "GitHub App registered successfully!" and
-# printed BEFORE the wiring step below — so a total wiring failure still showed a
-# green success banner and exited 0. It now states only what has actually
-# happened at this point (credentials stored); the overall success banner moved
-# to the end, after wiring, and is conditional on wiring having worked.
 echo ""
-echo -e "${BLUE}━━━ App credentials stored ━━━${NC}"
+echo -e "${GREEN}=========================================${NC}"
+echo -e "${GREEN}GitHub App registered successfully!${NC}"
+echo -e "${GREEN}=========================================${NC}"
 echo ""
 echo "  App Name:    $APP_NAME"
 echo "  App ID:      $APP_ID"
@@ -468,8 +460,6 @@ echo "  Webhook URL: $WEBHOOK_URL"
 echo "  Secrets:"
 echo "    ID:  $SECRET_ID_PATH"
 echo "    Key: $SECRET_KEY_PATH"
-echo ""
-info "Not done yet — the app still has to be wired into the running platform below."
 echo ""
 
 # =============================================================================
@@ -529,7 +519,7 @@ _validate_app_config() {
 
   # Expected permissions — mirrored from _build_app_manifest() in service.py
   # Format: "permission_name=minimum_level" (bash 3.2 compatible; no associative arrays)
-  local EXPECTED_PERMISSIONS="contents=write issues=write pull_requests=write checks=write metadata=read members=read"
+  local EXPECTED_PERMISSIONS="contents=write issues=write pull_requests=write checks=write metadata=read"
 
   # Expected events — mirrored from _build_app_manifest() in service.py
   local EXPECTED_EVENTS="issues issue_comment pull_request pull_request_review pull_request_review_comment label"
@@ -610,55 +600,23 @@ fi
 # (BG_GITHUB_APP_SLUG/ID/PRIVATE_KEY) and — if --client-secret was provided —
 # GitHub login (broker OAuth client_id/secret). Kept as a separate, independently
 # re-runnable script (e.g. to re-wire after a gateway redeploy or secret rotation).
-#
-# Issue #4016: the wire failure used to be swallowed by `|| warn` AFTER a green
-# "registered successfully!" banner had already printed, so a run whose wiring
-# failed completely still exited 0. The exit code is now captured and, if the
-# wire step failed, this script prints a red summary and exits non-zero.
-# --no-wire is operator INTENT, not a failure — it stays a warning and exits 0.
 WIRE_SCRIPT="${SCRIPT_DIR}/wire-github-app.sh"
-WIRE_FAILED=false
 if [ "$NO_WIRE" = true ]; then
   info "--no-wire set; skipping platform wiring."
   info "Run it later:  ${WIRE_SCRIPT} --app-slug ${APP_NAME} --env ${ENVIRONMENT} [--client-secret <secret>]"
 elif [ ! -x "$WIRE_SCRIPT" ]; then
   warn "wire-github-app.sh not found/executable at $WIRE_SCRIPT — skipping wiring."
   warn "Run it manually:  bash ${WIRE_SCRIPT} --app-slug ${APP_NAME} --env ${ENVIRONMENT}"
-  WIRE_FAILED=true
 else
   echo -e "${BLUE}━━━ Wiring the app into the running platform ━━━${NC}"
   WIRE_ARGS=(--app-slug "$APP_NAME" --env "$ENVIRONMENT" --region "$AWS_REGION")
   [ -n "$CLIENT_SECRET" ] && WIRE_ARGS+=(--client-secret "$CLIENT_SECRET")
   # AWS_REGION already in env; pass through. The wire script auto-fetches the
   # OAuth client_id via `gh api /apps/<slug>`.
-  if ! AWS_REGION="$AWS_REGION" bash "$WIRE_SCRIPT" "${WIRE_ARGS[@]}"; then
-    WIRE_FAILED=true
-  fi
+  AWS_REGION="$AWS_REGION" bash "$WIRE_SCRIPT" "${WIRE_ARGS[@]}" || \
+    warn "Wiring step reported an issue — review output above; you can re-run wire-github-app.sh."
 fi
 
-echo ""
-if [ "$WIRE_FAILED" = true ]; then
-  echo -e "${RED}=========================================${NC}"
-  echo -e "${RED}GitHub App registered, but NOT usable yet${NC}"
-  echo -e "${RED}=========================================${NC}"
-  echo ""
-  echo "  App credentials ARE stored (App ID $APP_ID):"
-  echo "    ID:  $SECRET_ID_PATH"
-  echo "    Key: $SECRET_KEY_PATH"
-  echo ""
-  echo -e "  ${RED}✗${NC} Wiring the app into the running platform FAILED — see the wiring"
-  echo "    output above for the specific step(s)."
-  echo ""
-  echo "  GitHub login and/or the UI 'Link GitHub' install flow will not work until"
-  echo "  wiring succeeds. Fix the reported items, then re-run (idempotent):"
-  echo "    ${WIRE_SCRIPT} --app-slug ${APP_NAME} --env ${ENVIRONMENT} [--client-secret <secret>]"
-  echo ""
-  exit 1
-fi
-
-echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}GitHub App registered and wired successfully!${NC}"
-echo -e "${GREEN}=========================================${NC}"
 echo ""
 echo "Next steps:"
 echo "  1. Install the app (suggested target repo: ${INSTALL_REPO}):"

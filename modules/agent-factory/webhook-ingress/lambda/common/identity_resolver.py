@@ -31,73 +31,6 @@ IDENTITY_INDEX_TABLE = os.environ.get("IDENTITY_INDEX_TABLE", "")
 USER_IDENTITY_INDEX_TABLE = os.environ.get("USER_IDENTITY_INDEX_TABLE", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 
-# ---------------------------------------------------------------------------
-# Cross-tenant trigger policy vocabulary (issue #3134)
-# ---------------------------------------------------------------------------
-# Issue #4029: these were bare string literals here and duplicated as bare
-# literals in the gateway's provenance authority gate
-# (modules/gateway/src/internal/provenance_routes.py). The two sides disagreed
-# about the DEFAULT, so the platform permitted a cross-tenant run to execute and
-# then refused to record its provenance — an audit hole exactly where
-# cross-tenant activity happens.
-#
-# They cannot share a module: package-lambdas.sh roots the Lambda zip at
-# lambda/, so nothing outside it is importable or readable at Lambda runtime.
-# The drift guard is therefore a lockstep test that imports both sides and
-# asserts these names and DEFAULT_TRIGGER_POLICY agree:
-#   modules/gateway/tests/internal/test_provenance_policy_lockstep.py
-# If you change the vocabulary or the default here, that test fails until the
-# gateway follows.
-TRIGGER_POLICY_ANY_ADP_USER = "any_adp_user"
-TRIGGER_POLICY_HOME_TENANT_ONLY = "home_tenant_only"
-
-# Absent attribute means any known ADP user may trigger. Load-bearing: it is the
-# posture of every tenant that never configured the setting.
-DEFAULT_TRIGGER_POLICY = TRIGGER_POLICY_ANY_ADP_USER
-
-# ---------------------------------------------------------------------------
-# Which identity links are proof of ownership (issue #5664, A10)
-# ---------------------------------------------------------------------------
-# What this resolver returns becomes `resolved.user_id`, which the handler feeds
-# to `agent_authority.VerifiedHumanEvent.from_verified_webhook` to mint human
-# dispatch authority. So "which platform user is this GitHub sender?" is an
-# authorization answer, not a lookup convenience.
-#
-# The DDB identity projection carries no provenance at all: a row written from a
-# link a user merely ASSERTED about themselves is byte-identical to one the
-# provider confirmed. Anyone who could name someone else's GitHub user id could
-# therefore have their comments attributed to that person — and act with their
-# authority — with nothing in the row to distinguish the two.
-#
-# This vocabulary must equal the gateway's `PROVEN_METHODS`
-# (modules/gateway/src/shared/identity/verification.py). It cannot import it:
-# package-lambdas.sh roots the Lambda zip at lambda/, so nothing outside it is
-# importable at runtime. The drift guard is the lockstep test
-#   modules/gateway/tests/internal/test_provenance_policy_lockstep.py
-# which imports both sides and asserts the sets agree. If you change this set,
-# that test fails until the gateway follows — do not "fix" it by editing one
-# side's expected value.
-PROVEN_VERIFICATION_METHODS = frozenset(
-    {
-        "oauth",
-        "org_placement",
-        "admin_attested",
-        "magic_link_confirmed",
-    }
-)
-
-
-def _is_proven(verification_method: str | None) -> bool:
-    """Fail-closed: anything not explicitly proven is not proof.
-
-    Covers ``None`` and ``""`` — a DDB row written before provenance was projected,
-    or a gateway not yet redeployed with the field. In neither case has this
-    process observed evidence the sender controls the account, and a new method is
-    inert here until it is deliberately declared proven on both sides.
-    """
-    return verification_method in PROVEN_VERIFICATION_METHODS
-
-
 _dynamodb = None
 _cloudwatch = None
 # Exposed for callers that need the tenant_item after resolve() completes
@@ -115,22 +48,6 @@ class ResolvedIdentity:
     user_provisioning_mode: str  # "strict" | "auto_provision"
     user_kind: str = "human"  # "human" | "bot"
     bot_kind: str = ""  # e.g. "agent-developer", "" for humans
-    # Issue #5664 (A10): HOW the sender's identity link was established, carried
-    # so that consumers granting authority from `user_id` can tell an
-    # provider-confirmed link from one the user asserted about themselves. Defaults
-    # to "" — unknown provenance, which `identity_proven` treats as NOT proof.
-    verification_method: str = ""
-
-    @property
-    def identity_proven(self) -> bool:
-        """Whether this identity is evidence the sender controls the account.
-
-        Consumers that mint authority from ``user_id`` (notably
-        ``agent_authority.VerifiedHumanEvent``) must gate on this rather than on
-        the mere existence of a resolution. Resolving a sender and being entitled
-        to act as them are different questions.
-        """
-        return _is_proven(self.verification_method)
 
 
 def _get_table():
@@ -263,28 +180,6 @@ def _emit_identity_index_drift_metric() -> None:
         logger.warning("Failed to emit IdentityIndexDrift metric: %s", e)
 
 
-def _emit_auto_register_denied_metric() -> None:
-    """Emit CloudWatch metric when the tenant gate denies a backfill.
-
-    Issue #2724 (slice B): mirrors the handler's ``AutoRegisterDenied`` so denials
-    from either write path are countable. Best-effort.
-    """
-    try:
-        cw = _get_cloudwatch()
-        cw.put_metric_data(
-            Namespace="ADP/IdentityResolver",
-            MetricData=[
-                {
-                    "MetricName": "AutoRegisterDenied",
-                    "Value": 1,
-                    "Unit": "Count",
-                }
-            ],
-        )
-    except Exception as e:
-        logger.warning("Failed to emit AutoRegisterDenied metric: %s", e)
-
-
 def _resolve_user_from_new_table(sender_id: int) -> dict | None:
     """Attempt to resolve user from the new user-identity-index table."""
     try:
@@ -306,15 +201,7 @@ def _resolve_user_from_new_table(sender_id: int) -> dict | None:
 
 
 def _resolve_user_from_old_table(sender_id: int) -> dict | None:
-    """Resolve user from the existing identity-index table.
-
-    Issue #5664 (A10): rows in this table carry no ``verification_method`` — the
-    attribute was never written here. They are returned as-is; ``_is_proven``
-    treats the absent value as unproven, so a legacy row can still IDENTIFY a
-    sender but cannot by itself authorize one. That is the intended asymmetry: the
-    table predates provenance, and inferring proof from its silence is exactly the
-    permissive fallback this issue removes.
-    """
+    """Resolve user from the existing identity-index table."""
     table = _get_table()
     resp = table.get_item(
         Key={
@@ -325,43 +212,37 @@ def _resolve_user_from_old_table(sender_id: int) -> dict | None:
     return resp.get("Item")
 
 
-def _backfill_installation_identity(installation_id: int, org_id: str, table) -> bool:
+def _backfill_installation_identity(installation_id: int, org_id: str, table) -> None:
     """Backfill a missing DDB identity-index row for an installation.
 
     Issue #2950: When the Postgres fallback resolves a tenant that DDB missed,
     write the row back so subsequent webhook deliveries resolve from DDB
     directly (O(1) instead of a gateway HTTP call).
 
-    A failed guarded write denies resolution because revocation may have won the race.
+    Best-effort — failures are logged but do not affect the current resolution.
     """
     import time
 
-    from common.installation_revocation import put_active_installation
-
     try:
-        put_active_installation(
-            table,
-            installation_id,
-            {
+        table.put_item(
+            Item={
                 "identity_type": "github_installation_id",
                 "identity_value": str(installation_id),
                 "org_id": org_id,
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            },
+            }
         )
         logger.info(
             "Backfilled identity-index: github_installation_id=%d → org=%s",
             installation_id,
             org_id,
         )
-        return True
     except Exception as e:
         logger.warning(
             "Failed to backfill identity-index for installation_id=%d: %s",
             installation_id,
             e,
         )
-        return False
 
 
 def resolve(
@@ -388,34 +269,77 @@ def resolve(
     try:
         table = _get_table()
 
-        from common.gateway_client import installation_gate
-        from common.installation_revocation import admit_installation
-
-        canonical, reason = admit_installation(table, installation_id)
-        if canonical is None:
-            last_tenant_item = None
-            return None, reason
-        org_id = canonical["tenant_id"]
-        tenant_item = table.get_item(
+        # Step 1: Resolve tenant from installation
+        tenant_resp = table.get_item(
             Key={
                 "identity_type": "github_installation_id",
                 "identity_value": str(installation_id),
             }
-        ).get("Item")
-        if tenant_item and tenant_item.get("org_id") != org_id:
-            last_tenant_item = None
-            return None, "installation_owner_mismatch"
-        if not tenant_item:
-            allowed, _ = installation_gate(canonical)
-            if not allowed:
-                last_tenant_item = None
-                return None, "unknown_installation"
-            if not _backfill_installation_identity(installation_id, org_id, table):
-                last_tenant_item = None
-                return None, "installation_unavailable"
-            tenant_item = {"org_id": org_id}
+        )
+        tenant_item = tenant_resp.get("Item")
         last_tenant_item = tenant_item
-        user_provisioning_mode = tenant_item.get("user_provisioning_mode", "strict")
+        if not tenant_item:
+            # Issue #2950: DDB miss — fall through to Postgres via the gateway
+            # internal API when the flag is enabled. This covers installations
+            # written to Postgres (via install-callback) before the DDB dual-write
+            # was added, or where the DDB write failed. On a Postgres hit we
+            # backfill the DDB row so subsequent lookups are fast again.
+            if _resolve_canonical_via_gateway_enabled():
+                from common.gateway_client import resolve_installation_by_id
+
+                pg_install = resolve_installation_by_id(str(installation_id))
+                if pg_install and pg_install.get("tenant_id"):
+                    pg_tenant = pg_install["tenant_id"]
+                    logger.info(
+                        "installation_id=%d resolved via Postgres fallback "
+                        "(tenant=%s) — backfilling DDB",
+                        installation_id,
+                        pg_tenant,
+                    )
+                    # Backfill DDB so future lookups don't need the gateway call
+                    _backfill_installation_identity(installation_id, pg_tenant, table)
+                    org_id = pg_tenant
+                    user_provisioning_mode = "strict"
+                else:
+                    logger.info(
+                        "Unknown installation_id=%d — no identity-index entry "
+                        "and Postgres fallback returned no match",
+                        installation_id,
+                    )
+                    return None, "unknown_installation"
+            else:
+                logger.info(
+                    "Unknown installation_id=%d — no identity-index entry",
+                    installation_id,
+                )
+                return None, "unknown_installation"
+        else:
+            org_id = tenant_item["org_id"]
+            user_provisioning_mode = tenant_item.get("user_provisioning_mode", "strict")
+
+        # Step 1b: Installation-tenant drift safety-net (Issue #2769).
+        # Cross-check the DDB installation → tenant mapping against Postgres
+        # (the source of truth) via POST /internal/v1/resolve-installation.
+        # On disagreement: trust Postgres, emit InstallationTenantDrift, log
+        # both tenants. On gateway miss/error: keep the DDB answer (fail-open —
+        # no hard RDS dependency on the webhook path). Flag-gated by the same
+        # RESOLVE_CANONICAL_VIA_GATEWAY switch as the user safety-net (#702).
+        if _resolve_canonical_via_gateway_enabled():
+            from common.gateway_client import resolve_installation_by_id
+
+            pg_install = resolve_installation_by_id(str(installation_id))
+            if pg_install and pg_install.get("tenant_id"):
+                pg_tenant = pg_install["tenant_id"]
+                if pg_tenant != org_id:
+                    logger.warning(
+                        "InstallationTenantDrift: installation_id=%d DDB tenant=%s, "
+                        "Postgres tenant=%s — trusting Postgres",
+                        installation_id,
+                        org_id,
+                        pg_tenant,
+                    )
+                    _emit_installation_tenant_drift_metric()
+                    org_id = pg_tenant
 
         # Step 2: Resolve sender (feature-flag-gated, Issue #537)
         user_item = None
@@ -433,20 +357,9 @@ def resolve(
         # Cross-validate against Postgres via POST /internal/v1/resolve-user.
         # Trusts Postgres on disagreement (canonical source of truth).
         if _resolve_canonical_via_gateway_enabled():
-            from common.gateway_client import (
-                USER_ERROR,
-                USER_RESOLVED,
-                resolve_user_state,
-            )
+            from common.gateway_client import resolve_user_by_identity
 
-            # Issue #5664 (A10): scope the lookup to the tenant this installation
-            # belongs to. `user_identities` is unique per (provider,
-            # provider_user_id, org_id), so an account linked in several tenants is
-            # ambiguous unscoped and the gateway declines to guess. The
-            # installation already told us the tenant, so the question is
-            # answerable — asking it unscoped was throwing away the answer.
-            pg_state = resolve_user_state("github", str(sender_id), org_id=org_id)
-            pg_result = pg_state["user"] if pg_state["state"] == USER_RESOLVED else None
+            pg_result = resolve_user_by_identity("github", str(sender_id))
 
             if pg_result and user_item:
                 # Both returned a result — check for drift
@@ -462,18 +375,6 @@ def resolve(
                     # Trust Postgres for canonical fields but preserve DDB-only
                     # attrs (member_org_ids, user_kind) that PG doesn't carry.
                     user_item = {**user_item, **pg_result}
-                else:
-                    # Same user. Postgres still owns provenance: the DDB row's
-                    # projected value can be stale in the permissive direction
-                    # (a link downgraded or re-created as unproven), and this is
-                    # the field authority is decided from.
-                    # `.get` with an empty default, not `[...]`: a gateway that
-                    # omits the field must yield unproven, not raise into the
-                    # caller's error path (which keeps the stale DDB value).
-                    user_item = {
-                        **user_item,
-                        "verification_method": pg_result.get("verification_method", ""),
-                    }
             elif pg_result and not user_item:
                 # v2/legacy missed but Postgres has it (write-through lag)
                 logger.info(
@@ -483,32 +384,8 @@ def resolve(
                     pg_result["user_id"],
                 )
                 user_item = pg_result
-            elif user_item and pg_state["state"] != USER_ERROR:
-                # Issue #5664 (A10): Postgres answered AUTHORITATIVELY that there
-                # is no proven link for this sender (404), or that the identity is
-                # ambiguous across tenants (409) — while a DDB row still exists.
-                #
-                # Previously the DDB row was kept wholesale ("fail-open, same as
-                # today"), which is the permissive legacy authority fallback: a row
-                # projected before a link was revoked, or a row whose Postgres link
-                # is self-asserted, kept answering as though it were proof.
-                #
-                # The row still IDENTIFIES the sender, so routing and loop guards
-                # are unchanged and this is not an outage. What it loses is
-                # provenance: any projected value is discarded, so `identity_proven`
-                # is False and nothing downstream can mint authority from it.
-                logger.warning(
-                    "Canonical lookup returned %s for sender_id=%d org=%s while a "
-                    "DDB row exists — identifying the sender but withholding "
-                    "provenance",
-                    pg_state["state"],
-                    sender_id,
-                    org_id,
-                )
-                user_item = {**user_item, "verification_method": ""}
-            # If the gateway could not be reached (state == error) and a DDB row
-            # exists, keep it as-is: an outage must not become a platform-wide
-            # deny. The row's own projected provenance then decides authority.
+            # If pg_result is None but user_item exists: Postgres miss/error,
+            # keep using the DDB result (fail-open, same as today).
 
         if not user_item:
             logger.info("Unknown sender_id=%d — no identity-index entry", sender_id)
@@ -528,12 +405,12 @@ def resolve(
         # the DDB rows already fetched (tenant_item + user_item).
         if user_item["org_id"] != org_id:
             trigger_policy = (
-                tenant_item.get("trigger_policy", DEFAULT_TRIGGER_POLICY)
+                tenant_item.get("trigger_policy", "any_adp_user")
                 if tenant_item
-                else DEFAULT_TRIGGER_POLICY
+                else "any_adp_user"
             )
 
-            if trigger_policy == TRIGGER_POLICY_HOME_TENANT_ONLY:
+            if trigger_policy == "home_tenant_only":
                 # Check membership: user must have org_id in their member_org_ids
                 member_org_ids = user_item.get("member_org_ids", [user_item["org_id"]])
                 if org_id not in member_org_ids:
@@ -587,12 +464,6 @@ def resolve(
                 user_provisioning_mode=user_provisioning_mode,
                 user_kind=user_kind,
                 bot_kind=user_item.get("bot_kind", ""),
-                # Issue #5664 (A10): absent on every DDB row (the attribute is not
-                # projected) and present only when the Postgres safety-net answered.
-                # "" is unknown provenance, which `identity_proven` treats as not
-                # proof — so resolution still IDENTIFIES the sender while authority
-                # is withheld until the link's origin is actually known.
-                verification_method=user_item.get("verification_method", ""),
             ),
             "ok",
         )

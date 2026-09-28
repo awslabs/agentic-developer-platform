@@ -10,11 +10,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import Request, build_opener
-
-from lib.authenticated_http import open_authenticated as urlopen
 
 
 def _get_config() -> tuple[str, str | None, str, str, str, bool]:
@@ -38,9 +35,8 @@ def _get_config() -> tuple[str, str | None, str, str, str, bool]:
 
     missing = []
     if use_sigv4:
-        # Internal APIs use /internal/{proxy+}. Adding /agent routes them to
-        # the edge ALB, which deliberately denies /internal/* (#5136, #4010).
-        base_url = gateway_endpoint.rstrip("/")
+        # SigV4 mode: only need the API Gateway endpoint + identity vars
+        base_url = gateway_endpoint.rstrip("/") + "/agent"
     else:
         # Legacy mode: need direct URL + shared secret
         if not base_url:
@@ -87,7 +83,7 @@ def _check_enabled() -> None:
         sys.exit(1)
 
 
-def _sigv4_request(method: str, url: str, body: dict | None = None, extra_headers: dict | None = None) -> dict | list:
+def _sigv4_request(method: str, url: str, body: dict | None = None) -> dict | list:
     """Make a SigV4-signed HTTP request to API Gateway.
 
     Uses the pod's IRSA credentials (available via boto3's credential chain).
@@ -101,25 +97,13 @@ def _sigv4_request(method: str, url: str, body: dict | None = None, extra_header
         sys.exit(1)
 
     session = botocore.session.get_session()
-    from adp_trigger.transport_identity import gateway_signing_region, worker_credentials
-    from lib.gateway_credential_client import _NoRedirect, _worker_identity_headers
-
-    authority = os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
-    if authority:
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
-            raise RuntimeError("Worker credential broker requires HTTPS and SigV4")
-    headers = {"Content-Type": "application/json"}
-    if extra_headers:
-        headers.update(extra_headers)
-    if authority:
-        headers.update(_worker_identity_headers())
-    credentials = worker_credentials(session)
+    credentials = session.get_credentials()
     if credentials is None:
         print("error: no AWS credentials available for SigV4 signing", file=sys.stderr)
         sys.exit(1)
     credentials = credentials.get_frozen_credentials()
 
+    headers = {"Content-Type": "application/json"}
     data = json.dumps(body).encode() if body else None
 
     aws_request = botocore.awsrequest.AWSRequest(
@@ -129,7 +113,7 @@ def _sigv4_request(method: str, url: str, body: dict | None = None, extra_header
         data=data,
     )
 
-    region = gateway_signing_region(url)
+    region = os.environ.get("AWS_REGION", "us-east-1")
     signer = botocore.auth.SigV4Auth(credentials, "execute-api", region)
     signer.add_auth(aws_request)
 
@@ -137,8 +121,7 @@ def _sigv4_request(method: str, url: str, body: dict | None = None, extra_header
     signed_headers = dict(aws_request.headers)
     req = Request(url, data=data, headers=signed_headers, method=method)
     try:
-        opener = build_opener(_NoRedirect()).open if authority else urlopen
-        with opener(req, timeout=30) as resp:
+        with urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except HTTPError as exc:
         error_body = exc.read().decode() if exc.fp else ""
@@ -149,14 +132,12 @@ def _sigv4_request(method: str, url: str, body: dict | None = None, extra_header
         sys.exit(1)
 
 
-def _request(method: str, url: str, api_key: str, body: dict | None = None, extra_headers: dict | None = None) -> dict | list:
+def _request(method: str, url: str, api_key: str, body: dict | None = None) -> dict | list:
     """Make an HTTP request to the gateway using shared-secret auth (legacy)."""
     headers = {
         "X-Internal-Api-Key": api_key,
         "Content-Type": "application/json",
     }
-    if extra_headers:
-        headers.update(extra_headers)
     data = json.dumps(body).encode() if body else None
     req = Request(url, data=data, headers=headers, method=method)
     try:
@@ -172,16 +153,12 @@ def _request(method: str, url: str, api_key: str, body: dict | None = None, extr
 
 
 def _do_request(
-    method: str, url: str, api_key: str | None, use_sigv4: bool, body: dict | None = None,
-    extra_headers: dict | None = None,
+    method: str, url: str, api_key: str | None, use_sigv4: bool, body: dict | None = None
 ) -> dict | list:
     """Dispatch to SigV4 or shared-secret request based on config."""
-    if not use_sigv4 and os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
-        raise RuntimeError("Worker credential broker requires HTTPS and SigV4")
-    kwargs = {"extra_headers": extra_headers} if extra_headers else {}
     if use_sigv4:
-        return _sigv4_request(method, url, body, **kwargs)
-    return _request(method, url, api_key, body, **kwargs)  # type: ignore[arg-type]
+        return _sigv4_request(method, url, body)
+    return _request(method, url, api_key, body)  # type: ignore[arg-type]
 
 
 def list_credentials() -> list:
@@ -239,7 +216,7 @@ def materialize(service: str, label: str | None = None) -> dict:
     if invocation_id:
         payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/credential-materialize"
-    return _do_request("POST", endpoint, api_key, use_sigv4, payload, extra_headers={"X-Agent-Scopes": "credential:materialize"})  # type: ignore[return-value]
+    return _do_request("POST", endpoint, api_key, use_sigv4, payload)  # type: ignore[return-value]
 
 
 def raw_read(service: str, label: str | None = None, purpose: str | None = None) -> dict:
@@ -258,4 +235,4 @@ def raw_read(service: str, label: str | None = None, purpose: str | None = None)
     if invocation_id:
         payload["invocation_id"] = invocation_id
     endpoint = f"{base_url}/internal/v1/credential-raw-read"
-    return _do_request("POST", endpoint, api_key, use_sigv4, payload, extra_headers={"X-Agent-Scopes": "credential:raw-read"})  # type: ignore[return-value]
+    return _do_request("POST", endpoint, api_key, use_sigv4, payload)  # type: ignore[return-value]

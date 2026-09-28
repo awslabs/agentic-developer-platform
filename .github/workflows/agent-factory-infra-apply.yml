@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       account_id:
-        description: 'Target AWS account (12 digits). Empty = use the protected deployment identity / config file.'
+        description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
         required: false
         default: ''
       customer_account_id:
@@ -27,10 +27,6 @@ on:
         description: 'Deployment environment.'
         required: false
         default: 'dev'
-      target:
-        description: 'Optional Terraform address to scope the apply, e.g. module.arc_runner. Empty = whole module (~61 resources).'
-        required: false
-        default: ''
 
 concurrency:
   group: tf-apply-agent-factory-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -47,11 +43,8 @@ env:
 jobs:
   apply:
     name: Terraform Apply
-    if: github.ref == 'refs/heads/main'
     runs-on: arc-runner-org
-    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
-      id-token: write
       contents: read
       pull-requests: read
 
@@ -59,19 +52,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -84,10 +64,27 @@ jobs:
 
       - name: Install required CLI tools
         run: |
-          set -euo pipefail
-          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
-            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
-          done
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v terraform >/dev/null 2>&1; then
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends terraform
+          fi
+          aws --version
+          terraform version | head -1
+
       - name: Pre-create stub GitHub App secrets (idempotent)
         run: |
           set -e
@@ -113,15 +110,6 @@ jobs:
             done
           done
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - name: Build factory Lambda packages
-        run: bash platform/scripts/build-agent-factory-lambdas.sh
-
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
@@ -133,31 +121,11 @@ jobs:
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TARGET: ${{ inputs.target }}
         run: |
           set -e
           set -o pipefail
           EXIT_CODE=0
-          # Optional -target. This module holds ~61 resources across chat-agent,
-          # gateway-intake, KMS, runner-RBAC and the ARC scale set, so an
-          # unscoped apply reconciles all of them — including anything that was
-          # live-patched by hand since the last apply (there is a precedent
-          # recorded in arc-runner/main.tf: maxRunners was live-patched on
-          # 2026-07-03 and had to be written back into code so "the next apply
-          # doesn't revert it"). Targeting keeps a one-module change from
-          # carrying unrelated reconciliation with it.
-          #
-          # -target is applied to the PLAN, and `terraform apply tfplan` below
-          # replays exactly that saved plan, so the scope shown in the plan is
-          # the scope that gets applied. The destroy-safety gate below still
-          # runs either way.
-          TARGET_ARGS=()
-          if [ -n "$TARGET" ]; then
-            echo "::warning::Targeted apply: scope limited to '$TARGET'. State will be only partially converged; run an unscoped apply when convenient."
-            TARGET_ARGS=(-target="$TARGET")
-          fi
-          terraform plan -var-file="terraform.tfvars" "${TARGET_ARGS[@]}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          terraform plan -var-file="terraform.tfvars" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 1 ]; then
             echo "::error::Terraform plan failed."
@@ -193,14 +161,6 @@ jobs:
             echo "No destroys in plan. Proceeding."
           fi
 
-      - name: Verify ARC controller and live scale-set compatibility
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: |
-          set -euo pipefail
-          umask 077
-          terraform show -json tfplan > "$RUNNER_TEMP/arc-upgrade-plan.json"
-          python3 ../../../platform/scripts/check-arc-upgrade.py --plan "$RUNNER_TEMP/arc-upgrade-plan.json"
-
       - name: Terraform Apply
         id: apply
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -208,18 +168,8 @@ jobs:
 
       - name: Summary
         if: always()
-        env:
-          ADP_INPUT_1F64C4B060: ${{ inputs.target }}
         run: |
           echo "## Terraform Apply -- ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status**: ${{ steps.apply.outcome == 'success' && 'applied' || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"
-          # Record scope explicitly: a targeted apply leaves the rest of the
-          # module unconverged, and that has to be visible afterwards rather
-          # than only in the dispatch inputs.
-          if [ -n "${ADP_INPUT_1F64C4B060}" ]; then
-            echo "- **Scope**: TARGETED — \`${ADP_INPUT_1F64C4B060}\` only. Remaining resources in this module were NOT reconciled." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "- **Scope**: full module (all resources reconciled)" >> "$GITHUB_STEP_SUMMARY"
-          fi

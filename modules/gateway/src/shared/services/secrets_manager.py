@@ -19,7 +19,6 @@ All operations are synchronous (boto3), intended to be called via
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import uuid
@@ -35,10 +34,6 @@ MAX_SECRET_SIZE_BYTES = 65_536  # 64 KB
 
 class SecretTooLargeError(Exception):
     """Raised when a secret payload exceeds the 64 KB limit."""
-
-
-class SecretOperationConflictError(Exception):
-    """Raised when an idempotent operation name belongs to different input."""
 
 
 class SecretsManagerHelper:
@@ -67,7 +62,6 @@ class SecretsManagerHelper:
         team_id: str | None = None,
         org_id: str | None = None,
         domain_app_id: str | None = None,
-        operation_id: str | None = None,
     ) -> str:
         """Build a namespaced secret name with a short UUID suffix.
 
@@ -95,15 +89,15 @@ class SecretsManagerHelper:
             if len(primary_owners) != 1:
                 raise ValueError("Exactly one of user_sub, team_id, org_id, or domain_app_id must be provided.")
 
-        leaf = f"operation-{operation_id}" if operation_id else f"{service}-{uuid.uuid4().hex[:8]}"
+        short_id = uuid.uuid4().hex[:8]
         if user_sub is not None:
-            return f"adp/users/{user_sub}/{leaf}"
+            return f"adp/users/{user_sub}/{service}-{short_id}"
         if team_id is not None:
-            return f"adp/teams/{team_id}/{leaf}"
+            return f"adp/teams/{team_id}/{service}-{short_id}"
         if domain_app_id is not None:
-            return f"adp/domain-apps/{domain_app_id}/{org_id}/{leaf}"
+            return f"adp/domain-apps/{domain_app_id}/{org_id}/{service}-{short_id}"
         # org-scoped
-        return f"adp/orgs/{org_id}/{leaf}"
+        return f"adp/orgs/{org_id}/{service}-{short_id}"
 
     @staticmethod
     def _validate_payload_size(payload: str | bytes) -> bytes:
@@ -130,8 +124,6 @@ class SecretsManagerHelper:
         team_id: str | None = None,
         org_id: str | None = None,
         domain_app_id: str | None = None,
-        operation_id: str | None = None,
-        operation_fingerprint: str | None = None,
     ) -> str:
         """Create a new secret and return its ARN.
 
@@ -175,7 +167,6 @@ class SecretsManagerHelper:
             team_id=team_id,
             org_id=org_id,
             domain_app_id=domain_app_id,
-            operation_id=operation_id,
         )
 
         # Build owner tag for audit / IAM attribute-based access control.
@@ -192,38 +183,17 @@ class SecretsManagerHelper:
             owner_tag = {"Key": "adp:owner_scope", "Value": "org"}
             owner_id_tag = {"Key": "adp:org_id", "Value": org_id or ""}
 
-        tags = [
-            owner_tag,
-            owner_id_tag,
-            {"Key": "adp:service", "Value": service},
-            {"Key": "adp:label", "Value": label},
-        ]
-        if operation_id is not None:
-            tags.append({"Key": "adp:operation_id", "Value": operation_id})
-        if operation_fingerprint is not None:
-            tags.append({"Key": "adp:operation_fingerprint", "Value": operation_fingerprint})
-        try:
-            response = self._client.create_secret(
-                Name=secret_name,
-                Description=f"Vault credential: {label} ({service})",
-                SecretString=payload,
-                Tags=tags,
-            )
-        except ClientError as exc:
-            if operation_id is None or exc.response["Error"]["Code"] != "ResourceExistsException":
-                raise
-            description = self._client.describe_secret(SecretId=secret_name)
-            existing_tags = {tag["Key"]: tag["Value"] for tag in description.get("Tags", [])}
-            expected_tags = {tag["Key"]: tag["Value"] for tag in tags}
-            existing_value = self._client.get_secret_value(SecretId=secret_name).get("SecretString")
-            if description.get("DeletedDate") is not None or any(existing_tags.get(key) != value for key, value in expected_tags.items()):
-                raise SecretOperationConflictError("Credential operation id is already in use") from exc
-            if not hmac.compare_digest(
-                (existing_value or "").encode("utf-8"),
-                payload.encode("utf-8"),
-            ):
-                raise SecretOperationConflictError("Credential operation id was retried with a different value") from exc
-            response = description
+        response = self._client.create_secret(
+            Name=secret_name,
+            Description=f"Vault credential: {label} ({service})",
+            SecretString=payload,
+            Tags=[
+                owner_tag,
+                owner_id_tag,
+                {"Key": "adp:service", "Value": service},
+                {"Key": "adp:label", "Value": label},
+            ],
+        )
         arn = response["ARN"]
         logger.info("Created secret %s scope=%s service=%s", arn, owner_tag["Value"], service)
         return arn
@@ -238,61 +208,6 @@ class SecretsManagerHelper:
         """
         response = self._client.get_secret_value(SecretId=secret_arn)
         return response["SecretString"]
-
-    def get_secret_at_version(self, secret_arn: str, version_id: str) -> tuple[str, str]:
-        """Retrieve a secret value pinned to a specific version, returning (value, actual_version).
-
-        Issue #5528 (F3). ``get_secret`` calls ``get_secret_value`` without a
-        ``VersionId``, which always reads ``AWSCURRENT``. During a rotation window,
-        ``AWSCURRENT`` may have advanced past the version the Gateway validated, so a
-        delivery that calls ``get_secret`` could hand the caller bytes that were never
-        validated.
-
-        This method pins the read to ``version_id`` and returns the version the
-        Secrets Manager actually served alongside the value. The caller (``deliver_credential``)
-        checks the two match before returning material; a mismatch means the version
-        changed between the "what is current" lookup and the actual read, which the
-        caller must refuse rather than deliver.
-
-        Raises ``botocore.exceptions.ClientError`` (``InvalidRequestException``) when
-        the version does not exist or no longer carries any staging label, which the
-        caller must treat as a refusal. Raises ``ValueError`` when Secrets Manager
-        does not identify the version it actually served.
-        """
-        response = self._client.get_secret_value(SecretId=secret_arn, VersionId=version_id)
-        served_version = response.get("VersionId")
-        if not isinstance(served_version, str) or not served_version:
-            raise ValueError("Secrets Manager response did not include a non-empty VersionId")
-        return response["SecretString"], served_version
-
-    def current_version_id(self, secret_arn: str) -> str | None:
-        """Return the id of the secret's CURRENT version, or ``None`` if unknown.
-
-        Issue #5528. Credential evidence has to state *which* stored value is
-        current: an evidence record that says "this credential is valid" without
-        naming a version cannot distinguish the value that was validated from one
-        that replaced it afterwards, which is the rotation-during-execution case.
-
-        Metadata only, deliberately. ``describe_secret`` returns version ids and
-        their staging labels and never the value, so adding this cannot become a
-        second way to read a secret — unlike ``get_secret`` above, whose result is
-        the material itself.
-
-        ``None`` rather than a raise or a guess when no version carries the
-        ``AWSCURRENT`` label. "I could not establish the version" and "the version
-        is X" are different facts, and the evidence service reports the former as
-        unverified rather than substituting a plausible-looking value.
-        """
-        response = self._client.describe_secret(SecretId=secret_arn)
-        stages = response.get("VersionIdsToStages") or {}
-        if not isinstance(stages, dict):
-            return None
-        current = [
-            version_id
-            for version_id, labels in stages.items()
-            if isinstance(version_id, str) and version_id and isinstance(labels, list | tuple) and "AWSCURRENT" in labels
-        ]
-        return current[0] if len(current) == 1 else None
 
     def update_secret(self, secret_arn: str, payload: str | dict) -> None:
         """Update an existing secret's value.
@@ -336,17 +251,6 @@ class SecretsManagerHelper:
                 if code == "ResourceNotFoundException":
                     logger.warning("Secret %s already deleted", secret_arn)
                     return
-                if code == "InvalidRequestException" and not force:
-                    try:
-                        description = self._client.describe_secret(SecretId=secret_arn)
-                    except ClientError as describe_exc:
-                        if describe_exc.response["Error"]["Code"] == "ResourceNotFoundException":
-                            logger.warning("Secret %s already deleted", secret_arn)
-                            return
-                        raise describe_exc from exc
-                    if description.get("DeletedDate") is not None:
-                        logger.warning("Secret %s is already scheduled for deletion", secret_arn)
-                        return
                 if attempt == max_retries:
                     raise
                 logger.warning(

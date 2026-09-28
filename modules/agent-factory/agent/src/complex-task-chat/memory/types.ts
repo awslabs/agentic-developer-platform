@@ -25,21 +25,6 @@ export interface MemoryScope {
   persona?: string;
 }
 
-/**
- * The authenticated scope the agent-facing memory tools are bound to.
- *
- * Closure-injected into the tools by the orchestrator (see
- * `complex-task-chat-agent.ts`) so the model cannot choose which partition it
- * reads or writes. `user`/`tenant` come from verified JWT claims; `persona`
- * MUST be the sanitized `persona.name` from `loadPersona`, never the raw
- * `agent_type` (which is LLM-derived by the classifier).
- */
-export interface MemoryToolScope {
-  user?: string;
-  tenant?: string;
-  persona?: string;
-}
-
 export interface MemoryQuery {
   query: string;
   scope?: MemoryScope;
@@ -62,10 +47,6 @@ export interface MemoryProvider {
   retrieve(input: MemoryQuery): Promise<MemoryRecord[]>;
   save(record: Omit<MemoryRecord, 'id' | 'createdAt'>): Promise<MemoryRecord>;
   delete?(id: string): Promise<void>;
-  /**
-   * Agent-facing tools, bound to the authenticated `scope`. Optional so
-   * providers that expose no tools need no implementation change.
-   */
-  tools(scope?: MemoryToolScope): AgentTool[];
+  tools(): AgentTool[];
   capabilities(): MemoryCapabilities;
 }

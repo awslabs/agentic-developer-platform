@@ -33,12 +33,11 @@ def client(app):
 class TestFeaturesDefaults:
     """All flags default to True when no env vars are set (fail-open).
 
-    Exceptions: gitlab (Issue #3773), orchestration_engine (Issue #4209) and
-    budget_spend (Issue #4402) default to False — optional add-ons are fail-closed.
+    Exception: gitlab defaults to False (fail-closed, Issue #3773).
     """
 
     def test_all_enabled_by_default(self, client, monkeypatch):
-        """With no FEATURE_* env vars, core flags are True; add-ons are False."""
+        """With no FEATURE_* env vars, core flags are True; gitlab is False."""
         # Clear any existing feature flags
         for var in [
             "FEATURE_CHAT_ENABLED",
@@ -49,13 +48,6 @@ class TestFeaturesDefaults:
             "FEATURE_SYSTEM_DASHBOARD_ENABLED",
             "FEATURE_LOGS_ENABLED",
             "FEATURE_GITLAB_ENABLED",
-            "FEATURE_ORCHESTRATION_ENGINE_ENABLED",
-            "FEATURE_BUDGET_SPEND_ENABLED",
-            "FEATURE_AGENT_CONTROL_ENABLED",
-            "FEATURE_AGENT_EXPLANATIONS_ENABLED",
-            "FEATURE_NEW_UI_ENABLED",
-            "FEATURE_SUPERPLANE_ENABLED",
-            "FEATURE_AGENT_MODELS_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -73,28 +65,6 @@ class TestFeaturesDefaults:
                 "system_dashboard": True,
                 "logs": True,
                 "gitlab": False,
-                "orchestration_engine": False,
-                # Issue #4402: fail-closed, so the documented rollback ("flip the flag
-                # off — screen and nav vanish") holds when the var is absent entirely.
-                "budget_spend": False,
-                # Issue #3960: fail-closed, and the strictest case in this dict. The
-                # flag gates a channel into a running pod, and the rollout invariant
-                # is that ordinary workloads stay off — so "absent" must mean off,
-                # not "off until someone sets it to something unparseable".
-                "agent_control": False,
-                "agent_explanations": False,
-                # Issue #5079: fail-closed. The current UI is the default and the
-                # /next shell is opt-in per environment, so "absent" must mean the
-                # new experience is not advertised at all.
-                "new_ui": False,
-                # Issue #5037: fail-closed. The Superplane domain app must not change
-                # any existing surface's behaviour while its gate is off, and the
-                # infrastructure behind it belongs to later units — so "absent" must
-                # mean no route is reachable, not "reachable but broken".
-                "superplane": False,
-                # Issue #5422: Agent Models is enabled only by PMM-09 after the
-                # catalogue and runtime enforcement are ready.
-                "agent_models": False,
             }
         }
 
@@ -110,16 +80,6 @@ class TestIndividualFlags:
         # Other flags unaffected
         assert data["connections"] is True
         assert data["credentials"] is True
-
-    def test_agent_models_is_strict_and_can_be_enabled(self, client, monkeypatch):
-        monkeypatch.delenv("FEATURE_AGENT_MODELS_ENABLED", raising=False)
-        assert client.get("/features").json()["features"]["agent_models"] is False
-
-        monkeypatch.setenv("FEATURE_AGENT_MODELS_ENABLED", "true")
-        assert client.get("/features").json()["features"]["agent_models"] is True
-
-        monkeypatch.setenv("FEATURE_AGENT_MODELS_ENABLED", "invalid")
-        assert client.get("/features").json()["features"]["agent_models"] is False
 
     def test_knowledge_disabled(self, client, monkeypatch):
         monkeypatch.setenv("FEATURE_KNOWLEDGE_ENABLED", "false")
@@ -258,100 +218,6 @@ class TestGitlabFailClosed:
         assert data["gitlab"] is False
         assert data["chat"] is True
         assert data["connections"] is True
-
-
-class TestBudgetSpendFailClosed:
-    """Budget & Spend flag uses fail-closed semantics (Issue #4402).
-
-    The screen's documented rollback is "flip the flag off — screen and nav vanish, no
-    redeploy". That only holds if *absence* of the var resolves to off: with fail-open
-    semantics the screen would be live in every environment the moment the SPA deployed,
-    and unsetting the var would not turn it off again.
-    """
-
-    def test_budget_spend_false_by_default(self, client, monkeypatch):
-        """With no FEATURE_BUDGET_SPEND_ENABLED env var, budget_spend is False."""
-        monkeypatch.delenv("FEATURE_BUDGET_SPEND_ENABLED", raising=False)
-        response = client.get("/features")
-        assert response.json()["features"]["budget_spend"] is False
-
-    def test_budget_spend_true_when_explicitly_enabled(self, client, monkeypatch):
-        """FEATURE_BUDGET_SPEND_ENABLED=true enables the flag."""
-        monkeypatch.setenv("FEATURE_BUDGET_SPEND_ENABLED", "true")
-        response = client.get("/features")
-        assert response.json()["features"]["budget_spend"] is True
-
-    def test_budget_spend_false_for_non_true_values(self, client, monkeypatch):
-        """Any value other than 'true' keeps the flag disabled."""
-        for value in ("false", "yes", "1", ""):
-            monkeypatch.setenv("FEATURE_BUDGET_SPEND_ENABLED", value)
-            response = client.get("/features")
-            assert response.json()["features"]["budget_spend"] is False, value
-
-    def test_budget_spend_does_not_affect_other_flags(self, client, monkeypatch):
-        """Enabling budget_spend leaves the other flags unchanged."""
-        monkeypatch.setenv("FEATURE_BUDGET_SPEND_ENABLED", "true")
-        response = client.get("/features")
-        data = response.json()["features"]
-        assert data["budget_spend"] is True
-        assert data["chat"] is True
-        assert data["gitlab"] is False
-        assert data["orchestration_engine"] is False
-
-
-class TestNewUiFailClosed:
-    """The opt-in /next UI shell flag is fail-closed (Issue #5079).
-
-    The current UI is the default experience and stays so. `new_ui` only controls
-    whether the additional /next experience is advertised and routable, and its
-    documented rollback is "flip the flag off": the entry link and /next routes
-    disappear while every current URL keeps working. That rollback only holds if
-    *absence* of the var resolves to off — otherwise the new shell would go live in
-    every environment the moment the gateway deployed.
-    """
-
-    def test_new_ui_false_by_default(self, client, monkeypatch):
-        """With no FEATURE_NEW_UI_ENABLED env var, new_ui is False."""
-        monkeypatch.delenv("FEATURE_NEW_UI_ENABLED", raising=False)
-        response = client.get("/features")
-        assert response.json()["features"]["new_ui"] is False
-
-    def test_new_ui_true_when_explicitly_enabled(self, client, monkeypatch):
-        """FEATURE_NEW_UI_ENABLED=true enables the flag."""
-        monkeypatch.setenv("FEATURE_NEW_UI_ENABLED", "true")
-        response = client.get("/features")
-        assert response.json()["features"]["new_ui"] is True
-
-    def test_new_ui_false_for_non_true_values(self, client, monkeypatch):
-        """Any value other than 'true' keeps the new experience hidden."""
-        for value in ("false", "yes", "1", "", "TRUE-ish"):
-            monkeypatch.setenv("FEATURE_NEW_UI_ENABLED", value)
-            response = client.get("/features")
-            assert response.json()["features"]["new_ui"] is False, value
-
-    def test_new_ui_accepts_mixed_case_true(self, client, monkeypatch):
-        """'True'/'TRUE' enable it — `_is_enabled_strict` lowercases before compare."""
-        for value in ("True", "TRUE"):
-            monkeypatch.setenv("FEATURE_NEW_UI_ENABLED", value)
-            response = client.get("/features")
-            assert response.json()["features"]["new_ui"] is True, value
-
-    def test_new_ui_does_not_affect_other_flags(self, client, monkeypatch):
-        """Enabling the new UI changes no other flag.
-
-        The coexistence contract says the new experience is purely additive: turning
-        it on must not disable, gate or otherwise alter any current-UI capability.
-        """
-        monkeypatch.setenv("FEATURE_NEW_UI_ENABLED", "true")
-        response = client.get("/features")
-        data = response.json()["features"]
-        assert data["new_ui"] is True
-        assert data["chat"] is True
-        assert data["connections"] is True
-        assert data["credentials"] is True
-        assert data["knowledge"] is True
-        assert data["gitlab"] is False
-        assert data["orchestration_engine"] is False
 
 
 class TestRouterPrefix:

@@ -38,8 +38,8 @@ def mock_cognito_sync():
 @pytest.fixture
 def org_create_request():
     return OrganizationCreateRequest(
-        id="acme-test",
-        name="Acme Test",
+        id="sophos-test",
+        name="Sophos Test",
         plan="free",
         channels=ChannelsConfig(
             github=[ChannelEntry(installation_id="124731131", org_login="aws-e")],
@@ -62,26 +62,26 @@ class TestOrganizationsService:
         )
         result = await svc.create_organization(org_create_request)
 
-        assert result.id == "acme-test"
-        assert result.name == "Acme Test"
+        assert result.id == "sophos-test"
+        assert result.name == "Sophos Test"
 
         # Verify org exists
-        org = (await db_session.execute(select(Organization).where(Organization.id == "acme-test"))).scalar_one()
-        assert org.name == "Acme Test"
+        org = (await db_session.execute(select(Organization).where(Organization.id == "sophos-test"))).scalar_one()
+        assert org.name == "Sophos Test"
         assert org.github_installation_ids == ["124731131"]
 
         # Verify default department
-        dept = (await db_session.execute(select(Department).where(Department.id == "acme-test-dept-default"))).scalar_one()
-        assert dept.org_id == "acme-test"
+        dept = (await db_session.execute(select(Department).where(Department.id == "sophos-test-dept-default"))).scalar_one()
+        assert dept.org_id == "sophos-test"
         assert dept.name == "Default"
 
         # Verify default team
-        team = (await db_session.execute(select(Team).where(Team.id == "acme-test-team-default"))).scalar_one()
-        assert team.org_id == "acme-test"
-        assert team.department_id == "acme-test-dept-default"
+        team = (await db_session.execute(select(Team).where(Team.id == "sophos-test-team-default"))).scalar_one()
+        assert team.org_id == "sophos-test"
+        assert team.department_id == "sophos-test-dept-default"
 
         # Verify channel_tenant_map
-        ctm = (await db_session.execute(select(ChannelTenantMap).where(ChannelTenantMap.org_id == "acme-test"))).scalars().all()
+        ctm = (await db_session.execute(select(ChannelTenantMap).where(ChannelTenantMap.org_id == "sophos-test"))).scalars().all()
         assert len(ctm) == 1
         assert ctm[0].provider == "github"
         assert ctm[0].provider_scope_id == "124731131"
@@ -99,7 +99,7 @@ class TestOrganizationsService:
         await svc.create_organization(org_create_request)
 
         mock_identity_index.sync_org_channels.assert_awaited_once_with(
-            org_id="acme-test",
+            org_id="sophos-test",
             github_installation_ids=["124731131"],
             cognito_client_ids=[],
         )
@@ -116,7 +116,7 @@ class TestOrganizationsService:
         )
         await svc.create_organization(org_create_request)
 
-        mock_cognito_sync.ensure_org_group.assert_awaited_once_with("acme-test")
+        mock_cognito_sync.ensure_org_group.assert_awaited_once_with("sophos-test")
 
     @pytest.mark.asyncio
     async def test_ddb_failure_does_not_rollback_postgres(self, db_session: AsyncSession, mock_cognito_sync, org_create_request):
@@ -143,9 +143,9 @@ class TestOrganizationsService:
             pass
 
         # Org should still exist in DB because commit happened before DDB call
-        org = (await db_session.execute(select(Organization).where(Organization.id == "acme-test"))).scalar_one_or_none()
+        org = (await db_session.execute(select(Organization).where(Organization.id == "sophos-test"))).scalar_one_or_none()
         assert org is not None
-        assert org.name == "Acme Test"
+        assert org.name == "Sophos Test"
 
     @pytest.mark.asyncio
     async def test_get_organization(self, db_session: AsyncSession, mock_identity_index, mock_cognito_sync, org_create_request):
@@ -153,9 +153,9 @@ class TestOrganizationsService:
         svc = OrganizationsService(db_session, identity_index=mock_identity_index, cognito_sync=mock_cognito_sync)
         await svc.create_organization(org_create_request)
 
-        result = await svc.get_organization("acme-test")
+        result = await svc.get_organization("sophos-test")
         assert result is not None
-        assert result.id == "acme-test"
+        assert result.id == "sophos-test"
 
     @pytest.mark.asyncio
     async def test_get_organization_not_found(self, db_session: AsyncSession):
@@ -172,7 +172,7 @@ class TestOrganizationsService:
 
         result = await svc.list_organizations()
         assert len(result) >= 1
-        assert any(o.id == "acme-test" for o in result)
+        assert any(o.id == "sophos-test" for o in result)
 
     @pytest.mark.asyncio
     async def test_update_organization_name(self, db_session: AsyncSession, mock_identity_index, mock_cognito_sync, org_create_request):
@@ -180,10 +180,10 @@ class TestOrganizationsService:
         svc = OrganizationsService(db_session, identity_index=mock_identity_index, cognito_sync=mock_cognito_sync)
         await svc.create_organization(org_create_request)
 
-        update = OrganizationUpdateRequest(name="Acme Production")
-        result = await svc.update_organization("acme-test", update)
+        update = OrganizationUpdateRequest(name="Sophos Production")
+        result = await svc.update_organization("sophos-test", update)
         assert result is not None
-        assert result.name == "Acme Production"
+        assert result.name == "Sophos Production"
 
     @pytest.mark.asyncio
     async def test_delete_organization_soft_deletes(self, db_session: AsyncSession, mock_identity_index, mock_cognito_sync, org_create_request):
@@ -191,11 +191,11 @@ class TestOrganizationsService:
         svc = OrganizationsService(db_session, identity_index=mock_identity_index, cognito_sync=mock_cognito_sync)
         await svc.create_organization(org_create_request)
 
-        deleted = await svc.delete_organization("acme-test")
+        deleted = await svc.delete_organization("sophos-test")
         assert deleted is True
 
         # Org still exists but is archived
-        org = (await db_session.execute(select(Organization).where(Organization.id == "acme-test"))).scalar_one()
+        org = (await db_session.execute(select(Organization).where(Organization.id == "sophos-test"))).scalar_one()
         assert org.settings.get("status") == "archived"
 
         # DDB cleanup was called

@@ -18,6 +18,4 @@ jobs:
       repo_owner: ${{ github.repository_owner }}
       repo_name: ${{ github.event.repository.name }}
       target_repo: ${{ github.repository }}
-    secrets:
-      WEBAPP_TEST_USERNAME: ${{ secrets.WEBAPP_TEST_USERNAME }}
-      WEBAPP_TEST_PASSWORD: ${{ secrets.WEBAPP_TEST_PASSWORD }}
+    secrets: inherit

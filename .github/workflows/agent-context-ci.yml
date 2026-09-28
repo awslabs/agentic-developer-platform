@@ -3,11 +3,6 @@ name: Agent Context CI
 on:
   pull_request:
     paths:
-      - '.github/workflows/agent-context-ci.yml'
-      - '.github/workflows/agent-context-deploy.yml'
-      - 'modules/agent-context/deploy.sh'
-      - 'modules/agent-context/scripts/**'
-      - 'modules/agent-context/images/ingestion/**'
       - 'modules/agent-context/door/**'
       - 'modules/agent-context/agent_context/**'
       - 'modules/agent-context/pipeline/**'
@@ -17,11 +12,6 @@ on:
       - main
   push:
     paths:
-      - '.github/workflows/agent-context-ci.yml'
-      - '.github/workflows/agent-context-deploy.yml'
-      - 'modules/agent-context/deploy.sh'
-      - 'modules/agent-context/scripts/**'
-      - 'modules/agent-context/images/ingestion/**'
       - 'modules/agent-context/door/**'
       - 'modules/agent-context/agent_context/**'
       - 'modules/agent-context/pipeline/**'
@@ -85,14 +75,9 @@ jobs:
           # door.server. This job was previously gated (skipped) by a red lint job,
           # so the drift was invisible. 1.29.0 is the last release exporting it.
           pip install pytest pytest-asyncio httpx respx pydantic pydantic-settings asgi-lifespan \
-            boto3 sqlalchemy fastapi 'mcp<2' requests pyyaml uvicorn defusedxml \
+            boto3 sqlalchemy fastapi 'mcp<2' requests pyyaml uvicorn \
             psycopg2-binary python-hcl2 neo4j python-ulid \
-            opentelemetry-sdk opentelemetry-exporter-otlp \
-            opentelemetry-sdk-extension-aws opentelemetry-propagator-aws-xray \
-            'playwright==1.63.0'
-
-      - name: Install Chromium for ingestion security regression
-        run: python -m playwright install --with-deps chromium
+            opentelemetry-sdk opentelemetry-exporter-otlp
 
       - name: Run Tests
         working-directory: modules/agent-context

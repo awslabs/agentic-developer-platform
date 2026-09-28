@@ -43,14 +43,6 @@ def _load_signing_key() -> bytes | None:
     """
     global _signing_key, _key_loaded
 
-    if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED") == "true":
-        # A shared HMAC key can impersonate another run's human lineage.
-        # Protected dispatch uses gateway authority; shared-marker compatibility
-        # needs a mediated signer before migration (see #5195).
-        _signing_key = None
-        _key_loaded = False
-        return None
-
     if _key_loaded:
         return _signing_key
 

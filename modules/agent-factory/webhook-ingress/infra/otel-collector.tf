@@ -142,12 +142,6 @@ resource "kubernetes_deployment" "otel_collector" {
 
     template {
       metadata {
-        # The collector is a Go binary; Java instrumentation is unused.
-        annotations = {
-          "cloudwatch.aws.amazon.com/auto-annotate-java" = "false"
-          "instrumentation.opentelemetry.io/inject-java" = "false"
-        }
-
         labels = {
           "app.kubernetes.io/name"      = "adot-collector"
           "app.kubernetes.io/part-of"   = "adp-agent-factory"
@@ -169,7 +163,7 @@ resource "kubernetes_deployment" "otel_collector" {
           name  = "adot-collector"
           image = var.otel_collector_image
 
-          args = ["--config=file:/conf/collector-config.yaml"]
+          args = ["--config=/conf/collector-config.yaml"]
 
           port {
             name           = "otlp-grpc"

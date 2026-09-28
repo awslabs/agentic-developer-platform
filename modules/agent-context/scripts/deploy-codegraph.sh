@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy CodeGraphContext using a reviewed pre-baked image; no runtime installer.
+# Deploy CodeGraphContext (fixed version — direct install, no init container)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,22 +8,6 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Source configuration and helpers
 source "${SCRIPT_DIR}/_common.sh"
 load_config "${ROOT_DIR}"
-
-# Resolve every offline prerequisite before the first scale/delete operation.
-# --render-only emits the exact manifest without contacting Kubernetes.
-if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--render-only" ) ]]; then
-  echo "Usage: $0 [--render-only]" >&2
-  exit 2
-fi
-: "${CODEGRAPH_IMAGE:?Set CODEGRAPH_IMAGE to a reviewed pre-baked image digest}"
-: "${CODEGRAPH_VALIDATION_RECEIPT:?Set CODEGRAPH_VALIDATION_RECEIPT to its passed runtime receipt}"
-RENDERED_MANIFEST=$(python3 "${SCRIPT_DIR}/render-codegraph.py" \
-  --image "${CODEGRAPH_IMAGE}" --receipt "${CODEGRAPH_VALIDATION_RECEIPT}" \
-  --namespace "${NAMESPACE}" --service-account "${SERVICE_ACCOUNT}")
-if [[ "${1:-}" == "--render-only" ]]; then
-  printf '%s\n' "$RENDERED_MANIFEST"
-  exit 0
-fi
 
 echo "================================================"
 echo "Task 2: Deploy CodeGraphContext (fixed)"
@@ -49,11 +33,11 @@ echo "[2/4] Applying fixed CodeGraphContext deployment..."
 
 export NAMESPACE SERVICE_ACCOUNT CODEGRAPH_IMAGE
 
-printf '%s\n' "$RENDERED_MANIFEST" | kubectl apply -f -
+template_file "${ROOT_DIR}/manifests/codegraph.yaml" | kubectl apply -f -
 
 # Step 3: Wait for pod ready
 echo ""
-echo "[3/4] Waiting for pre-baked CodeGraphContext pod..."
+echo "[3/4] Waiting for CodeGraphContext pod (this may take 2-3 minutes for package install)..."
 kubectl rollout status deploy/codegraph-context -n "${NAMESPACE}" --timeout=360s
 
 # Step 4: Verify cgc works
@@ -69,7 +53,7 @@ fi
 
 # Check cgc --version
 echo -n "  cgc --version: "
-kubectl exec "${CGC_POD}" -n "${NAMESPACE}" -- cgc --version 2>&1
+kubectl exec "${CGC_POD}" -n "${NAMESPACE}" -- cgc --version 2>&1 || echo "not available (may be CLI-only package)"
 
 # Check Python import
 echo -n "  python3 import: "

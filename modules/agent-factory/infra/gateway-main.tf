@@ -34,16 +34,7 @@ module "gateway_sessions" {
 # the API GW being created first, which is the correct ordering.
 
 module "gateway_lambda" {
-  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
-  source                              = "./modules/lambda-gateway"
-  model_policy_enabled                = var.chat_model_policy_enabled
-  persona_model_mapping_enabled       = var.persona_model_mapping_enabled && var.gateway_deployed
-  model_control_endpoint              = local.persona_model_control_endpoint
-  model_root_admission_arn            = local.persona_model_root_admission_arn
-
-  webhook_events_table_name  = local.chat_webhook_events_table
-  webhook_events_table_arn   = local.chat_webhook_events_table == "" ? "" : "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.chat_webhook_events_table}"
-  webhook_events_kms_key_arn = try(local.chat_worker_wiring.webhook_events_kms_key_arn, "")
+  source = "./modules/lambda-gateway"
 
   name_prefix         = local.name_prefix
   environment         = var.environment
@@ -54,31 +45,22 @@ module "gateway_lambda" {
   # Chat agent uses the FIFO queue (MessageGroupId=session_id serializes
   # per-session turns). The standard queue still exists for the legacy Python
   # worker but the ingest Lambda only sends to FIFO now.
-  input_queue_url       = aws_sqs_queue.chat_agent_tasks_fifo.url
-  input_queue_arn       = aws_sqs_queue.chat_agent_tasks_fifo.arn
-  response_queue_url    = module.gateway_sqs.response_queue_url
-  response_queue_arn    = module.gateway_sqs.response_queue_arn
-  sessions_table_name   = module.gateway_sessions.table_name
-  sessions_table_arn    = module.gateway_sessions.table_arn
-  dynamodb_kms_key_arn  = aws_kms_key.dynamodb.arn
-  artifacts_bucket_arn  = aws_s3_bucket.chat_artifacts.arn
-  artifacts_bucket_name = aws_s3_bucket.chat_artifacts.id
-  artifacts_table_arn   = aws_dynamodb_table.chat_artifacts.arn
-  artifacts_table_name  = aws_dynamodb_table.chat_artifacts.name
-  # Issue #4233: chat-dispatch ownership layer. Sourced from the gateway
-  # module's state (it owns the identity-index) and its KMS alias, so nothing
-  # here hardcodes a table name. All three are empty when the gateway is not
-  # deployed, which leaves the ownership layer inactive and the ingest
-  # Lambda's code-only org allowlist as the whole gate.
-  identity_index_table_name  = local.identity_index_table_name
-  identity_index_table_arn   = local.identity_index_table_arn
-  identity_index_kms_key_arn = local.gateway_dynamodb_kms_key_arn
-  ws_api_endpoint            = var.gateway_deployed ? module.gateway_apigw[0].stage_invoke_url : ""
-  ws_api_id                  = var.gateway_deployed ? module.gateway_apigw[0].api_id : ""
-  ws_execution_arn           = var.gateway_deployed ? module.gateway_apigw[0].execution_arn : ""
-  enable_ws_policies         = true
-  cloudwatch_kms_key_arn     = aws_kms_key.cloudwatch.arn
-  tags                       = { Component = "agent-gateway" }
+  input_queue_url        = aws_sqs_queue.chat_agent_tasks_fifo.url
+  input_queue_arn        = aws_sqs_queue.chat_agent_tasks_fifo.arn
+  response_queue_url     = module.gateway_sqs.response_queue_url
+  response_queue_arn     = module.gateway_sqs.response_queue_arn
+  sessions_table_name    = module.gateway_sessions.table_name
+  sessions_table_arn     = module.gateway_sessions.table_arn
+  artifacts_bucket_arn   = aws_s3_bucket.chat_artifacts.arn
+  artifacts_bucket_name  = aws_s3_bucket.chat_artifacts.id
+  artifacts_table_arn    = aws_dynamodb_table.chat_artifacts.arn
+  artifacts_table_name   = aws_dynamodb_table.chat_artifacts.name
+  ws_api_endpoint        = var.gateway_deployed ? module.gateway_apigw[0].stage_invoke_url : ""
+  ws_api_id              = var.gateway_deployed ? module.gateway_apigw[0].api_id : ""
+  ws_execution_arn       = var.gateway_deployed ? module.gateway_apigw[0].execution_arn : ""
+  enable_ws_policies     = true
+  cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
+  tags                   = { Component = "agent-gateway" }
 }
 
 # --- Gateway Auth (reuse authorizer from gateway module via remote state) ---
@@ -93,38 +75,10 @@ data "terraform_remote_state" "gateway" {
   }
 }
 
-# Issue #4233: the gateway's customer-managed KMS key encrypts the
-# identity-index. Referenced by alias so key rotation doesn't break the ingest
-# Lambda's read policy. Only read when the gateway is deployed — the alias does
-# not exist before then.
-data "aws_kms_alias" "gateway_dynamodb" {
-  count = var.gateway_deployed ? 1 : 0
-  name  = "alias/adp-${var.environment}-gateway-dynamodb"
-}
-
 locals {
   # Authorizer Lambda from gateway module (empty if gateway not deployed)
   authorizer_invoke_arn    = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.authorizer_lambda_invoke_arn, "") : ""
   authorizer_function_name = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.lambda_authorizer_name, "") : ""
-
-  # Issue #4233: identity-index (owned by the gateway module) for the
-  # chat-dispatch ownership layer. `try` keeps a gateway state predating these
-  # outputs from failing the apply — an empty value simply leaves the ownership
-  # layer inactive, which is the documented pre-apply posture.
-  identity_index_table_name    = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.identity_index_table_name, "") : ""
-  identity_index_table_arn     = var.gateway_deployed ? try(data.terraform_remote_state.gateway[0].outputs.identity_index_table_arn, "") : ""
-  gateway_dynamodb_kms_key_arn = var.gateway_deployed ? try(data.aws_kms_alias.gateway_dynamodb[0].target_key_arn, "") : ""
-}
-
-# Fail-closed on a half-wired ownership layer: granting the table without the
-# KMS key produces AccessDenied on every read, which the gate treats as
-# unverifiable and denies. Better to fail the apply than ship a dispatch path
-# that rejects everything.
-check "identity_index_kms_wired_when_table_present" {
-  assert {
-    condition     = local.identity_index_table_arn == "" || local.gateway_dynamodb_kms_key_arn != ""
-    error_message = "identity-index ARN resolved but the gateway KMS alias did not. The ingest Lambda's dispatch ownership layer needs kms:Decrypt on alias/adp-<env>-gateway-dynamodb; without it every identity-index read is AccessDenied and all chat dispatch is denied."
-  }
 }
 
 # Fail-closed: when gateway_deployed=true, the authorizer outputs MUST be
@@ -153,10 +107,6 @@ module "gateway_apigw" {
   authorizer_lambda_function_name = local.authorizer_function_name
   cloudwatch_kms_key_arn          = aws_kms_key.cloudwatch.arn
   tags                            = { Component = "agent-gateway" }
-
-  # Close the AWS-assigned hostname once ws.<zone> is published. See the variable
-  # for why this is the only control a WEBSOCKET API can carry.
-  disable_execute_api_endpoint = var.disable_execute_api_endpoint
 }
 
 # --- Gateway Agents Namespace ---
@@ -249,7 +199,7 @@ resource "aws_ssm_parameter" "gateway_ws_endpoint" {
   name        = "/adp/${var.environment}/gateway/agent-ws-url"
   description = "WebSocket API Gateway endpoint for agent streaming"
   type        = "String"
-  value       = var.agent_ws_public_url != "" ? var.agent_ws_public_url : module.gateway_apigw[0].stage_invoke_url
+  value       = module.gateway_apigw[0].stage_invoke_url
 
   tags = { Component = "agent-gateway" }
 }
@@ -270,8 +220,7 @@ resource "aws_ssm_parameter" "gateway_ws_endpoint" {
 # =============================================================================
 
 resource "aws_iam_role" "gateway_agent" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "adp-${var.environment}-gateway-agent-role"
+  name = "adp-${var.environment}-gateway-agent-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -469,16 +418,22 @@ resource "kubernetes_config_map" "agent_gateway_config" {
   }
 
   data = {
-    INPUT_QUEUE_URL               = module.gateway_sqs.input_queue_url
-    RESPONSE_QUEUE_URL            = module.gateway_sqs.response_queue_url
-    SESSIONS_TABLE_NAME           = module.gateway_sessions.table_name
-    AWS_REGION                    = var.aws_region
-    AGENT_DIR                     = "/app/agent"
-    ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.chat_model_policy_enabled)
-    ADP_AGENT_CONTROL_ENDPOINT    = var.chat_model_control_endpoint
-    # Account authorization, Marketplace entitlement and invocation are checked
-    # by the deployment helper before rolling out this default.
-    ANTHROPIC_MODEL = "global.anthropic.claude-sonnet-5"
+    INPUT_QUEUE_URL     = module.gateway_sqs.input_queue_url
+    RESPONSE_QUEUE_URL  = module.gateway_sqs.response_queue_url
+    SESSIONS_TABLE_NAME = module.gateway_sessions.table_name
+    AWS_REGION          = var.aws_region
+    AGENT_DIR           = "/app/agent"
+    # Use the `us.` cross-region inference profile (NOT `global.`): the `us.`
+    # profile is available in every account we deploy to, whereas `global.` is
+    # not enabled on all accounts (e.g. test account 919157478356 returns
+    # "invalid model identifier" for global.* and AccessDenied until the
+    # Marketplace subscription lands). `us.` works on both 919 and embark1.
+    # Default is Sonnet 4.6 (cheaper/faster than Opus, no Marketplace agreement
+    # required — the `us.` profile is invokable out-of-the-box on tested accounts
+    # incl. 261421447505). Override to an Opus profile (e.g.
+    # us.anthropic.claude-opus-4-6-v1) via TF_VAR / this env for capability-heavy
+    # workloads that need it.
+    ANTHROPIC_MODEL = "us.anthropic.claude-sonnet-4-6"
     # Phase 3 gateway routing (issue #748)
     ADP_BEDROCK_VIA            = "gateway"
     SIGV4_PROXY_TARGET         = var.gateway_deployed ? "${data.aws_ssm_parameter.gateway_apigw_invoke_url[0].value}/agent" : ""
@@ -501,14 +456,6 @@ resource "kubernetes_config_map" "agent_gateway_config" {
 # =============================================================================
 # The entrypoint writes step-level bootstrap logs directly to CloudWatch so
 # Setup failures are diagnosable after the pod is GC'd by KEDA.
-#
-# SCOPE: this grant covers aws_iam_role.gateway_agent only — service account
-# "adp-agent" in the gateway namespace. It does NOT cover the KEDA agent-worker
-# (SA "agent-scaledjob-sa" in adp-agents), which assumes a separate role defined
-# in webhook-ingress/infra/scaledjob-iam.tf. #1690 landed this grant on this role
-# alone, so the KEDA worker's bootstrap logging was silently denied until #4028
-# added the equivalent BootstrapLogging statement there. Two roles, two grants —
-# when changing one, check the other.
 # =============================================================================
 
 resource "aws_iam_role_policy" "gateway_agent_bootstrap_logs" {
@@ -549,31 +496,47 @@ resource "aws_iam_role_policy" "gateway_agent_execute_api" {
   })
 }
 
-# Shared runners use only the runner-runtime-policy grants. Direct gateway SQS,
-# session DynamoDB and DynamoDB KMS access belongs to the gateway workloads;
-# adding it here is redundant with (and denied by) the shared runtime boundary.
+# --- Extend runner IAM with gateway permissions ---
 
-# Basic saved-model lookup shares the existing gateway deployment. Derive its
-# endpoint from that deployment so a dev apply cannot erase manually supplied
-# producer wiring. Explicit advanced-policy endpoints still take precedence.
-locals {
-  persona_model_control_endpoint = var.chat_model_control_endpoint != "" ? var.chat_model_control_endpoint : (
-    var.persona_model_mapping_enabled && var.gateway_deployed ? "${data.terraform_remote_state.gateway[0].outputs.api_gateway_invoke_url}/internal/v1/agent" : ""
-  )
-  persona_model_root_admission_arn = var.chat_model_root_admission_arn != "" ? var.chat_model_root_admission_arn : (
-    var.persona_model_mapping_enabled && var.gateway_deployed ? "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${data.terraform_remote_state.gateway[0].outputs.api_gateway_id}/${data.terraform_remote_state.gateway[0].outputs.api_gateway_stage_name}/POST/internal/v1/agent/roots/admit" : ""
-  )
+resource "aws_iam_role_policy" "runner_gateway_sqs" {
+  name = "gateway-sqs"
+  role = module.runner_iam.runner_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl"]
+        Resource = module.gateway_sqs.input_queue_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+        Resource = module.gateway_sqs.response_queue_arn
+      }
+    ]
+  })
 }
 
-# Chat registration is required before inference can inherit the human's
-# destination and budgets. Discover the webhook-owned resource identifiers.
-data "aws_ssm_parameters_by_path" "chat_worker_runtime" {
-  path            = "/adp/${var.environment}/webhook-ingress/worker-runtime"
-  recursive       = false
-  with_decryption = false
-}
-locals {
-  chat_worker_parameters    = zipmap(data.aws_ssm_parameters_by_path.chat_worker_runtime.names, data.aws_ssm_parameters_by_path.chat_worker_runtime.values)
-  chat_worker_wiring        = jsondecode(lookup(local.chat_worker_parameters, "/adp/${var.environment}/webhook-ingress/worker-runtime/wiring", "{}"))
-  chat_webhook_events_table = try(local.chat_worker_wiring.webhook_events_table, "")
+resource "aws_iam_role_policy" "runner_gateway_dynamodb" {
+  name = "gateway-dynamodb"
+  role = module.runner_iam.runner_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = [module.gateway_sessions.table_arn, "${module.gateway_sessions.table_arn}/index/*"]
+      },
+      {
+        Sid      = "DynamoDBKMSAccess"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:GenerateDataKey*", "kms:DescribeKey"]
+        Resource = [aws_kms_key.dynamodb.arn]
+      }
+    ]
+  })
 }

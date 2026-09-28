@@ -58,20 +58,6 @@ resource "aws_apigatewayv2_vpc_link" "main" {
 # Egress to the ALB's security group on port 80 (HTTP).
 # The ALB SG must allow inbound from this SG — handled by the ingress rule below.
 
-locals {
-  # Issue #4010 follow-up: on EKS Auto Mode both Ingress-managed ALBs share the
-  # controller's frontend SG (observed live: sg-0623ec… appears in BOTH lists),
-  # and that SG already carries the edge rules from alb_security_group_ids.
-  # Emitting the same (peer, 80/tcp) rule again from the internal-plane blocks
-  # fails the whole apply with InvalidPermission.Duplicate — which aborted the
-  # 2026-08-26 gateway-infra-apply midway (run 33017530462). Only the SGs unique
-  # to the internal-plane ALB need their own rules.
-  internal_plane_only_sg_ids = [
-    for sg in var.internal_plane_alb_security_group_ids : sg
-    if !contains(var.alb_security_group_ids, sg)
-  ]
-}
-
 resource "aws_security_group" "vpc_link" {
   name_prefix = "${var.name_prefix}-vpc-link-v2-"
   description = "API Gateway VPC Link v2 to ALB (Issue #42)"
@@ -89,21 +75,6 @@ resource "aws_security_group" "vpc_link" {
       to_port         = 80
       protocol        = "tcp"
       security_groups = var.alb_security_group_ids
-    }
-  }
-
-  # Issue #4010: egress to the internal-plane ALB's SG(s). The
-  # `/internal/{proxy+}` route targets that ALB, so without this the VPC Link
-  # cannot open the connection and the route times out (~10s) then 503s.
-  # Empty until wire-gateway-alb.sh discovers the internal Ingress's ALB.
-  dynamic "egress" {
-    for_each = length(local.internal_plane_only_sg_ids) > 0 ? [1] : []
-    content {
-      description     = "Allow VPC Link to reach internal-plane ALB on port 80 (Issue #4010)"
-      from_port       = 80
-      to_port         = 80
-      protocol        = "tcp"
-      security_groups = local.internal_plane_only_sg_ids
     }
   }
 
@@ -127,21 +98,6 @@ resource "aws_security_group_rule" "alb_from_vpc_link" {
   source_security_group_id = aws_security_group.vpc_link.id
 }
 
-# Issue #4010: the matching inbound half on the internal-plane ALB's SG(s).
-# Both directions are required — the spike confirmed that opening only one side
-# leaves the connection silently dropped rather than refused.
-resource "aws_security_group_rule" "internal_plane_alb_from_vpc_link" {
-  count = length(local.internal_plane_only_sg_ids)
-
-  description              = "Allow inbound from API Gateway VPC Link v2 to internal plane (Issue #4010)"
-  type                     = "ingress"
-  from_port                = 80
-  to_port                  = 80
-  protocol                 = "tcp"
-  security_group_id        = local.internal_plane_only_sg_ids[count.index]
-  source_security_group_id = aws_security_group.vpc_link.id
-}
-
 # =============================================================================
 # API Gateway REST API (Regional) -- OpenAPI Definition
 # =============================================================================
@@ -153,55 +109,6 @@ resource "aws_security_group_rule" "internal_plane_alb_from_vpc_link" {
 # v2 VPC Link integrations that lack integrationTarget. This was discovered
 # during deployment when the body without integrationTarget was rejected with:
 # "IntegrationTarget is required for VpcLinkV2 <id>"
-
-# =============================================================================
-# Internal-plane routing target (Issue #4010)
-# =============================================================================
-# The `/internal/{proxy+}` route points at a dedicated internal-plane ALB so the
-# internal control plane is not reachable through the ALB that CloudFront fronts.
-# When the internal-plane vars are empty (pre-#4010, or before the internal
-# Ingress has materialized its ALB) these fall back to the edge ALB, preserving
-# exactly the previous behavior. That fallback is what makes this change safe to
-# merge ahead of the cluster-side rollout.
-locals {
-  internal_plane_alb_dns = var.internal_plane_alb_dns != "" ? var.internal_plane_alb_dns : var.internal_alb_dns
-  internal_plane_alb_arn = var.internal_plane_alb_arn != "" ? var.internal_plane_alb_arn : var.internal_alb_arn
-}
-
-resource "random_password" "edge_provenance" {
-  length  = 64
-  special = false
-}
-
-# Issue #5653 (A01): the identity header must never be forwarded from the client.
-#
-# X-Caller-Identity is proof of identity to the gateway pod: it names an IAM
-# principal, and the pod resolves it against the agent registry to a privileged
-# TokenContext. That is only sound when API GATEWAY wrote the value, which it does
-# on the AWS_IAM routes via `context.identity.userArn` — a value taken from the
-# verified SigV4 signature that a client cannot influence.
-#
-# AWS_IAM routes also inject an independently generated edge proof. The pod
-# validates that proof before trusting the identity, so a direct-cluster caller
-# cannot bypass API Gateway by supplying only the identity header. Auth-NONE
-# routes blank both headers, replacing any inbound values.
-#
-# Blank (not absent) is deliberate — an integration request parameter can only be
-# mapped to a value, not dropped, and the pod treats empty as "no identity"
-# (`headers.get(...).strip()` is falsy), so blank and absent are equivalent to the
-# application while blank is what API Gateway can actually guarantee.
-#
-# 'single-quoted' is API Gateway mapping syntax for a static string literal.
-locals {
-  blank_caller_identity = {
-    "integration.request.header.X-Caller-Identity"     = "''"
-    "integration.request.header.X-Adp-Edge-Provenance" = "''"
-  }
-  verified_caller_identity = {
-    "integration.request.header.X-Caller-Identity"     = "context.identity.userArn"
-    "integration.request.header.X-Adp-Edge-Provenance" = "'${random_password.edge_provenance.result}'"
-  }
-}
 
 resource "aws_api_gateway_rest_api" "main" {
   name        = "${var.name_prefix}-api"
@@ -248,9 +155,6 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = var.internal_alb_arn
-            # Issue #5653: BLANK the identity header on this NONE-auth route.
-            # See the local.blank_caller_identity rationale above.
-            requestParameters = local.blank_caller_identity
           }
         }
       }
@@ -276,19 +180,9 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = var.internal_alb_arn
-            # Issue #5653: BLANK the identity header. This route is auth NONE —
-            # API Gateway verifies no signature here — so a client-supplied
-            # X-Caller-Identity would otherwise be forwarded to the pod verbatim
-            # and honoured as proof of identity. CloudFront deletes the header,
-            # but the API Gateway invoke URL is directly reachable, so the edge
-            # function is not the only way in. Blanking it here means the value
-            # the pod sees on this route is always empty, whatever the client sent.
-            requestParameters = merge(
-              {
-                "integration.request.path.proxy" = "method.request.path.proxy"
-              },
-              local.blank_caller_identity,
-            )
+            requestParameters = {
+              "integration.request.path.proxy" = "method.request.path.proxy"
+            }
             cacheKeyParameters = ["method.request.path.proxy"]
           }
         }
@@ -308,7 +202,9 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = var.internal_alb_arn
-            requestParameters    = local.verified_caller_identity
+            requestParameters = {
+              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
+            }
           }
         }
       }
@@ -335,12 +231,10 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = var.internal_alb_arn
-            requestParameters = merge(
-              {
-                "integration.request.path.proxy" = "method.request.path.proxy"
-              },
-              local.verified_caller_identity,
-            )
+            requestParameters = {
+              "integration.request.path.proxy"               = "method.request.path.proxy"
+              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
+            }
             cacheKeyParameters = ["method.request.path.proxy"]
           }
         }
@@ -365,23 +259,17 @@ resource "aws_api_gateway_rest_api" "main" {
             # The Bedrock /agent proxy strips its prefix because the pod serves
             # Bedrock requests at root paths; but the /internal/v1/* routes are
             # registered with the prefix included, so 404s without it.
-            # Issue #4010: routed to the dedicated internal-plane ALB (which
-            # CloudFront has no VPC origin for), falling back to the edge ALB
-            # while internal_plane_alb_* are unset. integrationTarget must be a
-            # LOAD BALANCER ARN — a listener ARN is rejected by the API.
-            uri                  = "http://${local.internal_plane_alb_dns}/internal/{proxy}"
+            uri                  = "http://${var.internal_alb_dns}/internal/{proxy}"
             timeoutInMillis      = var.integration_timeout_ms
             responseTransferMode = "STREAM"
             passthroughBehavior  = "when_no_match"
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
-            integrationTarget    = local.internal_plane_alb_arn
-            requestParameters = merge(
-              {
-                "integration.request.path.proxy" = "method.request.path.proxy"
-              },
-              local.verified_caller_identity,
-            )
+            integrationTarget    = var.internal_alb_arn
+            requestParameters = {
+              "integration.request.path.proxy"               = "method.request.path.proxy"
+              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
+            }
             cacheKeyParameters = ["method.request.path.proxy"]
           }
         }
@@ -408,60 +296,6 @@ resource "aws_api_gateway_rest_api" "main" {
               passthroughBehavior = "when_no_match"
               contentHandling     = "CONVERT_TO_TEXT"
               timeoutInMillis     = 29000
-              # Issue #5653: BLANK the identity header on this NONE-auth route
-              # too. The broker Lambda does not consume X-Caller-Identity today,
-              # but leaving a client-settable identity header flowing into any
-              # auth-NONE integration is the pattern this issue exists to remove,
-              # and the invariant test below asserts it holds for every route.
-              requestParameters = local.blank_caller_identity
-            }
-          }
-        }
-      } : {},
-      # Issue #5795 (T2): POST /v1/tasks — Lambda proxy to the ingress Lambda.
-      #
-      # API Gateway selects the explicit /v1/tasks resource before /{proxy+} for
-      # every method. Keep an any-method fallback on that resource so methods
-      # other than POST still reach the gateway pod; the explicit POST method
-      # overrides only task submission and lands on the ingress Lambda.
-      var.enable_task_api_route && var.task_api_lambda_invoke_arn != "" ? {
-        "/v1/tasks" = {
-          x-amazon-apigateway-any-method = {
-            "x-amazon-apigateway-auth" = { type = "NONE" }
-            x-amazon-apigateway-integration = {
-              type                 = "http_proxy"
-              httpMethod           = "ANY"
-              uri                  = "http://${var.internal_alb_dns}/v1/tasks"
-              timeoutInMillis      = var.integration_timeout_ms
-              responseTransferMode = "STREAM"
-              passthroughBehavior  = "when_no_match"
-              connectionType       = "VPC_LINK"
-              connectionId         = aws_apigatewayv2_vpc_link.main.id
-              integrationTarget    = var.internal_alb_arn
-              requestParameters    = local.blank_caller_identity
-            }
-          }
-          post = {
-            "x-amazon-apigateway-auth" = { type = "NONE" }
-            x-amazon-apigateway-integration = {
-              type                = "aws_proxy"
-              httpMethod          = "POST"
-              uri                 = var.task_api_lambda_invoke_arn
-              passthroughBehavior = "when_no_match"
-              contentHandling     = "CONVERT_TO_TEXT"
-              # Submission is an admission decision plus one internal call, not
-              # model work. 29s is API Gateway's ceiling for a Lambda proxy; the
-              # Lambda's own admission budget is well inside it, so a stuck
-              # gateway surfaces as a retryable refusal the Lambda chose rather
-              # than a 504 whose body nothing controls.
-              timeoutInMillis = 29000
-              # Issue #5653: BLANK both headers. This route is auth NONE, so a
-              # client-supplied X-Caller-Identity would otherwise be forwarded
-              # verbatim. The Lambda does not read it — it derives the caller
-              # token only from Authorization — but a forged identity header
-              # arriving at any auth-NONE integration is the pattern that check
-              # exists to prevent, and the postcondition below enforces it.
-              requestParameters = local.blank_caller_identity
             }
           }
         }
@@ -500,89 +334,6 @@ resource "aws_api_gateway_rest_api" "main" {
     Service = "api-gateway"
     Purpose = "llm-streaming-alternate-route"
   })
-
-  # ===========================================================================
-  # Issue #5653 (A01): the route invariant, asserted at plan time
-  # ===========================================================================
-  # Every route must either SET X-Caller-Identity from the verified SigV4
-  # identity, or BLANK it. No route may leave it unmapped, because unmapped
-  # means "forward whatever the client sent" — and the pod treats that header
-  # as proof of identity, resolving it against the agent registry to a
-  # privileged TokenContext.
-  #
-  # This is asserted here rather than only in a test because the failure mode is
-  # a route ADDED LATER. The blanking on today's five routes is easy to review;
-  # what is not easy is remembering, months from now, that a new auth-NONE path
-  # added to this same `paths` map silently reopens an unauthenticated path to
-  # platform-scope authority. A plan-time postcondition makes that omission fail
-  # the deploy that introduces it, at the moment it is introduced, instead of
-  # depending on a reviewer noticing an absent line.
-  #
-  # Reading `self.body` checks the ACTUAL rendered document — after the
-  # conditionals and merges — so it cannot drift from what is deployed the way a
-  # parallel list of expected paths would.
-  #
-  # Issue #5795: the check iterates every METHOD key under each path, not just
-  # `x-amazon-apigateway-any-method`. It originally looked only at the any-method
-  # key, which was complete when every route used one — but it meant the first
-  # explicit method added (`post` on /v1/tasks) would have been skipped rather
-  # than checked, passing the invariant vacuously. A check that silently stops
-  # applying to new routes is worse than no check, because the deploy still goes
-  # green. Iterating the method map keeps it applying to any route shape.
-  lifecycle {
-    precondition {
-      condition = !var.enable_task_api_route || (
-        var.task_api_lambda_invoke_arn != "" &&
-        var.task_api_lambda_function_name != ""
-      )
-      error_message = "Publishing POST /v1/tasks requires both the ingress Lambda invoke ARN and function name."
-    }
-
-    postcondition {
-      # MOCK integrations are exempt, and that exemption is now stated rather
-      # than incidental. The first-pass placeholder body (no ALB yet) serves
-      # /status from a MOCK integration: API Gateway answers it itself, so there
-      # is no backend for a header to be forwarded to and nothing to forge an
-      # identity at. Before the method-map widening above, that route was skipped
-      # only because it uses an explicit `get` — widening the check without this
-      # exemption would have failed every first-pass deploy.
-      condition = alltrue(flatten([
-        for path_key, path_item in try(jsondecode(self.body).paths, {}) : [
-          for method_key, method_item in path_item : [
-            for required_header in [
-              "integration.request.header.X-Caller-Identity",
-              "integration.request.header.X-Adp-Edge-Provenance",
-              ] : contains(
-              keys(try(method_item["x-amazon-apigateway-integration"].requestParameters, {})),
-              required_header
-            )
-          ]
-          # Only method objects carry an integration. Anything else under a path
-          # (a `parameters` list, for example) is not a route and is skipped.
-          if can(method_item["x-amazon-apigateway-integration"]) &&
-          try(method_item["x-amazon-apigateway-integration"].type, "") != "MOCK"
-        ]
-      ]))
-      error_message = <<-EOT
-        Issue #5653: every API Gateway route must map both caller identity and edge provenance headers.
-
-        A route that does not map it forwards the client's value to the gateway pod,
-        which treats X-Caller-Identity as proof of identity and resolves it against
-        the agent registry — granting an unauthenticated caller a privileged
-        internal/platform TokenContext.
-
-        Add ONE of the following to the new route's x-amazon-apigateway-integration:
-
-          AWS_IAM route (API Gateway verified a SigV4 signature):
-            requestParameters = local.verified_caller_identity
-
-          any other route (auth NONE, Lambda proxy, etc.):
-            requestParameters = local.blank_caller_identity
-
-        Do not remove this check to make a deploy pass.
-      EOT
-    }
-  }
 }
 
 # =============================================================================
@@ -602,100 +353,14 @@ resource "aws_cloudwatch_log_group" "api_gateway" {
 }
 
 # =============================================================================
-# API Gateway Resource Policy — per-path source restrictions
-# =============================================================================
-# Created only when at least one CIDR list is populated, so a deployment that
-# sets neither has no resource policy and behaves exactly as before.
-#
-# Shape: one blanket Allow, then scoped explicit Denies. Not a narrowed Allow —
-# an explicit Deny always wins, so the restriction cannot be nullified by a
-# broader Allow appearing later in the same policy. Same construction as the
-# webhook API's policy.
-#
-# The Denies are per-path on purpose. `/auth/github/*` is excluded because
-# CloudFront proxies it here from edge addresses, which are neither a browser's
-# nor the NAT's and cannot be expressed in a resource policy — API Gateway does
-# not support managed prefix lists. Its EAA restriction is applied by the
-# CloudFront web ACL instead. `/{proxy+}` and `/status` are excluded because
-# their callers are not enumerated; restricting them is a separate decision.
-#
-# `/agent` is listed as well as `/agent/*`: the sigv4 proxy target is
-# <invoke_url>/agent with no trailing segment, so a policy covering only
-# /agent/* would miss the calls that matter most.
-
-locals {
-  api_policy_enabled = length(var.agent_route_source_cidrs) > 0 || length(var.internal_route_source_cidrs) > 0
-
-  api_policy_statements = concat(
-    [
-      {
-        Sid       = "AllowInvokeByDefault"
-        Effect    = "Allow"
-        Principal = "*"
-        Action    = "execute-api:Invoke"
-        Resource  = "${aws_api_gateway_rest_api.main.execution_arn}/*"
-      }
-    ],
-    length(var.agent_route_source_cidrs) > 0 ? [
-      {
-        Sid       = "DenyAgentRoutesOutsideAllowedSources"
-        Effect    = "Deny"
-        Principal = "*"
-        Action    = "execute-api:Invoke"
-        Resource = [
-          "${aws_api_gateway_rest_api.main.execution_arn}/*/*/agent",
-          "${aws_api_gateway_rest_api.main.execution_arn}/*/*/agent/*",
-        ]
-        Condition = {
-          NotIpAddress = { "aws:SourceIp" = var.agent_route_source_cidrs }
-        }
-      }
-    ] : [],
-    length(var.internal_route_source_cidrs) > 0 ? [
-      {
-        Sid       = "DenyInternalRoutesOutsideAllowedSources"
-        Effect    = "Deny"
-        Principal = "*"
-        Action    = "execute-api:Invoke"
-        Resource  = "${aws_api_gateway_rest_api.main.execution_arn}/*/*/internal/*"
-        Condition = {
-          NotIpAddress = { "aws:SourceIp" = var.internal_route_source_cidrs }
-        }
-      }
-    ] : [],
-  )
-}
-
-resource "aws_api_gateway_rest_api_policy" "main" {
-  count = local.api_policy_enabled ? 1 : 0
-
-  rest_api_id = aws_api_gateway_rest_api.main.id
-
-  policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = local.api_policy_statements
-  })
-}
-
-# =============================================================================
 # API Gateway Deployment
 # =============================================================================
 
 resource "aws_api_gateway_deployment" "main" {
   rest_api_id = aws_api_gateway_rest_api.main.id
 
-  # The policy is part of the trigger deliberately. A resource-policy change does
-  # not take effect until the stage is redeployed, and without it here the apply
-  # succeeds, the plan looks right, and nothing is actually restricted — the
-  # failure mode the runbook flags for the console revert path.
   triggers = {
-    # jsonencode the statements to a string before the conditional: a ternary
-    # requires both branches to unify, and a populated tuple will not unify with
-    # an empty one. Two strings always do.
-    redeployment = sha1(jsonencode([
-      coalesce(aws_api_gateway_rest_api.main.body, "initial"),
-      local.api_policy_enabled ? jsonencode(local.api_policy_statements) : "",
-    ]))
+    redeployment = sha1(jsonencode(coalesce(aws_api_gateway_rest_api.main.body, "initial")))
   }
 
   lifecycle {
@@ -750,28 +415,9 @@ resource "aws_api_gateway_method_settings" "all" {
   method_path = "*/*"
 
   settings {
-    metrics_enabled = true
-    logging_level   = "INFO"
-
-    # Issue #5672. This was `var.environment != "prod"`, i.e. full request/response
-    # payload tracing was ON in every environment whose name was not literally
-    # "prod". data_trace_enabled writes complete requests and responses — headers
-    # included — into the CloudWatch log group. Headers are where callers present
-    # their bearer tokens and the internal-plane shared secret; bodies are the
-    # prompts and completions. That put replayable credentials and private user
-    # content in front of everyone with log read access: CI roles, build roles,
-    # any operator.
-    #
-    # Deriving it from the environment NAME is the part that made this durable: a
-    # new environment is exposed by default because nobody added its name to a
-    # comparison. Now it is an explicit input, default false, set true nowhere.
-    # Turning payload tracing on has to be a deliberate, reviewed, per-environment
-    # act with a plan diff that shows it.
-    #
-    # The access_log_settings format on the stage above stays the single sanctioned
-    # gateway log source: request id, source IP, time, method, path, status, length
-    # and latencies — metadata only, no headers and no bodies.
-    data_trace_enabled = var.enable_payload_tracing
+    metrics_enabled    = true
+    logging_level      = "INFO"
+    data_trace_enabled = var.environment != "prod"
 
     throttling_burst_limit = var.throttle_burst_limit
     throttling_rate_limit  = var.throttle_rate_limit
@@ -796,9 +442,8 @@ data "aws_iam_policy_document" "api_gateway_assume_role" {
 }
 
 resource "aws_iam_role" "api_gateway_cloudwatch" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-api-gateway-cloudwatch"
-  assume_role_policy   = data.aws_iam_policy_document.api_gateway_assume_role.json
+  name               = "${var.name_prefix}-api-gateway-cloudwatch"
+  assume_role_policy = data.aws_iam_policy_document.api_gateway_assume_role.json
 
   tags = merge(var.common_tags, {
     Name    = "${var.name_prefix}-api-gateway-cloudwatch-role"
@@ -833,83 +478,4 @@ resource "aws_lambda_permission" "broker_api_gateway" {
   function_name = var.broker_lambda_function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
-}
-
-# =============================================================================
-# Task API Lambda Permission (Issue #5795, T2)
-# =============================================================================
-# Scoped to exactly POST /v1/tasks, not the `/*/*` the broker permission above
-# uses. That matters because this is the *ingress* Lambda: the same function
-# also serves the GitHub webhook route, which authenticates by HMAC over the
-# body. A `/*/*` grant would let any route on this API — present or added later
-# — invoke it, and a request arriving through some other path would reach the
-# ingress handler's router carrying whatever `resource` value that path
-# produced. Naming the one method and path keeps the grant matched to the one
-# route this module actually publishes.
-
-resource "aws_lambda_permission" "task_api_api_gateway" {
-  # Same plan-time-known flag rationale as the broker permission above: the
-  # invoke ARN is computed, so it cannot drive a count.
-  count = var.enable_task_api_route && var.task_api_lambda_function_name != "" ? 1 : 0
-
-  statement_id  = "AllowAPIGatewayInvokeTaskSubmit"
-  action        = "lambda:InvokeFunction"
-  function_name = var.task_api_lambda_function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/POST/v1/tasks"
-}
-
-# =============================================================================
-# Edge provenance signal for the ConfigMap renderers (Issue #5653, A01)
-# =============================================================================
-# BG_TRUST_APIGW_HEADERS tells the gateway pod "an X-Caller-Identity that
-# reaches you was written by API Gateway from a verified SigV4 signature, so you
-# may believe it". That claim is only true once the blanking above is deployed —
-# it is a statement about THIS module's state.
-#
-# Until now both ConfigMap renderers hard-coded it to `true`, which meant the
-# application's safe default (trust_apigw_headers = False in src/shared/config.py)
-# was overridden on every deploy regardless of whether any edge control existed.
-# The flag asserted a property nothing had established.
-#
-# Publishing it from the same module that installs the blanking couples the two:
-# the renderers read this param, so the pod believes the header only in an
-# environment whose edge actually blanks it. An environment that has not applied
-# this module has no param, the renderers fall back to "false", and forged
-# assertions are inert rather than authoritative.
-#
-# Rollout ordering (important, and the reason this is a param and not a literal):
-# apply this module BEFORE rolling out the app build that reads the param. In the
-# reverse order the pod is merely stricter than necessary for one rollout —
-# vouched agent traffic is refused until the param exists, which is an availability
-# regression, not a security one. The dangerous order is the opposite one, and it
-# is now impossible: the flag cannot be true without the blanking.
-resource "aws_ssm_parameter" "trust_apigw_headers" {
-  name        = "/adp/${var.environment}/gateway/trust-apigw-headers"
-  description = "Whether the gateway may evaluate API Gateway identity headers. Identity still requires the SecureString-backed edge proof. Issue #5653."
-  type        = "String"
-  value       = "true"
-
-  tags = var.common_tags
-
-  # Operators need a break-glass: if the tightening rejects a caller nobody
-  # anticipated, set this to "false" (SSM put + rollout restart) to make the
-  # header inert while the cause is diagnosed. Terraform must not revert that on
-  # the next apply. Matches the budget-fail-mode lever in gateway/infra/main.tf.
-  lifecycle {
-    ignore_changes = [value]
-  }
-
-  # The param is a claim about the blanking, so it must not exist before the
-  # route table that does the blanking.
-  depends_on = [aws_api_gateway_rest_api.main]
-}
-
-resource "aws_ssm_parameter" "edge_provenance_secret" {
-  name        = "/adp/${var.environment}/gateway/apigw-provenance-secret"
-  description = "Shared proof injected only by API Gateway AWS_IAM integrations and validated by the gateway pod. Issue #5653."
-  type        = "SecureString"
-  value       = random_password.edge_provenance.result
-
-  tags = var.common_tags
 }

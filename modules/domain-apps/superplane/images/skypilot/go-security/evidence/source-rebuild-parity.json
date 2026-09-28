@@ -1,8 +1,0 @@
-{
-  "source_docker_build_passed": true,
-  "crc32c_and_auth_exact_binary_parity": true,
-  "ssm_only_go_and_gnu_build_id_notes_differ": true,
-  "ssm_normalized_sha256": "2fa9e83eeb52933ff0e4d7e7ecfa2666d339de029cd77f2c93cf4aab4b3b51a5",
-  "ssm_release_binary_sha256": "baffbf5da3e935636f51801a29a43488dd734aec6cdaae6117d5a1be2dd7c9f8",
-  "ssm_source_binary_sha256": "ec6b552787ba6c5d49d610f525ddcecbb74d672673cc68e64f33bceb427ac7de"
-}

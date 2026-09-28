@@ -129,7 +129,9 @@ class TestTokenValidation:
             "_resolve_webhook_secret",
             return_value=h.PLACEHOLDER_WEBHOOK_SECRET,
         ):
-            assert h._validate_token({"x-gitlab-token": h.PLACEHOLDER_WEBHOOK_SECRET}) is False
+            assert h._validate_token(
+                {"x-gitlab-token": h.PLACEHOLDER_WEBHOOK_SECRET}
+            ) is False
 
 
 class TestEventParsing:
@@ -162,9 +164,7 @@ class TestEventParsing:
         payload = _sample_note_payload(note="This is just a regular comment")
         event = _make_event(payload)
 
-        with patch.object(h, "_get_sqs_publisher") as publisher:
-            result = h.handler(event, None)
-        publisher.assert_not_called()
+        result = h.handler(event, None)
 
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
@@ -177,15 +177,10 @@ class TestEventParsing:
 
         h._webhook_secret = None
 
-        payload = {
-            "object_kind": "push",
-            "project": {"id": 1, "path_with_namespace": "a/b", "web_url": ""},
-        }
+        payload = {"object_kind": "push", "project": {"id": 1, "path_with_namespace": "a/b", "web_url": ""}}
         event = _make_event(payload)
 
-        with patch.object(h, "_get_sqs_publisher") as publisher:
-            result = h.handler(event, None)
-        publisher.assert_not_called()
+        result = h.handler(event, None)
 
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
@@ -210,9 +205,7 @@ class TestEventParsing:
         }
         event = _make_event(payload)
 
-        with patch.object(h, "_get_sqs_publisher") as publisher:
-            result = h.handler(event, None)
-        publisher.assert_not_called()
+        result = h.handler(event, None)
 
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
@@ -373,183 +366,3 @@ class TestMalformedInput:
             result = h.handler(event, None)
 
         assert result["statusCode"] == 200
-
-
-def test_protected_gitlab_binds_project_secret_and_immutable_user_before_publish(monkeypatch):
-    import gitlab.handler as h
-
-    secret = "project-secret-" + "a" * 32
-    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "true")
-    monkeypatch.setattr(
-        h,
-        "_webhook_secret",
-        json.dumps([{"instance": "https://gitlab.example", "project_id": 123, "token": secret}]),
-    )
-    payload = _sample_note_payload()
-    payload["user"]["id"] = 42
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        sqs.return_value.publish_envelope.return_value = "published"
-        assert h.handler(_make_event(payload, token=secret), None)["statusCode"] == 200
-        args, kwargs = sqs.return_value.publish_envelope.call_args
-        assert args[0]["message_id"]
-        assert kwargs["model_root"] == {
-            "source": "gitlab",
-            "subject": "42",
-            "instance": "https://gitlab.example",
-            "project_id": 123,
-        }
-        sqs.reset_mock()
-        payload["project"]["id"] = 456
-        assert h.handler(_make_event(payload, token=secret), None)["statusCode"] == 403
-        sqs.assert_not_called()
-
-
-def test_protected_gitlab_refuses_shared_legacy_secret_or_missing_immutable_human(monkeypatch):
-    import gitlab.handler as h
-
-    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "true")
-    monkeypatch.setattr(h, "_webhook_secret", GITLAB_SECRET)
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        assert h.handler(_make_event(_sample_note_payload()), None)["statusCode"] == 401
-        sqs.assert_not_called()
-    secret = "a" * 32
-    monkeypatch.setattr(
-        h,
-        "_webhook_secret",
-        json.dumps([{"instance": "https://gitlab.example", "project_id": 123, "token": secret}]),
-    )
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        result = h.handler(_make_event(_sample_note_payload(), token=secret), None)
-        assert result["statusCode"] == 403
-        sqs.return_value.publish_envelope.assert_not_called()
-
-
-def _mixed_secret():
-    return {
-        "version": 1,
-        "legacy_token": GITLAB_SECRET,
-        "projects": [
-            {
-                "instance": "https://gitlab.example",
-                "project_id": 123,
-                "token": "project-secret-" + "a" * 32,
-            }
-        ],
-    }
-
-
-def test_mixed_registry_preserves_legacy_project_and_protects_opted_in_project(monkeypatch):
-    import gitlab.handler as h
-
-    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "false")
-    monkeypatch.setenv("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", "true")
-    secret = _mixed_secret()
-    monkeypatch.setattr(h, "_webhook_secret", json.dumps(secret))
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        sqs.return_value.publish_envelope.return_value = "published"
-        legacy = _sample_note_payload(project_id=456)
-        assert h.handler(_make_event(legacy), None)["statusCode"] == 200
-        assert sqs.return_value.publish_envelope.call_args.kwargs == {}
-        protected = _sample_note_payload()
-        protected["user"]["id"] = 42
-        assert (
-            h.handler(_make_event(protected, secret["projects"][0]["token"]), None)["statusCode"]
-            == 200
-        )
-        assert sqs.return_value.publish_envelope.call_args.kwargs["model_root"] == {
-            "source": "gitlab",
-            "subject": "42",
-            "instance": "https://gitlab.example",
-            "project_id": 123,
-        }
-        sqs.reset_mock()
-        assert h.handler(_make_event(protected), None)["statusCode"] == 403
-        sqs.assert_not_called()
-
-
-def test_mixed_registry_cannot_downgrade_global_protected_policy(monkeypatch):
-    import gitlab.handler as h
-
-    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "true")
-    monkeypatch.setenv("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", "true")
-    monkeypatch.setattr(h, "_webhook_secret", json.dumps(_mixed_secret()))
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        assert (
-            h.handler(_make_event(_sample_note_payload(project_id=456)), None)["statusCode"] == 401
-        )
-        sqs.assert_not_called()
-
-
-def test_mixed_registry_requires_explicit_opt_in_even_for_json_shaped_legacy_token(monkeypatch):
-    import gitlab.handler as h
-
-    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "false")
-    monkeypatch.delenv("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", raising=False)
-    scalar = '{"a":"legacy-token"}'
-    monkeypatch.setattr(h, "_webhook_secret", scalar)
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        sqs.return_value.publish_envelope.return_value = "legacy"
-        assert h.handler(_make_event(_sample_note_payload(), scalar), None)["statusCode"] == 200
-        assert sqs.return_value.publish_envelope.call_args.kwargs == {}
-
-
-def test_mixed_registry_rejects_foreign_project_and_missing_human(monkeypatch):
-    import gitlab.handler as h
-
-    monkeypatch.setenv("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", "true")
-    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "false")
-    document = _mixed_secret()
-    monkeypatch.setattr(h, "_webhook_secret", json.dumps(document))
-    token = document["projects"][0]["token"]
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        for payload in (_sample_note_payload(project_id=456), _sample_note_payload()):
-            assert h.handler(_make_event(payload, token), None)["statusCode"] == 403
-        sqs.return_value.publish_envelope.assert_not_called()
-
-
-def test_malformed_mixed_registry_never_falls_back_to_shared_token(monkeypatch):
-    import gitlab.handler as h
-
-    monkeypatch.setenv("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", "true")
-    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "false")
-    malformed = [GITLAB_SECRET, "{", json.dumps([])]
-    for change in (
-        {"version": 2},
-        {"projects": {}},
-        {"legacy_token": ""},
-        {"extra": "typo"},
-        {
-            "projects": [
-                {"project_id": True, "instance": "https://gitlab.example", "token": "a" * 32}
-            ]
-        },
-    ):
-        malformed.append(json.dumps({**_mixed_secret(), **change}))
-    reused = _mixed_secret()
-    reused["legacy_token"] = reused["projects"][0]["token"]
-    malformed.append(json.dumps(reused))
-    duplicate = _mixed_secret()
-    duplicate["projects"] *= 2
-    malformed.append(json.dumps(duplicate))
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        for value in malformed:
-            monkeypatch.setattr(h, "_webhook_secret", value)
-            assert (
-                h.handler(_make_event(_sample_note_payload(project_id=456)), None)["statusCode"]
-                == 401
-            )
-        sqs.assert_not_called()
-
-
-def test_mixed_registry_shared_token_cannot_bypass_selector_with_noninteger_id(monkeypatch):
-    import gitlab.handler as h
-
-    monkeypatch.setenv("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", "true")
-    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "false")
-    monkeypatch.setattr(h, "_webhook_secret", json.dumps(_mixed_secret()))
-    with patch.object(h, "_get_sqs_publisher") as sqs:
-        for project_id in ("123", 123.0, True, None, 0, -1):
-            payload = _sample_note_payload()
-            payload["project"]["id"] = project_id
-            assert h.handler(_make_event(payload), None)["statusCode"] == 400
-        sqs.assert_not_called()

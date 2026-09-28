@@ -9,10 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import jwt
 import pytest
-from botocore.exceptions import ClientError
 
-from src.admin.agent_schemas import AgentCreateRequest
-from src.admin.agent_service import AgentService
 from src.auth.cognito_jwt import (
     CognitoJWTValidator,
     CognitoTokenClaims,
@@ -28,11 +25,6 @@ def mock_settings():
         settings = MagicMock()
         settings.cognito_user_pool_id = "us-east-1_testpool"
         settings.cognito_client_id = "test-client-id"
-        settings.cognito_cli_client_id = ""
-        settings.cognito_agent_client_id = ""
-        settings.cognito_gitlab_client_id = ""
-        settings.cognito_pentest_client_id = ""
-        settings.agent_clients_table = ""
         settings.aws_region = "us-east-1"
         mock.return_value = settings
         yield settings
@@ -62,10 +54,18 @@ class TestCognitoJWTValidator:
         with pytest.raises(ValueError, match="User Pool ID must be configured"):
             CognitoJWTValidator(user_pool_id="", client_id="test", region="us-east-1")
 
-    def test_init_rejects_an_empty_runtime_client_policy(self, mock_settings):
+    def test_init_accepts_empty_client_id_for_m2m_auth(self, mock_settings):
+        """Test that initialization accepts empty client ID (Issue #119: M2M auth).
+
+        Issue #119 changed the validator to accept any client from the user pool
+        when no specific client_id is configured. This enables M2M authentication
+        where agents get their own Cognito App Clients.
+        """
         mock_settings.cognito_client_id = ""
-        with pytest.raises(ValueError, match="App Client ID"):
-            CognitoJWTValidator(user_pool_id="us-east-1_test", client_id="", region="us-east-1")
+        # This should NOT raise - empty client_id means accept any client from the user pool
+        validator = CognitoJWTValidator(user_pool_id="us-east-1_test", client_id="", region="us-east-1")
+        # With empty client_id, allowed_client_ids set should be empty (accept any)
+        assert len(validator.allowed_client_ids) == 0
 
 
 class TestCognitoTokenClaims:
@@ -232,54 +232,67 @@ class TestCognitoJWTValidatorMultipleClients:
             settings = MagicMock()
             settings.cognito_user_pool_id = "us-east-1_testpool"
             settings.cognito_client_id = "main-client-id"
-            settings.cognito_cli_client_id = ""
-            settings.cognito_agent_client_id = ""
-            settings.cognito_gitlab_client_id = ""
-            settings.cognito_pentest_client_id = ""
             settings.aws_region = "us-east-1"
             mock.return_value = settings
             yield settings
 
     def test_init_with_allowed_client_ids(self, mock_settings):
-        """Test initialization with primary and additional client IDs."""
+        """Test initialization with explicit allowed client IDs.
+
+        Issue #127: Changed behavior - settings.cognito_client_id is no longer
+        auto-added to allowed_client_ids. Only explicitly passed allowed_client_ids
+        are used. This enables accepting any client from the user pool by default.
+        """
         validator = CognitoJWTValidator(
             user_pool_id="us-east-1_testpool",
-            client_id="main-client-id",
+            client_id="main-client-id",  # This is stored but NOT added to allowed_client_ids
             allowed_client_ids=["agent-client-1", "agent-client-2"],
             region="us-east-1",
         )
 
-        assert "main-client-id" in validator.allowed_client_ids
+        # Only explicitly passed allowed_client_ids are in the set
+        # main-client-id is NOT automatically added anymore
         assert "agent-client-1" in validator.allowed_client_ids
         assert "agent-client-2" in validator.allowed_client_ids
-        assert len(validator.allowed_client_ids) == 3
+        assert len(validator.allowed_client_ids) == 2
 
     def test_init_without_primary_client_id(self, mock_settings):
-        """Test initialization without any client policy fails closed."""
+        """Test initialization without a primary client ID (accept all)."""
         mock_settings.cognito_client_id = ""
-
-        with pytest.raises(ValueError, match="App Client ID"):
-            CognitoJWTValidator(user_pool_id="us-east-1_testpool", client_id="", region="us-east-1")
-
-    def test_default_enforces_configured_clients(self, mock_settings):
-        mock_settings.cognito_client_id = "web-client-id"
-        mock_settings.cognito_cli_client_id = "cli-client-id"
-        mock_settings.cognito_agent_client_id = "agent-client-id"
-        mock_settings.cognito_gitlab_client_id = "gitlab-client-id"
-        mock_settings.cognito_pentest_client_id = "dev-pentest-client-id"
 
         validator = CognitoJWTValidator(
             user_pool_id="us-east-1_testpool",
+            client_id="",  # No primary client
             region="us-east-1",
         )
 
-        assert validator.allowed_client_ids == {
-            "web-client-id",
-            "cli-client-id",
-            "agent-client-id",
-            "gitlab-client-id",
-            "dev-pentest-client-id",
-        }
+        # When no client IDs are specified, the allowed_client_ids set should be empty
+        # This means any client from the user pool is accepted
+        assert len(validator.allowed_client_ids) == 0
+
+    def test_default_accepts_any_client_from_user_pool(self, mock_settings):
+        """Test that default initialization accepts any client from user pool.
+
+        Issue #127: When creating a validator with default settings (no explicit
+        allowed_client_ids), it should accept tokens from ANY App Client in the
+        same User Pool. This is critical for M2M authentication where agent clients
+        have different client_ids than the main web/CLI client.
+        """
+        # Even when cognito_client_id is set in settings, the validator should
+        # not restrict to only that client by default
+        mock_settings.cognito_client_id = "web-client-id"
+
+        validator = CognitoJWTValidator(
+            user_pool_id="us-east-1_testpool",
+            # client_id defaults to settings.cognito_client_id ("web-client-id")
+            region="us-east-1",
+        )
+
+        # allowed_client_ids should be empty, meaning accept any client
+        assert len(validator.allowed_client_ids) == 0
+
+        # The client_id from settings is stored but NOT used for restriction
+        assert validator.client_id == "web-client-id"
 
 
 class TestCognitoTokenClaimsServiceAccount:
@@ -530,325 +543,3 @@ class TestTamperedSignatureRejection:
         result = validator.decode_without_verification(forged_token)
         assert result is not None
         assert result["sub"] == "attacker-controlled-sub"
-
-
-class TestIdTokenAudienceBinding:
-    """An id token must be bound to an allowed app client — #5653 (A01).
-
-    The two Cognito token kinds carry the issuing app client in different claims:
-
-        access token -> ``client_id``
-        id token     -> ``aud``
-
-    ``validate_token`` sets ``verify_aud: False`` because Cognito access tokens carry
-    no ``aud`` at all, so PyJWT's built-in audience check cannot be used for them.
-    But that option is global, so it also switched off the audience check for ID
-    tokens — and nothing replaced it. Access tokens were bound to an allowed client;
-    id tokens were bound to nothing but the user pool.
-
-    The practical consequence on a deployment that configures an allowlist: an id
-    token minted by the SAME user pool for a DIFFERENT application was accepted,
-    while the equivalent access token from that same application was correctly
-    rejected. A user pool is frequently shared across applications with different
-    privilege levels, so "any app in the pool" is not the same trust statement as
-    "this app".
-
-    These tests sign locally and inject the key, so they exercise the real claim
-    logic rather than a mocked decode.
-    """
-
-    ALLOWED = "spa-client-id"
-    CLI_CLIENT = "cli-client-id"
-    MACHINE_CLIENT = "machine-client-id"
-    GITLAB_CLIENT = "gitlab-client-id"
-    PENTEST_CLIENT = "dev-pentest-client-id"
-    OTHER_APP = "some-other-app-in-the-same-pool"
-
-    @pytest.fixture(scope="class")
-    def rsa_keypair(self):
-        """A throwaway RS256 keypair generated per test class.
-
-        Real RSA rather than a shared HMAC string because ``validate_token`` pins
-        ``algorithms=["RS256"]``. Signing with HS256 makes every token fail on the
-        algorithm before any claim is examined, which would make these tests pass or
-        fail for reasons unrelated to the audience logic they exist to check.
-        """
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        private_pem = key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-        return private_pem, key.public_key()
-
-    @pytest.fixture
-    def restricted(self, mock_settings):
-        """A validator that restricts which app clients are acceptable."""
-        return CognitoJWTValidator(
-            user_pool_id="us-east-1_testpool",
-            client_id=self.ALLOWED,
-            allowed_client_ids=[self.CLI_CLIENT, self.MACHINE_CLIENT, self.GITLAB_CLIENT],
-            region="us-east-1",
-        )
-
-    def _token(self, validator, rsa_keypair, **claims) -> str:
-        private_pem, _ = rsa_keypair
-        payload = {
-            "sub": "user-123",
-            "iss": validator.issuer,
-            "exp": int(time.time()) + 3600,
-            "iat": int(time.time()),
-            **claims,
-        }
-        return jwt.encode(payload, private_pem, algorithm="RS256")
-
-    def _validate(self, validator, rsa_keypair, token):
-        """Validate against the locally generated public key.
-
-        Only the JWKS fetch is stubbed — signature, issuer, expiry and the claim
-        checks under test all run for real.
-        """
-        _, public_key = rsa_keypair
-        signing_key = MagicMock()
-        signing_key.key = public_key
-        with patch.object(type(validator), "jwk_client", new_callable=MagicMock) as jwk:
-            jwk.get_signing_key_from_jwt.return_value = signing_key
-            return validator.validate_token(token)
-
-    @staticmethod
-    def _dynamodb_with_items(items):
-        table = MagicMock()
-
-        def put_item(**kwargs):
-            item = kwargs["Item"]
-            items[item["client_id"]] = dict(item)
-
-        def get_item(**kwargs):
-            client_id = kwargs["Key"]["client_id"]
-            return {"Item": items[client_id]} if client_id in items else {}
-
-        table.put_item.side_effect = put_item
-        table.get_item.side_effect = get_item
-        dynamodb = MagicMock()
-        dynamodb.Table.return_value = table
-        return dynamodb, table
-
-    def _dynamic_token(self, validator, rsa_keypair, client_id, **overrides):
-        claims = {
-            "token_use": "access",
-            "client_id": client_id,
-            "custom:client_id": client_id,
-            "custom:account_type": "service",
-            "custom:org_id": "tenant-a",
-            "custom:team_id": "team-a",
-            "custom:department_id": "department-a",
-        }
-        claims.update(overrides)
-        return self._token(validator, rsa_keypair, **claims)
-
-    def test_id_token_for_another_app_is_rejected(self, restricted, rsa_keypair):
-        """THE FIX: same user pool, different application, must not be accepted."""
-        token = self._token(restricted, rsa_keypair, token_use="id", aud=self.OTHER_APP)
-
-        with pytest.raises(jwt.InvalidTokenError, match="aud"):
-            self._validate(restricted, rsa_keypair, token)
-
-    def test_id_token_for_the_allowed_app_is_accepted(self, restricted, rsa_keypair):
-        """Regression guard: the legitimate SPA id token still works.
-
-        Without this, "reject all id tokens" would satisfy the test above while
-        breaking every browser login.
-        """
-        claims = self._validate(restricted, rsa_keypair, self._token(restricted, rsa_keypair, token_use="id", aud=self.ALLOWED))
-        assert claims.token_use == "id"
-        assert claims.client_id == self.ALLOWED
-
-    def test_access_token_binding_is_unchanged(self, restricted, rsa_keypair):
-        """The access-token path keeps using client_id, accepted and rejected."""
-        ok = self._validate(restricted, rsa_keypair, self._token(restricted, rsa_keypair, token_use="access", client_id=self.ALLOWED))
-        assert ok.client_id == self.ALLOWED
-
-        with pytest.raises(jwt.InvalidTokenError, match="client_id"):
-            self._validate(restricted, rsa_keypair, self._token(restricted, rsa_keypair, token_use="access", client_id=self.OTHER_APP))
-
-    def test_id_token_with_no_audience_is_rejected(self, restricted, rsa_keypair):
-        """A token carrying no client binding at all cannot satisfy an allowlist."""
-        with pytest.raises(jwt.InvalidTokenError, match="aud"):
-            self._validate(restricted, rsa_keypair, self._token(restricted, rsa_keypair, token_use="id"))
-
-    def test_access_token_with_no_client_id_is_rejected(self, restricted, rsa_keypair):
-        with pytest.raises(jwt.InvalidTokenError, match="client_id"):
-            self._validate(restricted, rsa_keypair, self._token(restricted, rsa_keypair, token_use="access"))
-
-    def test_mixed_audience_fails_closed(self, restricted, rsa_keypair):
-        """Naming an allowed AND a disallowed client is not a token for the allowed one."""
-        token = self._token(restricted, rsa_keypair, token_use="id", aud=[self.ALLOWED, self.OTHER_APP])
-
-        with pytest.raises(jwt.InvalidTokenError, match="aud"):
-            self._validate(restricted, rsa_keypair, token)
-
-    def test_single_element_audience_list_is_honoured(self, restricted, rsa_keypair):
-        """JWT permits a list; a single allowed entry is still that client."""
-        claims = self._validate(restricted, rsa_keypair, self._token(restricted, rsa_keypair, token_use="id", aud=[self.ALLOWED]))
-        assert claims.token_use == "id"
-
-    @pytest.mark.parametrize(
-        "kind,claims",
-        [
-            ("spa-id-token", {"token_use": "id", "aud": "spa-client-id"}),
-            ("cli-access-token", {"token_use": "access", "client_id": "cli-client-id"}),
-            ("machine-access-token", {"token_use": "access", "client_id": "machine-client-id"}),
-            ("gitlab-id-token", {"token_use": "id", "aud": "gitlab-client-id"}),
-        ],
-    )
-    def test_every_legitimate_client_type_still_authenticates(self, restricted, rsa_keypair, kind, claims):
-        """No legitimate client type regresses; each is bound via its own claim."""
-        assert self._validate(restricted, rsa_keypair, self._token(restricted, rsa_keypair, **claims)) is not None
-
-    def test_configured_pentest_access_token_is_accepted(self, mock_settings, rsa_keypair):
-        mock_settings.cognito_pentest_client_id = self.PENTEST_CLIENT
-        validator = CognitoJWTValidator(user_pool_id="us-east-1_testpool", region="us-east-1")
-
-        claims = self._validate(
-            validator,
-            rsa_keypair,
-            self._token(validator, rsa_keypair, token_use="access", client_id=self.PENTEST_CLIENT),
-        )
-
-        assert claims.client_id == self.PENTEST_CLIENT
-
-    @pytest.mark.parametrize("token_use,claim", [("id", {"aud": OTHER_APP}), ("access", {"client_id": OTHER_APP})])
-    def test_runtime_default_rejects_unconfigured_same_pool_clients(self, validator, rsa_keypair, token_use, claim):
-        with pytest.raises(jwt.InvalidTokenError):
-            self._validate(validator, rsa_keypair, self._token(validator, rsa_keypair, token_use=token_use, **claim))
-
-    @pytest.mark.asyncio
-    async def test_runtime_default_accepts_agent_service_provisioned_client(self, mock_settings, rsa_keypair):
-        client_id = "tenant-a-provisioned-client"
-        mock_settings.agent_clients_table = "test-agent-clients"
-        mock_settings.cognito_domain = "test-domain"
-        items = {}
-        dynamodb, table = self._dynamodb_with_items(items)
-        cognito = MagicMock()
-        cognito.create_user_pool_client.return_value = {"UserPoolClient": {"ClientId": client_id}}
-
-        with patch("src.admin.agent_service.get_settings", return_value=mock_settings):
-            service = AgentService(cognito_client=cognito, dynamodb_resource=dynamodb)
-            await service.create_agent(
-                AgentCreateRequest(
-                    name="worker",
-                    org_id="tenant-a",
-                    team_id="team-a",
-                    department_id="department-a",
-                )
-            )
-
-        validator = CognitoJWTValidator(dynamodb_resource=dynamodb)
-        claims = self._validate(validator, rsa_keypair, self._dynamic_token(validator, rsa_keypair, client_id))
-
-        assert claims.client_id == client_id
-        assert claims.org_id == "tenant-a"
-        dynamodb.Table.assert_called_with("test-agent-clients")
-        table.get_item.assert_called_once_with(Key={"client_id": client_id}, ConsistentRead=True)
-
-    @pytest.mark.parametrize(
-        "record,claim_overrides",
-        [
-            (None, {}),
-            ({"status": "disabled"}, {}),
-            ({"org_id": ""}, {"custom:org_id": ""}),
-            ({}, {"custom:org_id": "tenant-b"}),
-            ({}, {"custom:team_id": "team-b"}),
-            ({}, {"custom:account_type": "human"}),
-            ({}, {"custom:client_id": "different-client"}),
-        ],
-        ids=[
-            "unregistered",
-            "inactive",
-            "missing-tenant",
-            "wrong-tenant",
-            "wrong-team",
-            "not-service",
-            "wrong-custom-client",
-        ],
-    )
-    def test_runtime_default_rejects_invalid_dynamic_clients(self, mock_settings, rsa_keypair, record, claim_overrides):
-        client_id = "tenant-a-dynamic-client"
-        mock_settings.agent_clients_table = "test-agent-clients"
-        items = {}
-        if record is not None:
-            items[client_id] = {
-                "client_id": client_id,
-                "status": "active",
-                "org_id": "tenant-a",
-                "team_id": "team-a",
-                "department_id": "department-a",
-                **record,
-            }
-        dynamodb, _ = self._dynamodb_with_items(items)
-        validator = CognitoJWTValidator(dynamodb_resource=dynamodb)
-        token = self._dynamic_token(validator, rsa_keypair, client_id, **claim_overrides)
-
-        with pytest.raises(jwt.InvalidTokenError, match="client_id"):
-            self._validate(validator, rsa_keypair, token)
-
-    def test_dynamic_registry_never_authorizes_id_tokens(self, mock_settings, rsa_keypair):
-        client_id = "tenant-a-dynamic-client"
-        mock_settings.agent_clients_table = "test-agent-clients"
-        items = {
-            client_id: {
-                "client_id": client_id,
-                "status": "active",
-                "org_id": "tenant-a",
-                "team_id": "",
-                "department_id": "",
-            }
-        }
-        dynamodb, table = self._dynamodb_with_items(items)
-        validator = CognitoJWTValidator(dynamodb_resource=dynamodb)
-        token = self._token(validator, rsa_keypair, token_use="id", aud=client_id)
-
-        with pytest.raises(jwt.InvalidTokenError, match="aud"):
-            self._validate(validator, rsa_keypair, token)
-        table.get_item.assert_not_called()
-
-    def test_static_client_does_not_depend_on_dynamic_registry(self, mock_settings, rsa_keypair):
-        mock_settings.agent_clients_table = "test-agent-clients"
-        dynamodb, table = self._dynamodb_with_items({})
-        table.get_item.side_effect = RuntimeError("registry unavailable")
-        validator = CognitoJWTValidator(dynamodb_resource=dynamodb)
-        token = self._token(validator, rsa_keypair, token_use="access", client_id="test-client-id")
-
-        claims = self._validate(validator, rsa_keypair, token)
-
-        assert claims.client_id == "test-client-id"
-        table.get_item.assert_not_called()
-
-    def test_dynamic_registry_error_fails_closed(self, mock_settings, rsa_keypair):
-        client_id = "tenant-a-dynamic-client"
-        mock_settings.agent_clients_table = "test-agent-clients"
-        dynamodb, table = self._dynamodb_with_items({})
-        table.get_item.side_effect = ClientError(
-            {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
-            "GetItem",
-        )
-        validator = CognitoJWTValidator(dynamodb_resource=dynamodb)
-        token = self._dynamic_token(validator, rsa_keypair, client_id)
-
-        with pytest.raises(jwt.InvalidTokenError, match="client_id"):
-            self._validate(validator, rsa_keypair, token)
-
-    def test_client_registered_to_another_tenant_is_rejected(self, restricted, rsa_keypair):
-        token = self._token(
-            restricted,
-            rsa_keypair,
-            token_use="access",
-            client_id=self.OTHER_APP,
-            **{"custom:org_id": "other-tenant"},
-        )
-
-        with pytest.raises(jwt.InvalidTokenError, match="client_id"):
-            self._validate(restricted, rsa_keypair, token)

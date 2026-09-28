@@ -1,4 +1,4 @@
-import { createPolicyQuery } from '../model-policy-runtime';
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import * as fs from 'fs';
 import { Plan, CodeResult, Milestone, IssueContext } from '../types';
 import { Logger } from './Logger';
@@ -27,7 +27,7 @@ export class CodeGenerationAgent {
       console.log('\n🤖 Starting Claude code generation...\n');
       let turnCount = 0;
       
-      const session = await createPolicyQuery({
+      const session = query({
         prompt,
         options: {
           model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929',

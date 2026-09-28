@@ -1,22 +1,4 @@
 # Data sources
-locals {
-  # Base URL of the Cognito hosted UI, in whichever form this pool uses.
-  #
-  # aws_cognito_user_pool_domain.main.domain returns the PREFIX for a
-  # Cognito-hosted domain and the FQDN for a custom one, and only the first needs
-  # `.auth.<region>.amazoncognito.com` appended. A prefix is a single DNS label —
-  # alphanumeric and hyphens — so a dot distinguishes them exactly.
-  #
-  # Expressed once because it was previously inlined ten times across this module,
-  # and one of those ten writes the token endpoint that agents authenticate
-  # against (aws_secretsmanager_secret_version.agent_cognito_creds). A custom
-  # domain silently produced "<fqdn>.auth.<region>.amazoncognito.com" in all of
-  # them.
-  cognito_domain_is_custom = length(regexall("\\.", aws_cognito_user_pool_domain.main.domain)) > 0
-
-  hosted_ui_base = local.cognito_domain_is_custom ? "https://${aws_cognito_user_pool_domain.main.domain}" : "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com"
-}
-
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
@@ -24,14 +6,14 @@ data "aws_caller_identity" "current" {}
 resource "aws_cognito_user_pool" "main" {
   name = "${var.name_prefix}-users"
 
-  # Pre Token Generation Lambda Trigger (V3) - Issue #119
+  # Pre Token Generation Lambda Trigger (V2) - Issue #119
   # Injects custom claims into access tokens for both users and M2M clients
   lambda_config {
     pre_sign_up = aws_lambda_function.pre_signup.arn
 
     pre_token_generation_config {
       lambda_arn     = aws_lambda_function.pre_token_generation.arn
-      lambda_version = "V3_0" # V3 also invokes the trigger for client_credentials (M2M).
+      lambda_version = "V2_0" # Use V2 trigger for access token customization
     }
   }
 
@@ -50,32 +32,6 @@ resource "aws_cognito_user_pool" "main" {
 
   software_token_mfa_configuration {
     enabled = var.enable_software_mfa
-  }
-
-  # Threat protection (advanced security) — #5666 (A11).
-  #
-  # Absent from this repository entirely before now: no user_pool_add_ons block
-  # existed in any .tf file, so the pool gating paid model access had no
-  # compromised-credential detection, no risk scoring and no adaptive auth.
-  #
-  # Dynamic because the add-on requires the Cognito Plus feature plan (billed per
-  # monthly active user). At "OFF" no block is emitted, so the pool stays on its
-  # current tier and this change is cost-neutral until an operator opts in; the
-  # tier below moves in lockstep for the same reason. AUDIT detects and logs
-  # without changing any sign-in outcome, which is the safe first step before
-  # ENFORCED starts challenging users.
-  # null, not "ESSENTIALS", at OFF. Pinning a tier here would be a billing change
-  # in its own right for any pool not already on that tier — the exact surprise
-  # this variable's OFF default exists to avoid. null leaves the tier unmanaged, so
-  # OFF is genuinely inert; PLUS is set only when an operator asks for threat
-  # protection, because the add-on requires it.
-  user_pool_tier = var.threat_protection_mode == "OFF" ? null : "PLUS"
-
-  dynamic "user_pool_add_ons" {
-    for_each = var.threat_protection_mode == "OFF" ? [] : [var.threat_protection_mode]
-    content {
-      advanced_security_mode = user_pool_add_ons.value
-    }
   }
 
   # Account recovery via email
@@ -230,50 +186,12 @@ resource "aws_cognito_user_pool_client" "main" {
   user_pool_id = aws_cognito_user_pool.main.id
 
   # Auth flows
-  #
-  # #5666 (A11) traced every consumer of this client before deciding what to
-  # remove. ALLOW_USER_PASSWORD_AUTH sends a raw password to the unsigned
-  # InitiateAuth API, so it is the flow you would normally drop from a browser
-  # client — and the SPA does not use it: it is exclusively hosted-UI
-  # authorization-code + PKCE (frontend/src/services/auth.ts buildLoginUrl,
-  # response_type=code / S256) or the /auth/github broker. There is no password
-  # field anywhere in the SPA's auth path.
-  #
-  # It is NOT dead permission, though, and is deliberately RETAINED:
-  # this client's id is published as SSM /adp/<env>/gateway/cognito-client-id
-  # (infra/main.tf), and several supported automation callers resolve that param
-  # and call InitiateAuth with USER_PASSWORD_AUTH — platform/evals/lib/cognito.sh
-  # (shared seeding helper for the budget-ratelimit, cli-onboarding and
-  # bedrock-routing evals), platform/scripts/bedrock-routing-validate.sh, and the
-  # BG_COGNITO_PUBLIC_AUTH=1 branch of cli/bg-cognito-auth.sh. Those evals run in
-  # a pod with NO AWS credentials, which is precisely why they use the unsigned
-  # InitiateAuth instead of the SigV4-signed AdminInitiateAuth — so keeping
-  # ALLOW_ADMIN_USER_PASSWORD_AUTH does not rescue them. Removing this line is a
-  # one-line change that breaks all of them, and MFA=ON already blunts it: a
-  # password alone no longer completes a sign-in, it returns an MFA challenge.
-  #
-  # ALLOW_ADMIN_USER_PASSWORD_AUTH is separately mandatory here: it is how the
-  # github-auth-broker mints tokens after a successful GitHub login
-  # (lambda/github-auth-broker/cognito_provisioner.py). Dropping it breaks the
-  # primary human login path.
-  #
-  # Retiring USER_PASSWORD_AUTH is real work with its own blast radius (give the
-  # clean-room evals a credential path, then decide the fate of
-  # BG_COGNITO_PUBLIC_AUTH); it is recorded as a remainder rather than done here.
   explicit_auth_flows = [
     "ALLOW_USER_SRP_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH",
     "ALLOW_USER_PASSWORD_AUTH",
     "ALLOW_ADMIN_USER_PASSWORD_AUTH"
   ]
-
-  # #5666 (A11): suppress user-existence disclosure. Without this, Cognito returns
-  # UserNotFoundException for an unknown username and NotAuthorizedException for a
-  # known one with a bad password, which turns any of the unsigned InitiateAuth
-  # flows above into a free account-enumeration oracle against this pool. ENABLED
-  # collapses both to the same generic failure. Costs nothing and changes no
-  # successful login — only what a failed one reveals.
-  prevent_user_existence_errors = "ENABLED"
 
   # No client secret for public clients (CLI usage)
   generate_secret = false
@@ -331,69 +249,6 @@ resource "aws_cognito_user_pool_client" "main" {
   ]
 }
 
-# CLI app client — web CLI login (bg-cognito-auth.sh login --web).
-#
-# A separate client because refresh-token validity is per-client: the SPA
-# keeps its long browser sessions on `main`, while the credential that lands
-# on a laptop's disk is short-lived (default 24 h) and ROTATED — every
-# background refresh invalidates the previous refresh token, so a stolen copy
-# dies the next time the legitimate machine refreshes.
-#
-# No user-facing auth flows: tokens on this client are minted exclusively
-# server-side by the gateway's /auth/cli endpoints via ADMIN_USER_PASSWORD_AUTH
-# (same mechanism the github-auth-broker uses), then kept fresh by the CLI via
-# REFRESH_TOKEN_AUTH. No OAuth flows, no callback URLs, no hosted UI.
-resource "aws_cognito_user_pool_client" "cli" {
-  name         = "${var.name_prefix}-cli-client"
-  user_pool_id = aws_cognito_user_pool.main.id
-
-  # ALLOW_REFRESH_TOKEN_AUTH is deliberately ABSENT: with refresh token
-  # rotation enabled, Cognito rejects it as an explicit flow
-  # ("ALLOW_REFRESH_TOKEN_AUTH is not a permitted ExplicitAuthFlow when
-  # refresh token rotation is enabled") — refresh-token auth is implicit on a
-  # rotation-enabled client.
-  explicit_auth_flows = [
-    "ALLOW_ADMIN_USER_PASSWORD_AUTH"
-  ]
-
-  generate_secret = false
-
-  access_token_validity  = var.access_token_validity
-  refresh_token_validity = var.cli_refresh_token_validity
-  id_token_validity      = var.id_token_validity
-
-  token_validity_units {
-    access_token  = "minutes"
-    refresh_token = "minutes"
-    id_token      = "minutes"
-  }
-
-  # Rotation: each REFRESH_TOKEN_AUTH returns a new refresh token and revokes
-  # the old one after a short grace window (network-retry tolerance). The CLI
-  # helper already persists a newly returned refresh token.
-  refresh_token_rotation {
-    feature                    = "ENABLED"
-    retry_grace_period_seconds = 60
-  }
-
-  enable_token_revocation = true
-
-  # Same read set as the SPA client; same deliberately-minimal write set (see
-  # the privilege-escalation comment on `main` above — it applies verbatim).
-  read_attributes = [
-    "email",
-    "name",
-    "custom:org_id",
-    "custom:department_id",
-    "custom:team_id",
-    "custom:role"
-  ]
-  write_attributes = [
-    "email",
-    "name"
-  ]
-}
-
 # User Pool Domain (Cognito-hosted or custom)
 resource "aws_cognito_user_pool_domain" "main" {
   # Cognito domains are globally unique across all AWS accounts. Appending an
@@ -401,10 +256,6 @@ resource "aws_cognito_user_pool_domain" "main" {
   # accounts don't collide. Override via var.custom_domain for a vanity domain.
   domain       = var.custom_domain != "" ? var.custom_domain : "${var.name_prefix}-auth-${substr(data.aws_caller_identity.current.account_id, 4, 8)}"
   user_pool_id = aws_cognito_user_pool.main.id
-
-  # Null unless an ACM certificate is supplied, so the prefix-domain form is
-  # unchanged for callers that don't set certificate_arn.
-  certificate_arn = var.certificate_arn != "" ? var.certificate_arn : null
 }
 
 # Cognito Identity Pool
@@ -428,8 +279,7 @@ resource "aws_cognito_identity_pool" "main" {
 
 # IAM Role for authenticated Cognito users (gateway-caller)
 resource "aws_iam_role" "gateway_caller" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-gateway-caller"
+  name = "${var.name_prefix}-gateway-caller"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -502,8 +352,7 @@ resource "aws_iam_role_policy" "gateway_caller_session_tags" {
 
 # IAM Role for unauthenticated users (denied access)
 resource "aws_iam_role" "unauthenticated" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-cognito-unauth"
+  name = "${var.name_prefix}-cognito-unauth"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -604,28 +453,6 @@ resource "aws_cognito_resource_server" "gateway" {
   }
 }
 
-# Task scopes are separate from Bedrock model invocation. Defining the resource
-# server does not grant any scope to the existing shared agent client.
-resource "aws_cognito_resource_server" "tasks" {
-  identifier   = "adp-tasks"
-  name         = "ADP Task API"
-  user_pool_id = aws_cognito_user_pool.main.id
-
-  dynamic "scope" {
-    for_each = {
-      submit    = "Submit bounded tasks"
-      read      = "Read owned task state and events"
-      input     = "Send follow-up input to owned tasks"
-      cancel    = "Cancel owned tasks"
-      artifacts = "Upload and read owned task artifacts"
-    }
-    content {
-      scope_name        = scope.key
-      scope_description = scope.value
-    }
-  }
-}
-
 # =============================================================================
 # Agent App Client with client_credentials grant (Issue #119)
 # =============================================================================
@@ -686,7 +513,7 @@ resource "aws_secretsmanager_secret_version" "agent_cognito_creds" {
   secret_string = jsonencode({
     client_id      = aws_cognito_user_pool_client.agent.id
     client_secret  = aws_cognito_user_pool_client.agent.client_secret
-    token_endpoint = "${local.hosted_ui_base}/oauth2/token"
+    token_endpoint = "https://${aws_cognito_user_pool_domain.main.domain}.auth.${data.aws_region.current.id}.amazoncognito.com/oauth2/token"
     scope          = "${aws_cognito_resource_server.gateway.identifier}/invoke"
   })
 

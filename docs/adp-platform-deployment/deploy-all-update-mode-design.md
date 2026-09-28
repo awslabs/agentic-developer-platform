@@ -145,8 +145,7 @@ In `--update` mode, the script:
 
 **Applies to all images:**
 - `adp-gateway` (gateway backend)
-- `adp-agent-gateway` (Python agent gateway)
-- `adp-chat-agent` (TypeScript chat agent)
+- `adp-agent-gateway` (agent gateway)
 - `adp-agent-runtime` (webhook-ingress worker)
 
 **Fresh-deploy mode (no `--update`):** unchanged — keeps `:latest` tag behavior

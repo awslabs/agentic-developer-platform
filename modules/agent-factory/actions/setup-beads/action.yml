@@ -54,25 +54,10 @@ runs:
           exit 0
         fi
 
-        # Pin the installer implementation and verify its bytes before execution.
-        # Update the commit and checksum together after reviewing upstream changes.
-        BEADS_INSTALLER_SHA256="ab1a75ffeb5f7d453a453cc8a96a613074e3667a53e34f1dec134f72fbd05ded"
-        # The installer exits with error if bd not in PATH yet, so we ignore its
-        # exit code and do our own verification after updating PATH.
-        BEADS_INSTALLER=$(mktemp /tmp/beads-install.XXXXXX)
-        trap 'rm -f "$BEADS_INSTALLER"' EXIT
-        if ! curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/3c30a28d07cb3ad923a4bb7450176855abbb40fe/scripts/install.sh -o "$BEADS_INSTALLER"; then
-          echo "ERROR: Failed to download Beads installer"
-          rm -f "$BEADS_INSTALLER"
-          exit 1
-        fi
-        if ! printf '%s  %s\n' "$BEADS_INSTALLER_SHA256" "$BEADS_INSTALLER" | sha256sum --check --status; then
-          echo "ERROR: Beads installer checksum mismatch; refusing execution"
-          rm -f "$BEADS_INSTALLER"
-          exit 1
-        fi
-        bash "$BEADS_INSTALLER" || true
-        rm -f "$BEADS_INSTALLER"
+        # Install via official script
+        # Note: The installer exits with error if bd not in PATH yet, so we ignore its exit code
+        # and do our own verification after updating PATH
+        curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash || true
 
         # Add to PATH for this job (GITHUB_PATH takes effect in next step, export for current step)
         echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -88,28 +73,15 @@ runs:
           exit 1
         fi
 
-        # Install Dolt if not present (manual install to avoid sudo requirement).
-        # Pinned to a reviewed release version (Issue #6115). Update DOLT_VERSION
-        # and DOLT_SHA256 together when upgrading.
-        DOLT_VERSION="2.3.5"
-        DOLT_SHA256="c49d4c3e004cf1581ba0d4a00c5023a26f84eb2ec15d5fe876eed36d5343f463"
+        # Install Dolt if not present (manual install to avoid sudo requirement)
         if ! command -v dolt &>/dev/null && [ ! -f "$HOME/.local/bin/dolt" ]; then
-          echo "Installing Dolt ${DOLT_VERSION} to ~/.local/bin..."
-          DOLT_TGZ=$(mktemp /tmp/dolt.XXXXXX.tar.gz)
-          if ! curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" -o "$DOLT_TGZ"; then
-            echo "ERROR: Failed to download Dolt ${DOLT_VERSION}"
-            rm -f "$DOLT_TGZ"
-            exit 1
-          fi
-          ACTUAL_SHA=$(sha256sum "$DOLT_TGZ" | awk '{print $1}')
-          if [ "$ACTUAL_SHA" != "$DOLT_SHA256" ]; then
-            echo "ERROR: Dolt checksum mismatch — expected $DOLT_SHA256, got $ACTUAL_SHA"
-            rm -f "$DOLT_TGZ"
-            exit 1
-          fi
-          tar -xzf "$DOLT_TGZ" -C /tmp
+          echo "Installing Dolt to ~/.local/bin..."
+          DOLT_VERSION=$(curl -fsSL https://api.github.com/repos/dolthub/dolt/releases/latest | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+          echo "Latest Dolt version: $DOLT_VERSION"
+          curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/dolt-linux-amd64.tar.gz" -o /tmp/dolt.tar.gz
+          tar -xzf /tmp/dolt.tar.gz -C /tmp
           mv /tmp/dolt-linux-amd64/bin/dolt "$HOME/.local/bin/"
-          rm -rf "$DOLT_TGZ" /tmp/dolt-linux-amd64
+          rm -rf /tmp/dolt.tar.gz /tmp/dolt-linux-amd64
           echo "Dolt installed: $(dolt version 2>/dev/null | head -1 || echo 'unknown')"
         fi
 

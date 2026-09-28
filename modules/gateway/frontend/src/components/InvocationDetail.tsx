@@ -12,23 +12,7 @@ import { useState } from 'react';
 import { Modal } from '@/components/ui';
 import { TranscriptContent } from '@/components/TranscriptViewer';
 import { formatDateTime, formatRelativeTime } from '@/utils/format';
-// Issue #4207: was a local formatCost with the same sub-cent convention.
-import { formatCost } from '@/utils/cost';
-import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
-import { describeStopReason, isBudgetStoppedStatus } from '@/utils/stopReason';
-import { describeLiveness } from '@/utils/liveness';
-// Issue #4400: this modal had its own STATUS_CONFIG, one of three near-identical
-// copies. `describeStatus` is the single map; the `'full'` variant preserves this
-// surface's longer `webhook_received` label, which the narrow table cannot fit.
-import { describeStatus } from '@/utils/status';
-import { LivenessBadge } from '@/components/activity/LivenessBadge';
-// Issue #3966: live run controls. Renders nothing unless the feature flag is on
-// AND the polled control state says this run is genuinely controllable, so this
-// import does not change the modal for any existing deployment.
-import { ControlPanel } from '@/components/ControlPanel';
-import { TaskEventStream } from '@/components/TaskEventStream';
-import { LiveExplanations } from '@/components/LiveExplanations';
-import type { InvocationItem } from '@/types/activity';
+import type { InvocationItem, InvocationStatus } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,12 +34,28 @@ function formatDuration(startIso: string, endIso: string): string {
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
+/** Format a cost value to a readable string. */
+function formatCost(costUsd: number): string {
+  if (costUsd < 0.01) return `$${costUsd.toFixed(4)}`;
+  return `$${costUsd.toFixed(2)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** Max characters to show for error_message before truncation. */
 const ERROR_TRUNCATE_LENGTH = 200;
+
+const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; colorClass: string }> = {
+  webhook_received: { glyph: '∘', label: 'Webhook received', colorClass: 'text-gray-500 dark:text-gray-400' },
+  in_progress: { glyph: '●', label: 'In progress', colorClass: 'text-blue-600 dark:text-blue-400' },
+  complete: { glyph: '✓', label: 'Complete', colorClass: 'text-green-600 dark:text-green-400' },
+  failed: { glyph: '✗', label: 'Failed', colorClass: 'text-red-600 dark:text-red-400' },
+  rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
+  rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
+  no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
+};
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -105,70 +105,27 @@ export interface InvocationDetailProps {
   onClose: () => void;
   /** Use admin transcript endpoint. */
   isAdmin?: boolean;
-  /**
-   * Issue #3966: re-fetch this invocation after a live control command.
-   *
-   * `item` is a snapshot owned by the page, so the panel cannot refresh it
-   * itself; without this the status row would keep showing the pre-command
-   * snapshot while the control panel showed the new phase.
-   */
-  onRefreshItem?: () => void;
 }
 
-export function InvocationDetail({
-  item,
-  isOpen,
-  onClose,
-  isAdmin = false,
-  onRefreshItem,
-}: InvocationDetailProps) {
+export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: InvocationDetailProps) {
   const [showTranscript, setShowTranscript] = useState(false);
 
   if (!item) return null;
 
-  const statusConfig = describeStatus(item.status, 'full');
-  // Issue #4020: blocked/skipped are terminal — without them the modal would
-  // claim "Active — not yet terminal" on a row that will never move again.
-  // Issue #4187: budget_stopped is terminal too — the run is over.
-  // Issue #3964: and so is aborted. Omitting it here would tell the operator who
-  // just stopped the run that it is "Active — not yet terminal", i.e. that their
-  // own stop did not take — the single most misleading thing this modal could say
-  // about an aborted run (AC-A9).
-  const isTerminal = [
-    'complete',
-    'failed',
-    'rejected',
-    'rate_limited',
-    'no_op',
-    'blocked',
-    'skipped',
-    'budget_stopped',
-    'aborted',
-  ].includes(item.status);
+  const statusConfig = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.no_op;
+  const isTerminal = ['complete', 'failed', 'rejected', 'rate_limited', 'no_op'].includes(item.status);
 
   // ---------------------------------------------------------------------------
   // Row fragments — extracted for conditional ordering (Issue #3765)
   // ---------------------------------------------------------------------------
 
-  /**
-   * Issue #4176: the derived liveness verdict, shown beside the status.
-   *
-   * On the detail view we show it for ALL verdicts, not just `unverifiable` —
-   * unlike the dense table, this surface has room, and an operator who opened a
-   * run specifically to understand its state deserves the explicit answer.
-   */
-  const livenessConfig = describeLiveness(item.liveness);
-
   const statusRow = (
     <DetailRow label="Status">
       <div className="space-y-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className={`inline-flex items-center gap-1 font-medium ${statusConfig.colorClass}`}>
-            <span aria-hidden="true">{statusConfig.glyph}</span>
-            <span>{statusConfig.label}</span>
-          </span>
-          <LivenessBadge verdict={item.liveness} />
-        </div>
+        <span className={`inline-flex items-center gap-1 font-medium ${statusConfig.colorClass}`}>
+          <span aria-hidden="true">{statusConfig.glyph}</span>
+          <span>{statusConfig.label}</span>
+        </span>
         {item.status_updated_at && (
           <p className="text-xs text-gray-500 dark:text-gray-400">
             Last transition:{' '}
@@ -177,24 +134,11 @@ export function InvocationDetail({
             </span>
           </p>
         )}
-        {/*
-          Issue #4176: this line used to read a flat "Active — not yet terminal"
-          on every non-terminal run, including ones that stopped reporting days
-          ago. When the verdict says we cannot confirm the run, say that instead —
-          it is the whole point of the field. Carefully worded as "cannot
-          confirm", never "stopped": loss of contact is not evidence of exit, and
-          a run described as ended is a run someone will retry.
-        */}
-        {!isTerminal &&
-          (livenessConfig && item.liveness === 'unverifiable' ? (
-            <p className="text-xs text-amber-700 dark:text-amber-400">
-              {livenessConfig.description}
-            </p>
-          ) : (
-            <p className="text-xs text-gray-400 dark:text-gray-500 italic">
-              Active — not yet terminal
-            </p>
-          ))}
+        {!isTerminal && (
+          <p className="text-xs text-gray-400 dark:text-gray-500 italic">
+            Active — not yet terminal
+          </p>
+        )}
       </div>
     </DetailRow>
   );
@@ -206,61 +150,6 @@ export function InvocationDetail({
       ) : (
         <span className="text-gray-400 dark:text-gray-500 italic">
           No error details available
-        </span>
-      )}
-    </DetailRow>
-  ) : null;
-
-  /**
-   * Issue #4020: the "why didn't anything run" row.
-   *
-   * Only rendered for the three non-run statuses. Presented as a plain
-   * informational row, NOT through ErrorDisplay — the red error styling would
-   * misreport a correct guard decision (a loop that was stopped, a redelivery
-   * that was deduplicated) as a fault.
-   *
-   * When the reason is absent this still renders, saying so explicitly: rows
-   * written before this change carry no reason, and "we don't have a reason for
-   * this one" is a more honest answer than an absent row that looks identical to
-   * the old unexplained badge.
-   */
-  const skipReasonRow = isNonRunStatus(item.status) ? (
-    <DetailRow label="Reason">
-      {describeSkipReason(item.skip_reason) ? (
-        <div className="space-y-1">
-          <p className="text-gray-900 dark:text-white">{describeSkipReason(item.skip_reason)}</p>
-          {/* The enum itself is what appears in CloudWatch logs and metrics, so
-              showing it gives an operator the exact term to search on. */}
-          <p className="text-xs font-mono text-gray-400 dark:text-gray-500">{item.skip_reason}</p>
-        </div>
-      ) : (
-        <span className="text-gray-400 dark:text-gray-500 italic">
-          No reason recorded — this event predates reason tracking.
-        </span>
-      )}
-    </DetailRow>
-  ) : null;
-
-  /**
-   * Issue #4187: the "why did this stop early" row.
-   *
-   * Same shape and rationale as `skipReasonRow` above, and deliberately NOT
-   * `ErrorDisplay`: a spend cap firing is the control working. The operator's
-   * next action is a budget decision, not a bug hunt, and red styling points
-   * them at the wrong one.
-   */
-  const stopReasonRow = isBudgetStoppedStatus(item.status) ? (
-    <DetailRow label="Stopped because">
-      {describeStopReason(item.stop_reason) ? (
-        <div className="space-y-1">
-          <p className="text-gray-900 dark:text-white">{describeStopReason(item.stop_reason)}</p>
-          {/* The enum is what appears in logs and metrics, so showing it gives
-              the operator the exact term to search on. */}
-          <p className="text-xs font-mono text-gray-400 dark:text-gray-500">{item.stop_reason}</p>
-        </div>
-      ) : (
-        <span className="text-gray-400 dark:text-gray-500 italic">
-          A spend cap stopped this run; no specific cap was recorded.
         </span>
       )}
     </DetailRow>
@@ -336,14 +225,14 @@ export function InvocationDetail({
     </DetailRow>
   ) : null;
 
-  const transcriptRow = item.transcript_key || item.transcript_status === 'available' ? (
-    <DetailRow label={item.source_type === 'task' ? "Retained Task report" : "Transcript"}>
+  const transcriptRow = item.transcript_key ? (
+    <DetailRow label="Transcript">
       <button
         type="button"
         onClick={() => setShowTranscript(true)}
         className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:underline text-sm"
       >
-        {item.source_type === 'task' ? 'View retained Task report' : 'View full transcript'}
+        View full transcript
       </button>
     </DetailRow>
   ) : null;
@@ -427,7 +316,7 @@ export function InvocationDetail({
   // ---------------------------------------------------------------------------
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={showTranscript ? (item.source_type === 'task' ? 'Retained Task report' : 'Run Transcript') : 'Invocation Detail'} size="lg">
+    <Modal isOpen={isOpen} onClose={onClose} title={showTranscript ? 'Run Transcript' : 'Invocation Detail'} size="lg">
       {showTranscript ? (
         /* Issue #3767: Inline transcript content swap (replaces nested modal) */
         <div>
@@ -468,13 +357,6 @@ export function InvocationDetail({
               <>
                 {/* Default order (non-failed runs) */}
                 {statusRow}
-                {/* Issue #4020: directly under Status, mirroring where Error sits
-                    in the failed-run order — for a non-run the reason IS the
-                    headline fact, so it must not be buried below the ID block. */}
-                {skipReasonRow}
-                {/* Issue #4187: same placement, same reasoning — for a run a cap
-                    stopped, why it stopped is the headline fact. */}
-                {stopReasonRow}
                 {identifierRows}
                 {timingRows}
                 {channelRow}
@@ -490,31 +372,9 @@ export function InvocationDetail({
             )}
           </dl>
 
-          {/*
-            Issue #3966: live controls.
-
-            Placed after the detail list rather than inside it: these are actions,
-            not facts, and interleaving buttons into a definition list would put
-            interactive controls inside `<dd>` elements.
-
-            `isTerminalRun` is passed only to avoid polling a run that has
-            demonstrably ended. It is not the gate — the panel decides what to
-            offer from the polled control state, because a non-terminal status
-            does not imply the run is reachable or controllable.
-          */}
-          {item.source_type === 'task' ? (item.task_id ? <TaskEventStream key={item.task_id} taskId={item.task_id} isOpen={isOpen} onTerminal={onRefreshItem} /> : <p>Task stream unavailable.</p>) : <>
-          <LiveExplanations key={item.invocation_id} invocationId={item.invocation_id} isOpen={isOpen} terminal={isTerminal} onTerminal={onRefreshItem} />
-          <ControlPanel
-            invocationId={item.invocation_id}
-            isOpen={isOpen}
-            isTerminalRun={isTerminal}
-            onCommandApplied={onRefreshItem}
-          />
-          </>}
-
           {/* Status timeline note */}
           <p className="mt-4 text-xs text-gray-400 dark:text-gray-500 italic">
-            {item.source_type === 'task' ? 'Task status is canonical; process liveness remains unverified. Retained events may be incomplete.' : 'Status shows current state and last transition time. Full transition history is not retained.'}
+            Status shows current state and last transition time. Full transition history is not retained.
           </p>
         </>
       )}

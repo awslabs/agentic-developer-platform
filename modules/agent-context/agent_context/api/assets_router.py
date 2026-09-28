@@ -316,13 +316,9 @@ async def list_assets(
         params["tid"] = current_user.org_id
         conditions.append("owner_sub IS NULL")
     else:
-        # Match detail visibility: tenant admins may inspect personal assets;
-        # other callers see only their own personal assets and shared assets.
+        # Default: show all assets the user can see (personal + tenant)
         conditions.append("tenant_id = :tid")
         params["tid"] = current_user.org_id
-        if not current_user.is_admin:
-            conditions.append("(owner_sub = :sub OR owner_sub IS NULL)")
-            params["sub"] = current_user.user_id
 
     if asset_type:
         conditions.append("asset_type = :atype")

@@ -263,15 +263,6 @@ resource "aws_dynamodb_table_item" "scaledjob_worker" {
     allowed_models = {
       SS = ["*"]
     }
-    # Issue #4131 (grant step): credential scopes granted to this agent, resolved
-    # server-side by the gateway instead of trusted from an X-Agent-Scopes header.
-    # credential:raw-read is the only scope any caller asserts today
-    # (agent-worker-image/lib/gateway_credential_client.py). Must stay in lockstep
-    # with the copy in modules/agent-factory/infra/agent-registry-seed.tf — the
-    # gateway test tests/auth/test_credential_scopes_seed.py asserts both agree.
-    credential_scopes = {
-      SS = ["credential:raw-read"]
-    }
     status = {
       S = "active"
     }
@@ -366,19 +357,12 @@ resource "aws_lambda_function" "authorizer" {
   }
 
   environment {
-    # The allowlist key is merged in only when configured, so deployments that
-    # leave ip_allowlist_ssm_parameter empty see no change to this resource.
-    variables = merge(
-      {
-        COGNITO_USER_POOL_ID = var.cognito_user_pool_id
-        COGNITO_REGION       = var.aws_region
-        AGENT_REGISTRY_TABLE = aws_dynamodb_table.agent_registry.name
-        AUTHORIZER_CACHE_TTL = tostring(var.authorizer_cache_ttl)
-      },
-      var.ip_allowlist_ssm_parameter != "" ? {
-        IP_ALLOWLIST_SSM_PARAM = var.ip_allowlist_ssm_parameter
-      } : {}
-    )
+    variables = {
+      COGNITO_USER_POOL_ID = var.cognito_user_pool_id
+      COGNITO_REGION       = var.aws_region
+      AGENT_REGISTRY_TABLE = aws_dynamodb_table.agent_registry.name
+      AUTHORIZER_CACHE_TTL = tostring(var.authorizer_cache_ttl)
+    }
   }
 
   tags = merge(var.common_tags, {
@@ -397,8 +381,7 @@ resource "aws_lambda_function" "authorizer" {
 # =============================================================================
 
 resource "aws_iam_role" "authorizer" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-api-authorizer-role"
+  name = "${var.name_prefix}-api-authorizer-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -426,9 +409,7 @@ resource "aws_iam_role_policy" "authorizer" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    # concat with an empty list when unconfigured, so the rendered policy is
-    # unchanged for deployments that don't set ip_allowlist_ssm_parameter.
-    Statement = concat([
+    Statement = [
       # DynamoDB read access for agent registry (Issue #248: added Query for GSI)
       {
         Sid    = "DynamoDBReadAgentRegistry"
@@ -464,16 +445,7 @@ resource "aws_iam_role_policy" "authorizer" {
         ]
         Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.name_prefix}-api-authorizer:*"
       }
-      ],
-      var.ip_allowlist_ssm_parameter != "" ? [
-        {
-          Sid      = "ReadIpAllowlistParameter"
-          Effect   = "Allow"
-          Action   = ["ssm:GetParameter"]
-          Resource = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${startswith(var.ip_allowlist_ssm_parameter, "/") ? "" : "/"}${var.ip_allowlist_ssm_parameter}"
-        }
-      ] : []
-    )
+    ]
   })
 }
 
@@ -482,7 +454,6 @@ resource "aws_iam_role_policy" "authorizer" {
 # =============================================================================
 
 resource "aws_cloudwatch_log_group" "authorizer" {
-  #checkov:skip=CKV_AWS_338: Authorizer logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/aws/lambda/${var.name_prefix}-api-authorizer"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn
@@ -536,8 +507,7 @@ resource "aws_api_gateway_authorizer" "main" {
 
 # IAM role for API Gateway to invoke the Lambda authorizer
 resource "aws_iam_role" "authorizer_invocation" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-api-authorizer-invoke-role"
+  name = "${var.name_prefix}-api-authorizer-invoke-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

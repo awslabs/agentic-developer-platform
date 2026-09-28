@@ -1,8 +1,0 @@
-{
-  "source_commit": "e11e9d170c520eb877c499c58d4ada9644f38e99",
-  "tag": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot:security27-rsync-e11e9d170",
-  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:5fa72c08cf9fb618406b3543fe4d4aed4e1f0c596383cb2a1beb97de09cf0999",
-  "config_digest": "sha256:405cd7b54f63c17a4fce5a327e1033bb9b13fdbbfb06a53165df46dc1079795e",
-  "registry_matches_scanned_root": true,
-  "deployed": false
-}

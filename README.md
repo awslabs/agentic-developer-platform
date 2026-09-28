@@ -15,9 +15,7 @@ Concretely: you bring the agent's job, and ADP handles everything around it — 
   - **@agent-reviewer** — the quality gate: reviews for correctness/security, blocks on real issues
   - **@agent-operations** — deploys, monitors, and maintains infrastructure
 
-  Domains add their own (e.g. **@agent-malware-analysis-agent** in the cyber pack), and new personas are a five-file declaration — no platform changes.
-
-  The list above is a highlight, not the full set. **See [`docs/agent-catalogue.md`](docs/agent-catalogue.md) for the authoritative catalogue** of all 10 personas with their exact trigger strings.
+  Domains add their own (e.g. **@malware-analysis-agent** in the cyber pack), and new personas are a five-file declaration — no platform changes.
 - **Code intelligence** — one MCP endpoint giving agents semantic search, code search, wikis, and persistent memory across your codebases.
 - **A shared harness** — tool routing, jobs, events, artifacts, and human-in-the-loop approvals, so every agent gets the same plumbing instead of reinventing it. *(In progress — see `ARCHITECTURE.md`.)*
 
@@ -217,9 +215,6 @@ Open the repo in any AI editor (Claude Code, Kiro, Cursor) and say *"Read the de
 
 ## Directory Structure
 
-For installation and everyday use of the `adp` command, see the
-**[ADP CLI guide and command reference](docs/adp-cli/README.md)**.
-
 ```
 adp/
 ├── platform/                    # Shared infrastructure
@@ -285,7 +280,6 @@ adp/
 | Doc | Location |
 |-----|----------|
 | **Architecture (mental model)** | [ARCHITECTURE.md](ARCHITECTURE.md) — the four categories, the two skins, where new work goes |
-| **Operator Onboarding Walkthrough (start here)** | [docs/onboarding-walkthrough.md](docs/onboarding-walkthrough.md) — day-1 → week-1 path: setup, first agent run, governance, troubleshooting, best practices |
 | **Deploy Quick Start (authoritative)** | [docs/adp-platform-deployment/deploy-quickstart.md](docs/adp-platform-deployment/deploy-quickstart.md) — verified phase-by-phase procedure |
 | Self-Managed Deploy (full reference) | [docs/adp-platform-deployment/self-managed-deploy.md](docs/adp-platform-deployment/self-managed-deploy.md) |
 | Gateway README | [modules/gateway/README.md](modules/gateway/README.md) |

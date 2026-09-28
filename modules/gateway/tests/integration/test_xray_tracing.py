@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.shared.tracing import (
-    _NoOpSpan,
     _NoOpTracer,
     get_tracer,
     setup_tracing,
@@ -96,32 +95,21 @@ class TestTracingConfiguration:
 class TestTracingOverhead:
     """Tests for tracing overhead."""
 
-    def test_noop_tracer_cpu_overhead(self):
-        """The disabled tracer stays a thin wrapper around its no-op span."""
-        from statistics import median
-        from time import thread_time
+    def test_noop_tracer_overhead(self):
+        """Test that no-op tracer adds negligible overhead."""
+        import time
 
         tracer = _NoOpTracer()
         iterations = 10000
 
-        def cpu_cost(start_span):
-            start = thread_time()
-            for _ in range(iterations):
-                with start_span("test") as span:
-                    span.set_attribute("key", "value")
-            return thread_time() - start
+        start = time.monotonic()
+        for _ in range(iterations):
+            with tracer.start_as_current_span("test") as span:
+                span.set_attribute("key", "value")
+        elapsed_ms = (time.monotonic() - start) * 1000
 
-        # Compare the same span lifecycle on the same interpreter. A fixed wall
-        # deadline measures shared-runner contention and coverage instrumentation
-        # as well as tracing. Thread CPU time excludes descheduling; alternating
-        # samples and their medians reduce warmup noise without removing the
-        # regression check for excess work in the disabled tracer.
-        direct, wrapped = [], []
-        for _ in range(5):
-            direct.append(cpu_cost(lambda name: _NoOpSpan()))
-            wrapped.append(cpu_cost(tracer.start_as_current_span))
-        ratio = median(wrapped) / median(direct)
-        assert ratio < 3, f"Disabled tracer adds excessive CPU work: {ratio:.2f}x the direct no-op span lifecycle"
+        # 10000 iterations should complete in < 100ms (< 0.01ms per iteration)
+        assert elapsed_ms < 100, f"No-op tracer overhead too high: {elapsed_ms:.1f}ms for {iterations} iterations"
 
     @pytest.mark.xfail(
         reason="Flaky under CI load — timing-dependent assertion (saw 214ms, 226ms). "

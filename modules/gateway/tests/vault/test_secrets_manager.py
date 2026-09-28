@@ -99,32 +99,6 @@ class TestGetSecret:
         mock_sm_client.get_secret_value.assert_called_once_with(SecretId="arn:aws:secretsmanager:us-east-1:123:secret:test")
 
 
-class TestGetSecretAtVersion:
-    def test_returns_the_version_reported_by_secrets_manager(self, helper, mock_sm_client):
-        mock_sm_client.get_secret_value.return_value = {
-            "SecretString": '{"token": "ghp_xxx"}',
-            "VersionId": "served-version",
-        }
-
-        result = helper.get_secret_at_version("arn:fake", "requested-version")
-
-        assert result == ('{"token": "ghp_xxx"}', "served-version")
-        mock_sm_client.get_secret_value.assert_called_once_with(SecretId="arn:fake", VersionId="requested-version")
-
-    @pytest.mark.parametrize(
-        "version_metadata",
-        [pytest.param({}, id="missing"), pytest.param({"VersionId": ""}, id="empty")],
-    )
-    def test_refuses_when_secrets_manager_does_not_report_a_version(self, helper, mock_sm_client, version_metadata):
-        mock_sm_client.get_secret_value.return_value = {
-            "SecretString": '{"token": "ghp_xxx"}',
-            **version_metadata,
-        }
-
-        with pytest.raises(ValueError, match="non-empty VersionId"):
-            helper.get_secret_at_version("arn:fake", "requested-version")
-
-
 # ---------------------------------------------------------------------------
 # update_secret
 # ---------------------------------------------------------------------------
@@ -170,31 +144,6 @@ class TestDeleteSecret:
         )
         # Should not raise
         helper.delete_secret("arn:gone")
-
-    def test_delete_already_scheduled_is_idempotent(self, helper, mock_sm_client):
-        mock_sm_client.delete_secret.side_effect = ClientError(
-            {"Error": {"Code": "InvalidRequestException", "Message": "scheduled for deletion"}},
-            "DeleteSecret",
-        )
-        mock_sm_client.describe_secret.return_value = {"DeletedDate": "2026-09-22T00:00:00Z"}
-
-        helper.delete_secret("arn:pending", force=False)
-
-        mock_sm_client.delete_secret.assert_called_once_with(SecretId="arn:pending")
-        mock_sm_client.describe_secret.assert_called_once_with(SecretId="arn:pending")
-
-    def test_delete_does_not_ignore_an_unverified_invalid_request(self, helper, mock_sm_client):
-        error = ClientError(
-            {"Error": {"Code": "InvalidRequestException", "Message": "not pending"}},
-            "DeleteSecret",
-        )
-        mock_sm_client.delete_secret.side_effect = error
-        mock_sm_client.describe_secret.return_value = {}
-
-        with pytest.raises(ClientError):
-            helper.delete_secret("arn:not-pending", force=False)
-
-        assert mock_sm_client.delete_secret.call_count == 3
 
     def test_delete_retries_on_transient_error(self, helper, mock_sm_client):
         """Non-ResourceNotFound errors are retried up to 3 times."""
@@ -247,75 +196,3 @@ class TestSizeCap:
 
         validated = SecretsManagerHelper._validate_payload_size(data)
         assert validated == data
-
-
-class TestIdempotentSecretCreation:
-    OPERATION_ID = "66666666-7777-4888-8999-aaaaaaaaaaaa"
-
-    def test_retry_reconciles_the_same_deterministic_secret(self, helper, mock_sm_client):
-        arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:operation"
-        conflict = ClientError(
-            {"Error": {"Code": "ResourceExistsException", "Message": "exists"}},
-            "CreateSecret",
-        )
-        mock_sm_client.create_secret.side_effect = [{"ARN": arn}, conflict]
-
-        first = helper.create_secret(
-            "nebius",
-            "prod",
-            "synthetic-secret",
-            user_sub="user-1",
-            operation_id=self.OPERATION_ID,
-            operation_fingerprint="fingerprint-1",
-        )
-        tags = mock_sm_client.create_secret.call_args.kwargs["Tags"]
-        name = mock_sm_client.create_secret.call_args.kwargs["Name"]
-        mock_sm_client.describe_secret.return_value = {"ARN": arn, "Name": name, "Tags": tags}
-        mock_sm_client.get_secret_value.return_value = {"SecretString": "synthetic-secret"}
-
-        second = helper.create_secret(
-            "nebius",
-            "prod",
-            "synthetic-secret",
-            user_sub="user-1",
-            operation_id=self.OPERATION_ID,
-            operation_fingerprint="fingerprint-1",
-        )
-
-        assert first == second == arn
-        assert name.endswith(f"operation-{self.OPERATION_ID}")
-        assert {call.kwargs["Name"] for call in mock_sm_client.create_secret.call_args_list} == {name}
-        assert {tag["Key"]: tag["Value"] for tag in tags}["adp:operation_id"] == self.OPERATION_ID
-
-    def test_retry_with_a_different_value_is_a_conflict(self, helper, mock_sm_client):
-        from src.shared.services.secrets_manager import SecretOperationConflictError
-
-        conflict = ClientError(
-            {"Error": {"Code": "ResourceExistsException", "Message": "exists"}},
-            "CreateSecret",
-        )
-        mock_sm_client.create_secret.side_effect = conflict
-        name = f"adp/users/user-1/operation-{self.OPERATION_ID}"
-        mock_sm_client.describe_secret.return_value = {
-            "ARN": "arn:operation",
-            "Name": name,
-            "Tags": [
-                {"Key": "adp:owner_scope", "Value": "user"},
-                {"Key": "adp:user_sub", "Value": "user-1"},
-                {"Key": "adp:service", "Value": "nebius"},
-                {"Key": "adp:label", "Value": "prod"},
-                {"Key": "adp:operation_id", "Value": self.OPERATION_ID},
-                {"Key": "adp:operation_fingerprint", "Value": "fingerprint-1"},
-            ],
-        }
-        mock_sm_client.get_secret_value.return_value = {"SecretString": "original-secret"}
-
-        with pytest.raises(SecretOperationConflictError):
-            helper.create_secret(
-                "nebius",
-                "prod",
-                "replacement-secret",
-                user_sub="user-1",
-                operation_id=self.OPERATION_ID,
-                operation_fingerprint="fingerprint-1",
-            )

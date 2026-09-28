@@ -1,9 +1,0 @@
-{
-  "time": "2026-09-27T16:01:30.691517+00:00",
-  "secret_name": "adp/dev/superplane/observation",
-  "previous_version": "7f635fc9-ea53-4959-8136-5866224eb8f1",
-  "new_version": "9b49525a-f5ce-4a25-b518-2f26710ab537",
-  "added_key": "jwt-signing-key",
-  "value_recorded": false,
-  "existing_keys_preserved": true
-}

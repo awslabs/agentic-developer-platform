@@ -11,8 +11,7 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "cyber_eks_cluster" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${local.name_prefix}-eks-cluster-role"
+  name = "${local.name_prefix}-eks-cluster-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -21,8 +20,7 @@ resource "aws_iam_role" "cyber_eks_cluster" {
       Principal = {
         Service = "eks.amazonaws.com"
       }
-      # Auto Mode passes session tags to enforce its resource-scoped policies.
-      Action = ["sts:AssumeRole", "sts:TagSession"]
+      Action = "sts:AssumeRole"
     }]
   })
 
@@ -57,8 +55,7 @@ resource "aws_iam_role_policy_attachment" "cyber_eks_networking_policy" {
 }
 
 resource "aws_iam_role" "cyber_eks_node" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${local.name_prefix}-eks-node-role"
+  name = "${local.name_prefix}-eks-node-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -156,9 +153,6 @@ resource "aws_eks_cluster" "cyber" {
   }
 
   # EKS Auto Mode
-  # EKS owns this role's built-in EC2 access entry and AmazonEKSAutoNodePolicy.
-  # Do not reuse the role for a managed node group: EC2_LINUX access entries
-  # cannot authorize Auto Mode's NodeClass.
   compute_config {
     enabled       = true
     node_pools    = ["general-purpose"]

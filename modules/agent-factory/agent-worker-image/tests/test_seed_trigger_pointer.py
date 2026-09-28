@@ -29,15 +29,9 @@ def _run(argv):
 
 
 class TestSeedTriggerPointer:
-    def test_seeds_chain_and_parent_edge(self):
-        """Full context → pointer for target issue carries corr + parent=own msg_id
-        + last_triggered_persona=target persona.
-
-        Issue #4129: root_human_id / is_human_rooted / chain_depth are NOT sent.
-        The webhook resolves all three from its own webhook-events rows keyed on
-        this correlation_id, so the seeded row carries lineage without carrying
-        authority — which is what makes a pod-forged row inert.
-        """
+    def test_inherits_chain_and_increments_depth(self):
+        """Full context → pointer for target issue inherits corr/root, parent=own
+        msg_id, depth=own+1, last_triggered_persona=target persona."""
         with patch.dict(os.environ, _FULL_ENV, clear=False):
             with (
                 patch("lib.correlation_store.write_pointer") as wp,
@@ -52,21 +46,16 @@ class TestSeedTriggerPointer:
         kw = wp.call_args.kwargs
         assert kw["channel_key"] == "github:repo=aws-e/adp,issue=1777"
         assert kw["correlation_id"] == "corr-OPS"
+        assert kw["root_human_id"] == "human-1"
+        assert kw["is_human_rooted"] is True
         assert kw["triggering_invocation_id"] == "ops-msg-1"
+        assert kw["chain_depth"] == 1
         # Issue #2149: pre-seeds the self-re-trigger guard
         assert kw["last_triggered_persona"] == "developer"
-        # Issue #4129: the pod cannot name a root human or reset the depth.
-        assert "root_human_id" not in kw
-        assert "is_human_rooted" not in kw
-        assert "chain_depth" not in kw
 
     def test_no_correlation_context_skips(self):
-        """No ADP_CORRELATION_ID → no write (webhook will start a fresh chain).
-
-        Issue #4129: the gate is now correlation_id ALONE. It previously also
-        required ADP_ROOT_HUMAN_ID, which the pod no longer sends.
-        """
-        with patch.dict(os.environ, {"ADP_CORRELATION_ID": ""}, clear=False):
+        """No ADP_CORRELATION_ID/ROOT → no write (webhook will start fresh chain)."""
+        with patch.dict(os.environ, {"ADP_CORRELATION_ID": "", "ADP_ROOT_HUMAN_ID": ""}, clear=False):
             with patch("lib.correlation_store.write_pointer") as wp:
                 rc = _run(["x", "aws-e/adp", "1777", "developer"])
         assert rc == 0

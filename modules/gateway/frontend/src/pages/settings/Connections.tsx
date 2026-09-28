@@ -12,7 +12,6 @@
  * the app status.
  */
 
-import { switchWorkspace } from "@/services/workspaces";
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useToast } from "@/contexts/ToastContext";
@@ -26,13 +25,12 @@ import {
   getGitHubAppStatus,
   listConnections,
   registerManualGitHubApp,
-  revalidateGitHubAppConfig,
   rotateGitHubAppKey,
   startGitHubAppRegistration,
   startGitHubInstall,
+  switchTenant,
   type AppStatusResponse,
   type GitHubConnectionItem,
-  type PlatformVerification,
   type RegisterManualResponse,
 } from "@/services/connections";
 import { GitHubTile } from "./components/GitHubTile";
@@ -48,11 +46,6 @@ export default function Connections() {
   const isPlatformAdmin = hasRole(AdminRole.PLATFORM_ADMIN);
 
   const [connections, setConnections] = useState<GitHubConnectionItem[]>([]);
-  // Issue #4016: deployment-wide onboarding checks. The API omits this for
-  // callers who cannot manage connections, so null means "not shown to me"
-  // rather than "everything is fine".
-  const [platformVerification, setPlatformVerification] =
-    useState<PlatformVerification | null>(null);
   const [appStatus, setAppStatus] = useState<AppStatusResponse | null>(null);
   const [appStatusError, setAppStatusError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -77,7 +70,6 @@ export default function Connections() {
     try {
       const data = await listConnections();
       setConnections(data?.connections ?? []);
-      setPlatformVerification(data?.platform_verification ?? null);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to load connections";
@@ -180,14 +172,8 @@ export default function Connections() {
 
   const handleDisconnect = async (installationId: number) => {
     try {
-      const result = await deleteGitHubConnection(installationId);
-      if (result?.warning) {
-        toast.warning(result.warning);
-      } else if (result?.provider_revoked === false) {
-        toast.success("Local access revoked. The installation remains at GitHub.");
-      } else {
-        toast.success("GitHub installation disconnected.");
-      }
+      await deleteGitHubConnection(installationId);
+      toast.success("GitHub installation disconnected.");
       await loadConnections();
     } catch (err: unknown) {
       const message =
@@ -249,42 +235,6 @@ export default function Connections() {
   };
 
   // -------------------------------------------------------------------------
-  // Re-validate App config handler (Issue #4017)
-  //
-  // Refetches connections afterwards so the verification panel reflects the
-  // result the operator was just shown — the backend clears its caches, but the
-  // page holds its own copy of the last response.
-  // -------------------------------------------------------------------------
-
-  const handleRevalidateApp = async () => {
-    try {
-      const result = await revalidateGitHubAppConfig();
-      const drifted =
-        result.app_webhook_url_matches === false ||
-        result.app_permissions_match === false ||
-        result.app_events_match === false;
-      if (drifted) {
-        toast.error(result.message || "App configuration has drifted.");
-      } else if (!result.checked) {
-        // Not an error: unknown is not the same as broken.
-        toast.info(
-          result.message || "Could not read the App configuration from GitHub.",
-        );
-      } else {
-        toast.success(result.message || "App configuration matches.");
-      }
-      await loadConnections();
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Failed to re-validate App configuration";
-      toast.error(message);
-      throw err;
-    }
-  };
-
-  // -------------------------------------------------------------------------
   // Disconnect app handler (Issue #2596)
   // -------------------------------------------------------------------------
 
@@ -314,7 +264,9 @@ export default function Connections() {
 
   const handleSwitchTenant = async (tenantId: string) => {
     try {
-      await switchWorkspace(tenantId);
+      await switchTenant(tenantId);
+      toast.success("Switched workspace. Refreshing connections…");
+      await loadConnections();
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to switch workspace";
@@ -354,8 +306,10 @@ export default function Connections() {
   const handleSwitchBack = async () => {
     if (!switchBanner) return;
     try {
-      await switchWorkspace(switchBanner.switchedFrom);
+      await switchTenant(switchBanner.switchedFrom);
       setSwitchBanner(null);
+      toast.success("Switched back. Refreshing connections…");
+      await loadConnections();
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to switch workspace";
@@ -388,7 +342,7 @@ export default function Connections() {
         >
           <p className="text-sm font-medium text-green-800 dark:text-green-200">
             <strong>{switchBanner.installed}</strong> connected &mdash;
-            select this organization above to start working in it.
+            you&rsquo;re now working in this workspace.
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -467,8 +421,6 @@ export default function Connections() {
           onDisconnectApp={handleDisconnectApp}
           onSwitchTenant={handleSwitchTenant}
           onRegisterManual={isPlatformAdmin ? handleRegisterManual : undefined}
-          platformVerification={platformVerification}
-          onRevalidateApp={isPlatformAdmin ? handleRevalidateApp : undefined}
         />
 
         {/* Future integrations — placeholder tiles */}

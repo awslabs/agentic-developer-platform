@@ -35,23 +35,17 @@ class TestPrMarkerIssueFallback:
     def test_nonempty_body_without_marker_falls_back_to_issue_pointer(self):
         """THE BUG: agent's '## Summary' body (no marker) → inherit from issue pointer."""
         store = _store_with_issue_pointer()
-        result, trusted = _pr_marker_text_with_issue_fallback(
+        result = _pr_marker_text_with_issue_fallback(
             store, "aws-e/adp", "## Summary\nSome PR description", "agent/issue-1733"
         )
         assert "adp-correlation:corr-DEV" in result
         assert "adp-invocation:inv-DEV" in result
-        # Issue #4128: synthesized server-side from a server-written pointer, so
-        # it is unsigned by construction but carries the pointer's trust.
-        assert trusted is True
         store.read_pointer.assert_called_once_with("github:repo=aws-e/adp,issue=1733")
 
     def test_empty_body_falls_back(self):
         store = _store_with_issue_pointer()
-        result, trusted = _pr_marker_text_with_issue_fallback(
-            store, "aws-e/adp", "", "agent/issue-1733"
-        )
+        result = _pr_marker_text_with_issue_fallback(store, "aws-e/adp", "", "agent/issue-1733")
         assert "adp-correlation:corr-DEV" in result
-        assert trusted is True
 
     def test_body_with_valid_marker_used_as_is(self):
         """If the PR body already has a valid marker, use it (no fallback)."""
@@ -59,28 +53,22 @@ class TestPrMarkerIssueFallback:
         marked = (
             "<!-- adp-correlation:corr-PR adp-root-human:u adp-is-human-rooted:true -->\n## Summary"
         )
-        result, trusted = _pr_marker_text_with_issue_fallback(
-            store, "aws-e/adp", marked, "agent/issue-1733"
-        )
+        result = _pr_marker_text_with_issue_fallback(store, "aws-e/adp", marked, "agent/issue-1733")
         assert result == marked
-        # Issue #4128: came from the PR body — attacker-controllable, must be verified.
-        assert trusted is False
         store.read_pointer.assert_not_called()
 
     def test_non_agent_branch_no_fallback(self):
         store = _store_with_issue_pointer()
-        result, trusted = _pr_marker_text_with_issue_fallback(
+        result = _pr_marker_text_with_issue_fallback(
             store, "aws-e/adp", "## Summary", "feature/foo"
         )
         assert result == "## Summary"
-        assert trusted is False
         store.read_pointer.assert_not_called()
 
     def test_no_issue_pointer_returns_body(self):
         store = _store_with_issue_pointer()
         store.read_pointer.return_value = None
-        result, trusted = _pr_marker_text_with_issue_fallback(
+        result = _pr_marker_text_with_issue_fallback(
             store, "aws-e/adp", "## Summary", "agent/issue-1733"
         )
         assert result == "## Summary"
-        assert trusted is False

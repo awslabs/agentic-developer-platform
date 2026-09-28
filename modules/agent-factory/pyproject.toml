@@ -38,7 +38,6 @@ markers = [
     "github: github_actions classifier flow tests; skipped unless RUN_GITHUB_TESTS=yes",
     "integration: webhook ingress e2e tests requiring deployed stack",
     "gitlab: GitLab webhook round-trip e2e tests requiring GitLab instance",
-    "live_fleet: needs a real agent-worker pod to start; depends on shared fleet capacity (#5354)",
     "github_regression: GitHub webhook regression tests after GitLab additions",
 ]
 # Default: run only unit tests (skip live_only, workflow)

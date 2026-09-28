@@ -44,67 +44,6 @@ class TestUsageServiceLogRequest:
         assert log.cost_usd == Decimal("0.01")
 
     @pytest.mark.asyncio
-    async def test_log_request_uses_attributed_org(self, usage_service: UsageService, db_session: AsyncSession):
-        """Issue #4132: usage_logs rows carry the ATTRIBUTED tenant, not the authenticated org.
-
-        This is #747's purpose: a hosted run triggered by customer-tenant-123 must
-        appear in that customer's usage, not under __platform__.
-        """
-        context = TokenContext(
-            user_id="scaledjob-worker",
-            org_id="__platform__",
-            team_id="__agents__",
-            department_id="",
-            account_type="service",
-            is_admin=False,
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-            scope="internal",
-            attributed_org_id="customer-tenant-123",
-        )
-
-        await usage_service.log_request(
-            context=context,
-            model="claude-3-sonnet",
-            input_tokens=10,
-            output_tokens=20,
-            cost_usd=0.002,
-            latency_ms=50,
-            status_code=200,
-            request_id="req-attributed-4132",
-        )
-
-        result = await db_session.execute(select(UsageLog).where(UsageLog.request_id == "req-attributed-4132"))
-        log = result.scalar_one_or_none()
-
-        assert log is not None
-        assert log.org_id == "customer-tenant-123"
-        assert log.org_id != "__platform__"
-
-    @pytest.mark.asyncio
-    async def test_log_request_defaults_attribution_to_authenticated_org(
-        self, usage_service: UsageService, org_user_context: TokenContext, db_session: AsyncSession
-    ):
-        """Issue #4132: with no override, attribution equals the authenticated org."""
-        assert org_user_context.attributed_org_id == "org-001"
-
-        await usage_service.log_request(
-            context=org_user_context,
-            model="claude-3-sonnet",
-            input_tokens=10,
-            output_tokens=20,
-            cost_usd=0.002,
-            latency_ms=50,
-            status_code=200,
-            request_id="req-default-4132",
-        )
-
-        result = await db_session.execute(select(UsageLog).where(UsageLog.request_id == "req-default-4132"))
-        log = result.scalar_one_or_none()
-
-        assert log is not None
-        assert log.org_id == "org-001"
-
-    @pytest.mark.asyncio
     async def test_log_request_service_account(self, usage_service: UsageService, service_account_context: TokenContext, db_session: AsyncSession):
         """Test logging a request from a service account."""
         await usage_service.log_request(

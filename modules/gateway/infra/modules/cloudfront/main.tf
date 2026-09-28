@@ -1,10 +1,5 @@
 # Local values for CloudFront configuration
 locals {
-  # Rendered as a suffix so the directive keeps its existing value byte-for-byte
-  # when the variable is unset — no response-headers-policy update, and no
-  # CloudFront propagation, for deployments that do not set it.
-  additional_connect_src = length(var.additional_connect_src) > 0 ? " ${join(" ", var.additional_connect_src)}" : ""
-
   # Use PriceClass_100 (US/EU only) for dev/test, PriceClass_All for prod
   price_class = var.price_class != "" ? var.price_class : (
     var.environment == "prod" ? "PriceClass_All" : "PriceClass_100"
@@ -22,12 +17,7 @@ locals {
   # Determine which origin to use for API traffic
   # VPC Origin takes precedence when enabled and configured
   api_origin_enabled = var.enable_vpc_origin || var.alb_domain_name != ""
-
-  # The GitHub auth broker, reached through the gateway's REST API. Enabled only
-  # when the API Gateway origin domain is supplied.
-  broker_origin_id      = "${var.name_prefix}-broker-origin"
-  broker_origin_enabled = var.broker_origin_domain_name != ""
-  use_vpc_origin        = var.enable_vpc_origin && var.internal_alb_arn != ""
+  use_vpc_origin     = var.enable_vpc_origin && var.internal_alb_arn != ""
 
   # GitLab VPC Origin: enabled only when both DNS and ARN are provided
   gitlab_origin_enabled = var.gitlab_origin_dns != "" && var.gitlab_origin_arn != ""
@@ -90,13 +80,8 @@ resource "aws_cloudfront_response_headers_policy" "security_headers" {
     # pattern rather than a blanket wss: to keep the directive meaningful.
     # Region is hard-coded because this module is only used from the us-east-1
     # root stack today; if that changes, wire a variable through.
-    #
-    # additional_connect_src exists because putting the WS API behind a custom
-    # domain changes its origin, and `https:` does not cover `wss:` — so a
-    # deployment that does that must extend this directive or chat breaks with a
-    # console-only error.
     content_security_policy {
-      content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss://*.execute-api.us-east-1.amazonaws.com${local.additional_connect_src}; frame-ancestors 'none'"
+      content_security_policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss://*.execute-api.us-east-1.amazonaws.com; frame-ancestors 'none'"
       override                = true
     }
   }
@@ -146,27 +131,6 @@ resource "aws_cloudfront_function" "strip_api_prefix" {
       return request;
     }
   EOF
-}
-
-# CloudFront Function attached to the S3 default cache behavior ONLY.
-#
-# Rewrites extensionless URIs to /index.html so React Router deep links resolve
-# to the app shell. This replaces the distribution-wide `custom_error_response`
-# that used to turn any 403 into "200 + /index.html" — that rule could not be
-# scoped to an origin, so it also masked every authorization denial the API
-# origin returned (issue #4386). Doing the rewrite on viewer-request means S3 is
-# only ever asked for objects that exist, so the 403 never occurs and no error
-# rewrite is needed. Full rationale is in the function source.
-#
-# Deliberately NOT attached to /api/*, /.well-known/*, or /gitlab/* — those
-# behaviors must return their origin's real status codes.
-resource "aws_cloudfront_function" "spa_fallback" {
-  name    = "${var.name_prefix}-spa-fallback"
-  runtime = "cloudfront-js-2.0"
-  comment = "Rewrites extensionless URIs to /index.html for SPA routing (S3 behavior only)"
-  publish = true
-
-  code = file("${path.module}/functions/spa-fallback.js")
 }
 
 # =============================================================================
@@ -235,14 +199,8 @@ resource "aws_cloudfront_vpc_origin" "gitlab" {
 
 # CloudFront Distribution
 resource "aws_cloudfront_distribution" "frontend" {
-  lifecycle {
-    precondition {
-      condition     = !var.enable_task_api_route || local.broker_origin_enabled
-      error_message = "Task routing requires the published REST API origin and stage."
-    }
-  }
   enabled             = true
-  is_ipv6_enabled     = var.enable_ipv6
+  is_ipv6_enabled     = true
   default_root_object = "index.html"
   comment             = "${var.name_prefix} frontend distribution"
   price_class         = local.price_class
@@ -297,29 +255,6 @@ resource "aws_cloudfront_distribution" "frontend" {
     }
   }
 
-  # GitHub auth broker origin — the gateway's REST API.
-  #
-  # A custom origin, not a VPC origin: API Gateway is a public regional endpoint,
-  # reached over the internet from CloudFront's edge. origin_path carries the
-  # stage, so a viewer request for /auth/github/start arrives at the API as
-  # /<stage>/auth/github/start and matches its /auth/github/{proxy+} route
-  # without any path rewriting.
-  dynamic "origin" {
-    for_each = local.broker_origin_enabled ? [1] : []
-    content {
-      domain_name = var.broker_origin_domain_name
-      origin_id   = local.broker_origin_id
-      origin_path = var.broker_origin_path
-
-      custom_origin_config {
-        http_port              = 80
-        https_port             = 443
-        origin_protocol_policy = "https-only"
-        origin_ssl_protocols   = ["TLSv1.2"]
-      }
-    }
-  }
-
   # GitLab Origin (internal ALB via VPC Origin)
   # Created only when gitlab_origin_dns and gitlab_origin_arn are both set.
   dynamic "origin" {
@@ -333,28 +268,6 @@ resource "aws_cloudfront_distribution" "frontend" {
         origin_read_timeout      = 60
         origin_keepalive_timeout = 60
       }
-    }
-  }
-
-  # Only the collection endpoint uses canonical Task ingress. Exact matching
-  # leaves /api/v1/tasks/<id>/events on the ALB streaming path below.
-  dynamic "ordered_cache_behavior" {
-    for_each = var.enable_task_api_route && local.broker_origin_enabled ? [1] : []
-    content {
-      path_pattern     = "/api/v1/tasks"
-      allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
-      cached_methods   = ["GET", "HEAD"]
-      target_origin_id = local.broker_origin_id
-
-      viewer_protocol_policy   = "redirect-to-https"
-      cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
-      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
-
-      function_association {
-        event_type   = "viewer-request"
-        function_arn = aws_cloudfront_function.strip_api_prefix.arn
-      }
-      compress = true
     }
   }
 
@@ -379,37 +292,6 @@ resource "aws_cloudfront_distribution" "frontend" {
         event_type   = "viewer-request"
         function_arn = aws_cloudfront_function.strip_api_prefix.arn
       }
-
-      compress = true
-    }
-  }
-
-  # GitHub auth broker behaviour — proxy /auth/github/* to the REST API.
-  #
-  # Putting the OAuth start and callback on the same origin as the dashboard
-  # means the whole login flow stays on one hostname, and no browser needs to
-  # reach the API Gateway hostname directly.
-  #
-  # NOTE the origin request policy: AllViewerExceptHostHeader, not AllViewer.
-  # API Gateway rejects a request whose Host header is not its own, so
-  # forwarding the viewer's Host — which AllViewer does, and which every other
-  # behaviour here wants — makes this return 403 from the API's edge with
-  # nothing in the broker's logs. This is the single detail that makes an
-  # API Gateway origin behind CloudFront work.
-  #
-  # Caching is disabled: these are OAuth redirects carrying single-use state.
-  dynamic "ordered_cache_behavior" {
-    for_each = local.broker_origin_enabled && var.enable_broker_cloudfront_route ? [1] : []
-    content {
-      path_pattern     = "/auth/github/*"
-      allowed_methods  = ["GET", "HEAD", "OPTIONS"]
-      cached_methods   = ["GET", "HEAD"]
-      target_origin_id = local.broker_origin_id
-
-      viewer_protocol_policy = "redirect-to-https"
-
-      cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
-      origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
 
       compress = true
     }
@@ -481,29 +363,20 @@ resource "aws_cloudfront_distribution" "frontend" {
     # Use response headers policy for security headers
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security_headers.id
 
-    # SPA deep-link routing: rewrite extensionless URIs to /index.html before the
-    # S3 fetch. Scoped to this behavior so API status codes are never touched.
-    function_association {
-      event_type   = "viewer-request"
-      function_arn = aws_cloudfront_function.spa_fallback.arn
-    }
-
     # Compress automatically
     compress = true
   }
 
-  # NO `custom_error_response` BLOCK — this is deliberate. Do not add one.
-  #
-  # `custom_error_response` is distribution-wide: it cannot be scoped to a cache
-  # behavior or an origin. A `403 → 200 /index.html` rule here (removed in issue
-  # #4386) rewrote authorization denials from the API origin into successful-looking
-  # SPA HTML, so clients, acceptance tests, and security monitors could not tell a
-  # refused request from an allowed one. The sibling `404` rule was removed earlier
-  # for the same reason (semantic API 404s were being turned into HTML).
-  #
-  # SPA routing is handled instead by `aws_cloudfront_function.spa_fallback` on the
-  # S3 default behavior above. `tests/infra/test_cloudfront_spa_fallback.py` guards
-  # both halves of this arrangement.
+  # Custom error response for SPA routing (403 → /index.html with 200)
+  # NOTE: Only 403 is needed — S3 with OAC returns 403 (Access Denied) for
+  # non-existent objects, not 404. Removing the 404 rule ensures API endpoints
+  # can return semantic 404 responses without CloudFront rewriting them to HTML.
+  custom_error_response {
+    error_caching_min_ttl = 10
+    error_code            = 403
+    response_code         = 200
+    response_page_path    = "/index.html"
+  }
 
   # Viewer certificate (custom domain or CloudFront default)
   viewer_certificate {
@@ -556,10 +429,4 @@ data "aws_cloudfront_cache_policy" "caching_disabled" {
 # Data source for AWS managed AllViewer origin request policy (forwards all headers/cookies/query strings)
 data "aws_cloudfront_origin_request_policy" "all_viewer" {
   name = "Managed-AllViewer"
-}
-
-# Forwards everything except Host. Required for the API Gateway origin: API
-# Gateway 403s a request carrying someone else's Host header.
-data "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
-  name = "Managed-AllViewerExceptHostHeader"
 }

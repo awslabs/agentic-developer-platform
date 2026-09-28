@@ -2,27 +2,11 @@
  * Formatting utilities for the Admin UI
  */
 
-// Re-exported from the cost module so there is ONE no-data convention, not a
-// second copy of `'—'` that can drift from the first (issue #4207).
-import { NO_DATA_INDICATOR } from './cost';
-
-export { NO_DATA_INDICATOR };
-
 /**
- * Format a number as currency (USD).
- *
- * Issue #4207: absent values return `NO_DATA_INDICATOR`, **not** `"$0.00"`. This
- * function used to coerce `null`/`undefined`/`NaN` to `0`, which made "we don't
- * know what this cost" render identically to "this was free" — a fabricated zero
- * that finance and ops read as a real one.
- *
- * Callers that already guard for null (`SpendTodayTile`, `WeekSummary`) are
- * unaffected; callers that did not now degrade to `'—'` instead of inventing a
- * figure. For agent-run costs prefer `utils/cost.ts`, which carries the
- * three-valued status and renders sub-cent amounts at full precision.
+ * Format a number as currency (USD)
  */
 export function formatCurrency(value: number | null | undefined, decimals: number = 2): string {
-  if (value == null || Number.isNaN(value)) return NO_DATA_INDICATOR;
+  if (value == null || Number.isNaN(value)) value = 0;
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',

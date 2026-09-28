@@ -15,7 +15,6 @@ Environment Variables:
     AWS_REGION: AWS region (default: us-east-1)
 """
 
-import hashlib
 import json
 import logging
 import os
@@ -32,18 +31,7 @@ import boto3
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 
 from db import get_db_connection
-from pricing_fallback import resolve_model_id
-from pricing_legacy_reader import get_legacy_rates
-from pricing_settlement import (
-    InvalidPricingDecisionError,
-    MissingUsageError,
-    compatibility_snapshot,
-    settle_chat_log,
-)
-from pricing_v2_reader import cache_failure_age_seconds, get_rate_state
-from root_principal import unqualify_root_principal_id
-
-from pricing_policy import is_openai_model
+from pricing_fallback import MODEL_PRICING, calculate_cost, resolve_model_id
 
 # Configure logging
 logger = logging.getLogger()
@@ -52,45 +40,10 @@ logger.setLevel(logging.INFO)
 # S3 client
 s3_client = boto3.client("s3")
 
-# Issue #4969: the former module-level pricing cache and its 1-hour TTL are gone.
-# Caching now lives in `pricing_v2_reader`/`pricing_policy.storage`, which has the
-# retention rule this one lacked: a failed read keeps the last known good
-# generation rather than reverting to bundled rates, because the bundle is by
-# definition older and reverting would silently reprice live traffic.
-
-# Issue #4300: the settled-ledger entity_type for the human who initiated an
-# agent chain.
-#
-# This MUST stay equal to `EntityType.ROOT_USER.value` in
-# src/shared/schemas/budget.py — this Lambda is a separate deploy artifact and
-# cannot import gateway `src`, so the agreement is pinned by a test rather than
-# by the type system (see tests/lambda/test_budget_usage_tracker.py::T15).
-#
-# Why a named constant and not an inline literal like the ("user", ...) entry
-# below: those hand-written literals are exactly how the org line drifted from
-# the reader's "org" (fixed in #4322, see `_ORGANIZATION_ENTITY_TYPE`), where a
-# writer/reader mismatch means enforcement silently reads an empty ledger and
-# every cap passes. Do not inline this string.
-_ROOT_USER_ENTITY_TYPE = "root_user"
-
-# Issue #4322: the settled-ledger entity_type for an organization.
-#
-# This MUST stay equal to `EntityType.ORGANIZATION.value` in
-# src/shared/schemas/budget.py — same separate-deploy-artifact reasoning as
-# `_ROOT_USER_ENTITY_TYPE` above, pinned by the same test.
-#
-# It is "org", NOT "organization". This Lambda wrote the hand-written literal
-# `"organization"` from #234 until #4322, while enforcement has always queried
-# `EntityType.ORGANIZATION.value` == "org" — so `_check_entity_budget` read the
-# org's accumulated spend as 0 on every request and the org cap never enforced
-# against the persisted period total. Nothing raised and nothing logged; the cap
-# was simply inert. Migration 032 merges the historical `"organization"` rows
-# into their `"org"` counterparts.
-#
-# Do not "tidy" this to the longer word to match `src/ratelimit/models.py`'s
-# EntityType.ORGANIZATION — that is a DIFFERENT enum keying rate_limit_configs,
-# and the two tables genuinely disagree on this string.
-_ORGANIZATION_ENTITY_TYPE = "org"
+# In-memory pricing cache with TTL
+_pricing_cache: dict[str, dict[str, Any]] = {}
+_pricing_cache_time: float = 0
+_PRICING_CACHE_TTL = 3600  # 1 hour
 
 
 def get_period_starts(timestamp: datetime) -> dict[str, datetime]:
@@ -127,57 +80,71 @@ def get_period_starts(timestamp: datetime) -> dict[str, datetime]:
     }
 
 
-def emit_pricing_metrics(reasons=()):
-    age = cache_failure_age_seconds()
-    values = {"PricingCacheAgeSeconds": age}
-    if age > 0:
-        values["PricingCacheRefreshFailure"] = 1
-    for reason, metric in (
-        ("unknown_model", "UnknownModelPricing"),
-        ("unsupported_variant", "PricingUnknownVariant"),
-        ("stale_rate_source", "PricingStaleRate"),
-    ):
-        if reason in reasons:
-            values[metric] = 1
-    print(
-        json.dumps(
-            {
-                "_aws": {
-                    "Timestamp": int(time.time() * 1000),
-                    "CloudWatchMetrics": [
-                        {"Namespace": "ADP/Gateway", "Dimensions": [[]], "Metrics": [{"Name": key, "Unit": "None"} for key in values]}
-                    ],
-                },
-                **values,
-            }
-        )
-    )
-
-
-def get_rate_source(conn):
+def load_pricing_from_db(conn) -> dict[str, dict[str, Decimal]]:
     """
-    Get the rate rows to settle with, from the active V2 pricing generation.
+    Load pricing from the model_pricing database table.
 
-    Issue #4969: replaces the former `model_pricing` flat-table load. That table
-    is keyed on model_id alone, so it could not express geography, service tier,
-    context tier or cache rates — a GovCloud long-context Priority request
-    settled at the same rate as an in-region short-context Flex one. Its rows
-    also included `source='fallback'` OpenAI prices that were simply wrong (up to
-    5x for Luna). Reading V2 instead is what stops those rows affecting current
-    settlement.
-
-    The reader keeps its own process-wide cache with the retention rules in
-    `pricing_policy.storage`, so the 1-hour TTL this function used to implement
-    is gone from here on purpose: a read failure now retains the last known good
-    generation instead of silently reverting to bundled rates.
+    Args:
+        conn: Database connection
 
     Returns:
-        A `RateSourceState`: rows, provenance and any estimate reasons the way
-        those rows were obtained implies.
+        Dict mapping model_id to pricing info
     """
-    state = get_rate_state(conn)
-    emit_pricing_metrics(state.reasons)
-    return state
+    pricing = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT model_id, input_price_per_1k_tokens, output_price_per_1k_tokens
+                FROM model_pricing
+                """
+            )
+            for row in cur.fetchall():
+                model_id, input_price, output_price = row
+                pricing[model_id] = {
+                    "input": Decimal(str(input_price)),
+                    "output": Decimal(str(output_price)),
+                }
+        logger.info(f"Loaded {len(pricing)} models from model_pricing table")
+    except Exception as e:
+        logger.warning(f"Failed to load pricing from database: {e}")
+
+    return pricing
+
+
+def get_pricing_table(conn) -> dict[str, dict[str, Any]]:
+    """
+    Get pricing table with caching.
+
+    Tries to load from database first, falls back to hardcoded pricing.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        Dict mapping model_id to pricing info
+    """
+    global _pricing_cache, _pricing_cache_time
+
+    now = time.monotonic()
+
+    # Check cache TTL
+    if _pricing_cache and (now - _pricing_cache_time) < _PRICING_CACHE_TTL:
+        return _pricing_cache
+
+    # Try to load from database
+    db_pricing = load_pricing_from_db(conn)
+
+    if db_pricing:
+        _pricing_cache = db_pricing
+        _pricing_cache_time = now
+        return db_pricing
+
+    # Fall back to hardcoded pricing
+    logger.info("Using fallback hardcoded pricing table")
+    _pricing_cache = MODEL_PRICING
+    _pricing_cache_time = now
+    return MODEL_PRICING
 
 
 def parse_chat_log(chat_log: dict[str, Any]) -> dict[str, Any] | None:
@@ -233,13 +200,6 @@ def parse_chat_log(chat_log: dict[str, Any]) -> dict[str, Any] | None:
         "org_id": chat_log["org_id"],
         "user_id": chat_log["user_id"],
         "team_id": chat_log.get("team_id"),
-        # Issue #4300: the initiating human. Deliberately `.get()` and
-        # deliberately NOT in `required_fields` above — it is legitimately absent
-        # on every non-human-rooted request and on every log written before #4300
-        # shipped. Requiring it would make this Lambda drop those logs entirely
-        # and stop recording ALL budget usage for them: a missing attribution
-        # field would become a total metering outage. Same handling as `agent_id`.
-        "root_human_id": chat_log.get("root_human_id"),
         "model": chat_log["model"],
         "input_tokens": int(input_tokens),
         "output_tokens": int(output_tokens),
@@ -274,9 +234,7 @@ def upsert_budget_usage(
     Args:
         conn: Database connection
         org_id: Organization ID
-        entity_type: Entity type (user/team/org/agent/root_user) — must be a
-            value of `EntityType` in src/shared/schemas/budget.py, which is what
-            enforcement queries this table with (#4322)
+        entity_type: Entity type (user/team/organization)
         entity_id: Entity ID
         period_start: Start of the period
         period_type: Period type (daily/weekly/monthly)
@@ -306,15 +264,13 @@ def upsert_budget_usage(
                 entity_id,
                 period_start.date(),
                 period_type,
-                cost,
+                float(cost),
                 tokens,
             ),
         )
 
 
-def bridge_cost_to_usage_logs(
-    conn, request_id: str, cost: Decimal, chat_log_s3_key: str | None = None, *, org_id: str, user_id: str, atomic: bool = False
-) -> bool:
+def bridge_cost_to_usage_logs(conn, request_id: str, cost: Decimal, chat_log_s3_key: str | None = None) -> bool:
     """
     Bridge calculated cost back to the usage_logs table.
 
@@ -342,10 +298,9 @@ def bridge_cost_to_usage_logs(
                 UPDATE usage_logs
                 SET cost_usd = CASE WHEN cost_usd = 0 THEN %s ELSE cost_usd END,
                     chat_log_s3_key = COALESCE(chat_log_s3_key, %s)
-                WHERE request_id = %s AND org_id = %s AND user_id = %s
-                  AND (cost_usd = 0 OR chat_log_s3_key IS NULL)
+                WHERE request_id = %s AND (cost_usd = 0 OR chat_log_s3_key IS NULL)
                 """,
-                (cost, chat_log_s3_key, request_id, org_id, user_id),
+                (float(cost), chat_log_s3_key, request_id),
             )
             updated = cur.rowcount > 0
             if updated:
@@ -358,13 +313,11 @@ def bridge_cost_to_usage_logs(
         # The failed statement aborted the transaction — roll back so
         # subsequent statements on this connection don't fail with
         # InFailedSqlTransaction.
-        if atomic:
-            raise
         conn.rollback()
         return False
 
 
-def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_key: str | None = None):
+def process_chat_log(conn, chat_log: dict[str, Any], pricing_table: dict[str, Any], chat_log_s3_key: str | None = None):
     """
     Process a single chat log and record usage.
 
@@ -380,16 +333,13 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
     Args:
         conn: Database connection
         chat_log: Parsed chat log dictionary
-        rate_source: `RateSourceState` from `get_rate_source` — the rows of the
-            active V2 generation, their provenance, and the estimate reasons the
-            way they were obtained implies (issue #4969)
+        pricing_table: Model pricing table
         chat_log_s3_key: Optional S3 object key for the chat log payload
     """
-    if type(chat_log.get("settlement_version")) is not int or chat_log["settlement_version"] != 1:
-        raise ValueError("Legacy transcript requires explicit settlement reconciliation")
     parsed = parse_chat_log(chat_log)
     if not parsed:
-        raise ValueError("Invalid chat log cannot be settled")
+        logger.warning("Skipping invalid chat log")
+        return
 
     org_id = parsed["org_id"]
     user_id = parsed["user_id"]
@@ -400,54 +350,27 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
     # Issue #1486: Extract prompt-cache token counts
     cache_read_input_tokens = parsed.get("cache_read_input_tokens", 0)
     cache_creation_input_tokens = parsed.get("cache_creation_input_tokens", 0)
-    timestamp = datetime.fromisoformat(chat_log["timestamp"].replace("Z", "+00:00"))
-    if timestamp.tzinfo is None:
-        raise ValueError("Settlement timestamp requires an explicit timezone")
-    timestamp = timestamp.astimezone(UTC)
+    timestamp = parsed["timestamp"]
     request_id = parsed.get("request_id")
 
     # Issue #249: Agent-specific fields
     account_type = parsed.get("account_type")
-    agent_id = parsed.get("agent_id") or (user_id if account_type == "service" else None)
-
-    # Issue #4300: the human who initiated this agent chain, if any.
-    root_human_id = parsed.get("root_human_id")
+    agent_id = parsed.get("agent_id")
 
     # Resolve cross-region model ID
     resolved_model_id = resolve_model_id(model_id)
 
-    # Issue #4969: settle from the durable decision the gateway attached, or —
-    # for a legacy OpenAI event that carries none — from the pinned bundle,
-    # marked estimated. Never recompute a present decision: it was priced against
-    # one immutable generation at response time, and re-pricing it here would make
-    # the amount depend on when this S3 event happened to be delivered.
-    #
-    # A malformed decision raises. It must NOT degrade to a re-price, which would
-    # silently defeat the reproducibility the decision exists to provide. It
-    # propagates to the per-record handler in `lambda_handler`, which counts the
-    # record as an error and leaves it for investigation without poisoning the
-    # other records in the batch.
-    settlement = settle_chat_log(
-        parsed,
-        chat_log=chat_log,
-        rows=rate_source.rows,
-        # The COMPATIBILITY snapshot, not the current one: it supplies the curated
-        # non-OpenAI policy and the context threshold used to price a legacy event,
-        # and pinning it means re-settling the same event after a new snapshot
-        # ships cannot change its amount.
-        snapshot=compatibility_snapshot(),
-        generation_id=rate_source.generation_id,
-        pointer_revision=rate_source.pointer_revision,
-        source_reasons=rate_source.reasons,
-        legacy_rates=get_legacy_rates(conn) if chat_log.get("pricing_decision") is None and not is_openai_model(model_id) else None,
+    # Calculate cost (Issue #1486: includes cache token costs)
+    cost = calculate_cost(
+        resolved_model_id,
+        input_tokens,
+        output_tokens,
+        pricing_table,
+        cache_read_input_tokens=cache_read_input_tokens,
+        cache_creation_input_tokens=cache_creation_input_tokens,
     )
-    emit_pricing_metrics(settlement.reasons)
-    logger.info(
-        "Pricing settlement: request=%s reused=%s estimated=%s reasons=%s", request_id, settlement.reused, settlement.estimated, settlement.reasons
-    )
-    cost = settlement.cost
     # Issue #1486: total_tokens includes cache tokens for accurate consumption tracking
-    total_tokens = settlement.total_tokens
+    total_tokens = input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens
 
     logger.info(
         f"Processing: model={model_id}, resolved={resolved_model_id}, "
@@ -456,100 +379,32 @@ def process_chat_log(conn, chat_log: dict[str, Any], rate_source, chat_log_s3_ke
         f"cost=${cost}"
     )
 
+    # Issue #1074: Bridge cost to usage_logs for dashboard visibility
+    # Issue #1616: Also bridge the S3 key for per-run traceability
+    if request_id and (cost > 0 or chat_log_s3_key):
+        bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key)
+        # Commit the bridge on its own: a later budget_usage failure must not
+        # roll back the per-run cost (the int32 overflow incident zeroed
+        # Agent Activity costs for days this way).
+        conn.commit()
+
     # Get period starts
     periods = get_period_starts(timestamp)
 
     # Record usage for each entity level and period type
     entities = [
         ("user", user_id),
-        # Issue #4322: the constant, never the literal — see its definition.
-        (_ORGANIZATION_ENTITY_TYPE, org_id),
+        ("organization", org_id),
     ]
 
     # Add team if present
     if team_id:
         entities.append(("team", team_id))
 
-    if chat_log.get("department_id"):
-        entities.append(("department", chat_log["department_id"]))
-
     # Issue #249: Add agent entity if this is an IAM-authenticated agent request
     if account_type == "service" and agent_id:
         entities.append(("agent", agent_id))
         logger.info(f"Including agent entity: {agent_id}")
-
-    # Issue #4300: attribute the spend to the human who set this chain in motion,
-    # so a person's budget is the envelope for everything they trigger and not
-    # just their own first hop.
-    #
-    # Gated on presence: an empty/absent root_human_id must add NO row. A row
-    # keyed on "" would collapse every non-human-rooted request in the tenant
-    # into one shared bogus ledger line.
-    #
-    # This is a THIRD row, not a second debit on the org's — each
-    # (entity_type, entity_id) is a distinct row under the table's
-    # UniqueConstraint, so the org line still receives exactly `cost`.
-    #
-    # Issue #4391: ALSO gated on `!= user_id`, mirroring the reader's guard at
-    # `src/budget/enforcement_service.py:437`. When the root principal IS the
-    # caller, this cost is already on the ("user", user_id) row above, and
-    # `root_user` is a distinct row under `uq_budget_usage` — so writing both
-    # settles one dollar twice, x3 period types. Enforcement has always skipped
-    # the entity in that case, so before this gate existed the tracker was
-    # writing a line no cap ever read and only the spend dashboard summed: a
-    # pure write/read asymmetry (same family as #4322's org-line mismatch),
-    # surfacing as over-reported spend. The two skip conditions are now
-    # co-extensive, which is why this cannot move any cap either way.
-    #
-    # Fires for the two cases enforcement documents at `:420-429`: the
-    # service-rooted run (`user_id="k"`, `root_human_id="service:k"`) and the
-    # direct human caller (`user_id == root_human_id`, both bare). It is a
-    # no-op for the hosted agent run #4300 exists for — there `user_id` is the
-    # worker identity and `root_human_id` a canonical `users.id`, which can
-    # never be equal — so human attribution survives untouched.
-    #
-    # Issue #4344: the comparison UNQUALIFIES; the entity id stays QUALIFIED.
-    # `root_human_id` carries the `service:` prefix for a service root while
-    # `user_id` never does, so comparing them verbatim would report "different"
-    # for exactly the service-rooted run this is meant to catch. The key written
-    # to the ledger must stay the qualified one — that is the key enforcement
-    # reads.
-    #
-    # Presence gate retained deliberately: see above, a "" root must add no row.
-    if root_human_id and unqualify_root_principal_id(root_human_id) != user_id:
-        entities.append((_ROOT_USER_ENTITY_TYPE, root_human_id))
-        logger.info(f"Including root-human entity: {root_human_id}")
-
-    entities = sorted(set(entities))
-    day = timestamp.astimezone(UTC).date()
-    allocation_key = hashlib.sha256(json.dumps([day.isoformat(), entities], separators=(",", ":")).encode()).hexdigest()
-    if not request_id:
-        raise ValueError("Legacy log has no settlement identity; explicit reconciliation required")
-    # Claim and ALL additive debits share the caller's transaction. A failed fanout
-    # rolls back the claim, so redelivery can finish without losing/doubling spend.
-    with conn.cursor() as cur:
-        cur.execute(
-            """INSERT INTO budget_settlement_receipts
-            (org_id, request_id, user_id, cost_usd, total_tokens, allocation_key)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (org_id, request_id) DO NOTHING RETURNING request_id""",
-            (org_id, request_id, user_id, cost, total_tokens, allocation_key),
-        )
-        if cur.fetchone() is None:
-            cur.execute(
-                """SELECT user_id, cost_usd, total_tokens, allocation_key FROM budget_settlement_receipts
-                WHERE org_id = %s AND request_id = %s""",
-                (org_id, request_id),
-            )
-            existing = cur.fetchone()
-            if existing != (user_id, cost, total_tokens, allocation_key):
-                raise ValueError("Conflicting settlement replay")
-            if cost > 0 or chat_log_s3_key:
-                bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key, org_id=org_id, user_id=user_id, atomic=True)
-            return
-
-    if cost > 0 or chat_log_s3_key:
-        bridge_cost_to_usage_logs(conn, request_id, cost, chat_log_s3_key=chat_log_s3_key, org_id=org_id, user_id=user_id, atomic=True)
 
     for entity_type, entity_id in entities:
         for period_type, period_start in periods.items():
@@ -588,11 +443,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     try:
         with get_db_connection() as conn:
-            # Issue #4969: read the active V2 generation once per invocation. The
-            # reader caches across invocations in this container and retains the
-            # last known good generation through a read failure, so this is not the
-            # per-record cost it appears to be.
-            rate_source = get_rate_source(conn)
+            # Load pricing table (cached for 1 hour)
+            pricing_table = get_pricing_table(conn)
 
             # Process each S3 record
             for record in event.get("Records", []):
@@ -607,9 +459,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         error_count += 1
                         continue
 
-                    from urllib.parse import unquote_plus
-
-                    key = unquote_plus(key)
                     # Skip non-JSON files
                     if not key.endswith(".json"):
                         logger.info(f"Skipping non-JSON file: {key}")
@@ -617,19 +466,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
                     logger.info(f"Processing s3://{bucket}/{key}")
 
-                    version_id = s3_info.get("object", {}).get("versionId")
-                    # Versioned notifications must read exactly their own object.
-                    response = s3_client.get_object(Bucket=bucket, Key=key, **({"VersionId": version_id} if version_id else {}))
+                    # Read chat log from S3
+                    response = s3_client.get_object(Bucket=bucket, Key=key)
                     body = response["Body"].read().decode("utf-8")
                     chat_log = json.loads(body)
-                    expected_prefix = f"{chat_log.get('org_id')}/{chat_log.get('user_id') or 'anonymous'}/"
-                    if not key.startswith(expected_prefix):
-                        raise ValueError("Transcript key does not match settlement owner")
-                    if chat_log.get("request_id") and key.rsplit("/", 1)[-1] != f"{chat_log['request_id']}.json":
-                        raise ValueError("Transcript key does not match settlement request")
 
                     # Process the chat log (issue #1616: pass S3 key for traceability)
-                    process_chat_log(conn, chat_log, rate_source, chat_log_s3_key=key)
+                    process_chat_log(conn, chat_log, pricing_table, chat_log_s3_key=key)
                     # Per-record commit: one bad record must not poison the
                     # shared connection or roll back other records' writes.
                     conn.commit()
@@ -638,25 +481,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 except json.JSONDecodeError as e:
                     logger.error(f"Invalid JSON in {key}: {e}")
                     error_count += 1
-                except InvalidPricingDecisionError as e:
-                    # Issue #4969: a decision was present and failed validation.
-                    # Logged distinctly because the remedy is different from any
-                    # other record error: the amount is NOT recoverable by retry
-                    # (a retry validates the same bad payload), and it means either
-                    # a gateway bug or a tampered settlement event. Never fall back
-                    # to re-pricing the request — that would silently defeat the
-                    # durable decision and bill an amount nobody quoted.
-                    logger.error(f"Invalid pricing decision in {key}, record not settled: {e}", exc_info=True)
-                    conn.rollback()
-                    error_count += 1
-                except MissingUsageError as e:
-                    # Issue #4968 preserved: a log with no usable token counts is
-                    # not settled and not counted as zero. A zero-cost row would
-                    # look like a free request and permanently under-report that
-                    # tenant's spend, so it is surfaced as an error instead.
-                    logger.error(f"No usable token counts in {key}, record not settled: {e}")
-                    conn.rollback()
-                    error_count += 1
                 except Exception as e:
                     logger.error(f"Error processing record: {e}", exc_info=True)
                     conn.rollback()
@@ -664,12 +488,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Database connection error: {e}", exc_info=True)
-        raise
-
-    if error_count:
-        # S3 invokes Lambda asynchronously: returning HTTP 500 still acknowledges
-        # the event. Raise so failed records retry; successful receipts deduplicate.
-        raise RuntimeError(f"{error_count} settlement records failed; {processed_count} committed")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)}),
+        }
 
     result = {
         "statusCode": 200,

@@ -24,7 +24,6 @@ import shutil
 import sys
 
 from adp_cred.client import _check_enabled, _do_request, _get_config
-from adp_trigger.transport_identity import preserve_worker_identity
 
 
 def cmd_assume(args: list[str]) -> None:
@@ -104,7 +103,6 @@ def cmd_assume(args: list[str]) -> None:
     if exec_args is not None:
         # Build a scoped env with assumed-role creds; remove IRSA vars.
         env = os.environ.copy()
-        preserve_worker_identity(env)
 
         # Inject assumed-role credentials (boto3 chain priority #2 — env vars).
         env["AWS_ACCESS_KEY_ID"] = result["access_key_id"]

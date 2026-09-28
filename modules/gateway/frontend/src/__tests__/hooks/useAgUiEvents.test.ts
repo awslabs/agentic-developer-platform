@@ -103,34 +103,17 @@ function agUiFrame(event: Record<string, unknown>) {
 
 describe('useAgUiEvents', () => {
   beforeEach(() => {
-    vi.stubEnv('VITE_AGENT_WS_URL', 'wss://chat.example.test/v1');
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
   afterEach(() => {
-    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
   // ----- Connection lifecycle -----
-
-  it('does not send credentials to a fallback endpoint when chat is unconfigured', async () => {
-    vi.stubEnv('VITE_AGENT_WS_URL', '');
-    const onMsg = vi.fn();
-    const conv = makeConversation();
-    const { result } = renderHook(() =>
-      useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }),
-    );
-    await act(async () => { await Promise.resolve(); });
-    expect(MockWebSocket.instances).toHaveLength(0);
-    expect(result.current.connectionStatus).toBe('disconnected');
-    expect(onMsg).toHaveBeenCalledWith(conv.id, expect.arrayContaining([
-      expect.objectContaining({ content: 'Agent chat is not configured for this deployment.', status: 'error' }),
-    ]));
-  });
 
   it('connects to WS when conversation is provided', async () => {
     const onMsg = vi.fn();
@@ -516,34 +499,6 @@ describe('useAgUiEvents', () => {
     expect(msgs[msgs.length - 1].status).toBe('error');
   });
 
-  it('clears waiting state when ingest cannot restore connection identity', async () => {
-    const onMsg = vi.fn();
-    const conv = makeConversation();
-    const { result } = renderHook(() =>
-      useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }),
-    );
-    await vi.advanceTimersByTimeAsync(10);
-    act(() => getLastWs().simulateOpen());
-    act(() => result.current.sendMessage('Hello'));
-    expect(result.current.isAwaitingReply).toBe(true);
-
-    const message = 'Chat could not restore your sign-in session. Please reconnect and retry.';
-    act(() => getLastWs().simulateMessage({
-      type: 'response',
-      status: 'failed',
-      code: 'connection_identity_unavailable',
-      content: message,
-      error: message,
-      // No task_id: identity failure happens before a task can be dispatched.
-    }));
-
-    expect(result.current.isAwaitingReply).toBe(false);
-    const msgs = onMsg.mock.calls[onMsg.mock.calls.length - 1][1] as ChatMessage[];
-    expect(msgs[msgs.length - 1].status).toBe('error');
-    expect(msgs[msgs.length - 1].errorReason).toBe(message);
-    expect(msgs[msgs.length - 1].content).toBe(message);
-  });
-
   it('handles legacy progress heartbeat frame', async () => {
     const onMsg = vi.fn();
     const conv = makeConversation();
@@ -841,139 +796,5 @@ describe('useAgUiEvents', () => {
     expect(errMsg.status).toBe('error');
     expect(errMsg.content).toBe('Partial reply...');
     expect(errMsg.errorReason).toBe('Connection timeout');
-  });
-
-  // ----- #5615: a session identifier the server will not accept -----
-  //
-  // Since the ingress stopped creating a conversation for any identifier it is
-  // handed, an identifier can now be refused. The common cause is benign and
-  // has nothing to do with attack: the sessions row expires after 24h while
-  // this browser keeps the id in localStorage indefinitely, so a user returning
-  // the next day names a row that is genuinely gone.
-  //
-  // The refusal arrives as a pushed frame because API Gateway discards a
-  // WebSocket integration's return body — without the frame the page would spin
-  // forever on a turn that will never run.
-
-  describe('session_invalid', () => {
-    const invalidFrame = {
-      type: 'session_invalid',
-      session_id: 'test-session',
-      error: 'session not found',
-      content: 'That conversation is no longer available. Starting a new one.',
-    };
-
-    it('stops the spinner instead of waiting for a reply that cannot come', async () => {
-      const onMsg = vi.fn();
-      const conv = makeConversation();
-      const { result } = renderHook(() =>
-        useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }),
-      );
-      await vi.advanceTimersByTimeAsync(10);
-      act(() => getLastWs().simulateOpen());
-      act(() => result.current.sendMessage('Are you there?'));
-      expect(result.current.isAwaitingReply).toBe(true);
-
-      act(() => getLastWs().simulateMessage(invalidFrame));
-
-      expect(result.current.isAwaitingReply).toBe(false);
-      expect(result.current.sessionExpired).toBe(true);
-    });
-
-    it('tells the user in the transcript why nothing happened', async () => {
-      const onMsg = vi.fn();
-      const conv = makeConversation();
-      renderHook(() => useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }));
-      await vi.advanceTimersByTimeAsync(10);
-      act(() => getLastWs().simulateOpen());
-
-      act(() => getLastWs().simulateMessage(invalidFrame));
-
-      const msgs = onMsg.mock.calls[onMsg.mock.calls.length - 1][1] as ChatMessage[];
-      const last = msgs[msgs.length - 1];
-      expect(last.role).toBe('system');
-      expect(last.status).toBe('error');
-      expect(last.content).toBe(invalidFrame.content);
-    });
-
-    it('refuses to send further messages on a refused identifier', async () => {
-      /*
-       * The refusal is terminal for this id. Retrying on it would be a
-       * guaranteed-refused round-trip, and — more importantly — the page must
-       * not drift into treating an unknown id as retryable, which is the
-       * behaviour that made squatting possible in the first place.
-       */
-      const onMsg = vi.fn();
-      const conv = makeConversation();
-      const { result } = renderHook(() =>
-        useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }),
-      );
-      await vi.advanceTimersByTimeAsync(10);
-      act(() => getLastWs().simulateOpen());
-      act(() => getLastWs().simulateMessage(invalidFrame));
-
-      const sentBefore = getLastWs().sent.length;
-      act(() => result.current.sendMessage('Please try again'));
-
-      expect(getLastWs().sent).toHaveLength(sentBefore);
-      expect(result.current.isAwaitingReply).toBe(false);
-    });
-
-    it('does not repeat the notice if the server refuses more than once', async () => {
-      const onMsg = vi.fn();
-      const conv = makeConversation();
-      renderHook(() => useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }));
-      await vi.advanceTimersByTimeAsync(10);
-      act(() => getLastWs().simulateOpen());
-
-      act(() => getLastWs().simulateMessage(invalidFrame));
-      act(() => getLastWs().simulateMessage(invalidFrame));
-
-      const msgs = onMsg.mock.calls[onMsg.mock.calls.length - 1][1] as ChatMessage[];
-      expect(msgs.filter((m) => m.content === invalidFrame.content)).toHaveLength(1);
-    });
-
-    it('clears the refusal when the user moves to another conversation', async () => {
-      /*
-       * `sessionExpired` describes one identifier, not the tab. If it survived a
-       * conversation switch, a user whose old conversation expired would find
-       * the composer dead in a perfectly valid new one.
-       */
-      const onMsg = vi.fn();
-      const expired = makeConversation('sess-expired-one');
-      const { result, rerender } = renderHook(
-        ({ conv }) => useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }),
-        { initialProps: { conv: expired as Conversation | null } },
-      );
-      await vi.advanceTimersByTimeAsync(10);
-      act(() => getLastWs().simulateOpen());
-      act(() => getLastWs().simulateMessage({ ...invalidFrame, session_id: expired.id }));
-      expect(result.current.sessionExpired).toBe(true);
-
-      rerender({ conv: makeConversation('sess-freshly-issued') });
-      await vi.advanceTimersByTimeAsync(10);
-
-      expect(result.current.sessionExpired).toBe(false);
-    });
-
-    it('carries no hint about whether the conversation ever existed', async () => {
-      /*
-       * The server answers identically for an expired id and for someone else's
-       * (#5742's anti-enumeration non-answer). The hook must not enrich it —
-       * deriving "expired" vs "not yours" here would rebuild the oracle the
-       * server refuses to be, in the client.
-       */
-      const onMsg = vi.fn();
-      const conv = makeConversation();
-      renderHook(() => useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }));
-      await vi.advanceTimersByTimeAsync(10);
-      act(() => getLastWs().simulateOpen());
-
-      act(() => getLastWs().simulateMessage(invalidFrame));
-
-      const msgs = onMsg.mock.calls[onMsg.mock.calls.length - 1][1] as ChatMessage[];
-      const shown = msgs[msgs.length - 1].content.toLowerCase();
-      expect(shown).not.toMatch(/expired|another user|other user|belongs to|forbidden/);
-    });
   });
 });

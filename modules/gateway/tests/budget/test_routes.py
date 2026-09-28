@@ -8,7 +8,6 @@ from httpx import ASGITransport, AsyncClient
 from src.budget.routes import get_budget_service, get_current_user
 from src.budget.routes import router as budget_router
 from src.budget.service import BudgetService
-from src.shared.database import get_db
 from src.shared.schemas.budget import (
     BudgetResponse,
     BudgetStatusResponse,
@@ -49,7 +48,6 @@ def mock_user_context():
         department_id="dept-123",
         account_type="human",
         is_admin=False,
-        cognito_username="",
     )
 
 
@@ -62,11 +60,6 @@ def app(mock_budget_service, mock_user_context):
     # Override dependencies
     app.dependency_overrides[get_budget_service] = lambda: mock_budget_service
     app.dependency_overrides[get_current_user] = lambda: mock_user_context
-    db = AsyncMock()
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = None
-    db.execute.return_value = result
-    app.dependency_overrides[get_db] = lambda: db
 
     return app
 

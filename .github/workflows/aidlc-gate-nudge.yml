@@ -13,22 +13,7 @@ on:
 jobs:
   nudge:
     name: Nudge stale AIDLC gates
-    # RUNNER CHOICE (#5362). Was ubuntu-latest, which the org's Actions billing block
-    # stopped GitHub allocating. This job's failure mode is quieter than the PR checks in
-    # that issue and worse for it: nobody watches a nightly cron, so the gate reminders
-    # simply stopped being posted while the workflow reported red. The in-cluster
-    # self-hosted pool is unaffected by the block, and every other scheduled workflow in
-    # this repo (8 of 8 before this change) already runs on it, either by the bare
-    # literal arc-runner-org label. A cron on
-    # this pool is the established pattern; this job was the only exception.
-    #
-    # Safe to move: a single actions/github-script step using the Actions-provided
-    # GITHUB_TOKEN via the GitHub API. No AWS call, no Docker (ARC container jobs are
-    # still blocked by #4167), no assertion about credentials being absent. No AWS
-    # credential-neutralising env is set here because this job runs no `run:` step for a
-    # shell override to apply to, and github-script makes no AWS calls — adding one
-    # would be inert config implying a guarantee it does not provide.
-    runs-on: arc-runner-org
+    runs-on: ubuntu-latest
     permissions:
       issues: write
 
@@ -164,31 +149,14 @@ jobs:
 
               // Post nudge comment
               const sinceDate = gateDate.toISOString().split('T')[0];
-              const approvalEffects = {
-                'intent-capture': 'Approve the problem and scope so the next planned inception stage can begin.',
-                'reverse-engineering': 'Approve the current-system assessment so requirements can be prepared.',
-                'requirements-analysis': 'Approve the requirements so delivery planning can begin.',
-                'delivery-planning': 'Approve the delivery plan so story issues and execution drafts can be prepared; execution still requires the loop-proposal gate.',
-                'loop-proposal': 'Approve the reviewed execution scope and target environment, allowing delivery-loop issues to be created and construction/deployment to start, subject to existing checks.',
-              };
-              const effect = approvalEffects[gateStage];
               const nudgeBody = [
                 NUDGE_MARKER,
                 '',
-                `**Decision needed:** ${gateStage.replace(/-/g, ' ')} has been waiting since ${sinceDate}.`,
-                `[Review the current gate and its artifact revision](${latestGateComment.html_url}). Check the proposed outcome and unresolved conditions before replying.`,
-                gateStage === 'loop-proposal'
-                  ? 'Confirm the execution scope and target environment. Skipping this final gate does not authorize construction.' : '',
+                `**Reminder:** Gate \`${gateStage}\` has been waiting since ${sinceDate}.`,
+                'Reply **approve** / **feedback: [your notes]** / **skip** to continue the workflow.',
                 '',
-                effect ? `- \`@agent-aidlc approve\` — ${effect}`
-                  : 'Ask for the approval scope in feedback before approving this stage.',
-                '- `@agent-aidlc feedback: [your notes]` — request revisions or missing evidence.',
-                effect && gateStage !== 'loop-proposal'
-                  ? '- `@agent-aidlc skip` — skip this stage; later approval gates still apply.' : '',
-                '',
-                'Include the mention in your reply. Reactions and checkbox ticks do not advance the workflow.',
-                `_Reminder ${nudgeCount + 1} of ${MAX_NUDGES}. If unanswered, this issue will be marked stalled (waiting for a response)._`,
-              ].filter(Boolean).join('\n\n');
+                `_Nudge ${nudgeCount + 1} of ${MAX_NUDGES}. If unanswered, this issue will be marked stalled._`,
+              ].join('\n');
 
               core.info(`#${issue.number}: posting nudge ${nudgeCount + 1}/${MAX_NUDGES} for gate "${gateStage}"`);
 

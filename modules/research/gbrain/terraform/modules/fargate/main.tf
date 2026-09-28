@@ -1,5 +1,34 @@
-locals {
-  serve_container = merge({
+resource "aws_ecs_cluster" "gbrain" {
+  name = var.name_prefix
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+}
+
+resource "aws_ecs_cluster_capacity_providers" "gbrain" {
+  cluster_name = aws_ecs_cluster.gbrain.name
+
+  capacity_providers = ["FARGATE"]
+
+  default_capacity_provider_strategy {
+    base              = 1
+    weight            = 100
+    capacity_provider = "FARGATE"
+  }
+}
+
+resource "aws_ecs_task_definition" "serve" {
+  family                   = "${var.name_prefix}-serve"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.cpu
+  memory                   = var.memory
+  task_role_arn            = var.task_role_arn
+  execution_role_arn       = var.execution_role_arn
+
+  container_definitions = jsonencode([{
     name  = "gbrain"
     image = var.container_image
 
@@ -10,7 +39,7 @@ locals {
       protocol      = "tcp"
     }]
 
-    environment = var.container_environment != null ? var.container_environment : [
+    environment = [
       { name = "PORT", value = "3000" },
       { name = "GBRAIN_DB_HOST", value = split(":", var.db_endpoint)[0] },
       { name = "GBRAIN_DB_PORT", value = "5432" },
@@ -50,50 +79,7 @@ locals {
       retries     = 3
       startPeriod = 60
     }
-    },
-    var.container_command != null ? { command = var.container_command } : {},
-    var.container_entrypoint != null ? { entryPoint = var.container_entrypoint } : {}
-  )
-}
-
-resource "aws_ecs_cluster" "gbrain" {
-  name = var.name_prefix
-
-  setting {
-    name  = "containerInsights"
-    value = "enabled"
-  }
-}
-
-resource "aws_ecs_cluster_capacity_providers" "gbrain" {
-  cluster_name = aws_ecs_cluster.gbrain.name
-
-  capacity_providers = ["FARGATE"]
-
-  default_capacity_provider_strategy {
-    base              = 1
-    weight            = 100
-    capacity_provider = "FARGATE"
-  }
-}
-
-resource "aws_ecs_task_definition" "serve" {
-  lifecycle {
-    precondition {
-      condition     = can(regex("@sha256:[0-9a-f]{64}$", var.container_image))
-      error_message = "ECS activation requires a registry-verified image digest; bootstrap only storage/build before publication."
-    }
-  }
-
-  family                   = "${var.name_prefix}-serve"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = var.cpu
-  memory                   = var.memory
-  task_role_arn            = var.task_role_arn
-  execution_role_arn       = var.execution_role_arn
-
-  container_definitions = jsonencode([local.serve_container])
+  }])
 }
 
 resource "aws_ecs_service" "mcp" {

@@ -56,11 +56,11 @@ describe('agent-reviewer spec-vs-diff review contract', () => {
       expect(source).toContain('AGENTS.md');
     });
 
-    it('separates severity, confidence and approval impact', () => {
-      expect(source).toContain('Impact severity: high / medium / low');
-      expect(source).toContain('Confidence: high / medium / low');
-      expect(source).toContain('Approval impact: blocker / discussion needed / optional follow-up');
-      expect(source).toContain('Any merge-blocking finding is unresolved');
+    it('requires confidence-ranked findings (HIGH / MEDIUM / LOW)', () => {
+      expect(source).toContain('Categorize every finding by confidence');
+      expect(source).toContain('HIGH');
+      expect(source).toContain('MEDIUM');
+      expect(source).toContain('LOW');
     });
 
     it('requires writing the review summary to data/code-review/', () => {
@@ -72,14 +72,12 @@ describe('agent-reviewer spec-vs-diff review contract', () => {
       expect(source).toContain('--body-file data/code-review/review-');
     });
 
-    it('requires the full acceptance criteria checklist and evidence', () => {
-      expect(source).toContain('full acceptance-criteria checklist (satisfied/missing,');
-      expect(source).toContain('evidence per criterion)');
+    it('includes the Acceptance criteria checklist template', () => {
+      expect(source).toContain('Acceptance criteria checklist');
     });
 
-    it('puts the verdict and blockers before the detailed criteria matrix', () => {
-      expect(source.indexOf('Start with verdict')).toBeLessThan(source.indexOf('Follow with the full acceptance-criteria checklist'));
-      expect(source).toContain('State validation gaps and outstanding required checks');
+    it('includes the Findings (by confidence) template', () => {
+      expect(source).toContain('Findings (by confidence)');
     });
 
     it('requires an explicit APPROVE / REQUEST CHANGES / BLOCK recommendation', () => {

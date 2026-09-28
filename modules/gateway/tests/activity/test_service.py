@@ -9,12 +9,9 @@ Covers:
 - Phase 6 (#1461): trigger_kind derivation, chain query, depth cap
 """
 
-import boto3
 import pytest
 from botocore.exceptions import ClientError
-from moto import mock_aws
 
-from src.activity.routes import _expand_date_bound
 from src.activity.service import (
     ActivityService,
     _build_chain_tree,
@@ -2593,10 +2590,14 @@ class TestGetInvocationBaseTableQuery:
 
 
 class TestGetChainMembershipScoping:
-    """Every row requires owner proof; a correlation ID is not authority (#5668)."""
+    """Issue #3949: get_chain uses membership-based authorization.
 
-    def test_proven_bot_owned_member_survives_but_sparse_member_is_omitted(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Delegated rows survive only when their own root_human_id proves ownership."""
+    Authorize the CHAIN (any member has user_id or root_human_id = caller),
+    then return ALL members unfiltered. No per-row user_id filter.
+    """
+
+    def test_bot_owned_member_survives_membership_auth(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Chain with bot-owned members: all survive because root has root_human_id = caller."""
         chain_items = [
             {
                 "event_id": "root-001",
@@ -2630,12 +2631,11 @@ class TestGetChainMembershipScoping:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.get_chain("corr-test", user_id="user-human")
 
-        # The legacy bot row lacks owner proof and must not be disclosed.
-        assert result.total_count == 2
-        assert "child-bot-002" not in result.model_dump_json()
+        # All 3 items returned (including sparse-root_human_id row)
+        assert result.total_count == 3
         assert len(result.items) == 1  # one root
         assert result.items[0].invocation_id == "root-001"
-        # Only the proven direct child remains.
+        # Root has 1 direct child, which has 1 grandchild
         assert len(result.items[0].children) == 1
         assert result.items[0].children[0].invocation_id == "child-bot-001"
 
@@ -2685,8 +2685,8 @@ class TestGetChainMembershipScoping:
             expr_str = str(filter_expr.get_expression())
             assert "user_id" not in expr_str
 
-    def test_sparse_unproven_middle_is_omitted_and_proven_leaf_becomes_root(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Historical tree completeness does not justify disclosure without owner proof."""
+    def test_sparse_root_human_id_no_orphan_promotion(self, mock_dynamodb_resource, mock_dynamodb_table):
+        """Pre-#2042 mid-chain row (no root_human_id) is NOT dropped — no tree restructure."""
         chain_items = [
             {
                 "event_id": "root-001",
@@ -2719,9 +2719,17 @@ class TestGetChainMembershipScoping:
         service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
         result = service.get_chain("corr-sparse", user_id="user-human")
 
-        assert result.total_count == 2
-        assert {item.invocation_id for item in result.items} == {"root-001", "leaf-001"}
-        assert all(not item.children for item in result.items)
+        # All 3 items returned — mid-chain row NOT dropped
+        assert result.total_count == 3
+        # Tree structure preserved: root → mid → leaf (not: root + orphan mid + orphan leaf)
+        assert len(result.items) == 1  # single root
+        root = result.items[0]
+        assert root.invocation_id == "root-001"
+        assert len(root.children) == 1
+        mid = root.children[0]
+        assert mid.invocation_id == "mid-001"
+        assert len(mid.children) == 1
+        assert mid.children[0].invocation_id == "leaf-001"
 
 
 # ---------------------------------------------------------------------------
@@ -3297,288 +3305,3 @@ class TestQueryChainsByUserRootBackfill:
         # Chain IS emitted — the backfilled root (status=failed) bypasses the filter
         assert result.count == 1
         assert result.chains[0].root.invocation_id == "inv-failed-root"
-
-
-class TestLivenessOnMappedItems:
-    """Issue #4176: every serialized item carries a liveness verdict.
-
-    The verdict itself is unit-tested in `test_liveness.py`; these assert the
-    WIRING — that the field is actually populated on the way out of the service,
-    for the flat list and for both chain construction paths, and that it agrees
-    with each item's status.
-    """
-
-    @staticmethod
-    def _recent() -> str:
-        """An `arrived_at` well inside the staleness window."""
-        from datetime import UTC, datetime
-
-        return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    def test_list_items_all_carry_a_consistent_verdict(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Every item in the list response has a liveness value matching its status."""
-        recent = self._recent()
-        mock_dynamodb_table.query.return_value = {
-            "Items": [
-                {"event_id": "inv-a", "arrived_at": recent, "status": "complete", "user_id": "user-1"},
-                {"event_id": "inv-b", "arrived_at": recent, "status": "failed", "user_id": "user-1"},
-                {"event_id": "inv-c", "arrived_at": recent, "status": "in_progress", "user_id": "user-1"},
-                {"event_id": "inv-d", "arrived_at": recent, "status": "blocked", "user_id": "user-1"},
-                # A status no build of the gateway knows about.
-                {"event_id": "inv-e", "arrived_at": recent, "status": "who_knows", "user_id": "user-1"},
-            ],
-            "Count": 5,
-        }
-        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
-        result = service.query_by_user(user_id="user-1")
-
-        by_id = {item.invocation_id: item for item in result.items}
-        # No item is left without a verdict.
-        assert all(item.liveness is not None for item in result.items)
-        assert by_id["inv-a"].liveness == "exited"
-        assert by_id["inv-b"].liveness == "exited"
-        assert by_id["inv-c"].liveness == "live"
-        assert by_id["inv-d"].liveness == "exited"
-        # Unknown status is indeterminate, never reported as finished.
-        assert by_id["inv-e"].liveness == "unverifiable"
-
-    def test_stale_in_progress_item_reports_unverifiable_not_exited(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """The operator-facing payoff: a long-dead run stops claiming to be healthy.
-
-        This is the row that renders as "in progress" forever today. It must now
-        serialize as `unverifiable` — and specifically NOT as `exited`, which
-        would license a future reaper to double-dispatch a live run.
-        """
-        mock_dynamodb_table.query.return_value = {
-            "Items": [
-                {
-                    "event_id": "inv-stalled",
-                    "arrived_at": "2020-01-01T00:00:00Z",
-                    "status": "in_progress",
-                    "user_id": "user-1",
-                }
-            ],
-            "Count": 1,
-        }
-        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
-        item = service.query_by_user(user_id="user-1").items[0]
-
-        assert item.status == "in_progress"
-        assert item.liveness == "unverifiable"
-        assert item.liveness != "exited"
-
-    def test_multi_day_healthy_run_serializes_as_live(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Issue #4235 end-to-end: the wiring passes `status_updated_at` through.
-
-        The unit semantics live in `test_liveness.py`; this asserts the service
-        actually hands the last-signal timestamp to `compute_liveness`. Without
-        the wiring this row would serialize `unverifiable` — a healthy multi-day
-        agent that an operator might kill on the strength of the badge.
-        """
-        from datetime import UTC, datetime, timedelta
-
-        now = datetime.now(UTC)
-        mock_dynamodb_table.query.return_value = {
-            "Items": [
-                {
-                    "event_id": "inv-multiday",
-                    "arrived_at": (now - timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "status_updated_at": (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "status": "in_progress",
-                    "user_id": "user-1",
-                },
-                {
-                    "event_id": "inv-wedged",
-                    "arrived_at": (now - timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "status_updated_at": (now - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "status": "in_progress",
-                    "user_id": "user-1",
-                },
-            ],
-            "Count": 2,
-        }
-        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
-        by_id = {item.invocation_id: item for item in service.query_by_user(user_id="user-1").items}
-
-        # Started days ago, still signalling → live.
-        assert by_id["inv-multiday"].liveness == "live"
-        # Started days ago, last signal also stale → still unverifiable (no over-correction).
-        assert by_id["inv-wedged"].liveness == "unverifiable"
-        assert by_id["inv-wedged"].liveness != "exited"
-
-    def test_chain_nodes_also_use_the_last_signal(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """The chain-tree path passes `status_updated_at` too, not just the flat list."""
-        from datetime import UTC, datetime, timedelta
-
-        now = datetime.now(UTC)
-        mock_dynamodb_table.query.return_value = {
-            "Items": [
-                {
-                    "event_id": "inv-root",
-                    "arrived_at": (now - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "status_updated_at": (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "status": "in_progress",
-                    "user_id": "user-1",
-                    "correlation_id": "corr-multiday",
-                }
-            ],
-            "Count": 1,
-        }
-        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
-        result = service.query_chains_by_user(user_id="user-1")
-
-        assert result.chains[0].root.liveness == "live"
-
-    def test_completed_at_still_derives_from_the_hoisted_terminal_set(self, mock_dynamodb_resource, mock_dynamodb_table):
-        """Regression: hoisting the terminal set out of `_map_item` must not have
-        changed the #1653/#4020 `completed_at` behaviour it also drives."""
-        mock_dynamodb_table.query.return_value = {
-            "Items": [
-                {
-                    "event_id": "inv-done",
-                    "arrived_at": "2026-08-20T10:00:00Z",
-                    "status": "skipped",
-                    "status_updated_at": "2026-08-20T10:00:09Z",
-                    "user_id": "user-1",
-                },
-                {
-                    "event_id": "inv-running",
-                    "arrived_at": "2026-08-20T10:00:00Z",
-                    "status": "in_progress",
-                    "status_updated_at": "2026-08-20T10:00:03Z",
-                    "user_id": "user-1",
-                },
-            ],
-            "Count": 2,
-        }
-        service = ActivityService(table_name="test-table", dynamodb_resource=mock_dynamodb_resource)
-        by_id = {i.invocation_id: i for i in service.query_by_user(user_id="user-1").items}
-
-        assert by_id["inv-done"].completed_at == "2026-08-20T10:00:09Z"
-        assert by_id["inv-running"].completed_at is None
-
-    def test_chain_tree_nodes_carry_a_verdict(self):
-        """`_build_chain_tree` populates liveness on roots and nested children."""
-        recent = self._recent()
-        roots = _build_chain_tree(
-            [
-                {"invocation_id": "root", "arrived_at": recent, "status": "complete"},
-                {
-                    "invocation_id": "child",
-                    "arrived_at": recent,
-                    "status": "in_progress",
-                    "parent_invocation_id": "root",
-                },
-                {
-                    "invocation_id": "stalled",
-                    "arrived_at": "2020-01-01T00:00:00Z",
-                    "status": "in_progress",
-                    "parent_invocation_id": "root",
-                },
-            ]
-        )
-
-        assert len(roots) == 1
-        assert roots[0].liveness == "exited"
-        children = {c.invocation_id: c for c in roots[0].children}
-        assert children["child"].liveness == "live"
-        # A stalled child is indeterminate, not finished.
-        assert children["stalled"].liveness == "unverifiable"
-
-
-class TestDateBoundZeroRowRegression:
-    """Issue #4390: end-to-end proof against a real (moto) DynamoDB table.
-
-    The mock-based tests above assert the shape of the KeyConditionExpression.
-    This class asserts the thing the user actually complained about: that a
-    single-day filter returns the day's rows instead of nothing. It needs a real
-    query engine because the bug lives in DynamoDB's lexicographic comparison of
-    the `arrived_at` sort key, which a MagicMock cannot reproduce.
-    """
-
-    TABLE = "test-webhook-events"
-    USER = "user-zero-row"
-    # A run that arrived late in the day — the row that a bare-date upper bound
-    # silently excludes.
-    ARRIVED_AT = "2026-06-13T22:00:00Z"
-
-    @pytest.fixture
-    def seeded_table(self):
-        with mock_aws():
-            ddb = boto3.resource("dynamodb", region_name="us-east-1")
-            ddb.create_table(
-                TableName=self.TABLE,
-                KeySchema=[
-                    {"AttributeName": "event_id", "KeyType": "HASH"},
-                    {"AttributeName": "arrived_at", "KeyType": "RANGE"},
-                ],
-                AttributeDefinitions=[
-                    {"AttributeName": "event_id", "AttributeType": "S"},
-                    {"AttributeName": "arrived_at", "AttributeType": "S"},
-                    {"AttributeName": "user_id", "AttributeType": "S"},
-                ],
-                GlobalSecondaryIndexes=[
-                    {
-                        "IndexName": "user-index",
-                        "KeySchema": [
-                            {"AttributeName": "user_id", "KeyType": "HASH"},
-                            {"AttributeName": "arrived_at", "KeyType": "RANGE"},
-                        ],
-                        "Projection": {"ProjectionType": "ALL"},
-                    }
-                ],
-                BillingMode="PAY_PER_REQUEST",
-            )
-            ddb.Table(self.TABLE).put_item(
-                Item={
-                    "event_id": "inv-late-in-day",
-                    "arrived_at": self.ARRIVED_AT,
-                    "user_id": self.USER,
-                    "status": "complete",
-                    "topic": "Late run",
-                }
-            )
-            yield ddb
-
-    def _query(self, ddb, since, until):
-        service = ActivityService(table_name=self.TABLE, dynamodb_resource=ddb)
-        return service.query_by_user(user_id=self.USER, since=since, until=until)
-
-    def test_single_day_expanded_bounds_return_the_row(self, seeded_table):
-        """since == until == the run's day returns the run (the headline bug).
-
-        With the route's expansion this passes; with the raw bare dates that the
-        UI sends it returns zero rows.
-        """
-        result = self._query(
-            seeded_table,
-            _expand_date_bound("2026-06-13", end=False),
-            _expand_date_bound("2026-06-13", end=True),
-        )
-        assert [i.invocation_id for i in result.items] == ["inv-late-in-day"]
-
-    def test_unexpanded_single_day_returns_nothing(self, seeded_table):
-        """Documents the defect: bare dates collapse to an empty result.
-
-        This is what the page did before the fix, and what it would still do if
-        only the param names were renamed.
-        """
-        result = self._query(seeded_table, "2026-06-13", "2026-06-13")
-        assert result.items == []
-
-    def test_until_only_includes_late_in_day_row(self, seeded_table):
-        """A bare-date upper bound must not drop the end day."""
-        expanded = self._query(seeded_table, None, _expand_date_bound("2026-06-13", end=True))
-        assert [i.invocation_id for i in expanded.items] == ["inv-late-in-day"]
-        # Unexpanded, the same request excludes the whole day
-        assert self._query(seeded_table, None, "2026-06-13").items == []
-
-    def test_day_before_and_after_are_excluded(self, seeded_table):
-        """The expansion widens to exactly one day — it must not leak neighbours."""
-        for day in ("2026-06-12", "2026-06-14"):
-            result = self._query(
-                seeded_table,
-                _expand_date_bound(day, end=False),
-                _expand_date_bound(day, end=True),
-            )
-            assert result.items == [], f"{day} should not match the 06-13 run"

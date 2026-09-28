@@ -3,7 +3,7 @@ import { apiClient } from '@/services/api';
 import {
   getOrganizations,
   getOrganization,
-  createOrganizationCanonical,
+  createOrganization,
   updateOrganization,
   deleteOrganization,
   getDepartments,
@@ -15,12 +15,8 @@ import {
   updateTeam,
   deleteTeam,
   getUserRoles,
-  getAvailableRoles,
   assignUserRole,
   removeUserRole,
-  getMemberGithubUserId,
-  listPlatformUsers,
-  transformOrganization,
 } from '@/services/admin';
 import { AdminRole } from '@/types';
 
@@ -124,39 +120,24 @@ describe('Admin Service', () => {
       });
     });
 
-    // Issue #4842: the `createOrganization` specs are gone with the function.
-    // `POST /admin/organizations` now returns 410 (ruling D4 = Option A) and the
-    // client export had no product callers.
+    describe('createOrganization', () => {
+      it('creates a new organization', async () => {
+        const mockResponse = {
+          id: 'org-new',
+          name: 'New Org',
+          aws_accounts: [],
+          role_mappings: {},
+          settings: {},
+          created_at: '2024-01-01T00:00:00Z',
+        };
 
-    describe('createOrganizationCanonical', () => {
-      it('posts the caller-supplied id to the canonical identity route', async () => {
-        vi.mocked(apiClient.post).mockResolvedValue({ id: 'acme-corp', name: 'Acme Corp' });
+        vi.mocked(apiClient.post).mockResolvedValue(mockResponse);
 
-        const result = await createOrganizationCanonical({ id: 'acme-corp', name: 'Acme Corp' });
+        const result = await createOrganization({ name: 'New Org' });
 
-        // The `/api` IS doubled on purpose (Issue #4841). apiClient's base is already
-        // `/api` and the identity router mounts at `/api/admin/identity`, so the browser
-        // emits `/api/api/...` and the CloudFront viewer function strips one segment back
-        // to the mount. Dropping one `/api` here 404s in a deployed environment; this
-        // assertion is what catches a well-meaning "cleanup" of the duplicate.
-        expect(apiClient.post).toHaveBeenCalledWith('/api/admin/identity/organizations', {
-          id: 'acme-corp',
-          name: 'Acme Corp',
-        });
-        expect(result).toEqual({ id: 'acme-corp', name: 'Acme Corp' });
-      });
-
-      it('sends the id even when it differs from a slug of the name', async () => {
-        // The route requires an id and never derives one, so whatever the admin confirmed
-        // must reach the server verbatim.
-        vi.mocked(apiClient.post).mockResolvedValue({ id: 'acme-emea', name: 'Acme Corp' });
-
-        await createOrganizationCanonical({ id: 'acme-emea', name: 'Acme Corp' });
-
-        expect(apiClient.post).toHaveBeenCalledWith('/api/admin/identity/organizations', {
-          id: 'acme-emea',
-          name: 'Acme Corp',
-        });
+        expect(apiClient.post).toHaveBeenCalledWith('/admin/organizations', { name: 'New Org' });
+        expect(result.id).toBe('org-new');
+        expect(result.name).toBe('New Org');
       });
     });
 
@@ -189,125 +170,6 @@ describe('Admin Service', () => {
         await deleteOrganization('org-1');
 
         expect(apiClient.delete).toHaveBeenCalledWith('/admin/organizations/org-1');
-      });
-    });
-
-    /**
-     * Issue #4929 — the org transform must consume only fields its route actually sends.
-     *
-     * Until this fix, ONE transform served two server schemas and read the union of their
-     * fields, so `role_mappings` and `member_approval_policy` — which the canonical
-     * identity route has never sent — were mapped from every response. The bug was
-     * invisible because no test ever fed a CANONICAL-shaped response through the
-     * transform; these are those tests. Wave 1 check 36 is the same assertion against a
-     * live response.
-     */
-    describe('transformOrganization — canonical route wire contract (#4929)', () => {
-      /**
-       * A response shaped exactly like `OrganizationResponse` in
-       * `src/admin/identity/schemas.py`, including the fields this client does not read
-       * (`plan`, `channels`, `cognito_client_ids`) so the fixture stays a faithful sample
-       * of the live payload rather than a trimmed-to-fit one.
-       */
-      const canonicalResponse = {
-        id: 'acme-corp',
-        name: 'Acme Corp',
-        plan: 'enterprise',
-        channels: { github: [{ installation_id: '12345678' }], slack: [], whatsapp: [] },
-        aws_accounts: [
-          { account_id: '123456789012', role_arn: 'arn:aws:iam::123456789012:role/Bedrock', external_id: null },
-        ],
-        settings: { user_auto_provision_mode: 'github_oauth' },
-        github_installation_ids: ['12345678'],
-        cognito_client_ids: ['abc123client'],
-        created_at: '2026-09-01T00:00:00Z',
-      };
-
-      it('maps a canonical-shaped response without depending on fields that route never sends', () => {
-        const org = transformOrganization(canonicalResponse);
-
-        expect(org.id).toBe('acme-corp');
-        expect(org.name).toBe('Acme Corp');
-        expect(org.settings).toEqual({ user_auto_provision_mode: 'github_oauth' });
-        expect(org.githubInstallationIds).toEqual(['12345678']);
-        expect(org.createdAt).toBe('2026-09-01T00:00:00Z');
-      });
-
-      it('leaves roleMappings and memberApprovalPolicy ABSENT, not coerced to empty values', () => {
-        const org = transformOrganization(canonicalResponse);
-
-        // `in` rather than a falsy check: `{}` and `''` are falsy too, and coercing to
-        // those is exactly the failure mode here — the panel would render "no policy
-        // configured" for an org that has one. Absence has to be absence.
-        expect('roleMappings' in org).toBe(false);
-        expect('memberApprovalPolicy' in org).toBe(false);
-      });
-
-      it('projects the canonical aws_accounts objects down to account ids', () => {
-        // The canonical route sends `list[AwsAccountEntry]` where the deprecated one sends
-        // `list[str]`. Declaring `string[]` for both would be the same class of untrue
-        // wire type this split exists to remove.
-        expect(transformOrganization(canonicalResponse).awsAccounts).toEqual(['123456789012']);
-      });
-
-      it('treats an org with no routing destinations as empty, not as an error', () => {
-        const org = transformOrganization({ ...canonicalResponse, aws_accounts: [], github_installation_ids: [] });
-
-        expect(org.awsAccounts).toEqual([]);
-        expect(org.githubInstallationIds).toEqual([]);
-      });
-    });
-
-    /**
-     * Issue #4929 regression guard: the DEPRECATED route still sends both fields, and every
-     * current read path (`getOrganizations`, `getOrganization`, `updateOrganization`) still
-     * targets it. Repointing those is #4847's work — until then this is the live behaviour.
-     */
-    describe('deprecated route still populates both fields (#4929 regression guard)', () => {
-      it('populates roleMappings and memberApprovalPolicy from a deprecated-shaped response', async () => {
-        vi.mocked(apiClient.get).mockResolvedValue({
-          id: 'org-1',
-          name: 'Org 1',
-          aws_accounts: ['123456789012'],
-          role_mappings: { admin: 'arn:aws:iam::123456789012:role/Admin' },
-          settings: {},
-          member_approval_policy: 'require_admin_approval',
-          github_installation_ids: ['12345678'],
-          created_at: '2024-01-01T00:00:00Z',
-        });
-
-        const org = await getOrganization('org-1');
-
-        expect(apiClient.get).toHaveBeenCalledWith('/admin/organizations/org-1');
-        expect(org.roleMappings).toEqual({ admin: 'arn:aws:iam::123456789012:role/Admin' });
-        expect(org.memberApprovalPolicy).toBe('require_admin_approval');
-        expect(org.awsAccounts).toEqual(['123456789012']);
-        expect(org.githubInstallationIds).toEqual(['12345678']);
-      });
-
-      it('keeps the list read on the deprecated route with both fields intact', async () => {
-        vi.mocked(apiClient.get).mockResolvedValue({
-          items: [
-            {
-              id: 'org-1',
-              name: 'Org 1',
-              aws_accounts: ['123456789012'],
-              role_mappings: { admin: 'arn:aws:iam::123456789012:role/Admin' },
-              settings: {},
-              member_approval_policy: 'auto_approve_org_members',
-              created_at: '2024-01-01T00:00:00Z',
-            },
-          ],
-          total: 1,
-          page: 1,
-          page_size: 50,
-          has_more: false,
-        });
-
-        const result = await getOrganizations();
-
-        expect(result.items[0].roleMappings).toEqual({ admin: 'arn:aws:iam::123456789012:role/Admin' });
-        expect(result.items[0].memberApprovalPolicy).toBe('auto_approve_org_members');
       });
     });
   });
@@ -543,215 +405,26 @@ describe('Admin Service', () => {
       });
     });
 
-    describe('getAvailableRoles', () => {
-      it('returns the roles the backend says this caller may assign', async () => {
-        vi.mocked(apiClient.get).mockResolvedValue({ roles: ['member', 'dept_admin', 'org_admin'] });
-
-        const result = await getAvailableRoles();
-
-        expect(apiClient.get).toHaveBeenCalledWith('/admin/users/roles');
-        expect(result).toEqual(['member', 'dept_admin', 'org_admin']);
-      });
-    });
-
-    // Issue #4019: these two used to assert `rejects.toThrow(...)` placeholders.
     describe('assignUserRole', () => {
-      it('PUTs the role to the org-scoped user endpoint', async () => {
-        vi.mocked(apiClient.put).mockResolvedValue({
-          id: 'user-1',
-          org_id: 'org-1',
-          role: 'org_admin',
-          created_at: '2024-01-01T00:00:00Z',
-        });
-
-        const result = await assignUserRole({
-          user_id: 'user-1',
-          role: AdminRole.ORG_ADMIN,
-          org_id: 'org-1',
-        });
-
-        expect(apiClient.put).toHaveBeenCalledWith('/admin/organizations/org-1/users/user-1', {
-          role: 'org_admin',
-        });
-        expect(result.userId).toBe('user-1');
-        expect(result.role).toBe('org_admin');
-        expect(result.orgId).toBe('org-1');
-      });
-
-      it('rejects without an org_id instead of calling an unscoped endpoint', async () => {
-        // The endpoint is org-scoped; a call without org_id would hit
-        // /admin/organizations/undefined/... and 404 with a confusing message.
+      it('throws error since it should be done via user management', async () => {
+        // assignUserRole now throws an error directing to user management endpoints
         await expect(
-          assignUserRole({ user_id: 'user-1', role: AdminRole.ORG_ADMIN })
-        ).rejects.toThrow('org_id is required');
-        expect(apiClient.put).not.toHaveBeenCalled();
+          assignUserRole({
+            user_id: 'user-1',
+            role: AdminRole.ORG_ADMIN,
+            org_id: 'org-1',
+          })
+        ).rejects.toThrow('User role assignment should be done via user management endpoints');
       });
     });
 
     describe('removeUserRole', () => {
-      it('demotes to member rather than deleting the membership', async () => {
-        vi.mocked(apiClient.put).mockResolvedValue({});
-
-        await removeUserRole('user-1', 'org-1');
-
-        // A DELETE would leave a no-row principal; the contract is "demote".
-        expect(apiClient.delete).not.toHaveBeenCalled();
-        expect(apiClient.put).toHaveBeenCalledWith('/admin/organizations/org-1/users/user-1', {
-          role: 'member',
-        });
+      it('throws error since it should be done via user management', async () => {
+        // removeUserRole now throws an error directing to user management endpoints
+        await expect(removeUserRole('user-1')).rejects.toThrow(
+          'User role removal should be done via user management endpoints'
+        );
       });
-
-      it('rejects without an org_id', async () => {
-        await expect(removeUserRole('user-1')).rejects.toThrow('org_id is required');
-        expect(apiClient.put).not.toHaveBeenCalled();
-      });
-    });
-  });
-
-  // Issue #4687: the only server-side source of a member's GitHub numeric id, which is
-  // what the cross-workspace person anchor (`github:<id>`) is built from. Everything
-  // here exists to keep that id from being inferred client-side: a cap keyed on a guess
-  // validates, displays a number, and is never matched by enforcement (#4511).
-  describe('getMemberGithubUserId', () => {
-    it('reads the id from the identities endpoint', async () => {
-      vi.mocked(apiClient.get).mockResolvedValue({
-        identities: [
-          { provider: 'github', provider_user_id: '20402445' },
-        ],
-        total: 1,
-      });
-
-      const id = await getMemberGithubUserId('user-operator');
-
-      expect(id).toBe('20402445');
-      // The doubled `/api` is deliberate: CloudFront strips the first segment, and this
-      // router is one of the quarantined `/api`-prefixed mounts. Dropping one 404s.
-      expect(apiClient.get).toHaveBeenCalledWith(
-        '/api/admin/identity/users/user-operator/identities'
-      );
-    });
-
-    it('picks the github identity out of several providers', async () => {
-      vi.mocked(apiClient.get).mockResolvedValue({
-        identities: [
-          { provider: 'google', provider_user_id: 'not-a-github-id' },
-          { provider: 'github', provider_user_id: '20402445' },
-        ],
-        total: 2,
-      });
-
-      // Provider-matched rather than positional: an anchor built from another
-      // provider's id would be a well-formed key for a person who does not exist.
-      expect(await getMemberGithubUserId('user-operator')).toBe('20402445');
-    });
-
-    it('returns null for a member with no linked identities', async () => {
-      // Legitimate and permanent for someone who signed up by email. Null rather than a
-      // throw, because the caller has a real answer to give ("no limit can be set for
-      // this person") and an exception would render it as an outage.
-      vi.mocked(apiClient.get).mockResolvedValue({ identities: [], total: 0 });
-
-      expect(await getMemberGithubUserId('user-invited')).toBeNull();
-    });
-
-    it('returns null when linked to other providers but not github', async () => {
-      vi.mocked(apiClient.get).mockResolvedValue({
-        identities: [{ provider: 'google', provider_user_id: '123' }],
-        total: 1,
-      });
-
-      expect(await getMemberGithubUserId('user-invited')).toBeNull();
-    });
-
-    it('returns null for a blank provider id rather than a bare prefix', async () => {
-      // `github:` with nothing after it is an anchor the server rejects, so treating a
-      // blank as "no identity" keeps the caller from submitting a key it knows is bad.
-      vi.mocked(apiClient.get).mockResolvedValue({
-        identities: [{ provider: 'github', provider_user_id: '   ' }],
-        total: 1,
-      });
-
-      expect(await getMemberGithubUserId('user-operator')).toBeNull();
-    });
-
-    it('propagates transport and authorization failures', async () => {
-      // A 403 or a network fault is NOT "this person has no GitHub identity". Collapsing
-      // the two would let a permissions problem read as a fact about the member.
-      vi.mocked(apiClient.get).mockRejectedValue(new Error('Forbidden'));
-
-      await expect(getMemberGithubUserId('user-operator')).rejects.toThrow('Forbidden');
-    });
-  });
-
-  // Issue #4827: the source the person-scoped admin pickers read. The routing panel used
-  // to ask an operator to type a `users.id` by hand, which nobody could produce. What
-  // matters here is the shape of the request (a *server-side* search, so the browser
-  // never pulls the whole member table) and that the canonical id survives the
-  // snake_case→camelCase hop intact.
-  describe('listPlatformUsers', () => {
-    it('camelCases the roster and keeps the canonical id', async () => {
-      vi.mocked(apiClient.get).mockResolvedValue({
-        items: [
-          {
-            id: '48270000-0000-4000-8000-00000000ca5e',
-            org_id: 'org-acme',
-            email: 'casey@acme.example',
-            name: 'Casey Ng',
-            github_username: 'caseyng',
-          },
-        ],
-        total: 1,
-        page: 1,
-        page_size: 50,
-        has_more: false,
-      });
-
-      const result = await listPlatformUsers({ q: 'casey' });
-
-      // Search reaches the server. A client-side filter is what pagination exists to
-      // avoid on a table that grows with every signup.
-      expect(apiClient.get).toHaveBeenCalledWith('/admin/users?q=casey&page=1&page_size=50');
-      // The id is what a routing rule is stored under (#4647), so it must pass through
-      // untouched — an email or a login here would store cleanly and govern nobody.
-      expect(result.items[0].id).toBe('48270000-0000-4000-8000-00000000ca5e');
-      expect(result.items[0].githubUsername).toBe('caseyng');
-      expect(result.items[0].orgId).toBe('org-acme');
-      expect(result.hasMore).toBe(false);
-    });
-
-    it('keeps a null github username null rather than blanking it', async () => {
-      // An email-onboarded member has no GitHub login, permanently. Coercing that to ''
-      // would make the picker label them as though the lookup had failed.
-      vi.mocked(apiClient.get).mockResolvedValue({
-        items: [
-          {
-            id: 'user-invited',
-            org_id: 'org-acme',
-            email: 'invited@acme.example',
-            name: null,
-            github_username: null,
-          },
-        ],
-        total: 1,
-        page: 1,
-        page_size: 50,
-        has_more: false,
-      });
-
-      const result = await listPlatformUsers();
-
-      expect(result.items[0].githubUsername).toBeNull();
-      expect(result.items[0].name).toBeNull();
-    });
-
-    it('omits a blank search instead of filtering on the empty string', async () => {
-      vi.mocked(apiClient.get).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50, has_more: false });
-
-      await listPlatformUsers({ q: '   ' });
-
-      // A cleared search box must reset to everybody. Sending `q=` (or `q=%20`) would
-      // ask the server to match whitespace and return an empty picker.
-      expect(apiClient.get).toHaveBeenCalledWith('/admin/users?page=1&page_size=50');
     });
   });
 
@@ -766,11 +439,7 @@ describe('Admin Service', () => {
     it('handles network errors', async () => {
       vi.mocked(apiClient.post).mockRejectedValue(new Error('Network error'));
 
-      // Issue #4842: this asserted through `createOrganization` before that export
-      // was removed. Repointed at another POST wrapper rather than deleted — the
-      // coverage being kept is "a rejected POST propagates", which is not specific
-      // to org creation.
-      await expect(createDepartment('org-1', { name: 'Test' })).rejects.toThrow('Network error');
+      await expect(createOrganization({ name: 'Test' })).rejects.toThrow('Network error');
     });
   });
 });

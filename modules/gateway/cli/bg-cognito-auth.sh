@@ -7,7 +7,6 @@
 #
 # Usage:
 #   ./bg-cognito-auth.sh login --gateway-url https://gateway.company.com
-#   ./bg-cognito-auth.sh import --gateway-url https://gateway.company.com/api
 #   ./bg-cognito-auth.sh refresh
 #   ./bg-cognito-auth.sh logout
 #   ./bg-cognito-auth.sh status
@@ -18,63 +17,12 @@
 set -euo pipefail
 
 # Configuration file locations
-#
-# BG_CONFIG_DIR (Issue #5413) is how the selected deployment reaches this script.
-# `adp` resolves the deployment ONCE at entry and exports this, so a machine with
-# three deployments keeps three independent token stores; unset, the path is the
-# original single-deployment one, which is what keeps every existing install and
-# every direct invocation of this script working unchanged.
-#
-# Read here and nowhere else: everything below derives from CONFIG_DIR, so there
-# is one place where "which store" is decided and no way for the config file and
-# the token file to end up belonging to different deployments.
-CONFIG_DIR="${BG_CONFIG_DIR:-${HOME}/.bedrock-gateway}"
+CONFIG_DIR="${HOME}/.bedrock-gateway"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 AWS_CREDENTIALS_FILE="${HOME}/.aws/credentials"
 AWS_CONFIG_FILE="${HOME}/.aws/config"
-
-# The AWS profile the Identity Pool exchange writes into the user's own
-# ~/.aws/credentials. BG_AWS_PROFILE (Issue #5413) is set by the deployment
-# resolver so three deployments write three profiles instead of silently
-# overwriting each other's credentials; unset, it stays the original name, which
-# is what existing AWS_PROFILE=bedrock-gateway setups depend on.
-PROFILE_NAME="${BG_AWS_PROFILE:-bedrock-gateway}"
-
-# Local auth-proxy mode (Issue #4154)
-#
-# ADP_RUNTIME_DIR (Issue #5413) is the selected deployment's runtime directory,
-# exported by the resolver. The pidfile MUST agree with what `adp` reads, or one
-# half would think no proxy is running while the other refuses to start a second
-# — so both derive it from the same variable, defaulting to the original path
-# when no deployment is selected.
-PROXY_RUNTIME_DIR="${ADP_RUNTIME_DIR:-${CONFIG_DIR}}"
-PROXY_PID_FILE="${PROXY_RUNTIME_DIR}/proxy.pid"
-# Where the proxy publishes its bound port and which deployment it serves, after
-# binding (Issue #5413). Separate from the pidfile because it answers a different
-# question: the pidfile says "a proxy exists", this says "on this port, for this
-# deployment" — which is what a launcher must know before reusing one.
-PROXY_IDENTITY_FILE="${PROXY_RUNTIME_DIR}/proxy.json"
-PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
-DEFAULT_PROXY_PORT=9191
-
-# Cross-process refresh lock (Issue #4837)
-#
-# Claude Code (via apiKeyHelper) and the Codex proxy (via `serve`) both call
-# this script's `token`/`refresh` in separate processes against the SAME
-# token file. With refresh-token rotation enabled on the CLI Cognito client,
-# each successful refresh invalidates the previous refresh token — so two
-# uncoordinated refreshes leave whichever one loses the race holding a dead
-# credential ("invalid token"), and a non-atomic write can corrupt the file
-# outright. This lock makes refresh single-flight per machine.
-#
-# mkdir is the lock primitive because it is atomic on POSIX and, unlike
-# flock(1), ships on macOS. A crashed holder leaves the dir behind, so it is
-# treated as stale (and broken) once older than LOCK_STALE_SECONDS.
-LOCK_DIR="${CONFIG_DIR}/refresh.lock"
-LOCK_STALE_SECONDS=30
-LOCK_MAX_WAIT_SECONDS=20
-_LOCK_HELD=0
+PROFILE_NAME="bedrock-gateway"
 
 # Colors for output
 RED='\033[0;31m'
@@ -88,37 +36,6 @@ print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-
-# ---------------------------------------------------------------------------
-# Cognito auth flow selection
-# ---------------------------------------------------------------------------
-# Two ways to authenticate a username/password against a user pool:
-#
-#   initiate-auth       USER_PASSWORD_AUTH        unauthenticated, public API
-#   admin-initiate-auth ADMIN_USER_PASSWORD_AUTH  SigV4-signed, admin API
-#
-# They are equivalent for our purposes, and normally the public one is correct
-# because it needs no AWS credentials. But when the user pool is protected by an
-# AWS WAF web ACL — as it is here, from runbook 5.4 — the ACL covers the pool's
-# PUBLIC API operations, and those are served from
-# cognito-idp.<region>.amazonaws.com. That is an AWS-owned hostname, so it cannot
-# be published through the corporate ZTNA tunnel and the request arrives from the
-# developer's own address, which the ACL does not allow. `initiate-auth` then
-# fails with ForbiddenException.
-#
-# SigV4-signed Admin* operations are outside that surface — verified twice on
-# 2026-08-27, by the github-auth-broker's admin_get_user surviving the ACL and by
-# ws_roundtrip.py authenticating from a laptop. So preferring the admin flow keeps
-# this script working from a developer machine.
-#
-# It needs two things the public flow does not: a user pool id (already in the
-# config file) and cognito-idp:AdminInitiateAuth on the caller's IAM identity.
-# BG_COGNITO_PUBLIC_AUTH=1 forces the public flow for deployments whose users have
-# no admin IAM and whose pool has no web ACL.
-_use_admin_auth() {
-    [ "${BG_COGNITO_PUBLIC_AUTH:-0}" = "1" ] && return 1
-    [ -n "${USER_POOL_ID:-}" ] && [ "${USER_POOL_ID}" != "null" ]
-}
 
 # Check for required dependencies
 check_dependencies() {
@@ -155,22 +72,17 @@ save_config() {
     local client_id="$3"
     local identity_pool_id="$4"
     local region="$5"
-    # Optional: "gateway" means refresh through the gateway's /auth/cli/refresh
-    # endpoint instead of calling Cognito directly. Set by `login --web`, whose
-    # CLI app client has refresh-token rotation on — a rotating client can only
-    # be refreshed via the admin API, which the user has no AWS creds for, so the
-    # gateway does it server-side (Issue #4837 follow-up). Empty = direct Cognito.
-    local refresh_via="${6:-}"
 
-    local tmp
-    tmp=$(mktemp "${CONFIG_FILE}.XXXXXX")
-    jq -n --arg gateway_url "${gateway_url}" --arg user_pool_id "${user_pool_id}" \
-        --arg client_id "${client_id}" --arg identity_pool_id "${identity_pool_id}" \
-        --arg region "${region}" --arg refresh_via "${refresh_via}" \
-        '{gateway_url: $gateway_url, user_pool_id: $user_pool_id, client_id: $client_id,
-          identity_pool_id: $identity_pool_id, region: $region, refresh_via: $refresh_via}' > "${tmp}"
-    chmod 600 "${tmp}"
-    mv -f "${tmp}" "${CONFIG_FILE}"
+    cat > "${CONFIG_FILE}" << EOF
+{
+    "gateway_url": "${gateway_url}",
+    "user_pool_id": "${user_pool_id}",
+    "client_id": "${client_id}",
+    "identity_pool_id": "${identity_pool_id}",
+    "region": "${region}"
+}
+EOF
+    chmod 600 "${CONFIG_FILE}"
 }
 
 # Load configuration
@@ -186,59 +98,9 @@ load_config() {
     CLIENT_ID=$(jq -r '.client_id' "${CONFIG_FILE}")
     IDENTITY_POOL_ID=$(jq -r '.identity_pool_id' "${CONFIG_FILE}")
     REGION=$(jq -r '.region' "${CONFIG_FILE}")
-    REFRESH_VIA=$(jq -r '.refresh_via // empty' "${CONFIG_FILE}")
 }
 
 # Save tokens
-# Age in seconds of the lock directory, or empty if it does not exist.
-# Portable across macOS (stat -f %m) and Linux (stat -c %Y).
-_lock_age_seconds() {
-    local mtime now
-    if mtime=$(stat -f %m "${LOCK_DIR}" 2>/dev/null); then
-        :
-    elif mtime=$(stat -c %Y "${LOCK_DIR}" 2>/dev/null); then
-        :
-    else
-        return 1
-    fi
-    now=$(date +%s)
-    echo $((now - mtime))
-}
-
-# Acquire the machine-wide refresh lock, waiting up to LOCK_MAX_WAIT_SECONDS.
-# Returns non-zero if it cannot be taken. Releases automatically on process
-# exit or interrupt so a Ctrl-C'd `token`/`refresh` never wedges the next one.
-_acquire_refresh_lock() {
-    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
-    local waited=0
-    while :; do
-        if mkdir "${LOCK_DIR}" 2>/dev/null; then
-            _LOCK_HELD=1
-            trap _release_refresh_lock EXIT INT TERM
-            return 0
-        fi
-        # Reclaim a lock abandoned by a crashed process.
-        local age
-        age=$(_lock_age_seconds || true)
-        if [ -n "${age}" ] && [ "${age}" -ge "${LOCK_STALE_SECONDS}" ]; then
-            rmdir "${LOCK_DIR}" 2>/dev/null || rm -rf "${LOCK_DIR}" 2>/dev/null || true
-            continue
-        fi
-        if [ "${waited}" -ge "${LOCK_MAX_WAIT_SECONDS}" ]; then
-            return 1
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-}
-
-_release_refresh_lock() {
-    if [ "${_LOCK_HELD}" = "1" ]; then
-        rmdir "${LOCK_DIR}" 2>/dev/null || rm -rf "${LOCK_DIR}" 2>/dev/null || true
-        _LOCK_HELD=0
-    fi
-}
-
 save_tokens() {
     local id_token="$1"
     local access_token="$2"
@@ -247,16 +109,7 @@ save_tokens() {
 
     local expires_at=$(($(date +%s) + expires_in))
 
-    # Write-then-rename so a reader (or a concurrent writer) never sees a
-    # half-written token file. mktemp in the same directory keeps the mv on
-    # one filesystem, where rename(2) is atomic.
-    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
-    local tmp
-    tmp=$(mktemp "${TOKEN_FILE}.XXXXXX") || {
-        print_error "Failed to create a temporary token file in ${CONFIG_DIR}."
-        return 1
-    }
-    cat > "${tmp}" << EOF
+    cat > "${TOKEN_FILE}" << EOF
 {
     "id_token": "${id_token}",
     "access_token": "${access_token}",
@@ -264,8 +117,7 @@ save_tokens() {
     "expires_at": ${expires_at}
 }
 EOF
-    chmod 600 "${tmp}"
-    mv -f "${tmp}" "${TOKEN_FILE}"
+    chmod 600 "${TOKEN_FILE}"
 }
 
 # Load tokens
@@ -310,45 +162,15 @@ authenticate_user() {
 
     # Initiate authentication with Cognito
     local auth_result
-    if _use_admin_auth; then
-        auth_result=$(aws cognito-idp admin-initiate-auth \
-            --auth-flow ADMIN_USER_PASSWORD_AUTH \
-            --user-pool-id "${USER_POOL_ID}" \
-            --client-id "${CLIENT_ID}" \
-            --auth-parameters "USERNAME=${username},PASSWORD=${password}" \
-            --region "${REGION}" \
-            2>&1) || {
-            print_error "Authentication failed: ${auth_result}"
-            case "${auth_result}" in
-                *AccessDenied*|*not\ authorized*)
-                    print_warning "The admin auth flow needs cognito-idp:AdminInitiateAuth."
-                    print_warning "Set BG_COGNITO_PUBLIC_AUTH=1 to use the public flow instead —"
-                    print_warning "but note it is blocked if the user pool has a WAF web ACL and"
-                    print_warning "you are not on an allowlisted address."
-                    ;;
-            esac
-            return 1
-        }
-    else
-        auth_result=$(aws cognito-idp initiate-auth \
-            --auth-flow USER_PASSWORD_AUTH \
-            --client-id "${CLIENT_ID}" \
-            --auth-parameters "USERNAME=${username},PASSWORD=${password}" \
-            --region "${REGION}" \
-            2>&1) || {
-            print_error "Authentication failed: ${auth_result}"
-            case "${auth_result}" in
-                *ForbiddenException*)
-                    print_warning "ForbiddenException means a WAF web ACL on the user pool refused"
-                    print_warning "this request — the public Cognito API is served from an AWS-owned"
-                    print_warning "hostname that cannot be tunnelled, so you arrive from your own"
-                    print_warning "address. Unset BG_COGNITO_PUBLIC_AUTH to use the admin flow,"
-                    print_warning "which is SigV4-signed and outside that surface."
-                    ;;
-            esac
-            return 1
-        }
-    fi
+    auth_result=$(aws cognito-idp initiate-auth \
+        --auth-flow USER_PASSWORD_AUTH \
+        --client-id "${CLIENT_ID}" \
+        --auth-parameters "USERNAME=${username},PASSWORD=${password}" \
+        --region "${REGION}" \
+        2>&1) || {
+        print_error "Authentication failed: ${auth_result}"
+        return 1
+    }
 
     # Check if we need to respond to a challenge (e.g., NEW_PASSWORD_REQUIRED)
     local challenge_name
@@ -371,33 +193,16 @@ authenticate_user() {
                 local session
                 session=$(echo "${auth_result}" | jq -r '.Session')
 
-                # Must match the flow that produced the session: an admin session
-                # is not valid for the public respond-to-auth-challenge, and the
-                # error names neither flow.
-                if _use_admin_auth; then
-                    auth_result=$(aws cognito-idp admin-respond-to-auth-challenge \
-                        --user-pool-id "${USER_POOL_ID}" \
-                        --client-id "${CLIENT_ID}" \
-                        --challenge-name NEW_PASSWORD_REQUIRED \
-                        --session "${session}" \
-                        --challenge-responses "USERNAME=${username},NEW_PASSWORD=${new_password}" \
-                        --region "${REGION}" \
-                        2>&1) || {
-                        print_error "Password change failed: ${auth_result}"
-                        return 1
-                    }
-                else
-                    auth_result=$(aws cognito-idp respond-to-auth-challenge \
-                        --client-id "${CLIENT_ID}" \
-                        --challenge-name NEW_PASSWORD_REQUIRED \
-                        --session "${session}" \
-                        --challenge-responses "USERNAME=${username},NEW_PASSWORD=${new_password}" \
-                        --region "${REGION}" \
-                        2>&1) || {
-                        print_error "Password change failed: ${auth_result}"
-                        return 1
-                    }
-                fi
+                auth_result=$(aws cognito-idp respond-to-auth-challenge \
+                    --client-id "${CLIENT_ID}" \
+                    --challenge-name NEW_PASSWORD_REQUIRED \
+                    --session "${session}" \
+                    --challenge-responses "USERNAME=${username},NEW_PASSWORD=${new_password}" \
+                    --region "${REGION}" \
+                    2>&1) || {
+                    print_error "Password change failed: ${auth_result}"
+                    return 1
+                }
                 ;;
             *)
                 print_error "Unsupported challenge: ${challenge_name}"
@@ -424,17 +229,8 @@ authenticate_user() {
     return 0
 }
 
-# Refresh tokens using refresh token.
-#
-# Pass --if-needed to skip the refresh when the token on disk is still valid
-# (used by the auto-refresh path in `token`); without it the refresh is
-# unconditional (the explicit `refresh` command). Either way the work runs
-# under the machine-wide lock so concurrent callers cannot rotate the refresh
-# token out from under each other (Issue #4837).
+# Refresh tokens using refresh token
 refresh_tokens() {
-    local if_needed=0
-    [ "${1:-}" = "--if-needed" ] && if_needed=1
-
     load_config
 
     if ! load_tokens; then
@@ -442,136 +238,33 @@ refresh_tokens() {
         return 1
     fi
 
-    if ! _acquire_refresh_lock; then
-        print_error "Could not acquire the refresh lock within ${LOCK_MAX_WAIT_SECONDS}s."
-        print_warning "Another refresh may be stuck — remove ${LOCK_DIR} if no other session is running."
-        return 1
-    fi
-
-    # Re-read under the lock: a process that held it before us may have already
-    # rotated the token while we waited. Reusing our now-stale in-memory refresh
-    # token would fail, so adopt whatever is on disk before deciding.
-    load_tokens
-    if [ "${if_needed}" = "1" ]; then
-        local now
-        now=$(date +%s)
-        if [ -n "${EXPIRES_AT}" ] && [ "${EXPIRES_AT}" != "null" ] && [ "${now}" -lt "$((EXPIRES_AT - 300))" ]; then
-            _release_refresh_lock
-            return 0  # Another process already refreshed; nothing to do.
-        fi
-    fi
-
     print_info "Refreshing tokens..."
 
-    local id_token access_token expires_in new_refresh_token
+    local auth_result
+    auth_result=$(aws cognito-idp initiate-auth \
+        --auth-flow REFRESH_TOKEN_AUTH \
+        --client-id "${CLIENT_ID}" \
+        --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
+        --region "${REGION}" \
+        2>&1) || {
+        print_error "Token refresh failed: ${auth_result}"
+        print_warning "Please run 'login' to re-authenticate."
+        return 1
+    }
 
-    if [ "${REFRESH_VIA:-}" = "gateway" ]; then
-        # Rotation-enabled CLI client (login --web): only the admin API can
-        # refresh it, and the user holds no AWS creds — so the gateway does the
-        # refresh server-side with its own task role. The refresh token in the
-        # POST body is the sole credential, exactly like Cognito's own endpoint.
-        if [ -z "${GATEWAY_URL}" ] || [ "${GATEWAY_URL}" = "null" ]; then
-            _release_refresh_lock
-            print_error "No gateway_url in config; cannot refresh."
-            print_warning "Run 'bg-cognito-auth.sh login --web' to sign in again."
-            return 1
-        fi
-        # Retry TRANSIENT failures a few times before giving up. The refresh
-        # token rotates: the server may have already rotated it (issuing a new
-        # one) even when the response never reached us — a gateway pod rolling
-        # during a deploy, or a brief network drop. Re-presenting the SAME token
-        # is safe *within* Cognito's 60s rotation grace window: it returns the
-        # same freshly-rotated token instead of tripping reuse detection. So a
-        # quick retry lets an interrupted refresh self-heal instead of stranding
-        # the on-disk token (which would log the user out at the next refresh).
-        # The total backoff (2s + 4s) stays well inside the 60s grace. 401 is
-        # terminal (token genuinely dead/expired); other non-200s are not
-        # retried either — only the transient set below.
-        local resp http_code body attempt=0
-        local max_attempts=3
-        while :; do
-            attempt=$((attempt + 1))
-            resp=$(printf '{"refresh_token":"%s"}' "${REFRESH_TOKEN}" | curl -s -w '\n%{http_code}' \
-                -X POST "${GATEWAY_URL%/}/auth/cli/refresh" \
-                -H "Content-Type: application/json" --data @- 2>/dev/null) || resp=$'\n000'
-            http_code="${resp##*$'\n'}"
-            body="${resp%$'\n'*}"
+    local id_token access_token expires_in
+    id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken')
+    access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken')
+    expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn')
 
-            case "${http_code}" in
-                000 | 408 | 425 | 429 | 500 | 502 | 503 | 504)
-                    if [ "${attempt}" -lt "${max_attempts}" ]; then
-                        sleep $((attempt * 2))
-                        continue
-                    fi
-                    ;;
-            esac
-            break
-        done
-
-        if [ "${http_code}" = "401" ]; then
-            # Terminal: the refresh token is dead/rotated-away. Retrying is futile.
-            _release_refresh_lock
-            print_error "Your CLI session has expired."
-            print_warning "Run 'bg-cognito-auth.sh login --web' to sign in again."
-            return 1
-        fi
-        if [ "${http_code}" != "200" ]; then
-            _release_refresh_lock
-            print_error "Token refresh failed (HTTP ${http_code})."
-            print_warning "Please run 'login --web' to re-authenticate."
-            return 1
-        fi
-
-        id_token=$(echo "${body}" | jq -r '.id_token // empty')
-        access_token=$(echo "${body}" | jq -r '.access_token // empty')
-        expires_in=$(echo "${body}" | jq -r '.expires_in // 3600')
-        new_refresh_token=$(echo "${body}" | jq -r '.refresh_token // empty')
-    else
-        local auth_result rc=0
-        if _use_admin_auth; then
-            auth_result=$(aws cognito-idp admin-initiate-auth \
-                --auth-flow REFRESH_TOKEN_AUTH \
-                --user-pool-id "${USER_POOL_ID}" \
-                --client-id "${CLIENT_ID}" \
-                --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
-                --region "${REGION}" \
-                2>&1) || rc=$?
-        else
-            auth_result=$(aws cognito-idp initiate-auth \
-                --auth-flow REFRESH_TOKEN_AUTH \
-                --client-id "${CLIENT_ID}" \
-                --auth-parameters "REFRESH_TOKEN=${REFRESH_TOKEN}" \
-                --region "${REGION}" \
-                2>&1) || rc=$?
-        fi
-
-        if [ "${rc}" -ne 0 ]; then
-            _release_refresh_lock
-            print_error "Token refresh failed: ${auth_result}"
-            print_warning "Please run 'login' to re-authenticate."
-            return 1
-        fi
-
-        id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken')
-        access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken')
-        expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn')
-        new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
-    fi
-
-    # Refresh token may or may not be returned (with rotation it always is).
+    # Refresh token may or may not be returned
+    local new_refresh_token
+    new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
     if [ -z "${new_refresh_token}" ]; then
         new_refresh_token="${REFRESH_TOKEN}"
     fi
 
-    if [ -z "${id_token}" ] || [ "${id_token}" = "null" ] || [ -z "${access_token}" ] || [ "${access_token}" = "null" ]; then
-        _release_refresh_lock
-        print_error "Refresh returned an incomplete token set."
-        print_warning "Please run 'login --web' to re-authenticate."
-        return 1
-    fi
-
     save_tokens "${id_token}" "${access_token}" "${new_refresh_token}" "${expires_in}"
-    _release_refresh_lock
     print_success "Tokens refreshed successfully!"
 
     return 0
@@ -631,7 +324,7 @@ exchange_for_aws_credentials() {
     fi
 
     # Write credentials to AWS credentials file
-    write_aws_credentials "${access_key_id}" "${secret_access_key}" "${session_token}" || return 1
+    write_aws_credentials "${access_key_id}" "${secret_access_key}" "${session_token}"
 
     print_success "AWS credentials obtained successfully!"
     print_info "Credentials expire at: ${expiration}"
@@ -639,28 +332,62 @@ exchange_for_aws_credentials() {
     return 0
 }
 
-# All deployments share these two AWS files. Hold one OS-managed lock across
-# complete-file replacements, including logout; per-deployment refresh locks
-# cannot serialize updates to unrelated profiles in the same file.
-update_aws_profile() {
-    local operation="$1"
-    shift
-    # Credential values travel on stdin, never in a subprocess argument list.
-    printf '%s\n' "$@" | python3 -c '
-import json, sys
-sys.path.insert(0, sys.argv[1])
-from adp_deployments import DeploymentError, update_aws_profile
-try:
-    update_aws_profile(sys.argv[2], sys.argv[3], sys.argv[4], sys.stdin.read().splitlines(),
-                       retired_profiles=json.loads(sys.argv[5]))
-except DeploymentError as exc:
-    sys.stderr.write("[ERROR] " + str(exc) + "\n")
-    sys.exit(1)
-' "$(dirname "$(script_path)")" "${operation}" "${PROFILE_NAME}" "${REGION:-us-east-1}" "${BG_AWS_RETIRED_PROFILES:-[]}"
-}
-
+# Write AWS credentials to credentials file
 write_aws_credentials() {
-    update_aws_profile write "$1" "$2" "$3"
+    local access_key_id="$1"
+    local secret_access_key="$2"
+    local session_token="$3"
+
+    # Backup existing credentials file
+    if [ -f "${AWS_CREDENTIALS_FILE}" ]; then
+        # Remove existing bedrock-gateway profile if present
+        local temp_file
+        temp_file=$(mktemp)
+
+        # Use awk to filter out the existing profile
+        awk -v profile="[${PROFILE_NAME}]" '
+            BEGIN { skip = 0 }
+            /^\[/ { skip = ($0 == profile) }
+            !skip { print }
+        ' "${AWS_CREDENTIALS_FILE}" > "${temp_file}"
+
+        mv "${temp_file}" "${AWS_CREDENTIALS_FILE}"
+    fi
+
+    # Append the new profile
+    cat >> "${AWS_CREDENTIALS_FILE}" << EOF
+
+[${PROFILE_NAME}]
+aws_access_key_id = ${access_key_id}
+aws_secret_access_key = ${secret_access_key}
+aws_session_token = ${session_token}
+EOF
+
+    chmod 600 "${AWS_CREDENTIALS_FILE}"
+
+    # Also update AWS config with region
+    if [ -f "${AWS_CONFIG_FILE}" ]; then
+        # Remove existing profile config
+        local temp_file
+        temp_file=$(mktemp)
+
+        awk -v profile="[profile ${PROFILE_NAME}]" '
+            BEGIN { skip = 0 }
+            /^\[/ { skip = ($0 == profile) }
+            !skip { print }
+        ' "${AWS_CONFIG_FILE}" > "${temp_file}"
+
+        mv "${temp_file}" "${AWS_CONFIG_FILE}"
+    fi
+
+    cat >> "${AWS_CONFIG_FILE}" << EOF
+
+[profile ${PROFILE_NAME}]
+region = ${REGION}
+output = json
+EOF
+
+    chmod 600 "${AWS_CONFIG_FILE}"
 }
 
 # Login command
@@ -770,309 +497,10 @@ cmd_login() {
     echo ""
 }
 
-# Import command (Issue #4145)
-#
-# Seeds the token store from a refresh token the browser login already holds,
-# so a GitHub-provisioned user (who has a random Cognito password they never
-# see) can authenticate the CLI without a password.
-#
-# Deliberately does NOT touch the Identity Pool or ~/.aws/credentials: the
-# `token` subcommand needs only client_id + region + a valid refresh token.
-cmd_import() {
-    local gateway_url=""
-    local refresh_token=""
-    local user_pool_id=""
-    local client_id=""
-    local region=""
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --gateway-url)
-                gateway_url="$2"
-                shift 2
-                ;;
-            --refresh-token)
-                # Supported for scripting. Prefer the stdin path: an argv flag
-                # lands in shell history and in `ps` output.
-                refresh_token="$2"
-                shift 2
-                ;;
-            --user-pool-id)
-                user_pool_id="$2"
-                shift 2
-                ;;
-            --client-id)
-                client_id="$2"
-                shift 2
-                ;;
-            --region)
-                region="$2"
-                shift 2
-                ;;
-            *)
-                print_error "Unknown option: $1" >&2
-                usage
-                exit 1
-                ;;
-        esac
-    done
-
-    if [ -z "${gateway_url}" ]; then
-        print_error "Gateway URL is required (--gateway-url)" >&2
-        exit 1
-    fi
-
-    # Read the refresh token from stdin when not passed as a flag.
-    if [ -z "${refresh_token}" ]; then
-        if [ -t 0 ]; then
-            printf 'Paste your refresh token (input hidden): ' >&2
-            read -rs refresh_token
-            printf '\n' >&2
-        else
-            read -r refresh_token || true
-        fi
-    fi
-
-    if [ -z "${refresh_token}" ]; then
-        print_error "No refresh token supplied. Paste it when prompted, pipe it on stdin, or pass --refresh-token." >&2
-        exit 1
-    fi
-
-    # Discover the Cognito settings the refresh call needs, unless fully overridden.
-    if [ -z "${client_id}" ] || [ -z "${region}" ] || [ -z "${user_pool_id}" ]; then
-        print_info "Discovering Cognito settings from gateway..." >&2
-
-        local discovery_result
-        discovery_result=$(curl -sf "${gateway_url}/.well-known/cognito-config" 2>/dev/null) || true
-
-        if [ -n "${discovery_result}" ] && echo "${discovery_result}" | jq . >/dev/null 2>&1; then
-            user_pool_id=${user_pool_id:-$(echo "${discovery_result}" | jq -r '.user_pool_id // empty')}
-            client_id=${client_id:-$(echo "${discovery_result}" | jq -r '.client_id // empty')}
-            region=${region:-$(echo "${discovery_result}" | jq -r '.region // empty')}
-        fi
-    fi
-
-    if [ -z "${client_id}" ]; then
-        print_error "Could not determine Cognito client_id — pass --client-id, or check that ${gateway_url}/.well-known/cognito-config is reachable" >&2
-        exit 1
-    fi
-    region=${region:-us-east-1}
-
-    # Validate the refresh token BEFORE persisting anything, so a failed import
-    # cannot clobber a working session.
-    print_info "Validating refresh token with Cognito..." >&2
-
-    local auth_result
-    auth_result=$(aws cognito-idp initiate-auth \
-        --auth-flow REFRESH_TOKEN_AUTH \
-        --client-id "${client_id}" \
-        --auth-parameters "REFRESH_TOKEN=${refresh_token}" \
-        --region "${region}" \
-        2>&1) || {
-        if echo "${auth_result}" | grep -q "NotAuthorizedException"; then
-            print_error "Refresh token invalid or expired; sign in again and re-copy it." >&2
-        else
-            print_error "Could not validate the refresh token with Cognito." >&2
-            print_info "Check that --client-id (${client_id}) and --region (${region}) match your deployment." >&2
-        fi
-        exit 1
-    }
-
-    local id_token access_token expires_in
-    id_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.IdToken // empty')
-    access_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.AccessToken // empty')
-    expires_in=$(echo "${auth_result}" | jq -r '.AuthenticationResult.ExpiresIn // empty')
-
-    if [ -z "${access_token}" ] || [ -z "${expires_in}" ]; then
-        print_error "Cognito accepted the refresh token but returned no access token. Nothing was written." >&2
-        exit 1
-    fi
-
-    # REFRESH_TOKEN_AUTH does not normally return a new refresh token — persist
-    # the supplied one, as refresh_tokens() does.
-    local new_refresh_token
-    new_refresh_token=$(echo "${auth_result}" | jq -r '.AuthenticationResult.RefreshToken // empty')
-    if [ -z "${new_refresh_token}" ]; then
-        new_refresh_token="${refresh_token}"
-    fi
-
-    save_config "${gateway_url}" "${user_pool_id}" "${client_id}" "" "${region}"
-    save_tokens "${id_token}" "${access_token}" "${new_refresh_token}" "${expires_in}"
-
-    print_success "CLI credentials imported." >&2
-    {
-        echo ""
-        echo "Next: point Claude Code at the gateway (~/.claude/settings.json):"
-        echo ""
-        echo "  {"
-        echo "    \"env\": { \"ANTHROPIC_BASE_URL\": \"${gateway_url}\" },"
-        echo "    \"apiKeyHelper\": \"bash $(basename "$0") token\","
-        echo "    \"apiKeyHelperTtlMs\": 3300000"
-        echo "  }"
-        echo ""
-        echo "Verify with: $(basename "$0") status"
-    } >&2
-}
-
 # Refresh command
-# Web sign-in: device-authorization-style flow against the gateway's /auth/cli
-# endpoints. No credential is ever displayed or pasted — the browser approves,
-# the CLI polls, tokens arrive minted on the CLI-specific app client (short
-# refresh validity + rotation). This is the primary path for GitHub sign-ins;
-# `import` remains the fallback for headless machines, and `login` (password)
-# for native Cognito users.
-cmd_login_web() {
-    local gateway_url=""
-    local no_browser=0
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --web)
-                shift # the flag that routed us here
-                ;;
-            --gateway-url)
-                gateway_url="$2"
-                shift 2
-                ;;
-            --no-browser)
-                no_browser=1
-                shift
-                ;;
-            *)
-                print_error "Unknown option: $1"
-                usage
-                exit 1
-                ;;
-        esac
-    done
-
-    # Fall back to the stored gateway_url so re-login is just `login --web`.
-    if [ -z "${gateway_url}" ] && [ -f "${CONFIG_FILE}" ]; then
-        gateway_url=$(jq -r '.gateway_url // empty' "${CONFIG_FILE}")
-    fi
-    if [ -z "${gateway_url}" ]; then
-        print_error "Gateway URL is required (--gateway-url)"
-        exit 1
-    fi
-    gateway_url="${gateway_url%/}"
-
-    print_info "Starting web sign-in with ${gateway_url}..."
-    local start_response
-    start_response=$(curl -sf -X POST "${gateway_url}/auth/cli/start" \
-        -H "Content-Type: application/json" -d '{}' 2>/dev/null) || {
-        print_error "Could not start a web sign-in. Is the gateway reachable, and does it support web CLI login?"
-        print_info "Fallback: use 'import' (paste a refresh token from Settings) or 'login' (Cognito password)."
-        exit 1
-    }
-
-    local user_code device_code verification_path expires_in interval
-    user_code=$(echo "${start_response}" | jq -r '.user_code // empty')
-    device_code=$(echo "${start_response}" | jq -r '.device_code // empty')
-    verification_path=$(echo "${start_response}" | jq -r '.verification_path // empty')
-    expires_in=$(echo "${start_response}" | jq -r '.expires_in // 600')
-    interval=$(echo "${start_response}" | jq -r '.interval // 3')
-    if [ -z "${user_code}" ] || [ -z "${device_code}" ]; then
-        print_error "Gateway returned an unexpected response to /auth/cli/start."
-        exit 1
-    fi
-
-    # The dashboard shares the gateway origin; strip the API base path.
-    local verify_url="${gateway_url%/api}${verification_path}"
-
-    echo ""
-    echo "  Confirm this code in your browser:  ${user_code}"
-    echo "  ${verify_url}"
-    echo ""
-
-    if [ "${no_browser}" -eq 0 ]; then
-        if command -v open &> /dev/null; then
-            open "${verify_url}" 2>/dev/null || true
-        elif command -v xdg-open &> /dev/null; then
-            xdg-open "${verify_url}" 2>/dev/null || true
-        fi
-    fi
-    print_info "Waiting for approval (Ctrl-C to cancel)..."
-
-    local deadline=$(($(date +%s) + expires_in))
-    local consecutive_failures=0
-    while [ "$(date +%s)" -lt "${deadline}" ]; do
-        # device_code goes via stdin, not argv — argv is visible in `ps`.
-        local response http_code body
-        response=$(printf '{"device_code":"%s"}' "${device_code}" | curl -s -w '\n%{http_code}' \
-            -X POST "${gateway_url}/auth/cli/token" \
-            -H "Content-Type: application/json" --data @- 2>/dev/null) || response=$'\n000'
-        http_code="${response##*$'\n'}"
-        body="${response%$'\n'*}"
-
-        case "${http_code}" in
-            200)
-                local access_token id_token refresh_token token_expires_in client_id user_pool_id region
-                access_token=$(echo "${body}" | jq -r '.access_token // empty')
-                id_token=$(echo "${body}" | jq -r '.id_token // empty')
-                refresh_token=$(echo "${body}" | jq -r '.refresh_token // empty')
-                token_expires_in=$(echo "${body}" | jq -r '.expires_in // 3600')
-                client_id=$(echo "${body}" | jq -r '.client_id // empty')
-                user_pool_id=$(echo "${body}" | jq -r '.user_pool_id // empty')
-                region=$(echo "${body}" | jq -r '.region // "us-east-1"')
-                if [ -z "${access_token}" ] || [ -z "${refresh_token}" ] || [ -z "${client_id}" ]; then
-                    print_error "Gateway returned an incomplete token response."
-                    exit 1
-                fi
-                # client_id comes from the RESPONSE (the CLI app client), not
-                # from discovery — discovery advertises the SPA client, whose
-                # refresh tokens have a different lifetime and no rotation.
-                # refresh_via=gateway: this client rotates, so refresh must go
-                # through the gateway (the user has no AWS creds for the admin API).
-                save_config "${gateway_url}" "${user_pool_id}" "${client_id}" "" "${region}" "gateway"
-                save_tokens "${id_token}" "${access_token}" "${refresh_token}" "${token_expires_in}"
-                print_success "Signed in. Tokens saved to ${CONFIG_DIR}/ — refresh is automatic from here."
-                return 0
-                ;;
-            202)
-                consecutive_failures=0
-                sleep "${interval}"
-                ;;
-            403)
-                print_error "The sign-in was denied in the browser."
-                exit 1
-                ;;
-            410)
-                print_error "The sign-in request expired or was already used. Run 'login --web' again."
-                exit 1
-                ;;
-            *)
-                # Transient (network blip, pod restart, mint retry). Give up
-                # only after several in a row.
-                consecutive_failures=$((consecutive_failures + 1))
-                if [ "${consecutive_failures}" -ge 5 ]; then
-                    print_error "Gateway kept failing while polling (last HTTP ${http_code}). Try again."
-                    exit 1
-                fi
-                sleep "${interval}"
-                ;;
-        esac
-    done
-
-    print_error "Timed out waiting for browser approval. Run 'login --web' again."
-    exit 1
-}
-
 cmd_refresh() {
     if ! refresh_tokens; then
         exit 1
-    fi
-
-    # The web-login CLI client (refresh_via=gateway) deliberately holds NO AWS
-    # credentials — there is no Identity Pool to exchange against. Running the
-    # exchange on that path always fails with "Invalid length for parameter
-    # IdentityPoolId, value: 0" and makes `refresh` (and `adp refresh`) exit
-    # non-zero even though the token refresh above fully succeeded — which trips
-    # any health check or wrapper that keys off the exit code. Refreshing the
-    # gateway tokens IS the whole job here, so stop after it.
-    load_config
-    if [ "${REFRESH_VIA:-}" = "gateway" ] || [ -z "${IDENTITY_POOL_ID:-}" ] || [ "${IDENTITY_POOL_ID:-}" = "null" ]; then
-        print_success "Tokens refreshed successfully!"
-        return 0
     fi
 
     if ! exchange_for_aws_credentials; then
@@ -1091,7 +519,19 @@ cmd_logout() {
         rm -f "${TOKEN_FILE}"
     fi
 
-    update_aws_profile delete
+    # Remove credentials profile
+    if [ -f "${AWS_CREDENTIALS_FILE}" ]; then
+        local temp_file
+        temp_file=$(mktemp)
+
+        awk -v profile="[${PROFILE_NAME}]" '
+            BEGIN { skip = 0 }
+            /^\[/ { skip = ($0 == profile) }
+            !skip { print }
+        ' "${AWS_CREDENTIALS_FILE}" > "${temp_file}"
+
+        mv "${temp_file}" "${AWS_CREDENTIALS_FILE}"
+    fi
 
     print_success "Logged out successfully."
 }
@@ -1169,10 +609,8 @@ cmd_token() {
     local expiry_with_buffer=$((EXPIRES_AT - buffer))
 
     if [ "${current_time}" -ge "${expiry_with_buffer}" ]; then
-        # Token expired or about to expire - try to refresh. --if-needed makes
-        # this a no-op if a concurrent process (the Codex proxy, another Claude
-        # Code call) already refreshed while we waited on the lock (Issue #4837).
-        if ! refresh_tokens --if-needed >/dev/null 2>&1; then
+        # Token expired or about to expire - try to refresh
+        if ! refresh_tokens >/dev/null 2>&1; then
             echo "Token expired. Run: bg-cognito-auth.sh login" >&2
             exit 1
         fi
@@ -1182,121 +620,7 @@ cmd_token() {
 
     # Output just the access token to stdout (no newline for clean output)
     # This is used by Claude Code's apiKeyHelper configuration
-    if [ -n "${ADP_TENANT_ID:-}" ]; then
-        printf "%s" "${ACCESS_TOKEN}" | python3 "$(dirname "$(script_path)")/adp-tenant.py" --wrap-token
-    else
-        printf "%s" "${ACCESS_TOKEN}"
-    fi
-}
-
-# Serve command (Issue #4154)
-#
-# Starts a localhost-only proxy that injects a freshly-refreshed token into
-# every request, giving Codex (and any client with no apiKeyHelper-style hook)
-# zero-touch auth. Codex reads its credential from an env var once at launch, so
-# without this a session that outlives the 60-minute token dies with 401s.
-#
-# This wrapper owns arg parsing, config validation and the pidfile; the socket
-# loop lives in bg-gateway-proxy.py. The proxy obtains tokens by calling this
-# script's `token` subcommand, so there is exactly one refresh implementation.
-cmd_serve() {
-    # A named deployment defaults to an OS-assigned port (Issue #5413): three
-    # deployments cannot all own 9191, and the caller reads the real port back
-    # from the identity file the proxy publishes after binding. A legacy
-    # single-deployment run keeps 9191, which is what every existing
-    # config.toml, doc and the /setup page already say.
-    local port="${DEFAULT_PROXY_PORT}"
-    if { [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; } || [ -n "${ADP_TENANT_ID:-}" ]; then
-        port=0
-        if [ -f "${PROXY_RUNTIME_DIR}/setup-port.json" ]; then
-            port="$(jq -er '.port' "${PROXY_RUNTIME_DIR}/setup-port.json")"
-        fi
-    fi
-
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --port)
-                port="$2"
-                shift 2
-                ;;
-            --foreground)
-                # Accepted for explicitness; foreground is the only mode.
-                # Daemonization is a deliberate non-goal — use your shell's job
-                # control or a terminal multiplexer.
-                shift
-                ;;
-            *)
-                print_error "Unknown option: $1" >&2
-                usage
-                exit 1
-                ;;
-        esac
-    done
-
-    # 0 is now legal and means "let the OS assign a free port" (Issue #5413).
-    if ! [[ "${port}" =~ ^[0-9]+$ ]] || [ "${port}" -gt 65535 ]; then
-        print_error "Invalid --port: ${port} (0 means let the OS choose)" >&2
-        exit 1
-    fi
-
-    if ! command -v python3 &> /dev/null; then
-        print_error "python3 is required for 'serve' (macOS and Linux both ship it)." >&2
-        exit 1
-    fi
-
-    if [ ! -f "${CONFIG_FILE}" ]; then
-        print_error "Not configured. Run 'bg-cognito-auth.sh import' (GitHub login) or 'login' first." >&2
-        exit 1
-    fi
-    load_config
-
-    if [ -z "${GATEWAY_URL}" ] || [ "${GATEWAY_URL}" = "null" ]; then
-        print_error "No gateway_url in ${CONFIG_FILE}. Run 'bg-cognito-auth.sh import' or 'login' first." >&2
-        exit 1
-    fi
-
-    local proxy_script
-    proxy_script="$(dirname "$(script_path)")/${PROXY_SCRIPT_NAME}"
-    if [ ! -f "${proxy_script}" ]; then
-        print_error "Proxy script not found at ${proxy_script} — copy it alongside $(basename "$0")." >&2
-        exit 1
-    fi
-
-    # A reused PID may belong to an unrelated process. Only durable process
-    # identity and matching deployment metadata prove ownership.
-    local existing_pid
-    existing_pid=$(python3 "$(dirname "$(script_path)")/adp_deployments.py" proxy-owner \
-        "${PROXY_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${GATEWAY_URL}") || exit $?
-    if [ -n "${existing_pid}" ]; then
-        print_error "A gateway proxy is already running (pid ${existing_pid}). Stop the original proxy session first." >&2
-        exit 1
-    fi
-    rm -f "${PROXY_PID_FILE}" "${PROXY_IDENTITY_FILE}"
-
-    # The runtime dir may not exist on a named deployment's first serve.
-    mkdir -p "${PROXY_RUNTIME_DIR}" 2>/dev/null || true
-    echo "$$" > "${PROXY_PID_FILE}"
-    chmod 600 "${PROXY_PID_FILE}"
-
-    # exec so the pid we just recorded is the pid of the running proxy, and so
-    # Ctrl-C reaches the Python process directly instead of a bash wrapper.
-    exec python3 "${proxy_script}" \
-        --gateway-url "${GATEWAY_URL}" \
-        --auth-helper "$(script_path)" \
-        --port "${port}" \
-        --pidfile "${PROXY_PID_FILE}" \
-        --identity-file "${PROXY_IDENTITY_FILE}" \
-        --deployment-id "${ADP_DEPLOYMENT_ID:-}" \
-        --deployment "${ADP_DEPLOYMENT_NAME:-}"
-}
-
-# Absolute path to this script, so `serve` can find its sibling proxy file and
-# tell the proxy how to call back into `token`.
-script_path() {
-    local source="${BASH_SOURCE[0]}"
-    local dir
-    dir="$(cd "$(dirname "${source}")" && pwd)"
-    echo "${dir}/$(basename "${source}")"
+    printf "%s" "${ACCESS_TOKEN}"
 }
 
 # Usage information
@@ -1309,13 +633,10 @@ Usage:
 
 Commands:
     login       Authenticate with Cognito and obtain AWS credentials
-    login --web Sign in via the browser — approve once, no password, no copy-paste
-    import      Seed the token store from a browser-login refresh token (no password)
     refresh     Refresh tokens and AWS credentials
     logout      Remove stored tokens and credentials
     status      Show current authentication status
     token       Output current access token (for apiKeyHelper - Issue #119)
-    serve       Run a localhost auth proxy for Codex (Issue #4154)
 
 Login Options:
     --gateway-url <url>       Gateway URL (required)
@@ -1324,29 +645,9 @@ Login Options:
     --identity-pool-id <id>   Cognito Identity Pool ID
     --region <region>         AWS region (default: us-east-1)
 
-Web Login Options (login --web):
-    --gateway-url <url>       Gateway URL (falls back to the stored one on re-login)
-    --no-browser              Print the approval URL instead of opening a browser
-
-Import Options (Issue #4145):
-    --gateway-url <url>       Gateway URL (required)
-    --refresh-token <token>   Refresh token (optional; read from stdin if omitted)
-    --client-id <id>          Cognito Client ID (else discovered from the gateway)
-    --user-pool-id <id>       Cognito User Pool ID (else discovered from the gateway)
-    --region <region>         AWS region (else discovered; default: us-east-1)
-
-Serve Options (Issue #4154):
-    --port <port>             Loopback port to listen on (default: ${DEFAULT_PROXY_PORT})
-    --foreground              Run in the foreground (default; accepted for explicitness)
-
 Examples:
     # Interactive login (discovers settings from gateway)
     $(basename "$0") login --gateway-url https://gateway.company.com
-
-    # Seed the CLI after signing in with GitHub in the browser.
-    # Copy the refresh token from Settings > Connect CLI and paste it when
-    # prompted — do NOT pass it as a flag on a shared machine.
-    $(basename "$0") import --gateway-url https://gateway.company.com/api
 
     # Login with explicit settings
     $(basename "$0") login --gateway-url https://gateway.company.com \\
@@ -1362,11 +663,6 @@ Examples:
 
     # Get access token for apiKeyHelper (Issue #119)
     $(basename "$0") token
-
-    # Zero-touch auth for Codex: run the local proxy, then launch codex.
-    # Codex reads its key once at launch, so a static token dies after 60 min;
-    # the proxy injects a fresh one per request instead. See cli/README.md.
-    $(basename "$0") serve --port ${DEFAULT_PROXY_PORT}
 
 After authentication, use Claude Code with:
     CLAUDE_CODE_USE_BEDROCK=1 claude
@@ -1387,58 +683,8 @@ EOF
 }
 
 # Main entry point
-resolve_auth_deployment() {
-    local resolver="$(dirname "$(script_path)")/adp_deployments.py"
-    local registry="${ADP_HOME:-${HOME}/.adp}/deployments.json"
-    if [ ! -f "${resolver}" ]; then
-        if [ -n "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}" ] || [ -f "${registry}" ]; then
-            print_error "Deployment resolver is missing. Reinstall the CLI before using this session." >&2
-            exit 1
-        fi
-        return
-    fi
-    if [ -z "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}" ] && [ ! -f "${registry}" ] && [ ! -f "${CONFIG_FILE}" ]; then
-        return
-    fi
-    local exports
-    exports=$(python3 "${resolver}" resolve --format env --validate-config --lease-pid "$$") || exit $?
-    eval "${exports}"
-    CONFIG_DIR="${BG_CONFIG_DIR}"
-    CONFIG_FILE="${CONFIG_DIR}/config.json"
-    TOKEN_FILE="${CONFIG_DIR}/tokens.json"
-    PROFILE_NAME="${BG_AWS_PROFILE}"
-    PROXY_RUNTIME_DIR="${ADP_RUNTIME_DIR}"
-    PROXY_PID_FILE="${PROXY_RUNTIME_DIR}/proxy.pid"
-    PROXY_IDENTITY_FILE="${PROXY_RUNTIME_DIR}/proxy.json"
-    LOCK_DIR="${CONFIG_DIR}/refresh.lock"
-
-    # Validate every supplied URL before discovery, authentication, or writes.
-    # In particular a second flag cannot replace an already-validated first one.
-    local seen=0 requested
-    while [ $# -gt 0 ]; do
-        if [ "$1" = "--gateway-url" ]; then
-            if [ "${seen}" = 1 ] || [ -z "${2:-}" ]; then
-                print_error "Supply --gateway-url exactly once with a value." >&2
-                exit 1
-            fi
-            seen=1
-            requested=$(python3 "${resolver}" canonicalize "$2") || exit $?
-            if [ -n "${ADP_DEPLOYMENT_URL:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ] && [ "${requested}" != "${ADP_DEPLOYMENT_URL}" ]; then
-                print_error "Gateway URL does not match the selected deployment." >&2
-                exit 1
-            fi
-            shift
-        fi
-        shift
-    done
-}
-
 main() {
     check_dependencies
-    case "${1:-}" in
-        help|--help|-h|"") ;;
-        *) resolve_auth_deployment "$@" ;;
-    esac
     init_config
 
     local command="${1:-}"
@@ -1446,16 +692,7 @@ main() {
 
     case "${command}" in
         login)
-            # `login --web` is the browser-approval flow (no password, no
-            # copy-paste); bare `login` remains the Cognito-password flow.
-            if [[ " $* " == *" --web "* ]]; then
-                cmd_login_web "$@"
-            else
-                cmd_login "$@"
-            fi
-            ;;
-        import)
-            cmd_import "$@"
+            cmd_login "$@"
             ;;
         refresh)
             cmd_refresh "$@"
@@ -1468,9 +705,6 @@ main() {
             ;;
         token)
             cmd_token "$@"
-            ;;
-        serve)
-            cmd_serve "$@"
             ;;
         help|--help|-h)
             usage

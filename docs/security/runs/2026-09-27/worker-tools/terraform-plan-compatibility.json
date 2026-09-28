@@ -1,1 +1,0 @@
-{"terraform_version": "1.15.7", "old_plan_applied_by_fixed_binary": "passed", "fixed_plan_applied_by_old_binary": "passed", "state_and_output_roundtrip": "passed", "network": "none", "uid": 1001, "BG_CONFIG_DIR": "isolated"}

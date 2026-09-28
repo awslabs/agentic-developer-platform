@@ -18,6 +18,7 @@ from src.proxy.exceptions import (
 )
 from src.proxy.format_translator import FormatTranslator
 from src.proxy.model_resolver import ModelResolver
+from src.proxy.routes import router
 from src.proxy.schemas import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
@@ -31,6 +32,7 @@ from src.proxy.schemas import (
     ProxyRequest,
     ProxyResponse,
 )
+from src.proxy.service import ProxyService
 from src.proxy.stream_handler import StreamHandler
 
 __all__ = [
@@ -65,17 +67,3 @@ __all__ = [
     "ProxyError",
     "BedrockInvocationError",
 ]
-
-
-def __getattr__(name: str):
-    # Policy-only consumers (including the tick Lambda) need ModelResolver
-    # without initializing HTTP authentication or budget routes.
-    if name == "router":
-        from src.proxy.routes import router
-
-        return router
-    if name == "ProxyService":
-        from src.proxy.service import ProxyService
-
-        return ProxyService
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

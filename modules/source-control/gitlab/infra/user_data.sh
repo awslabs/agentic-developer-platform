@@ -19,23 +19,7 @@ apt-get install -y curl openssh-server ca-certificates tzdata perl postfix
 # -----------------------------------------------------------------------------
 # Install GitLab CE Omnibus repository
 # -----------------------------------------------------------------------------
-# The endpoint is mutable. Pin reviewed content locally and refuse execution if
-# GitLab changes it; updating this digest requires reviewing the new script.
-GITLAB_REPO_SHA256="3f6a403e8564c5c2d6d02d6deb3ba8af7a47ab0df986f86e1c4c327162e8d30b"
-GITLAB_REPO_SCRIPT=$(mktemp /tmp/gitlab-repo-setup.XXXXXX)
-trap 'rm -f "$GITLAB_REPO_SCRIPT"' EXIT
-if ! curl -fsSL https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh -o "$GITLAB_REPO_SCRIPT"; then
-  echo "ERROR: Failed to download GitLab repository setup script" >&2
-  rm -f "$GITLAB_REPO_SCRIPT"
-  exit 1
-fi
-if ! printf '%s  %s\n' "$GITLAB_REPO_SHA256" "$GITLAB_REPO_SCRIPT" | sha256sum --check --status; then
-  echo "ERROR: GitLab repository installer checksum mismatch; refusing execution" >&2
-  rm -f "$GITLAB_REPO_SCRIPT"
-  exit 1
-fi
-bash "$GITLAB_REPO_SCRIPT"
-rm -f "$GITLAB_REPO_SCRIPT"
+curl -fsSL https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | bash
 
 # -----------------------------------------------------------------------------
 # Install GitLab CE
@@ -57,27 +41,8 @@ nginx['proxy_set_headers'] = {
   "X-Forwarded-Ssl" => "on"
 }
 
-# Monitoring endpoint allowlist (Issue #5685).
-#
-# Scoped to the VPC CIDR instead of 0.0.0.0/0. This governs GitLab's own
-# monitoring endpoints (/-/metrics, /-/metrics/system, /-/readiness and
-# /-/liveness) at the Rails layer.
-#
-# Be precise about what this does and does not do: every request arrives via the
-# ALB, so Rails sees the ALB's private address as the client either way — this
-# narrowing does NOT by itself refuse an anonymous public request. The control
-# that does is the fixed-response rules on the ALB's CloudFront-facing HTTP
-# listener (see alb.tf), which refuse the /gitlab-prefixed public form of these
-# paths while the VPC-only HTTPS listener remains available to operators.
-#
-# It is still worth setting: the config no longer declares the endpoints
-# world-readable, and it bounds the exposure if the instance is ever reachable
-# by a route that does not pass through the ALB.
-#
-# NOTE: the ALB target-group health check probes /-/health, which nginx answers
-# directly via custom_gitlab_server_config below. It does not pass through this
-# Rails allowlist, so narrowing this cannot affect target health.
-gitlab_rails['monitoring_whitelist'] = ['${vpc_cidr_block}']
+# Health check endpoint (used by ALB target group)
+gitlab_rails['monitoring_whitelist'] = ['0.0.0.0/0']
 
 # Custom nginx health endpoint for ALB health checks.
 # Returns 200 directly from nginx regardless of Host header,

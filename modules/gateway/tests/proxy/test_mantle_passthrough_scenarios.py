@@ -22,7 +22,6 @@ Patterns (StubAuth, make_service, httpx.MockTransport, build_app) mirror
 test_mantle_route.py so the two files read consistently.
 """
 
-import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -36,8 +35,6 @@ from src.proxy.mantle_service import MantlePassthroughService, MantleResponse, M
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.routes import get_mantle_service, get_token_context, router, set_mantle_service, set_model_resolver
 from src.shared.schemas.auth import TokenContext
-
-pytestmark = pytest.mark.usefixtures("unmapped_mantle_routing")
 
 MANTLE_URL = "https://bedrock-mantle.us-east-1.api.aws"
 
@@ -188,7 +185,7 @@ class TestMeteringAccuracy:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
             captured.update(usage=dict(usage), model=model, status=status_code, request_id=request_id)
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -211,7 +208,7 @@ class TestMeteringAccuracy:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
             captured.update(usage=dict(usage), status=status_code)
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -283,7 +280,7 @@ class TestStreamingIntegrity:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
             captured.update(usage=dict(usage))
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -295,7 +292,7 @@ class TestStreamingIntegrity:
         """Run a streaming call, returning (received_bytes, captured_usage)."""
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
             captured.update(usage=dict(usage))
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -380,11 +377,9 @@ class TestStreamingIntegrity:
 
         from src.proxy.mantle_service import _MAX_SNIFF_BUFFER_BYTES
 
-        # A gigantic data line crosses the cap before a later record finishes
-        # the response. Missing terminal events are covered by lifecycle tests.
+        # A gigantic data: line with no trailing newline → never completes.
         oversized = b"data: " + b"a" * (_MAX_SNIFF_BUFFER_BYTES + 1024)
         chunks = [oversized[i : i + 65536] for i in range(0, len(oversized), 65536)]
-        chunks.append(b'\n\ndata: {"type":"response.completed","response":{}}\n\n')
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, stream=ChunkedStream(chunks))
@@ -403,7 +398,6 @@ class TestStreamingIntegrity:
             b"data: not-json-at-all\n\n",
             b"event: ping\n\n",
             b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
-            b'data: {"type":"response.completed","response":{}}\n\n',
         ]
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -507,7 +501,7 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
             captured.update(status_code=status_code, usage=dict(usage))
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -526,7 +520,7 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
             captured.update(status_code=status_code)
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -549,7 +543,7 @@ class TestStreamingUpstreamErrors:
         svc = make_service(handler, no_log=False)
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
             captured.update(usage=dict(usage), status_code=status_code)
 
         svc._log_usage = spy  # type: ignore[method-assign]
@@ -575,159 +569,3 @@ class TestStreamingUpstreamErrors:
         assert resp.status_code == 403
         assert resp.content == err
         assert resp.headers.get("x-request-id")
-
-
-# ============================================================================
-# Inference-profile rewrite — bedrock-runtime serves OpenAI models only via
-# cross-region inference profiles, so the forwarded body's model id is prefixed
-# (openai.gpt-6-astra → us.openai.gpt-6-astra) while metering keeps the bare id.
-# ============================================================================
-
-
-def _profile_service(handler, prefix: str, *, on_demand_models: str = "openai.gpt-oss*", no_log: bool = True) -> MantlePassthroughService:
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    svc = MantlePassthroughService(
-        StubAuth(),
-        MANTLE_URL,
-        inference_profile_prefix=prefix,
-        on_demand_models=on_demand_models,
-        http_client=client,
-    )
-    if no_log:
-        svc._log_usage = AsyncMock()  # type: ignore[method-assign]
-    return svc
-
-
-class TestInferenceProfileRewrite:
-    async def test_bare_openai_model_is_prefixed_in_forwarded_body(self, token_context):
-        # The upstream must receive the inference-profile id; a bare on-demand id
-        # would be rejected by bedrock-runtime ("on-demand throughput isn't
-        # supported").
-        seen = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["forwarded"] = json.loads(request.content)
-            return httpx.Response(200, json={"output_text": "ok"})
-
-        svc = _profile_service(handler, "us")
-        body = b'{"model":"openai.gpt-6-astra","input":"hi"}'
-        await svc.create_response(body, token_context, stream=False, model="openai.gpt-6-astra")
-
-        assert seen["forwarded"]["model"] == "us.openai.gpt-6-astra"
-        # The rest of the body is untouched.
-        assert seen["forwarded"]["input"] == "hi"
-
-    async def test_metering_and_pricing_keep_the_bare_id(self, token_context):
-        # The rewrite is invisible to metering: usage_logs records the bare id the
-        # caller sent, not the profile-qualified one forwarded upstream.
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"output_text": "ok", "usage": {"input_tokens": 5, "output_tokens": 7}})
-
-        svc = _profile_service(handler, "us", no_log=False)
-        captured = {}
-
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
-            captured.update(model=model)
-
-        svc._log_usage = spy  # type: ignore[method-assign]
-        body = b'{"model":"openai.gpt-6-astra","input":"hi"}'
-        await svc.create_response(body, token_context, stream=False, model="openai.gpt-6-astra")
-
-        assert captured["model"] == "openai.gpt-6-astra"
-
-    async def test_already_profiled_id_is_not_double_prefixed(self, token_context):
-        # A caller that already sends a fully-qualified profile id must not get a
-        # second prefix (us.us.openai.* would 404).
-        seen = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["forwarded"] = json.loads(request.content)
-            return httpx.Response(200, json={"output_text": "ok"})
-
-        svc = _profile_service(handler, "us")
-        body = b'{"model":"global.openai.gpt-6-astra","input":"hi"}'
-        await svc.create_response(body, token_context, stream=False, model="global.openai.gpt-6-astra")
-
-        assert seen["forwarded"]["model"] == "global.openai.gpt-6-astra"
-
-    async def test_no_prefix_configured_forwards_body_byte_for_byte(self, token_context):
-        # With the rewrite disabled (prefix ""), the body is forwarded unchanged —
-        # preserving the pure-passthrough contract for hosts that map bare ids.
-        seen = {}
-        body = b'{"model":"openai.gpt-5.6-sol","input":"hi"}'
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["raw"] = request.content
-            return httpx.Response(200, json={"output_text": "ok"})
-
-        svc = _profile_service(handler, "")
-        await svc.create_response(body, token_context, stream=False, model="openai.gpt-5.6-sol")
-
-        assert seen["raw"] == body
-
-    async def test_streaming_path_also_rewrites_forwarded_model(self, token_context):
-        seen = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["forwarded"] = json.loads(request.content)
-            return httpx.Response(200, stream=httpx.ByteStream(b"data: [DONE]\n\n"))
-
-        svc = _profile_service(handler, "us")
-        body = b'{"model":"openai.gpt-6-astra","input":"hi","stream":true}'
-        result = await svc.create_response(body, token_context, stream=True, model="openai.gpt-6-astra")
-        _ = [c async for c in result]
-
-        assert seen["forwarded"]["model"] == "us.openai.gpt-6-astra"
-
-    @pytest.mark.parametrize(
-        "model",
-        ["openai.gpt-6-astra", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna"],
-    )
-    async def test_all_flagship_profile_only_models_are_prefixed(self, token_context, model):
-        # The whole gpt-5.6/gpt-6 family is inference-profile-only on bedrock-runtime;
-        # every one must be rewritten so it isn't just Astra that works.
-        seen = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["forwarded"] = json.loads(request.content)
-            return httpx.Response(200, json={"output_text": "ok"})
-
-        svc = _profile_service(handler, "us")
-        body = json.dumps({"model": model, "input": "hi"}).encode()
-        await svc.create_response(body, token_context, stream=False, model=model)
-
-        assert seen["forwarded"]["model"] == f"us.{model}"
-
-    @pytest.mark.parametrize(
-        "model",
-        ["openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0", "openai.gpt-oss-safeguard-120b"],
-    )
-    async def test_on_demand_models_are_not_prefixed(self, token_context, model):
-        # gpt-oss is on-demand (bare id, no inference profile) — prefixing it would
-        # produce an invalid id. It must be forwarded with the bare id unchanged.
-        seen = {}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["forwarded"] = json.loads(request.content)
-            return httpx.Response(200, json={"output_text": "ok"})
-
-        svc = _profile_service(handler, "us")
-        body = json.dumps({"model": model, "input": "hi"}).encode()
-        await svc.create_response(body, token_context, stream=False, model=model)
-
-        assert seen["forwarded"]["model"] == model
-
-    async def test_non_json_body_forwarded_unchanged(self, token_context):
-        # A body that isn't JSON (shouldn't happen post-route-parse, but the
-        # service must be defensive) is forwarded as-is rather than crashing.
-        seen = {}
-        body = b"not json at all"
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen["raw"] = request.content
-            return httpx.Response(200, json={"output_text": "ok"})
-
-        svc = _profile_service(handler, "us")
-        await svc.create_response(body, token_context, stream=False, model="openai.gpt-6-astra")
-
-        assert seen["raw"] == body

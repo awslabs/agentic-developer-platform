@@ -5,7 +5,7 @@
 # execution via `runtimeClassName: gvisor`. Also grants RBAC for:
 # - agent-scaledjob-sa (adp-agents): get/list/watch runtimeclasses (pod needs
 #   to reference it)
-# - adp:trusted-deployment: runtimeclass lifecycle (trusted deployment kubectl
+# - github-runner-sa (arc-runners): full CRUD on runtimeclasses (CI/CD kubectl
 #   apply for this file's null_resource)
 #
 # Applied via null_resource + kubectl (same pattern as nodepool-packer.tf):
@@ -68,7 +68,7 @@ EOF
 
   # Best-effort destroy — remove the RuntimeClass on terraform destroy
   provisioner "local-exec" {
-    when = destroy
+    when       = destroy
     environment = {
       KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
     }
@@ -132,9 +132,9 @@ resource "kubernetes_cluster_role_binding" "agent_runtimeclass_reader" {
 }
 
 # -----------------------------------------------------------------------------
-# RBAC: admitted trusted-deployment group — runtimeclass lifecycle
+# RBAC: github-runner-sa — full CRUD on runtimeclasses (CI/CD)
 # -----------------------------------------------------------------------------
-# The separately admitted deployment identity runs `kubectl apply` for the
+# The CI runner (github-runner-sa in arc-runners) runs `kubectl apply` for the
 # RuntimeClass manifest via the null_resource above. It needs create/update/patch
 # permissions on cluster-scoped runtimeclasses. Modeled on the PriorityClass
 # RBAC pattern in warm-pool.tf.
@@ -184,9 +184,9 @@ resource "kubernetes_cluster_role_binding" "runner_runtimeclass_manage" {
   }
 
   subject {
-    kind      = "Group"
-    name      = "adp:trusted-deployment"
-    api_group = "rbac.authorization.k8s.io"
+    kind      = "ServiceAccount"
+    name      = "github-runner-sa"
+    namespace = "arc-runners"
   }
 
   depends_on = [module.eks]

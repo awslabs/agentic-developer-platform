@@ -9,7 +9,6 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.exc import OperationalError
 
 from src.budget.enforcement_service import BudgetEnforcementService
 from src.budget.pricing import PricingService
@@ -229,28 +228,19 @@ class TestBudgetEnforcementService:
         assert result.allowed is True
 
     @pytest.mark.asyncio
-    async def test_check_budget_fails_closed_when_mode_is_closed(self, token_context):
-        """Test that budget check blocks on DB errors when mode is "closed".
-
-        Issue #4075: this test used to be named ``..._by_default`` and its
-        inline comment claimed ``"closed"`` was "Default behavior" — but it
-        patches ``budget_config`` and sets the mode explicitly, so it never
-        reads the shipped default and would have stayed green either way. It is
-        renamed to describe what it actually exercises (an explicitly-closed
-        mode). The real default is asserted against an unpatched
-        ``BudgetConfig()`` in ``tests/budget/test_fail_closed_enforcement.py``.
-        """
+    async def test_check_budget_fails_closed_on_error_by_default(self, token_context):
+        """Test that budget check fails closed on database errors by default."""
+        # Test by mocking _get_session to raise an exception
         service = BudgetEnforcementService()
 
-        # An infrastructure fault — the class the grace window is scoped to.
-        db_error = OperationalError("SELECT 1", {}, Exception("Database error"))
+        # Patch the internal method to simulate a database error
+        async def mock_get_session_error():
+            raise Exception("Database error")
 
-        with patch.object(service, "_get_session", side_effect=db_error):
+        with patch.object(service, "_get_session", side_effect=mock_get_session_error):
             with patch("src.budget.enforcement_service.budget_config") as mock_config:
                 mock_config.budget_check_enabled = True
-                mock_config.budget_fail_mode = "closed"
-                mock_config.budget_fail_open_grace_seconds = 0  # no grace: steady state
-                mock_config.budget_grace_window_backend = "process"
+                mock_config.budget_fail_mode = "closed"  # Default behavior
                 result = await service.check_budget_hierarchy(token_context, estimated_cost=Decimal("1.00"))
 
         # Should fail closed - block the request
@@ -260,11 +250,14 @@ class TestBudgetEnforcementService:
     @pytest.mark.asyncio
     async def test_check_budget_fails_open_when_configured(self, token_context):
         """Test that budget check fails open when configured to do so."""
+        # Test by mocking _get_session to raise an exception
         service = BudgetEnforcementService()
 
-        db_error = OperationalError("SELECT 1", {}, Exception("Database error"))
+        # Patch the internal method to simulate a database error
+        async def mock_get_session_error():
+            raise Exception("Database error")
 
-        with patch.object(service, "_get_session", side_effect=db_error):
+        with patch.object(service, "_get_session", side_effect=mock_get_session_error):
             with patch("src.budget.enforcement_service.budget_config") as mock_config:
                 mock_config.budget_check_enabled = True
                 mock_config.budget_fail_mode = "open"  # Configure to fail open
@@ -285,45 +278,6 @@ class TestBudgetEnforcementService:
         assert entities[1] == (EntityType.TEAM, "team-789")
         assert entities[2] == (EntityType.DEPARTMENT, "dept-012")
         assert entities[3] == (EntityType.ORGANIZATION, "org-456")
-
-    def test_get_entity_hierarchy_uses_attributed_org(self):
-        """Issue #4132: the budget denominator follows ATTRIBUTION, not the authenticated org.
-
-        Billing-integrity guard. An internal agent running on behalf of
-        customer-tenant-123 must consume THAT tenant's budget, not __platform__'s.
-        Had the attribution rename left this reader on org_id, every hosted run
-        would have billed the platform and per-tenant caps would go unenforced.
-        """
-        service = BudgetEnforcementService()
-
-        context = TokenContext(
-            user_id="scaledjob-worker",
-            org_id="__platform__",
-            team_id="__agents__",
-            department_id="",
-            account_type="service",
-            is_admin=False,
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-            scope="internal",
-            attributed_org_id="customer-tenant-123",
-        )
-
-        entities = service._get_entity_hierarchy(context)
-
-        assert (EntityType.ORGANIZATION, "customer-tenant-123") in entities
-        assert (EntityType.ORGANIZATION, "__platform__") not in entities
-
-    def test_get_entity_hierarchy_defaults_to_authenticated_org(self, token_context):
-        """Issue #4132: with no attribution override, the denominator is unchanged.
-
-        Regression guard for every non-internal caller.
-        """
-        service = BudgetEnforcementService()
-
-        assert token_context.attributed_org_id == "org-456"
-        entities = service._get_entity_hierarchy(token_context)
-
-        assert (EntityType.ORGANIZATION, "org-456") in entities
 
     def test_get_entity_hierarchy_service_account(self, service_account_context):
         """Test entity hierarchy for service accounts."""

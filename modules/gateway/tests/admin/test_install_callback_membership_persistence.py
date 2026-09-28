@@ -20,6 +20,7 @@ _create_installer_membership.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,29 +30,23 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
+    _PROVIDER_GITHUB_INSTALL,
     install_callback,
 )
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
-from src.shared.models.vault import UserIdentity
-from tests.admin import install_setup_fixtures as setup_fixtures
-from tests.admin.install_setup_fixtures import (
-    bind_real_org_control,
-    issue_install_nonce,
-)
+from src.shared.models.vault import MagicLinkNonce
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-offline_setup_boundaries = setup_fixtures.offline_setup_boundaries
-
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture(autouse=True)
-def _configure_github_app(monkeypatch, offline_setup_boundaries):
+def _configure_github_app(monkeypatch):
     """Block Secrets Manager and DDB in unit tests."""
     from src.admin.connections.github_app_provider import _reset_provider_for_testing
 
@@ -61,11 +56,11 @@ def _configure_github_app(monkeypatch, offline_setup_boundaries):
         "src.admin.connections.github_app_provider.boto3.client",
         side_effect=RuntimeError("Secrets Manager blocked in unit tests"),
     ):
-        with (
-            patch("src.admin.connections.service._write_installation_identity_index", new_callable=AsyncMock, return_value=None),
-            patch("src.admin.connections.bot_identity.IdentityIndexWriter") as writer,
+        with patch(
+            "src.admin.connections.service._write_installation_identity_index",
+            new_callable=AsyncMock,
+            return_value=None,
         ):
-            writer.return_value.put_user_identity = AsyncMock(return_value=True)
             yield
     _reset_provider_for_testing(None)
 
@@ -100,7 +95,7 @@ def _mock_github_client() -> MagicMock:
             "id": 124731131,
             "account": {
                 "type": "Organization",
-                "login": "acme-test",
+                "login": "sophos-test",
                 "id": 98765,
             },
             "repository_selection": "selected",
@@ -110,8 +105,7 @@ def _mock_github_client() -> MagicMock:
     client.delete_installation = AsyncMock(return_value=None)
     client.list_installation_repositories = AsyncMock(return_value=2)
     client.list_installation_repository_names = AsyncMock(return_value=["acme/repo-one", "acme/repo-two"])
-    client.get_bot_user = AsyncMock(return_value={"id": 424242, "login": "test-adp-agent[bot]", "type": "Bot"})
-    return bind_real_org_control(client)
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +155,17 @@ class TestMembershipPersistenceAcrossSessions:
             seed_session.add(user)
             await seed_session.commit()
 
-            await issue_install_nonce(seed_session, user, jti="persist-jti-001")
+            nonce = MagicLinkNonce(
+                jti="persist-jti-001",
+                provider=_PROVIDER_GITHUB_INSTALL,
+                provider_user_id="sub-persist-001",
+                channel_context=None,
+                target_user_id="user-persist-001",
+                expires_at=datetime.now(UTC) + timedelta(minutes=15),
+                consumed_at=None,
+            )
+            seed_session.add(nonce)
+            await seed_session.commit()
 
         # --- Session 2: Run install_callback, then close WITHOUT committing ---
         # This mirrors the real get_db lifecycle: the session is yielded to the
@@ -177,7 +181,6 @@ class TestMembershipPersistenceAcrossSessions:
                 github_client=gh,
             )
             assert result["success"] is True
-            gh.get_bot_user.assert_awaited_once_with("test-adp-agent[bot]", installation_id=124731131)
             # DO NOT commit here — this is the whole point of the test.
             # get_db closes the session without committing.
 
@@ -196,13 +199,4 @@ class TestMembershipPersistenceAcrossSessions:
             )
             assert membership.role == "org_admin"
             assert membership.joined_via == "app_install"
-            assert membership.github_org_id == "acme-test"
-
-            # The bot's canonical link and minimal membership survive the same
-            # callback teardown; its seed must not alter the installer's role.
-            bot_link = (await verify_session.scalars(select(UserIdentity).where(UserIdentity.provider_user_id == "424242"))).one()
-            bot = await verify_session.get(User, bot_link.user_id)
-            assert bot.user_kind == "bot"
-            assert bot.org_id == "org-persist-001"
-            bot_membership = (await verify_session.scalars(select(TenantMembership).where(TenantMembership.user_id == bot.id))).one()
-            assert bot_membership.role == "member"
+            assert membership.github_org_id == "sophos-test"

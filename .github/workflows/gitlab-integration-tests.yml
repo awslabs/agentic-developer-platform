@@ -1,167 +1,141 @@
-# PRs run the actual webhook handler and fleet-helper unit contracts.
-# Deployed endpoint/fleet tests need live signing secrets and run only on
-# independently reviewed main under the protected integration-check identity.
 name: GitLab Integration Tests
+
+on:
+  pull_request:
+    paths:
+      - 'modules/agent-factory/**'
+      - 'modules/source-control/gitlab/**'
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    paths:
+      - 'modules/agent-factory/**'
+      - 'modules/source-control/gitlab/**'
+
 concurrency:
   group: gitlab-e2e-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
+
 jobs:
-  gitlab-webhook-contract:
-    name: GitLab Webhook Contract
+  gitlab-e2e-tests:
+    name: GitLab E2E Tests
     runs-on: arc-runner-org
     timeout-minutes: 10
+    environment: dev
+
     steps:
-    - uses: actions/checkout@v7
-    - name: Setup Python
-      uses: actions/setup-python@v7
-      with:
-        python-version: '3.12'
-    - name: Install dependencies
-      working-directory: modules/agent-factory
-      run: 'pip install pytest requests boto3 pytest-timeout
+      - uses: actions/checkout@v7
 
-        '
-    - name: Verify GitLab publish and ignore contracts
-      working-directory: modules/agent-factory
-      env:
-        GITLAB_WEBHOOK_SECRET: test-gitlab-secret
-        GITLAB_WEBHOOK_SECRET_ARN: ''
-      run: python3 -m pytest webhook-ingress/lambda/gitlab/tests -q --tb=short
-    - name: Verify fleet-diagnostics helpers
-      working-directory: modules/agent-factory
-      run: python3 -m pytest tests/unit/test_fleet_diagnostics.py -q --tb=short
-    permissions:
-      contents: read
-  gitlab-live-fleet:
-    name: GitLab Live Fleet
-    runs-on: arc-runner-org
-    timeout-minutes: 20
-    environment: adp-checks-dev
-    steps:
-    - uses: actions/checkout@v7
-      with:
-        ref: main
-        persist-credentials: false
-    - name: Assume protected integration-check identity
-      uses: aws-e/adp/.github/actions/trusted-checks@main
-      with:
-        role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
-        region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
-    - name: Setup Python
-      uses: actions/setup-python@v7
-      with:
-        python-version: '3.12'
-    - name: Install dependencies
-      working-directory: modules/agent-factory
-      run: 'pip install pytest requests boto3 pytest-timeout
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
 
-        '
-    - name: Resolve test configuration from SSM
-      uses: ./.github/actions/gitlab-e2e-config
-    - name: Run GitLab live-fleet tests
-      id: live_fleet
-      working-directory: modules/agent-factory
-      env:
-        E2E_LATENCY_DIR: ${{ github.workspace }}/live-fleet-latency
-      run: "mkdir -p \"$E2E_LATENCY_DIR\"\npython3 -m pytest tests/e2e/test_gitlab_live_fleet.py \\\n  -v --tb=short --timeout=600\
-        \ \\\n  -m \"live_fleet\" \\\n  --junitxml=live-fleet-results.xml\n"
-    - name: Upload live-fleet results and latency
-      uses: actions/upload-artifact@v7
-      if: always()
-      with:
-        name: gitlab-live-fleet-results
-        path: 'modules/agent-factory/live-fleet-results.xml
+      - name: Install dependencies
+        working-directory: modules/agent-factory
+        run: |
+          pip install pytest requests boto3 pytest-timeout
 
-          live-fleet-latency/
+      - name: Resolve test configuration from SSM
+        run: |
+          REGION="${AWS_REGION:-us-east-1}"
+          ENV="${DEPLOY_ENV:-dev}"
 
-          '
-    - name: Summary
-      if: always()
-      run: "{\n  echo \"## GitLab Live Fleet\"\n  echo \"\"\n  echo \"Live proof of webhook -> Lambda -> SQS -> agent-worker\
-        \ -> comment.\"\n  echo \"Needs a real worker pod, so it depends on shared dev-fleet capacity.\"\n  echo \"Reported\
-        \ separately and not configured as a required merge context.\"\n  echo \"A failed live assertion remains a failed\
-        \ check; it is never greenwashed.\"\n  echo \"\"\n  echo \"- **Result**: \\`${{ steps.live_fleet.outcome }}\\`\"\n\
-        } >> \"$GITHUB_STEP_SUMMARY\"\nif [ -f modules/agent-factory/live-fleet-results.xml ]; then\n  TESTS=$(grep -oP 'tests=\"\
-        \\K[^\"]+' modules/agent-factory/live-fleet-results.xml | head -1)\n  FAILURES=$(grep -oP 'failures=\"\\K[^\"]+' modules/agent-factory/live-fleet-results.xml\
-        \ | head -1)\n  ERRORS=$(grep -oP 'errors=\"\\K[^\"]+' modules/agent-factory/live-fleet-results.xml | head -1)\n \
-        \ {\n    echo \"- **Tests**: ${TESTS:-0}\"\n    echo \"- **Failures**: ${FAILURES:-0}\"\n    echo \"- **Errors**:\
-        \ ${ERRORS:-0}\"\n  } >> \"$GITHUB_STEP_SUMMARY\"\nfi\necho \"\" >> \"$GITHUB_STEP_SUMMARY\"\necho \"### Enqueue to\
-        \ acknowledgement latency\" >> \"$GITHUB_STEP_SUMMARY\"\nif [ -f live-fleet-latency/e2e-latency-aggregate.json ];\
-        \ then\n  echo '```json' >> \"$GITHUB_STEP_SUMMARY\"\n  cat live-fleet-latency/e2e-latency-aggregate.json >> \"$GITHUB_STEP_SUMMARY\"\
-        \n  echo '```' >> \"$GITHUB_STEP_SUMMARY\"\nelse\n  echo \"- No latency recording produced.\" >> \"$GITHUB_STEP_SUMMARY\"\
-        \nfi\n"
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      id-token: write
-  gitlab-deployed-contract:
-    name: GitLab Deployed Webhook Contract
-    runs-on: arc-runner-org
-    timeout-minutes: 10
-    environment: adp-checks-dev
-    steps:
-    - uses: actions/checkout@v7
-      with:
-        ref: main
-        persist-credentials: false
-    - name: Assume protected integration-check identity
-      uses: aws-e/adp/.github/actions/trusted-checks@main
-      with:
-        role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
-        region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
-    - name: Setup Python
-      uses: actions/setup-python@v7
-      with:
-        python-version: '3.12'
-    - name: Install dependencies
-      working-directory: modules/agent-factory
-      run: 'pip install pytest requests boto3 pytest-timeout
+          # GitLab webhook endpoint (API Gateway URL for /gitlab route)
+          GITLAB_WEBHOOK_ENDPOINT=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/gitlab-endpoint" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
 
-        '
-    - name: Resolve test configuration from SSM
-      uses: ./.github/actions/gitlab-e2e-config
-    - name: Verify GitLab publish and ignore contracts
-      working-directory: modules/agent-factory
-      env:
-        GITLAB_WEBHOOK_SECRET: test-gitlab-secret
-        GITLAB_WEBHOOK_SECRET_ARN: ''
-      run: python3 -m pytest webhook-ingress/lambda/gitlab/tests -q --tb=short
-    - name: Verify fleet-diagnostics helpers
-      working-directory: modules/agent-factory
-      run: python3 -m pytest tests/unit/test_fleet_diagnostics.py -q --tb=short
-    - name: Run GitLab webhook contract tests
-      working-directory: modules/agent-factory
-      run: "python3 -m pytest tests/e2e/test_gitlab_roundtrip.py tests/e2e/test_github_regression.py \\\n  -v --tb=short --timeout=120\
-        \ \\\n  -m \"integration and not live_fleet\" \\\n  --junitxml=contract-results.xml\n"
-    - name: Upload contract test results
-      uses: actions/upload-artifact@v7
-      if: always()
-      with:
-        name: gitlab-contract-test-results
-        path: modules/agent-factory/contract-results.xml
-    - name: Summary
-      if: always()
-      run: "{\n  echo \"## GitLab Webhook Contract\"\n  echo \"\"\n  echo \"Deterministic checks on the webhook Lambda's synchronous\
-        \ reply.\"\n  echo \"Independent of agent-fleet load (#5354).\"\n  echo \"\"\n} >> \"$GITHUB_STEP_SUMMARY\"\nif [\
-        \ -f modules/agent-factory/contract-results.xml ]; then\n  TESTS=$(grep -oP 'tests=\"\\K[^\"]+' modules/agent-factory/contract-results.xml\
-        \ | head -1)\n  FAILURES=$(grep -oP 'failures=\"\\K[^\"]+' modules/agent-factory/contract-results.xml | head -1)\n\
-        \  ERRORS=$(grep -oP 'errors=\"\\K[^\"]+' modules/agent-factory/contract-results.xml | head -1)\n  {\n    echo \"\
-        - **Tests**: ${TESTS:-0}\"\n    echo \"- **Failures**: ${FAILURES:-0}\"\n    echo \"- **Errors**: ${ERRORS:-0}\"\n\
-        \  } >> \"$GITHUB_STEP_SUMMARY\"\nelse\n  echo \"- No test results file found\" >> \"$GITHUB_STEP_SUMMARY\"\nfi\n"
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      id-token: write
-'on':
-  pull_request:
-    paths:
-    - modules/agent-factory/**
-    - modules/source-control/gitlab/**
-    branches:
-    - main
-  push:
-    branches:
-    - main
-    paths:
-    - modules/agent-factory/**
-    - modules/source-control/gitlab/**
+          # GitLab webhook secret from Secrets Manager
+          GITLAB_SECRET_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/gitlab-webhook-secret-arn" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          if [ -n "$GITLAB_SECRET_ARN" ]; then
+            GITLAB_WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
+              --secret-id "$GITLAB_SECRET_ARN" \
+              --query "SecretString" --output text 2>/dev/null || echo "")
+          fi
+
+          # GitLab instance details
+          GITLAB_URL=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/gitlab/url" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          GITLAB_TOKEN_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/gitlab/api-token-arn" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          if [ -n "$GITLAB_TOKEN_ARN" ]; then
+            GITLAB_TOKEN=$(aws secretsmanager get-secret-value \
+              --secret-id "$GITLAB_TOKEN_ARN" \
+              --query "SecretString" --output text 2>/dev/null || echo "")
+          fi
+          GITLAB_PROJECT_ID=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/gitlab/test-project-id" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          GITLAB_PROJECT_PATH=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/gitlab/test-project-path" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+
+          # GitHub webhook endpoint (for regression tests)
+          WEBHOOK_ENDPOINT=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/endpoint" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          WEBHOOK_SECRET_ARN=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/webhook-secret-arn" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+          if [ -n "$WEBHOOK_SECRET_ARN" ]; then
+            WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
+              --secret-id "$WEBHOOK_SECRET_ARN" \
+              --query "SecretString" --output text 2>/dev/null || echo "")
+          fi
+
+          # Shared SQS queue
+          WEBHOOK_SQS_QUEUE_URL=$(aws ssm get-parameter \
+            --name "/adp/${ENV}/webhook-ingress/sqs-queue-url" \
+            --query "Parameter.Value" --output text 2>/dev/null || echo "")
+
+          # Export all to GITHUB_ENV
+          {
+            echo "GITLAB_WEBHOOK_ENDPOINT=${GITLAB_WEBHOOK_ENDPOINT}"
+            echo "GITLAB_WEBHOOK_SECRET=${GITLAB_WEBHOOK_SECRET}"
+            echo "GITLAB_URL=${GITLAB_URL}"
+            echo "GITLAB_TOKEN=${GITLAB_TOKEN}"
+            echo "GITLAB_PROJECT_ID=${GITLAB_PROJECT_ID}"
+            echo "GITLAB_PROJECT_PATH=${GITLAB_PROJECT_PATH}"
+            echo "WEBHOOK_ENDPOINT=${WEBHOOK_ENDPOINT}"
+            echo "WEBHOOK_SECRET=${WEBHOOK_SECRET}"
+            echo "WEBHOOK_SQS_QUEUE_URL=${WEBHOOK_SQS_QUEUE_URL}"
+            echo "TEST_ENV=${ENV}"
+          } >> "$GITHUB_ENV"
+
+      - name: Run GitLab E2E tests
+        working-directory: modules/agent-factory
+        run: |
+          python3 -m pytest tests/e2e/test_gitlab_roundtrip.py tests/e2e/test_github_regression.py \
+            -v --tb=short --timeout=120 \
+            -m "integration" \
+            --junitxml=test-results.xml
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gitlab-e2e-test-results
+          path: modules/agent-factory/test-results.xml
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## GitLab E2E Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f modules/agent-factory/test-results.xml ]; then
+            TESTS=$(grep -oP 'tests="\K[^"]+' modules/agent-factory/test-results.xml | head -1)
+            FAILURES=$(grep -oP 'failures="\K[^"]+' modules/agent-factory/test-results.xml | head -1)
+            ERRORS=$(grep -oP 'errors="\K[^"]+' modules/agent-factory/test-results.xml | head -1)
+            echo "- **Tests**: ${TESTS:-0}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Failures**: ${FAILURES:-0}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Errors**: ${ERRORS:-0}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- No test results file found" >> "$GITHUB_STEP_SUMMARY"
+          fi

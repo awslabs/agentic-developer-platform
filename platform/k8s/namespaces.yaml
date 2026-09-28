@@ -8,31 +8,6 @@ metadata:
   labels:
     app.kubernetes.io/part-of: adp
     app.kubernetes.io/component: gateway
-    # Issue #5675: Pod Security Admission, kept IDENTICAL to the same labels in
-    # modules/gateway/k8s/namespace.yaml. This namespace is declared in two files
-    # and either can be applied last, so labels on only one of them would make
-    # enforcement depend on apply order — it would look present and then vanish
-    # on an unrelated deploy.
-    pod-security.kubernetes.io/enforce: restricted
-    pod-security.kubernetes.io/enforce-version: latest
-    pod-security.kubernetes.io/warn: restricted
-    pod-security.kubernetes.io/warn-version: latest
-    pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/audit-version: latest
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: adp-gateway-evals
-  labels:
-    app.kubernetes.io/part-of: adp
-    app.kubernetes.io/component: gateway-evals
-    pod-security.kubernetes.io/enforce: baseline
-    pod-security.kubernetes.io/enforce-version: latest
-    pod-security.kubernetes.io/warn: restricted
-    pod-security.kubernetes.io/warn-version: latest
-    pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/audit-version: latest
 ---
 apiVersion: v1
 kind: Namespace

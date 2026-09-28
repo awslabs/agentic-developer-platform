@@ -13,17 +13,6 @@ from src.proxy.service import ProxyService
 from src.shared.schemas.auth import TokenContext
 
 
-@pytest.fixture(autouse=True)
-def routing_database(db_session_factory, monkeypatch):
-    """Use the integration database for both signing and usage persistence."""
-    from src.proxy.bedrock_routing import bedrock_routing_resolver
-
-    bedrock_routing_resolver._mappings_exist_cache = None
-    monkeypatch.setattr("src.shared.database.get_session_factory", lambda: db_session_factory)
-    yield
-    bedrock_routing_resolver._mappings_exist_cache = None
-
-
 @pytest.fixture
 def agent_token_context():
     """Token context representing an agent caller."""

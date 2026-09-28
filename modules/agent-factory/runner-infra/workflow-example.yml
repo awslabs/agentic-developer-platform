@@ -12,7 +12,7 @@ jobs:
     # Replace <repo-name> with your repository name
     # This must match the name used in: ./onboard-repo.sh <repo-name>
     if: github.event.label.name == 'ai-agent'
-    runs-on: arc-runner-org
+    runs-on: arc-runner-<repo-name>
     
     steps:
       - name: Checkout this repository

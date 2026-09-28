@@ -184,12 +184,12 @@ class TestGetMyStats:
     def test_uses_canonical_user_id(self, client, mock_stats_service):
         """Endpoint resolves token sub to canonical user_id for the query."""
         client.get("/me/agent-run-stats")
-        mock_stats_service.get_stats_by_user.assert_called_once_with(user_id=CANONICAL_USER_ID, tenant_id="org-tenant-001", days=7)
+        mock_stats_service.get_stats_by_user.assert_called_once_with(user_id=CANONICAL_USER_ID, days=7)
 
     def test_days_param_forwarded(self, client, mock_stats_service):
         """Custom days param is forwarded to service."""
         client.get("/me/agent-run-stats?days=14")
-        mock_stats_service.get_stats_by_user.assert_called_once_with(user_id=CANONICAL_USER_ID, tenant_id="org-tenant-001", days=14)
+        mock_stats_service.get_stats_by_user.assert_called_once_with(user_id=CANONICAL_USER_ID, days=14)
 
     def test_days_zero_returns_422(self, client):
         """days=0 is out of range (ge=1) → 422."""

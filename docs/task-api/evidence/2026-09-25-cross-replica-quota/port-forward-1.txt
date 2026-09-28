@@ -1,3 +1,0 @@
-Forwarding from 127.0.0.1:58363 -> 8080
-Handling connection for 58363
-Handling connection for 58363

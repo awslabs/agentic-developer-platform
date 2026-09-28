@@ -267,12 +267,12 @@ module "s3_vectors" {
 module "images_build" {
   source = "./modules/images-build"
 
-  environment                 = var.environment
-  aws_region                  = var.aws_region
-  name_prefix                 = local.name_prefix
-  state_bucket                = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
-  codebuild_service_role_arns = data.terraform_remote_state.platform.outputs.agent_context_codebuild_role_arns
-  common_tags                 = var.tags
+  environment                = var.environment
+  aws_region                 = var.aws_region
+  name_prefix                = local.name_prefix
+  state_bucket               = "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
+  codebuild_service_role_arn = data.terraform_remote_state.platform.outputs.codebuild_role_arn
+  common_tags                = var.tags
 }
 
 # =============================================================================

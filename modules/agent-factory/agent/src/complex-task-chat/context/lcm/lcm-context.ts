@@ -12,7 +12,6 @@ import { LcmConfig, loadLcmConfig } from './config';
 import { resolveContextItems, splitByTail, sanitizeMessages } from './assembler';
 import { maybeCompact } from './compactor';
 import { createExpandSummaryTool } from './expand-summary';
-import { assertValidSessionId } from '../../session-id';
 
 // Concrete implementations
 import { DynamoContextStore } from '../store/dynamo-store';
@@ -119,8 +118,8 @@ export class LcmContext implements ContextManager {
    * - If header does not exist → conditional put (attribute_not_exists). If two
    *   concurrent callers race, one wins; the loser re-reads and re-verifies.
    *
-   * Tenant identity is mandatory. Existing headers missing it are quarantined;
-   * ownership is never inferred from a matching user id alone.
+   * Stage A (#184): team-aware check. If BOTH existing header AND caller have
+   * teamId and they differ, reject. If either is missing, allow (legacy compat).
    */
   async assertOwnership(sessionId: string, userId: string, tenantId?: string, identity?: {
     orgId?: string;
@@ -128,18 +127,20 @@ export class LcmContext implements ContextManager {
     departmentId?: string;
     accountType?: string;
   }): Promise<void> {
-    // #5660 (A07): `sessionId` originates from the client and becomes both a
-    // store key and an artifact path segment. Refuse a bad shape before any read
-    // or write, as the artifact store and sweeper already do.
-    assertValidSessionId(sessionId);
-    if (!tenantId) {
-      console.warn(`[lcm] OWNERSHIP REFUSED session=${sessionId} caller=${userId}: missing tenant identity`);
-      throw new Error(`Session tenant identity is required for ${sessionId}`);
-    }
-
     const existing = await this.store.getSessionHeader(sessionId);
     if (existing) {
-      this.verifyHeaderOwner(existing, sessionId, userId, tenantId, identity);
+      if (existing.ownerUserId !== userId) {
+        throw new Error(
+          `Session ownership mismatch: session ${sessionId} is owned by ${existing.ownerUserId}, not ${userId}`,
+        );
+      }
+      // Stage A (#184): team-aware check — reject cross-team access when both
+      // sides have a teamId. If either is missing, allow (legacy compat).
+      if (existing.teamId && identity?.teamId && existing.teamId !== identity.teamId) {
+        throw new Error(
+          `Session team mismatch: session ${sessionId} belongs to team ${existing.teamId}, caller is team ${identity.teamId}`,
+        );
+      }
       return;
     }
 
@@ -166,59 +167,20 @@ export class LcmContext implements ContextManager {
           // Extremely unlikely (deleted between our race and re-read). Propagate.
           throw err;
         }
-        // Same check as the existing-header path — shared so the two cannot
-        // drift apart and leave the race a way around ownership.
-        this.verifyHeaderOwner(header, sessionId, userId, tenantId, identity);
+        if (header.ownerUserId !== userId) {
+          throw new Error(
+            `Session ownership mismatch: session ${sessionId} is owned by ${header.ownerUserId}, not ${userId}`,
+          );
+        }
+        // Stage A (#184): team check on race-loser path too
+        if (header.teamId && identity?.teamId && header.teamId !== identity.teamId) {
+          throw new Error(
+            `Session team mismatch: session ${sessionId} belongs to team ${header.teamId}, caller is team ${identity.teamId}`,
+          );
+        }
         return;
       }
       throw err;
-    }
-  }
-
-  /**
-   * Verify a stored session header belongs to the caller.
-   *
-   * Used by both the existing-header and race-loser paths so a concurrent create
-   * cannot bypass a check the direct path applies. Refusals are logged before
-   * throwing so a reviewer can see the control working.
-   *
-   * #5660 (A07): tenant identity is exact and mandatory. A header without it is
-   * legacy data with unverified ownership and remains quarantined.
-   */
-  private verifyHeaderOwner(
-    header: { ownerUserId: string; tenantId?: string; orgId?: string; teamId?: string },
-    sessionId: string,
-    userId: string,
-    tenantId?: string,
-    identity?: { orgId?: string; teamId?: string },
-  ): void {
-    // Every refusal is logged for audit before it throws. Messages keep their
-    // existing wording: this is an agent-internal error, not a client response,
-    // and callers (including tests) distinguish the three causes by it.
-    const refuse = (message: string): never => {
-      console.warn(`[lcm] OWNERSHIP REFUSED session=${sessionId} caller=${userId}: ${message}`);
-      throw new Error(message);
-    };
-
-    if (header.ownerUserId !== userId) {
-      refuse(
-        `Session ownership mismatch: session ${sessionId} is owned by ${header.ownerUserId}, not ${userId}`,
-      );
-    }
-    if (!header.tenantId || header.tenantId !== tenantId) {
-      refuse(
-        `Session tenant mismatch: session ${sessionId} belongs to tenant ${header.tenantId ?? 'unknown'}, caller is tenant ${tenantId}`,
-      );
-    }
-    if ((header.orgId ?? '') !== (identity?.orgId ?? '')) {
-      refuse(
-        `Session organization mismatch: session ${sessionId} belongs to organization ${header.orgId ?? 'none'}, caller is organization ${identity?.orgId ?? 'none'}`,
-      );
-    }
-    if ((header.teamId ?? '') !== (identity?.teamId ?? '')) {
-      refuse(
-        `Session team mismatch: session ${sessionId} belongs to team ${header.teamId ?? 'none'}, caller is team ${identity?.teamId ?? 'none'}`,
-      );
     }
   }
 

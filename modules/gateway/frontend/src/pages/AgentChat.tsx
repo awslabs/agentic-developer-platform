@@ -16,12 +16,10 @@ import {
 } from 'react';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useAgUiEvents } from '@/hooks/useAgUiEvents';
-import { requestServerSessionId } from '@/services/chatSession';
 import { ConversationSidebar } from '@/components/chat/ConversationSidebar';
 import { ChatMessageRenderer } from '@/components/chat/ChatMessageRenderer';
 import { ToolCallRow } from '@/components/chat/ToolCallRow';
 import { SessionMetaPanel } from '@/components/chat/SessionMetaPanel';
-import { DraftPanel } from '@/components/chat/DraftPanel';
 import { TypingIndicator } from '@/components/chat/TypingIndicator';
 import { FileDropZone, type PendingUpload } from '@/components/chat/FileDropZone';
 import type { ChatMessage, Conversation, ConnectionStatus } from '@/types/chat';
@@ -48,21 +46,14 @@ const SUGGESTION_CHIPS = [
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Build the local record for a conversation the SERVER has already created.
- *
- * #5615: `sessionId` is issued by the server and passed in — this page no longer
- * invents one. The old `generateSessionId()` produced `sess-<clock>-<weak
- * random>`, which the server then adopted, so a conversation's name was the
- * browser's choice and was largely predictable. Creation now happens server-side
- * (`requestServerSessionId`), and nothing here may synthesise a fallback: a
- * locally invented id would be refused by the ingress and would strand the user
- * in a conversation that can never receive a reply.
- */
-function createConversation(sessionId: string, title?: string): Conversation {
+function generateSessionId(): string {
+  return `sess-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function createConversation(title?: string): Conversation {
   const now = Date.now();
   return {
-    id: sessionId,
+    id: generateSessionId(),
     title: title || 'New conversation',
     createdAt: now,
     updatedAt: now,
@@ -91,15 +82,6 @@ export default function AgentChat() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // #5615: starting a conversation is now a server round-trip, so it can be in
-  // flight and it can fail.
-  const [isStartingConversation, setIsStartingConversation] = useState(false);
-  const [startError, setStartError] = useState<string | null>(null);
-  // Guards against a second in-flight creation (double-click, or Enter while the
-  // first request is still open). Without it each attempt would mint its own
-  // server-side row and all but the last would be orphaned.
-  const startInFlightRef = useRef(false);
-
   // ------------------------------------------------------------------
   // Conversation CRUD
   // ------------------------------------------------------------------
@@ -124,50 +106,11 @@ export default function AgentChat() {
     [setConversations],
   );
 
-  /**
-   * Start a conversation: ask the server for its identifier, then record it.
-   *
-   * #5615. Two ordering rules matter here, and both are about not leaving debris:
-   *
-   *   - The sidebar entry is added only AFTER the server acknowledges an
-   *     identifier. Adding it first and patching the id in later would put a
-   *     conversation on screen that the server has never heard of, and a failed
-   *     or lost reply would leave it there permanently as a dead row the user
-   *     could click but never use.
-   *   - A failure is reported, not papered over. There is deliberately no
-   *     fallback to a locally invented identifier: the ingress refuses ids it
-   *     did not issue, so a fallback would produce a conversation that silently
-   *     swallows every message.
-   *
-   * Retrying is safe. Each attempt gets a fresh identifier and never rebinds an
-   * earlier one; an identifier whose reply was lost in flight is an empty owned
-   * row that the sessions table's TTL reaps.
-   */
-  const startConversation = useCallback(async (): Promise<string | null> => {
-    if (startInFlightRef.current) return null;
-    startInFlightRef.current = true;
-    setIsStartingConversation(true);
-    setStartError(null);
-    try {
-      const sessionId = await requestServerSessionId();
-      const conv = createConversation(sessionId);
-      setConversations((prev) => [conv, ...prev]);
-      setActiveConvId(conv.id);
-      return conv.id;
-    } catch (err) {
-      setStartError(
-        err instanceof Error ? err.message : 'Could not start a conversation. Please try again.',
-      );
-      return null;
-    } finally {
-      startInFlightRef.current = false;
-      setIsStartingConversation(false);
-    }
-  }, [setConversations]);
-
   const handleCreateConversation = useCallback(() => {
-    void startConversation();
-  }, [startConversation]);
+    const conv = createConversation();
+    setConversations((prev) => [conv, ...prev]);
+    setActiveConvId(conv.id);
+  }, [setConversations]);
 
   const handleSelectConversation = useCallback((id: string) => {
     setActiveConvId(id);
@@ -188,7 +131,7 @@ export default function AgentChat() {
   // Agent chat hook
   // ------------------------------------------------------------------
 
-  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionExpired, sessionMeta, sendMessage, activeToolCalls, wsRef } = useAgUiEvents({
+  const { connectionStatus, isAwaitingReply, reconnectAttempt, sessionMeta, sendMessage, activeToolCalls, wsRef } = useAgUiEvents({
     conversation: activeConversation,
     onMessagesChange: handleMessagesChange,
   });
@@ -220,12 +163,13 @@ export default function AgentChat() {
     const text = inputValue.trim();
     if (!text || isAwaitingReply) return;
 
-    // If no conversation, ask the server to start one first (#5615). The typed
-    // text stays in the box; the effect below sends it once the socket for the
-    // new conversation is connected. On failure the text is still there and the
-    // error is shown, so the user loses nothing and can retry.
+    // If no conversation, create one first.
     if (!activeConvId) {
-      void startConversation();
+      const conv = createConversation();
+      setConversations((prev) => [conv, ...prev]);
+      setActiveConvId(conv.id);
+      // We can't send yet because the hook needs to connect first.
+      // Store the text and send after effect.
       return;
     }
 
@@ -239,7 +183,7 @@ export default function AgentChat() {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [inputValue, isAwaitingReply, activeConvId, sendMessage, startConversation, pendingUploads]);
+  }, [inputValue, isAwaitingReply, activeConvId, sendMessage, setConversations, pendingUploads]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -266,23 +210,20 @@ export default function AgentChat() {
   const handleSuggestionClick = useCallback(
     (chip: string) => {
       if (!activeConvId) {
-        // #5615: park the chip in the input and let the connect effect send it
-        // once the server has issued an identifier.
+        const conv = createConversation();
+        setConversations((prev) => [conv, ...prev]);
+        setActiveConvId(conv.id);
         setInputValue(chip);
-        void startConversation();
         return;
       }
       sendMessage(chip);
     },
-    [activeConvId, sendMessage, startConversation],
+    [activeConvId, sendMessage, setConversations],
   );
 
-  // Send pending input after connection establishes.
-  // #5615: this is what delivers the first message of a conversation. The send
-  // is deliberately gated on `activeConvId` — the SERVER-ISSUED id — so the
-  // first message can only ever go to an identifier the server acknowledged.
+  // Send pending input after connection establishes
   useEffect(() => {
-    if (connectionStatus === 'connected' && inputValue.trim() && activeConvId && !sessionExpired) {
+    if (connectionStatus === 'connected' && inputValue.trim() && activeConvId) {
       const text = inputValue.trim();
       sendMessage(text);
       setInputValue('');
@@ -394,56 +335,12 @@ export default function AgentChat() {
           )}
         </div>
 
-        {/* Live intent draft (#4208) — populated by update_draft via STATE_DELTA */}
-        <DraftPanel draft={sessionMeta?.draft} />
-
         {/* Session metadata (AG-UI STATE_DELTA) */}
         <SessionMetaPanel meta={sessionMeta} />
 
         {/* Input area with drag-drop */}
         <FileDropZone wsRef={wsRef} sessionId={activeConvId} onUploadComplete={handleUploadComplete}>
         <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3">
-          {/* #5615: starting a conversation is a server round-trip, so it can
-              fail. Say so and offer a retry rather than appearing to do nothing
-              — the alternative (inventing an id locally) would produce a
-              conversation the server refuses every message on. */}
-          {startError && (
-            <div
-              className="flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-lg text-xs bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300"
-              role="alert"
-              data-testid="start-session-error"
-            >
-              <span>{startError}</span>
-              <button
-                onClick={handleCreateConversation}
-                disabled={isStartingConversation}
-                className="flex-shrink-0 font-medium underline hover:no-underline disabled:opacity-50"
-                data-testid="start-session-retry"
-              >
-                Try again
-              </button>
-            </div>
-          )}
-          {/* #5615: the server refused this conversation's id. Commonly the row
-              expired (24h TTL) while this browser kept the id in localStorage,
-              so there is nothing to retry — only a new conversation to start. */}
-          {sessionExpired && (
-            <div
-              className="flex items-center justify-between gap-3 mb-2 px-3 py-2 rounded-lg text-xs bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300"
-              role="alert"
-              data-testid="session-expired-notice"
-            >
-              <span>This conversation is no longer available.</span>
-              <button
-                onClick={handleCreateConversation}
-                disabled={isStartingConversation}
-                className="flex-shrink-0 font-medium underline hover:no-underline disabled:opacity-50"
-                data-testid="session-expired-new"
-              >
-                Start a new conversation
-              </button>
-            </div>
-          )}
           {/* Pending uploads chips */}
           {pendingUploads.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
@@ -473,22 +370,14 @@ export default function AgentChat() {
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
                 placeholder={
-                  sessionExpired
-                    ? 'Start a new conversation to continue'
-                    : isStartingConversation
-                      ? 'Starting a conversation...'
-                      : connectionStatus === 'connected'
-                        ? 'Type a message... (Enter to send, Shift+Enter for newline)'
-                        : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
-                          ? 'Connecting...'
-                          : 'Start a conversation to connect'
+                  connectionStatus === 'connected'
+                    ? 'Type a message... (Enter to send, Shift+Enter for newline)'
+                    : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
+                      ? 'Connecting...'
+                      : 'Start a conversation to connect'
                 }
                 disabled={
                   isAwaitingReply ||
-                  // #5615: no point typing into an id the server has refused, or
-                  // while the id for a brand-new conversation is still in flight.
-                  sessionExpired ||
-                  isStartingConversation ||
                   connectionStatus === 'connecting' ||
                   connectionStatus === 'reconnecting'
                 }
@@ -511,8 +400,6 @@ export default function AgentChat() {
               disabled={
                 !inputValue.trim() ||
                 isAwaitingReply ||
-                sessionExpired ||
-                isStartingConversation ||
                 (connectionStatus !== 'connected' && !!activeConvId)
               }
               className="flex-shrink-0 p-2.5 rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"

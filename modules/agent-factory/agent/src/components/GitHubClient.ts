@@ -69,37 +69,14 @@ export class GitHubClient {
     });
   }
 
-  async getComments(
-    issueNumber: number,
-    since?: Date
-  ): Promise<{ id: number; body: string; created_at: string; author: string }[]> {
+  async getComments(issueNumber: number, since?: Date): Promise<{ id: number; body: string; created_at: string }[]> {
     const response = await this.octokit!.issues.listComments({
       owner: this.owner,
       repo: this.repo,
       issue_number: issueNumber,
       since: since?.toISOString(),
     });
-    return response.data.map(c => ({
-      id: c.id,
-      body: c.body || '',
-      created_at: c.created_at,
-      author: c.user?.login || '',
-    }));
-  }
-
-  /**
-   * Repository permission level for a user: 'admin' | 'maintain' | 'write' |
-   * 'triage' | 'read' | 'none'. Used as the authorization predicate for
-   * approvals (issue #4181) so authority tracks repo maintainership rather
-   * than a hardcoded identity list.
-   */
-  async getUserPermission(username: string): Promise<string> {
-    const response = await this.octokit!.repos.getCollaboratorPermissionLevel({
-      owner: this.owner,
-      repo: this.repo,
-      username,
-    });
-    return response.data.permission || 'none';
+    return response.data.map(c => ({ id: c.id, body: c.body || '', created_at: c.created_at }));
   }
 
   async createBranch(branchName: string, workDir: string): Promise<void> {

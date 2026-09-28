@@ -16,7 +16,6 @@ modules/platform-deploy-mgmt/
 │   ├── boto_helpers.py    # Context dataclass, dual-session builder (customer reads, platform writes)
 │   ├── runner.py          # Orchestrator: runs checks, uploads evidence, updates DDB
 │   ├── phase_1.py         # Phase 1 checks (bootstrap state backend)
-│   ├── phase_12.py        # Phase 12 checks (Superplane domain app — optional)
 │   └── requirements.txt   # Python dependencies
 ├── infra/
 │   ├── main.tf            # S3 bucket + DDB table + IRSA role (platform account)
@@ -74,17 +73,6 @@ PHASE_REGISTRY: dict[int, tuple[str, str]] = {
 3. Add the step in `.github/workflows/platform-deploy-mgmt-verify.yml` (replace the stub).
 4. Write unit tests.
 
-Phase numbers match the step numbering in `platform/scripts/deploy-all.sh`, so an operator
-reading `Step 12/12: Superplane` in a deploy log knows which phase verifies it. Gaps in
-`PHASE_REGISTRY` are expected while intermediate phases are unimplemented.
-
-## Registered Phases
-
-| Phase | Verifies | Deploy step | Notes |
-|-------|----------|-------------|-------|
-| 1 | Bootstrap state backend | Step 1 | |
-| 12 | Superplane domain app | `Step 12/12: Superplane` | **Optional module.** Absence is a SKIP unless `SUPERPLANE_ENABLED` is set, so `phase: all` on a gateway-only account does not report a false failure. No workflow step yet — invoke as `python -m platform_deploy_mgmt.checks.runner --phase=12`. |
-
 ## Running Locally
 
 ```bash
@@ -124,12 +112,3 @@ GitHub Step Summary                 DDB: adp-platform-deployments (deployment_id
 |----------|---------|
 | `platform-deploy-mgmt-verify.yml` | Run phase checks (dispatched per-phase or "all") |
 | `platform-deploy-mgmt-infra-apply.yml` | Deploy the infrastructure (S3 + DDB + IRSA role) |
-
-
-Phase 12's secret-grant audit reads both inline policies and attached managed
-policies at their default versions, including all list pages. Its read-only
-identity needs `iam:ListAttachedRolePolicies`, `iam:GetPolicy`, and
-`iam:GetPolicyVersion` in addition to the existing role/inline-policy reads.
-Unreadable or incomplete evidence fails verification. This is a conservative
-allow-grant audit: it does not evaluate deny precedence, permission boundaries or
-organization policies, and unsupported complement grants require investigation.

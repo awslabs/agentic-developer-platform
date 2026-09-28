@@ -1,6 +1,6 @@
 # Lightweight Install (Agents Only)
 
-Run ADP's autonomous code agents (`@agent-developer`, `@agent-pm`, `@agent-architect`, `@agent-product`, `@agent-reviewer`, `@agent-operations`, `@agent-superpower`) on your own AWS + EKS + ARC setup. Label a GitHub issue, an agent picks it up, writes code, opens a PR. For the full set of personas and their exact trigger strings, see [`agent-catalogue.md`](agent-catalogue.md) — note that mention strings and ARC label names differ (the ARC label for `@agent-superpower` is `agent-pt-superpower`).
+Run ADP's autonomous code agents (`@agent-developer`, `@agent-pm`, `@agent-architect`, `@agent-product`, `@agent-reviewer`, `@agent-operations`, `@agent-pt-superpower`) on your own AWS + EKS + ARC setup. Label a GitHub issue, an agent picks it up, writes code, opens a PR.
 
 **What this does not give you**: the Bedrock gateway proxy, the chat widget, the user vault, Agent Context (code search / wikis), budget enforcement, or beads task state. For those, see the full-deployment runbook at [`../AGENTS.md`](../AGENTS.md).
 

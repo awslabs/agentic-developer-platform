@@ -7,34 +7,20 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
-from src.admin.config import AdminRole
 from src.admin.routes import get_access_control, get_admin_service, get_current_user, router
 from src.admin.schemas import OrganizationResponse, PoolAccountResponse, PoolStatusResponse
 from src.admin.service import AdminService
-from src.shared.database import get_db
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.schemas.auth import TokenContext
 
 
-@pytest.fixture(autouse=True)
-def _isolate_unit_test_audit_sink(monkeypatch):
-    # These service/response unit tests use fake database sessions. Keep the
-    # route's audit staging and permission gates; durable SQL is exercised by
-    # test_admin_audit_durability.py and test_admin_audit_postgres.py.
-    from src.admin import audit_operation
-
-    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
-
-
 @pytest.fixture
-def app(mock_db):
+def app():
     """Create a test FastAPI app."""
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_db] = lambda: mock_db
 
     # Add exception handler for BedrockGatewayError (same as in app.py)
     @app.exception_handler(BedrockGatewayError)
@@ -48,18 +34,9 @@ def app(mock_db):
 
 
 @pytest.fixture
-def mock_db():
-    db = AsyncMock(spec=AsyncSession)
-    db.get.return_value = None
-    return db
-
-
-@pytest.fixture
-def mock_admin_service(mock_db):
+def mock_admin_service():
     """Create a mock admin service."""
     service = MagicMock(spec=AdminService)
-    service.db = mock_db
-    service.resolve_budget_target = AsyncMock(side_effect=lambda org, kind, key: (key, None))
     return service
 
 
@@ -70,10 +47,6 @@ def mock_access_control():
     ac.check_permission = AsyncMock(return_value=True)
     ac.get_accessible_organizations = AsyncMock(return_value=None)
     ac.require_platform_admin = MagicMock()
-    # Issue #4019: GET /admin/users/roles now ceiling-filters the role list, so it
-    # resolves the caller's role. The `client` fixture authenticates as a platform
-    # admin, so mirror that here.
-    ac.get_user_role = AsyncMock(return_value=(AdminRole.PLATFORM_ADMIN, None, None))
     return ac
 
 
@@ -114,51 +87,28 @@ def client(app, mock_admin_service, mock_access_control, platform_admin_user):
 class TestOrganizationEndpoints:
     """Tests for organization endpoints."""
 
-    def test_create_organization_is_gone(self, client, mock_admin_service):
-        """Issue #4842 (D4=Option A): POST /admin/organizations is deprecated → 410.
+    def test_create_organization(self, client, mock_admin_service):
+        """Test POST /admin/organizations."""
+        mock_admin_service.create_organization = AsyncMock(
+            return_value=OrganizationResponse(
+                id="org-new",
+                name="New Org",
+                aws_accounts=["123456789012"],
+                role_mappings={},
+                settings={},
+                created_at=datetime.now(UTC),
+            )
+        )
 
-        Two org-create routes existed with different semantics, and this was the
-        lesser one: it wrote an ``organizations`` row and nothing else, so the
-        tenant it produced had no default department, no default team and no
-        channel mapping — an org that looks created and cannot route a webhook.
-        410 rather than a silent redirect, because the canonical route takes a
-        different request shape and quietly rewriting a caller's request would
-        substitute a 422 for a clear "this endpoint is gone" answer.
-        """
         response = client.post(
             "/admin/organizations",
             json={"name": "New Org", "aws_accounts": ["123456789012"]},
         )
 
-        assert response.status_code == 410
-        assert "/api/admin/identity/organizations" in response.json()["detail"]
-        # Gone means gone: the service must not have been reached at all, or the
-        # route would still be minting tenants while reporting that it cannot.
-        mock_admin_service.create_organization.assert_not_called()
-
-    def test_create_organization_gone_still_requires_auth(self, app, mock_admin_service, mock_access_control):
-        """The tombstone keeps the auth gate the live route had (#4915 review L1).
-
-        The retired handler must not become the one unauthenticated route on the
-        admin router: an anonymous caller gets 401/403, not a 410 that names the
-        canonical internal route path. Built without the get_current_user
-        override the shared ``client`` fixture installs.
-        """
-
-        async def override_admin_service():
-            return mock_admin_service
-
-        async def override_access_control():
-            return mock_access_control
-
-        app.dependency_overrides[get_admin_service] = override_admin_service
-        app.dependency_overrides[get_access_control] = override_access_control
-        anonymous = TestClient(app)
-
-        response = anonymous.post("/admin/organizations", json={"name": "New Org"})
-
-        assert response.status_code in (401, 403)
-        assert response.status_code != 410
+        assert response.status_code == 201
+        data = response.json()
+        assert data["name"] == "New Org"
+        assert data["id"] == "org-new"
 
     def test_list_organizations(self, client, mock_admin_service):
         """Test GET /admin/organizations."""
@@ -324,22 +274,7 @@ class TestBudgetConfigEndpoints:
 
     def test_update_budget_config(self, client, mock_admin_service):
         """Test PUT /admin/organizations/{org_id}/budget/{entity_type}/{entity_id}."""
-        from datetime import UTC, datetime
-        from decimal import Decimal
-
-        from src.admin.schemas import BudgetConfigResponse
-
-        mock_admin_service.update_budget_config = AsyncMock(
-            return_value=BudgetConfigResponse(
-                org_id="org-1",
-                entity_type="org",
-                entity_id="org-1",
-                period_type="monthly",
-                budget_amount_usd=Decimal("1000.00"),
-                enforcement_mode="hard",
-                updated_at=datetime.now(UTC),
-            )
-        )
+        mock_admin_service.update_budget_config = AsyncMock(return_value=None)
 
         response = client.put(
             "/admin/organizations/org-1/budget/org/org-1",
@@ -347,67 +282,6 @@ class TestBudgetConfigEndpoints:
         )
 
         assert response.status_code == 200
-        assert response.json()["entity_id"] == "org-1"
-
-    def test_update_budget_config_missing_returns_404(self, client, mock_admin_service):
-        """Issue #4511: a miss is a 404, not HTTP 200 with a null body.
-
-        This endpoint previously declared `BudgetConfigResponse | None` and the
-        service returned `None` on every miss, so an operator editing a budget
-        that could not be found got a success response and no change — a silent
-        no-op edit. This test pins the replacement contract.
-        """
-        from src.admin.exceptions import ResourceNotFoundError
-
-        mock_admin_service.update_budget_config = AsyncMock(side_effect=ResourceNotFoundError("BudgetConfig", "org/no-such-entity"))
-
-        response = client.put(
-            "/admin/organizations/org-1/budget/org/no-such-entity",
-            json={"budget_amount_usd": 1000.00},
-        )
-
-        assert response.status_code == 404
-
-    def test_update_budget_config_unresolvable_user_returns_422(self, client, mock_admin_service):
-        """Issue #4511: an unresolvable `user` id is refused with guidance."""
-        from src.shared.identity import UnresolvableUserEntityError
-
-        mock_admin_service.update_budget_config = AsyncMock(
-            side_effect=UnresolvableUserEntityError("someone@example.com", "no user in this organization matches this id")
-        )
-
-        response = client.put(
-            "/admin/organizations/org-1/budget/user/someone@example.com",
-            json={"budget_amount_usd": 1000.00},
-        )
-
-        assert response.status_code == 422
-
-    def test_create_budget_unresolvable_user_returns_422(self, client, mock_admin_service):
-        """Issue #4511: creating a cap for an unmatchable user is refused.
-
-        The whole point of the fix: rather than persisting a row the budget
-        engine can never match, the API says so.
-        """
-        from src.shared.identity import UnresolvableUserEntityError
-
-        mock_admin_service.create_budget = AsyncMock(
-            side_effect=UnresolvableUserEntityError("GitHub_20402445", "no GitHub identity is linked to a user in this organization")
-        )
-
-        response = client.post(
-            "/admin/organizations/org-1/budgets",
-            json={
-                "entity_type": "user",
-                "entity_id": "GitHub_20402445",
-                "period_type": "monthly",
-                "budget_amount_usd": 100.00,
-                "enforcement_mode": "hard",
-            },
-        )
-
-        assert response.status_code == 422
-        assert "accepted_forms" in response.json()["details"]
 
 
 class TestRateLimitConfigEndpoints:
@@ -674,22 +548,14 @@ class TestRateLimitListCreateDeleteEndpoints:
 class TestValidation:
     """Tests for request validation."""
 
-    def test_create_organization_is_gone_regardless_of_body(self, client, mock_admin_service):
-        """Issue #4842: the 410 wins over body validation on the deprecated route.
-
-        This previously asserted 422 for an empty name. The route now takes no body
-        at all, so a malformed one cannot produce a validation error — and that is
-        the better answer: telling a caller their ``name`` is invalid on an endpoint
-        that no longer exists would send them off fixing the wrong thing. The
-        equivalent empty-name coverage now lives against the canonical route in
-        ``tests/admin/identity/test_organizations_create_error_mapping.py``.
-        """
+    def test_create_organization_invalid_name(self, client, mock_admin_service):
+        """Test POST /admin/organizations with empty name."""
         response = client.post(
             "/admin/organizations",
-            json={"name": ""},  # Empty name — would have been a 422
+            json={"name": ""},  # Empty name
         )
 
-        assert response.status_code == 410
+        assert response.status_code == 422  # Validation error
 
     def test_add_pool_account_invalid_account_id(self, client, mock_admin_service):
         """Test POST /admin/pool/accounts with invalid account ID."""
@@ -737,29 +603,17 @@ class TestUserRolesEndpoint:
     """Tests for GET /admin/users/roles endpoint (Issue #179)."""
 
     def test_get_available_roles(self, client):
-        """Test GET /admin/users/roles returns the caller's assignable roles.
-
-        Issue #4019 replaced the hardcoded list with a ROLE_RANK-derived,
-        ceiling-filtered one. Two assertions changed deliberately: ``user`` is gone
-        (``member`` is the canonical spelling of that privilege level — the old list
-        carried aliases, which made the picker offer one level twice), and
-        ``service_account`` is gone because it is absent from ROLE_RANK and so was
-        rejected by require_assignable_role for every non-platform caller — a
-        dropdown option that always failed. ``dept_admin`` is now present; its
-        absence made the supported member->dept_admin promotion unofferable.
-        """
+        """Test GET /admin/users/roles returns static role list."""
         response = client.get("/admin/users/roles")
 
         assert response.status_code == 200
         data = response.json()
         assert "roles" in data
         assert isinstance(data["roles"], list)
-        # Caller is a platform admin, so the full assignable set is offered.
         assert "platform_admin" in data["roles"]
         assert "org_admin" in data["roles"]
-        assert "dept_admin" in data["roles"]
-        assert "member" in data["roles"]
-        assert "service_account" not in data["roles"]
+        assert "user" in data["roles"]
+        assert "service_account" in data["roles"]
 
 
 class TestUsageTimeseriesEndpoint:
@@ -1189,31 +1043,3 @@ class TestCognitoDepartmentListEndpoint:
         data = response.json()
         assert data["total"] == 0
         assert len(data["items"]) == 0
-
-
-def test_exact_budget_delete_requires_revision(client, mock_admin_service):
-    response = client.delete("/admin/organizations/org1/budget/org/org1/daily/revision")
-    assert response.status_code == 422
-    mock_admin_service.delete_exact_budget.assert_not_called()
-
-
-def test_exact_budget_rejects_unsupported_period(client, mock_admin_service):
-    response = client.get("/admin/organizations/org1/budget/org/org1/lifetime")
-    assert response.status_code == 422
-    mock_admin_service.exact_budget.assert_not_called()
-
-
-def test_exact_budget_get_returns_missing_as_null(client, mock_admin_service):
-    mock_admin_service.exact_budget = AsyncMock(return_value=None)
-    response = client.get("/admin/organizations/org1/budget/org/org1/daily")
-    assert response.status_code == 200
-    assert response.json() is None
-    mock_admin_service.exact_budget.assert_awaited_once_with("org1", "org", "org1", "daily")
-
-
-def test_exact_budget_delete_forwards_only_selected_period(client, mock_admin_service):
-    mock_admin_service.delete_exact_budget = AsyncMock()
-    revision = datetime.now(UTC)
-    response = client.delete("/admin/organizations/org1/budget/org/org1/weekly/revision", params={"expected_revision": revision.isoformat()})
-    assert response.status_code == 204
-    mock_admin_service.delete_exact_budget.assert_awaited_once_with("org1", "org", "org1", "weekly", revision)

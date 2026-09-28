@@ -3,7 +3,7 @@ terraform {
 
   backend "s3" {
     # Configured via -backend-config during terraform init
-    # See modules/domain-apps/cyber/environments/dev/sandbox-backend.tfvars
+    # See environments/dev/modules/cyber-sandbox-backend.tfvars
   }
 
   required_providers {

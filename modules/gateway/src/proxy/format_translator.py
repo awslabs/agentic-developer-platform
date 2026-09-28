@@ -304,7 +304,12 @@ class FormatTranslator:
                 model=request_model,
                 stop_reason=response.stop_reason,
                 stop_sequence=response.stop_sequence,
-                usage=AnthropicUsage(**response.usage),
+                usage=AnthropicUsage(
+                    input_tokens=response.usage.get("input_tokens", 0),
+                    output_tokens=response.usage.get("output_tokens", 0),
+                    cache_read_input_tokens=response.usage.get("cache_read_input_tokens", 0),
+                    cache_creation_input_tokens=response.usage.get("cache_creation_input_tokens", 0),
+                ),
             )
 
         except Exception as e:
@@ -487,14 +492,7 @@ class FormatTranslator:
         bedrock_content: list[dict[str, Any]] = []
         for item in content:
             if hasattr(item, "model_dump"):
-                # Issue #4180: exclude_none is load-bearing, not cosmetic. The
-                # content-block models now carry an optional `cache_control`, so a
-                # plain model_dump() would emit `"cache_control": null` on EVERY
-                # non-caching request — a wire change for the common case, and one
-                # Bedrock may reject. exclude_none keeps the no-marker path
-                # byte-identical to before this fix while letting a real
-                # breakpoint through.
-                bedrock_content.append(item.model_dump(exclude_none=True))
+                bedrock_content.append(item.model_dump())
             elif isinstance(item, dict):
                 bedrock_content.append(item)
             else:

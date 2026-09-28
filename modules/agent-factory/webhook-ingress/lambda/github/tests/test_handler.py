@@ -251,7 +251,6 @@ class TestSuccessfulPublish:
     @patch("handler._get_rate_limiter")
     @patch("handler._get_identity_resolver")
     @patch("handler._get_signature")
-    @patch.dict("os.environ", {"GITHUB_AUTO_PR_REVIEW_ENABLED": "true"})
     def test_pr_opened_publishes_reviewer_envelope(
         self, mock_sig, mock_resolver, mock_rate, mock_sqs, mock_write, mock_capture, mock_log
     ):
@@ -278,7 +277,7 @@ class TestSuccessfulPublish:
 
         assert result["statusCode"] == 202
         envelope = mock_sqs.call_args[0][0]
-        assert envelope["persona"] == "agent-codex-reviewer"
+        assert envelope["persona"] == "reviewer"
         assert envelope["source_ref"]["pr"] == 15
         assert envelope["source_ref"]["sha"] == "abc123"
         assert envelope["intent"]["trigger"] == "pr_opened"

@@ -190,7 +190,7 @@ An Epic is a GitHub Issue with the `type: epic` label that contains a Tasklist o
 1. Create the epic issue FIRST, before creating child stories.
 2. Apply labels: `type: epic`, `phase: inception`, relevant `area:` labels.
 3. After creating child stories, EDIT the epic body to add story issue numbers to the Tasklist.
-4. Epic titles: `Epic {N}: {Title}` (e.g., `Epic 1: MCP Gateway Deployment`).
+4. Epic titles: `Epic {N}: {Title}` (e.g., `Epic 1: MCP Agent Mail Deployment`).
 5. Create Beads epic: `bd create "Epic N: Title" -t epic -p 1 --json`
 
 ---
@@ -201,14 +201,37 @@ A Story is a GitHub Issue with the `type: story` label. It describes a user-faci
 
 ### Story Template
 
-Use [developer-issue.md](../templates/developer-issue.md), following
-[issue-authoring.md](issue-authoring.md). Put persona, motivation and parent
-reference in Description; keep one stable acceptance table in Validation.
-Use native sub-issue links for children; text/tasklists supplement the hierarchy.
+```markdown
+## US-{Epic}.{Story}: {Story Title}
+
+**As a** {persona},
+**I want to** {action},
+**So that** {benefit}.
+
+**Epic**: #{epic_issue_number} | **Priority**: {priority} | **Size**: {size}
+
+### Acceptance Criteria
+- [ ] {Specific, testable criterion 1}
+- [ ] {Specific, testable criterion 2}
+- [ ] {Specific, testable criterion 3}
+
+### Technical Notes
+{Any implementation guidance, API contracts, or design references}
+
+```[tasklist]
+### Units
+- [ ] #{unit_issue_number} {Unit title}
+- [ ] #{unit_issue_number} {Unit title}
+```
+
+### Dependencies
+- **Blocked by**: #{issue_number} (reason)
+- **Blocks**: #{issue_number} (reason)
+```
 
 ### Agent Rules for Stories
 
-1. Every story states who benefits, the desired outcome and why, using the canonical template.
+1. Every story MUST follow the "As a / I want to / So that" format.
 2. Every story MUST have at least 2 testable acceptance criteria.
 3. Apply labels: `type: story`, `phase: inception`, `priority:` label.
 4. Story IDs: `US-{Epic}.{Story}` (e.g., `US-1.2`).
@@ -224,14 +247,42 @@ A Unit is a GitHub Issue with `type: unit` label. It represents an implementable
 
 ### Unit Template
 
-Use the same [developer issue template](../templates/developer-issue.md), scaled
-to the unit's scope. Name dependencies, reuse points, completion boundary and
-phase owners. A file list is guidance; behavior and acceptance define the work.
-Do not embed an agent mention as assignment or add a trigger label.
+```markdown
+## Unit {Epic}-{Seq}: {Unit Title}
+
+**Story**: #{story_issue_number} | **Priority**: {priority}
+**Assigned Agent**: @agent-{type}
+
+### What to Build
+{Clear description of the implementation scope}
+
+### Files to Create/Modify
+```
+path/to/file1.py    # Description of changes
+path/to/file2.ts    # Description of changes
+```
+
+### Implementation Details
+{Specific technical guidance — API signatures, patterns to follow, constraints}
+
+### Acceptance Criteria
+- [ ] {Implementation-level criterion 1}
+- [ ] {Implementation-level criterion 2}
+- [ ] Tests pass
+- [ ] PR approved
+
+### Dependencies
+- **Blocked by**: #{issue_number} — {reason, what must complete first}
+- **Blocks**: #{issue_number} — {what depends on this unit}
+
+### Rules/Constraints
+- {Constraint 1 — e.g., "Do NOT modify shared/ directory"}
+- {Constraint 2 — e.g., "Follow existing patterns in src/auth/"}
+```
 
 ### Agent Rules for Units
 
-1. Apply classification and status labels consistent with the project. Never add `agent-*` labels; see core-workflow for dispatch.
+1. Apply labels: `type: unit`, `phase: construction`, `agent-{type}`, `status: ready` or `status: blocked`.
 2. Unit IDs: `Unit {Epic}-{Seq}` (e.g., `Unit 1-3`).
 3. Reference the parent story issue number in the body.
 4. Include specific file paths — units should be actionable without clarification.
@@ -239,7 +290,7 @@ Do not embed an agent mention as assignment or add a trigger label.
    - In issue body: `Blocked by: #N`
    - On project board: `blocked_by` field
    - In Beads: `bd dep add <this-unit> <blocker> --type blocks`
-6. Prefer one coherent PR per unit. If acceptance includes post-merge fixes, keep the issue open until its declared completion boundary is met.
+6. Each unit maps to exactly one PR.
 7. Create Beads task: `bd create "Unit X-Y: Title" -p 3 --json` then set dependencies.
 
 ---
@@ -263,7 +314,7 @@ Do not embed an agent mention as assignment or add a trigger label.
 Backlog → Todo (when unblocked)
 Todo → In Progress (when agent starts)
 In Progress → Review (when PR created)
-Review → Done (when the issue's declared acceptance is met)
+Review → Done (when PR merged)
 ```
 
 ---
@@ -280,12 +331,12 @@ gh label create "type: unit" --color "1D76DB" --repo "$REPO" || true
 
 # 2. Create Epic
 EPIC_NUM=$(gh issue create --repo "$REPO" \
-  --title "Epic 1: MCP Gateway Deployment" \
+  --title "Epic 1: MCP Agent Mail Deployment" \
   --label "type: epic,phase: inception" \
   --body "$EPIC_BODY" | grep -oE '[0-9]+$')
 
 # 3. Create Beads epic
-bd create "Epic 1: MCP Gateway Deployment" -t epic -p 1 --json
+bd create "Epic 1: MCP Agent Mail Deployment" -t epic -p 1 --json
 ```
 
 ### Step 2: Inception - Create Stories
@@ -293,7 +344,7 @@ bd create "Epic 1: MCP Gateway Deployment" -t epic -p 1 --json
 ```bash
 # Create Story under Epic
 STORY_NUM=$(gh issue create --repo "$REPO" \
-  --title "US-1.1: Deploy MCP Gateway to K8s" \
+  --title "US-1.1: Deploy Agent Mail to K8s" \
   --label "type: story,phase: inception" \
   --body "$STORY_BODY" | grep -oE '[0-9]+$')
 
@@ -311,13 +362,13 @@ bd dep add <story-id> <epic-id> --type parent-child
 # Unit 1 (no dependencies)
 UNIT1_NUM=$(gh issue create --repo "$REPO" \
   --title "Unit 1-1: Create K8s manifests" \
-  --label "type: unit,phase: construction,status: ready" \
+  --label "type: unit,phase: construction,agent-developer,status: ready" \
   --body "$UNIT1_BODY" | grep -oE '[0-9]+$')
 
 # Unit 2 (blocked by Unit 1)
 UNIT2_NUM=$(gh issue create --repo "$REPO" \
   --title "Unit 1-2: Configure persistent storage" \
-  --label "type: unit,phase: construction,status: blocked" \
+  --label "type: unit,phase: construction,agent-developer,status: blocked" \
   --body "$UNIT2_BODY_WITH_BLOCKED_BY" | grep -oE '[0-9]+$')
 
 # Set project board blocked_by field
@@ -353,7 +404,7 @@ bd close bd-abc.1 --reason "PR #123 merged"
 
 | Level | Pattern | Example |
 |-------|---------|---------|
-| Epic | `Epic {N}: {Title}` | `Epic 1: MCP Gateway Deployment` |
+| Epic | `Epic {N}: {Title}` | `Epic 1: MCP Agent Mail Deployment` |
 | Story | `US-{Epic}.{Story}: {Title}` | `US-1.2: Configure Authentication` |
 | Unit | `Unit {Epic}-{Seq}: {Title}` | `Unit 1-3: Create Ingress Rules` |
 | Task | `Task: {Title}` | `Task: Update documentation` |

@@ -1,10 +1,8 @@
 """Tests for ModelResolver component."""
 
-import json
-
 import pytest
 
-from src.proxy.model_resolver import DEFAULT_MODEL_ALIASES, ModelResolver, production_model_resolver
+from src.proxy.model_resolver import DEFAULT_MODEL_ALIASES, ModelResolver
 from src.shared.exceptions import ModelNotAllowedError
 from src.shared.schemas.auth import TokenContext
 
@@ -190,35 +188,6 @@ class TestModelResolver:
         assert isinstance(aliases, dict)
         assert "claude-3.5-sonnet" in aliases
         assert aliases["claude-3.5-sonnet"] == DEFAULT_MODEL_ALIASES["claude-3.5-sonnet"]
-
-    def test_production_resolver_reads_distinct_org_and_team_policy(self, monkeypatch) -> None:
-        """The deployed BG_ policy, not a test-only setter, drives precedence."""
-        from datetime import UTC, datetime, timedelta
-
-        monkeypatch.setenv(
-            "BG_MODEL_ALLOWED_MODELS_CONFIG",
-            json.dumps(
-                {
-                    "org-a": ["global.anthropic.claude-sonnet-*"],
-                    "org-a:team-restricted": ["global.anthropic.claude-haiku-*"],
-                    "org-b": ["global.anthropic.claude-opus-*"],
-                }
-            ),
-        )
-        resolver = production_model_resolver()
-        common = {
-            "user_id": "user-a",
-            "department_id": "",
-            "account_type": "human",
-            "expires_at": datetime.now(UTC) + timedelta(hours=1),
-        }
-        org_a = TokenContext(org_id="org-a", team_id="team-default", **common)
-        team_restricted = TokenContext(org_id="org-a", team_id="team-restricted", **common)
-        org_b = TokenContext(org_id="org-b", team_id="team-default", **common)
-
-        assert resolver.get_allowed_models(org_a) == ["global.anthropic.claude-sonnet-*"]
-        assert resolver.get_allowed_models(team_restricted) == ["global.anthropic.claude-haiku-*"]
-        assert resolver.get_allowed_models(org_b) == ["global.anthropic.claude-opus-*"]
 
     def test_custom_aliases_in_constructor(self) -> None:
         """Test providing custom aliases in constructor."""

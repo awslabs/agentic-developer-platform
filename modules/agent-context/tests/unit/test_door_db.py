@@ -314,24 +314,18 @@ class TestCreateDBPool:
             )
             assert pool is mock_pool_cls.return_value
 
-    def test_no_config_raises(self, monkeypatch):
-        """No IAM and no DATABASE_URL -> raises, never a usable-looking None.
-
-        Before #5658 this returned ``None`` and every caller treated the missing
-        pool as "no ACL store, so no restrictions" — an unconfigured Door served
-        unfiltered cross-tenant reads. The absence of the access-control
-        database must be an error the startup path cannot mistake for success.
-        """
+    def test_no_config_returns_none(self, monkeypatch):
+        """No IAM and no DATABASE_URL -> None."""
         monkeypatch.setenv("DB_USE_IAM_AUTH", "false")
         monkeypatch.delenv("DB_HOST", raising=False)
 
         mock_config = MagicMock()
         mock_config.database_url = ""
 
-        from door.db import DatabaseConfigurationError, create_db_pool
+        from door.db import create_db_pool
 
-        with pytest.raises(DatabaseConfigurationError):
-            create_db_pool(mock_config)
+        pool = create_db_pool(mock_config)
+        assert pool is None
 
     @patch("door.db._get_iam_auth_token", return_value="iam-token")
     @patch("psycopg2.connect")

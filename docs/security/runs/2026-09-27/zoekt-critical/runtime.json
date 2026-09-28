@@ -1,7 +1,0 @@
-{
-  "binaries_unchanged": "e83c507cb9ccf9a77019b00bb5347e067f52b855d0e50f9a82c600a80cbe96fd  /usr/local/bin/zoekt-webserver\nbfe7664448a5008f4f2630a31bd0ca10998e16e1218126dc6dc71ac266bff4b4  /usr/local/bin/zoekt-git-index\n",
-  "index_search_fixture": "2026/09/27 13:08:09 symbol analysis finished for shard statistics: duration=0s symbols=0 bytes=28\n2026/09/27 13:08:09 finished shard /data/index/fixture_v16.00000.zoekt: 1783 index bytes (overhead 44.6), 1 files processed \nnative index and HTTP search passed\n",
-  "busybox_shard_sync": "shard-sync-passed\n",
-  "new_critical_high_advisory_package_pairs": [],
-  "live_acceptance": false
-}

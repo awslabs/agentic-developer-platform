@@ -57,7 +57,7 @@ AUTO_FIX_JOB=$(cat << 'EOF'
   auto-fix-on-failure:
     needs: [JOB_NAMES_PLACEHOLDER]
     if: failure()
-    runs-on: arc-runner-org
+    runs-on: arc-runner-auto-fix
     steps:
       - name: Fetch logs and create issue
         env:

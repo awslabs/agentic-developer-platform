@@ -146,17 +146,15 @@ class CognitoService:
             if github_username:
                 user_attributes.append({"Name": "custom:github_username", "Value": github_username})
 
-            # Omit MessageAction for a NEW invitation. RESEND resets an existing
-            # account's temporary password and must never be used for creation.
-            params = {
-                "UserPoolId": self.user_pool_id,
-                "Username": email,
-                "UserAttributes": user_attributes,
-                "DesiredDeliveryMediums": ["EMAIL"],
-            }
-            if suppress_invitation:
-                params["MessageAction"] = "SUPPRESS"
-            response = self.client.admin_create_user(**params)
+            message_action = "SUPPRESS" if suppress_invitation else "RESEND"
+
+            response = self.client.admin_create_user(
+                UserPoolId=self.user_pool_id,
+                Username=email,
+                UserAttributes=user_attributes,
+                MessageAction=message_action,
+                DesiredDeliveryMediums=["EMAIL"],
+            )
 
             logger.info(f"Created Cognito user: {email} in org {org_id}")
             return response.get("User", {})

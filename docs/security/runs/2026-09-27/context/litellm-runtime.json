@@ -1,9 +1,0 @@
-{
-  "uid": 10001,
-  "startup": "passed",
-  "auth_negative": "passed",
-  "real_proxy_roundtrip": "passed",
-  "root_and_config_writes": "denied",
-  "malformed_request": "denied",
-  "provider_outage": "503"
-}

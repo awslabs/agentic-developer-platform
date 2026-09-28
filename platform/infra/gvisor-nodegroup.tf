@@ -41,18 +41,6 @@ resource "aws_launch_template" "gvisor_nodes" {
   # Use the EKS-managed cluster security group (Auto Mode pattern)
   vpc_security_group_ids = [module.eks.cluster_security_group_id]
 
-  # IMDSv2 required — CKV_AWS_79, #6103. http_tokens = "required" forces
-  # token-based metadata requests; hop_limit = 1 constrains ordinary routed
-  # pod traffic from reaching IMDS (the extra network hop exceeds the limit).
-  # This does NOT block hostNetwork pods or other host-level callers — those
-  # require separate admission control (e.g. PodSecurity or OPA/Gatekeeper).
-  # Same pattern as every other launch template in this repo.
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 1
-  }
-
   # Pre-bootstrap user-data: installs gVisor before kubelet starts.
   # EKS merges this with its own NodeConfig for AL2023 managed node groups.
   user_data = base64encode(<<-USERDATA

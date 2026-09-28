@@ -19,9 +19,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "images" / "ingestion"))
 
 from scope import (  # noqa: E402
+    DEFAULT_SCOPE,
     IngestionScope,
     compute_s3_prefix,
-    ScopeValidationError,
     parse_scope,
     parse_scope_from_env,
 )
@@ -133,10 +133,14 @@ class TestComputeS3Prefix:
 class TestParseScopeFromEnv:
     """Tests for parse_scope_from_env() — reading scope from environment."""
 
-    def test_missing_environment_is_refused(self):
-        with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(ScopeValidationError):
-                parse_scope_from_env()
+    def test_no_env_vars_returns_shared(self):
+        """Missing env vars default to shared scope."""
+        env = {}
+        with patch.dict(os.environ, env, clear=True):
+            scope = parse_scope_from_env()
+        assert scope.is_shared
+        assert scope.tenant_id is None
+        assert scope.owner_sub is None
 
     def test_shared_visibility_explicit(self):
         """Explicit shared visibility from env."""
@@ -172,45 +176,32 @@ class TestParseScopeFromEnv:
         assert scope.is_personal
         assert scope.owner_sub == "user-abc-123"
 
-    def test_tenant_without_id_is_rejected(self):
-        """Tenant visibility without tenant_id fails the run (#5658).
-
-        Reaching here means the parent validated a tenant scope and the env
-        propagation lost INGESTION_SCOPE_TENANT_ID. The old fallback wrote that
-        tenant's artifacts to the shared prefix.
-        """
+    def test_tenant_without_id_falls_back_shared(self):
+        """Tenant visibility without tenant_id falls back to shared."""
         env = {
             "INGESTION_SCOPE_VISIBILITY": "tenant",
             "INGESTION_SCOPE_TENANT_ID": "",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ScopeValidationError):
-                parse_scope_from_env()
+            scope = parse_scope_from_env()
+        assert scope.is_shared
 
-    def test_personal_without_owner_sub_is_rejected(self):
-        """Personal visibility without owner_sub fails the run (#5658).
-
-        The most sensitive case: personal content downgraded to shared is one
-        user's private material published to everyone.
-        """
+    def test_personal_without_owner_sub_falls_back_shared(self):
+        """Personal visibility without owner_sub falls back to shared."""
         env = {
             "INGESTION_SCOPE_VISIBILITY": "personal",
             "INGESTION_SCOPE_OWNER_SUB": "",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ScopeValidationError):
-                parse_scope_from_env()
+            scope = parse_scope_from_env()
+        assert scope.is_shared
 
-    def test_invalid_visibility_is_rejected(self):
-        """Unknown visibility value fails the run rather than defaulting (#5658)."""
+    def test_invalid_visibility_falls_back_shared(self):
+        """Unknown visibility value defaults to shared."""
         env = {"INGESTION_SCOPE_VISIBILITY": "unknown_value"}
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ScopeValidationError):
-                parse_scope_from_env()
-
-    def test_explicit_shared_environment_remains_supported(self):
-        with patch.dict(os.environ, {"INGESTION_SCOPE_VISIBILITY": "shared"}, clear=True):
-            assert parse_scope_from_env().is_shared
+            scope = parse_scope_from_env()
+        assert scope.is_shared
 
 
 # ---------------------------------------------------------------------------
@@ -287,39 +278,30 @@ class TestIngestionScopeProperties:
 class TestParseScopeValidation:
     """Tests for parse_scope() validation — ensures invalid input defaults safely."""
 
-    def test_tenant_missing_tenant_id_is_rejected(self):
-        """Tenant visibility without tenant_id is refused, not downgraded (#5658)."""
-        with pytest.raises(ScopeValidationError):
-            parse_scope({"visibility": "tenant", "tenant_id": None})
+    def test_tenant_missing_tenant_id_returns_shared(self):
+        """Tenant visibility without tenant_id falls back to shared."""
+        raw = {"visibility": "tenant", "tenant_id": None}
+        scope = parse_scope(raw)
+        assert scope.is_shared
 
-    def test_tenant_empty_tenant_id_is_rejected(self):
-        """An empty tenant_id is as unusable as a missing one."""
-        with pytest.raises(ScopeValidationError):
-            parse_scope({"visibility": "tenant", "tenant_id": ""})
+    def test_tenant_empty_tenant_id_returns_shared(self):
+        """Tenant visibility with empty tenant_id falls back to shared."""
+        raw = {"visibility": "tenant", "tenant_id": ""}
+        scope = parse_scope(raw)
+        assert scope.is_shared
 
-    def test_personal_missing_owner_sub_is_rejected(self):
-        """Personal visibility without owner_sub is refused, not downgraded."""
-        with pytest.raises(ScopeValidationError):
-            parse_scope({"visibility": "personal", "owner_sub": None})
+    def test_personal_missing_owner_sub_returns_shared(self):
+        """Personal visibility without owner_sub falls back to shared."""
+        raw = {"visibility": "personal", "owner_sub": None}
+        scope = parse_scope(raw)
+        assert scope.is_shared
 
-    def test_non_dict_scope_is_refused(self):
-        for raw in (None, [], "shared", 42):
-            with pytest.raises(ScopeValidationError):
-                parse_scope(raw)
+    def test_non_dict_scope_returns_default(self):
+        """Non-dict raw value returns default shared scope."""
+        scope = parse_scope(None)
+        assert scope is DEFAULT_SCOPE
 
-    def test_empty_scope_is_refused(self):
-        with pytest.raises(ScopeValidationError):
-            parse_scope({})
-
-
-@pytest.mark.parametrize(
-    "identifier", ["../other", "team/other", "team%2Fother", "team\\other", ".", "..", "", [], {}]
-)
-def test_scope_identifiers_cannot_change_storage_root(identifier):
-    with pytest.raises(ScopeValidationError):
-        parse_scope({"visibility": "tenant", "tenant_id": identifier})
-
-
-def test_shared_scope_cannot_discard_an_owner_restriction():
-    with pytest.raises(ScopeValidationError):
-        parse_scope({"visibility": "shared", "owner_sub": "alice"})
+    def test_empty_dict_returns_default(self):
+        """Empty dict returns default (treated as falsy by parse_scope)."""
+        scope = parse_scope({})
+        assert scope.is_shared

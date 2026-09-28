@@ -237,52 +237,6 @@ def fake_dependency_store() -> FakeDependencyStore:
 
 
 # ---------------------------------------------------------------------------
-# Door ACL-store availability (#5658)
-# ---------------------------------------------------------------------------
-
-
-class StubDoorACLStore:
-    """Door ACL store that is reachable but grants nothing.
-
-    The Door refuses every ACL-enforced verb outright when its ACL store is
-    unavailable (#5658): without ``repositories.allowed_principals`` there is no
-    basis on which to authorise a read, and the pre-#5658 behaviour of serving
-    unfiltered results in that state was the vulnerability. That refusal is a
-    different outcome from "authorised, and you may see nothing", and tests
-    about identity handling need the latter.
-
-    Granting no repos keeps the observable result an empty envelope, which is
-    what a caller with no resolvable identity should get.
-    """
-
-    def get_allowed_repos(self, principal):  # noqa: ANN001, ANN201 - test stub
-        return set()
-
-
-@pytest.fixture
-def acl_store_live():
-    """Install a reachable ACL store on the Door app state for one test.
-
-    Use this in tests whose subject is the *identity* gate (no headers -> empty
-    results). Without it those tests would pass for the wrong reason: they would
-    be observing the store-unavailable refusal, and would keep passing even if
-    the identity check were deleted. Tests whose subject IS the store gate must
-    NOT use this fixture.
-    """
-    from door import server as server_mod
-
-    previous_store = server_mod.state.acl_store
-    previous_error = server_mod.state.acl_store_error
-    server_mod.state.acl_store = StubDoorACLStore()
-    server_mod.state.acl_store_error = ""
-    try:
-        yield server_mod.state.acl_store
-    finally:
-        server_mod.state.acl_store = previous_store
-        server_mod.state.acl_store_error = previous_error
-
-
-# ---------------------------------------------------------------------------
 # Principal fixtures for isolation tests
 # ---------------------------------------------------------------------------
 

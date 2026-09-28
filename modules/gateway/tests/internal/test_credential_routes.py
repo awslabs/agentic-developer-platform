@@ -108,7 +108,7 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession, mock_sm=None, *, user="user-canonical") -> TestClient:
+def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     """Build a minimal FastAPI test app with the credential routes router."""
     app = FastAPI()
     app.include_router(router)
@@ -119,9 +119,6 @@ def _make_app(db_session: AsyncSession, mock_sm=None, *, user="user-canonical") 
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[get_secrets_manager] = lambda: mock_sm
-    from tests.internal.broker_fixture import install_broker_fixture
-
-    install_broker_fixture(app, user=user, run="canonical-run", tenant="org-canonical")
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -148,13 +145,14 @@ class TestCredentialListCanonicalResolution:
         AND org_id must be replaced in downstream queries.
         """
         with (
+            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.credential_routes.get_settings", return_value=_settings_mock()),
         ):
             client = _make_app(db)
             resp = client.get(
                 "/internal/v1/user-credentials",
-                params={"invocation_id": "canonical-run", "user_id": "user-canonical", "service": "aws"},
+                params={"user_id": "user-canonical", "service": "aws"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
 
@@ -169,13 +167,14 @@ class TestCredentialListCanonicalResolution:
     async def test_credential_lookup_returns_404_when_user_not_found(self, db):
         """Non-existent user_id returns 404."""
         with (
+            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.credential_routes.get_settings", return_value=_settings_mock()),
         ):
-            client = _make_app(db, user="user-nonexistent")
+            client = _make_app(db)
             resp = client.get(
                 "/internal/v1/user-credentials",
-                params={"invocation_id": "canonical-run", "user_id": "user-nonexistent", "service": "aws"},
+                params={"user_id": "user-nonexistent", "service": "aws"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
 
@@ -187,13 +186,14 @@ class TestCredentialListCanonicalResolution:
         """Test 6: current empty-list behavior preserved when the canonical user
         genuinely has no credentials in the org."""
         with (
+            patch("src.internal.routes.get_settings", return_value=_settings_mock()),
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
             patch("src.internal.credential_routes.get_settings", return_value=_settings_mock()),
         ):
-            client = _make_app(db, user="user-empty")
+            client = _make_app(db)
             resp = client.get(
                 "/internal/v1/user-credentials",
-                params={"invocation_id": "canonical-run", "user_id": "user-empty", "service": "aws"},
+                params={"user_id": "user-empty", "service": "aws"},
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
 

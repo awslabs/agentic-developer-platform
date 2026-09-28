@@ -41,13 +41,8 @@ class AgentRegistryEntry(TypedDict):
     team_id: str
     owner: str
     scope: str
-    requires_run_identity: bool
     budget_config_id: str
     allowed_models: list[str]
-    # Issue #4131 (grant step): the credential scopes this agent has actually
-    # been granted, resolved server-side from the registry. Absent/empty means
-    # the agent holds no credential scopes.
-    credential_scopes: list[str]
     status: str
     description: str
     image_uri: str
@@ -114,10 +109,8 @@ class AgentRegistryService:
             team_id=item.get("team_id", {}).get("S", ""),
             owner=item.get("owner", {}).get("S", ""),
             scope=item.get("scope", {}).get("S", ""),
-            requires_run_identity=item.get("requires_run_identity", {}).get("BOOL", False),
             budget_config_id=item.get("budget_config_id", {}).get("S", ""),
             allowed_models=item.get("allowed_models", {}).get("SS", []),
-            credential_scopes=item.get("credential_scopes", {}).get("SS", []),
             status=item.get("status", {}).get("S", ""),
             description=item.get("description", {}).get("S", ""),
             image_uri=item.get("image_uri", {}).get("S", ""),
@@ -184,28 +177,6 @@ class AgentRegistryService:
         except Exception as e:
             logger.error(f"Unexpected error looking up agent: {e}")
             return None
-
-    def get_current_agent(self, agent_id: str, role_arn: str) -> AgentRegistryEntry | None:
-        """Strong read of one authenticated principal for credential delivery.
-
-        The GSI/cache locates identity; it cannot prove a capability is still live.
-        Verify the role again because the cached identity may have been replaced.
-        Storage failures propagate so the caller can distinguish unavailability.
-        """
-        if not self._table_name or not agent_id or not role_arn:
-            return None
-        reply = self.dynamodb.get_item(
-            TableName=self._table_name,
-            Key={"agent_id": {"S": agent_id}},
-            ConsistentRead=True,
-        )
-        item = reply.get("Item")
-        if not item:
-            return None
-        entry = self._parse_dynamodb_item(item)
-        if entry["role_arn"] != role_arn or entry["status"] != "active":
-            return None
-        return entry
 
     def clear_cache(self):
         """Clear the agent cache."""
@@ -274,11 +245,8 @@ def agent_entry_to_token_context(entry: AgentRegistryEntry) -> TokenContext:
     Returns:
         TokenContext for the agent
     """
-    if not entry.get("agent_id"):
-        raise ValueError("Registered service principal is missing its immutable ID")
     return TokenContext(
-        # Separate service principals from human IDs and mutable display names.
-        user_id=f"iam-agent:{entry['agent_id']}",
+        user_id=entry["agent_name"],
         org_id=entry["org_id"],
         team_id=entry["team_id"],
         department_id="",  # Agents don't have department_id
@@ -291,21 +259,4 @@ def agent_entry_to_token_context(entry: AgentRegistryEntry) -> TokenContext:
         # internal plane with no way to distinguish an internal principal from
         # any other registered agent.
         scope=entry.get("scope", ""),
-        # Preserve enforcement for protected entries seeded before this field
-        # existed. Disabling the gateway rollout flag must not downgrade them.
-        requires_run_identity=entry.get("requires_run_identity", False) or entry.get("agent_id") == "authority-worker",
-        # Issue #4131 (grant step): carry the registry-granted credential scopes
-        # so credential routes can authorize against them server-side instead of
-        # trusting a caller-supplied header. Nothing reads this yet — the
-        # enforcement change is a separate, follow-on PR that must not land until
-        # the registry rows are seeded and verified.
-        credential_scopes=list(entry.get("credential_scopes", [])),
-        # Issue #5420 (PMM-03 / locked D3): carry the real registry-owned
-        # service-principal model restriction into the authenticated context.
-        # It used to stop at DynamoDB and was therefore an inert setting.
-        registered_allowed_models=list(entry.get("allowed_models", [])),
-        # ``agent_name`` is mutable and non-unique.  Preserve the registry's
-        # immutable primary key so privileged internal routes can authenticate
-        # the exact seeded principal instead of trusting a display name.
-        agent_registry_id=entry.get("agent_id", ""),
     )

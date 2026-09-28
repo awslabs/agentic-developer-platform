@@ -7,8 +7,6 @@ error handling, retry logic, and mocking support for testing.
 
 import asyncio
 import logging
-import re
-from collections.abc import Mapping
 from typing import Any
 
 import boto3
@@ -143,15 +141,7 @@ class STSClient:
             logger.error(f"Unexpected error in get_caller_identity: {e}")
             raise STSClientError(f"Unexpected error during STS operation: {str(e)}", details={"error_type": "unexpected_error"})
 
-    async def assume_role(
-        self,
-        role_arn: str,
-        role_session_name: str,
-        duration_seconds: int = 3600,
-        external_id: str | None = None,
-        *,
-        tags: list[dict[str, str]] | None = None,
-    ) -> dict[str, Any]:
+    async def assume_role(self, role_arn: str, role_session_name: str, duration_seconds: int = 3600) -> dict[str, Any]:
         """
         Assume an AWS IAM role.
 
@@ -159,13 +149,6 @@ class STSClient:
             role_arn: ARN of the role to assume
             role_session_name: Session name for the assumed role
             duration_seconds: Duration of the session in seconds (default: 1 hour)
-            external_id: Optional ExternalId for confused-deputy protection. When
-                supplied it is sent as the ``ExternalId`` parameter, which a role
-                whose trust policy carries an ``sts:ExternalId`` condition requires.
-                Keyword-optional so the existing callers that assume roles trusting
-                ADP unconditionally keep working unchanged; brokered workspace
-                assumes must go through :meth:`assume_workspace_role`, which makes
-                the value mandatory.
 
         Returns:
             Dict containing the assumed role credentials
@@ -181,85 +164,31 @@ class STSClient:
         if not self._client:
             raise STSClientError("STS client not initialized")
 
-        params: dict[str, Any] = {
-            "RoleArn": role_arn,
-            "RoleSessionName": role_session_name,
-            "DurationSeconds": duration_seconds,
-        }
-        if external_id:
-            params["ExternalId"] = external_id
-        if tags is not None:
-            params["Tags"] = tags
-
         try:
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, lambda: self._client.assume_role(**params))
+            response = await loop.run_in_executor(
+                None, lambda: self._client.assume_role(RoleArn=role_arn, RoleSessionName=role_session_name, DurationSeconds=duration_seconds)
+            )
 
             logger.debug(f"AssumeRole successful for role: {role_arn}")
             return response
 
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
-            logger.warning("AssumeRole ClientError: %s", error_code)
+            error_message = e.response["Error"]["Message"]
+
+            logger.warning(f"AssumeRole ClientError: {error_code} - {error_message}")
 
             raise STSClientError(
-                f"Failed to assume role {role_arn}: {error_code}",
-                details={"error_code": error_code, "role_arn": role_arn, "error_type": "assume_role_failed"},
+                f"Failed to assume role {role_arn}: {error_message}",
+                details={"error_code": error_code, "error_message": error_message, "role_arn": role_arn, "error_type": "assume_role_failed"},
             )
 
         except Exception as e:
-            logger.error("Unexpected error in assume_role (%s)", type(e).__name__)
-            raise STSClientError("Unexpected error during assume role operation", details={"error_type": "unexpected_error", "role_arn": role_arn})
-
-    async def assume_workspace_role(
-        self,
-        stored_account: Mapping[str, Any],
-        role_session_name: str,
-        duration_seconds: int = 3600,
-        *,
-        user_id: str,
-        agent_id: str,
-        task_id: str,
-    ) -> dict[str, Any]:
-        """Broker an ADP-created workspace role using authorized stored metadata.
-
-        Called after the credential endpoint resolves the principal and selects
-        their credential. ExternalId and target account come only from that
-        stored record. Session tags preserve the v1 role's required user binding.
-        Imported and legacy generic roles retain their separate existing path.
-        Returns only temporary credentials; no role or ExternalId is delivered.
-        """
-        role_arn = stored_account.get("role_arn")
-        if not isinstance(role_arn, str) or not role_arn.strip():
-            raise STSClientError("Stored cloud-account record has no role ARN", details={"error_type": "missing_role_arn"})
-        account_id = stored_account.get("account_id")
-        match = re.fullmatch(r"arn:aws(?:-us-gov|-cn)?:iam::([0-9]{12}):role/[^\s]+", role_arn)
-        if not isinstance(account_id, str) or match is None or match.group(1) != account_id:
-            raise STSClientError("Stored cloud-account role and account disagree", details={"error_type": "invalid_account_role"})
-        external_id = stored_account.get("external_id")
-        if not isinstance(external_id, str) or not external_id.strip():
-            raise STSClientError("Stored cloud-account record has no ExternalId", details={"error_type": "missing_external_id"})
-        if re.fullmatch(r"[A-Za-z0-9_+=,.@:/-]{2,1224}", external_id) is None:
-            raise STSClientError("Stored ExternalId is malformed", details={"error_type": "invalid_external_id"})
-        if any(not isinstance(value, str) or not value.strip() for value in (user_id, agent_id, task_id)):
-            raise STSClientError("Broker requires resolved identity context", details={"error_type": "missing_identity"})
-        response = await self.assume_role(
-            role_arn=role_arn,
-            role_session_name=role_session_name,
-            duration_seconds=duration_seconds,
-            external_id=external_id,
-            tags=[
-                {"Key": "adp:user_id", "Value": user_id},
-                {"Key": "adp:agent_id", "Value": agent_id},
-                {"Key": "adp:task_id", "Value": task_id},
-                {"Key": "adp:persona", "Value": agent_id},
-            ],
-        )
-        credentials = response.get("Credentials")
-        required = ("AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")
-        if not isinstance(credentials, dict) or any(not credentials.get(key) for key in required):
-            raise STSClientError("AssumeRole returned incomplete credentials", details={"error_type": "no_credentials_returned"})
-        return {key: credentials[key] for key in required}
+            logger.error(f"Unexpected error in assume_role: {e}")
+            raise STSClientError(
+                f"Unexpected error during assume role operation: {str(e)}", details={"error_type": "unexpected_error", "role_arn": role_arn}
+            )
 
     def get_account_id_from_arn(self, arn: str) -> str:
         """

@@ -1,9 +1,0 @@
-{
-  "candidate": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cb081f259e95108195c22ef7506eeed843fef6d015f7ce33366ad4f69fd8284c",
-  "canary_pod_uid": "ac74a5e1-58e1-4474-ab04-413760cf3b1c",
-  "observed_imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cb081f259e95108195c22ef7506eeed843fef6d015f7ce33366ad4f69fd8284c",
-  "canary_exit": 0,
-  "image_only_template_change": true,
-  "generation": 61,
-  "full_task_lifecycle_verified": false
-}

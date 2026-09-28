@@ -1,229 +1,187 @@
-"""Refresh errors must participate in Lambda asynchronous retry semantics."""
+"""
+Tests for Pricing Refresh Lambda Handler.
 
-from contextlib import contextmanager
-from dataclasses import replace
-from types import SimpleNamespace
-from unittest.mock import Mock
+Issue #234: Budget Usage Tracking Lambda
+"""
+
+import json
+from decimal import Decimal
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pricing_policy.refresh import assemble_candidate
-from tests.pricing_policy.test_aws_refresh import VERIFIED, template
+from ._handler_loader import handler_module_name, load_handler
 
-from ._handler_loader import load_handler
-
-pytest.importorskip("psycopg2")
-
-
-@pytest.fixture
-def refresh(monkeypatch):
-    module = load_handler("pricing-refresh")
-    old = template()
-    fresh = replace(old, source="model_card", verified_at=VERIFIED, snapshot_version=None)
-    candidate = assemble_candidate((old,), (fresh,), frozenset((old.variant_key,)))
-    commits = []
-
-    @contextmanager
-    def connection():
-        yield object()
-        commits.append("committed")
-
-    monkeypatch.setattr(module, "get_db_connection", connection)
-    monkeypatch.setattr(module, "emit_metrics", Mock())
-    monkeypatch.setattr(module, "read_active", Mock(return_value=SimpleNamespace(revision=1, rows=(old,))))
-    monkeypatch.setattr(module, "load_snapshot", lambda: SimpleNamespace(models={}, rates=(old,), required_variants=frozenset((old.variant_key,))))
-    monkeypatch.setattr(module, "fetch_rates", Mock(return_value=((fresh,), ())))
-    monkeypatch.setattr(module, "publish", Mock(return_value=(2, 2, candidate)))
-    return module, commits
+# Unique module name for the pricing-refresh handler — used both to load it and
+# as the patch target, so it never collides with other lambdas' ``handler``.
+_PRICING_HANDLER = handler_module_name("pricing-refresh")
 
 
-def test_full_success_publishes_heartbeat(refresh):
-    module, commits = refresh
-    assert module.handler({}, None)["status"] == "published"
-    assert len(commits) == 2
-    assert module.emit_metrics.call_args.args[0]["PricingRefreshSuccess"] == 1
+def _has_psycopg2() -> bool:
+    """Check if psycopg2 is installed."""
+    try:
+        import psycopg2  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
 
 
-def test_partial_commits_before_raising_and_never_emits_success(refresh):
-    module, commits = refresh
-    module.fetch_rates.return_value = module.fetch_rates.return_value[0], ("https://failed-source",)
-    with pytest.raises(module.PartialRefreshError):
-        module.handler({}, None)
-    assert len(commits) == 2
-    assert module.emit_metrics.call_args.args[0]["PricingRefreshPartial"] == 1
-    assert "PricingRefreshSuccess" not in module.emit_metrics.call_args.args[0]
+# Register the handler module under its unique name at import time when its
+# deps are available, so the class-level @patch(f"{_PRICING_HANDLER}.…")
+# decorators can resolve their target (patch imports the target before the
+# test body runs). Skipped when psycopg2 is absent — those tests are skipped
+# too, so the module is never needed.
+if _has_psycopg2():
+    load_handler("pricing-refresh")
 
 
-@pytest.mark.parametrize("reason", ["schema_absent", "paused", "consumers_disabled_or_unseeded"])
-def test_schema_or_paused_defers_without_fetch_or_write(refresh, reason):
-    module, _ = refresh
-    module.read_active.side_effect = module.RefreshDeferredError(reason)
-    assert module.handler({}, None) == {"status": "deferred", "reason": reason}
-    module.fetch_rates.assert_not_called()
-    module.publish.assert_not_called()
+from pricing_fallback import MODEL_PRICING  # noqa: E402
 
 
-def test_operational_failure_raises_not_http_500(refresh):
-    module, _ = refresh
-    module.fetch_rates.side_effect = module.SourceValidationError("bad AWS schema")
-    with pytest.raises(module.SourceValidationError):
-        module.handler({}, None)
-    module.publish.assert_not_called()
-    assert module.emit_metrics.call_args.args[0] == {"PricingRefreshRejected": 1}
+@pytest.mark.skipif(
+    not _has_psycopg2(),
+    reason="psycopg2 not installed (Lambda-only dependency)",
+)
+class TestPricingRefreshHandler:
+    """Tests for pricing refresh Lambda handler."""
+
+    def test_extract_model_pricing_from_product(self):
+        """Test extracting model pricing from AWS Pricing API product data."""
+        extract_model_pricing_from_product = load_handler("pricing-refresh").extract_model_pricing_from_product
+
+        # Sample product data structure from AWS Pricing API
+        product = {
+            "product": {
+                "attributes": {
+                    "modelId": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                }
+            },
+            "terms": {
+                "OnDemand": {
+                    "term1": {
+                        "priceDimensions": {
+                            "dim1": {
+                                "description": "Input token price",
+                                "unit": "1000 tokens",
+                                "pricePerUnit": {"USD": "0.003"},
+                            },
+                            "dim2": {
+                                "description": "Output token price",
+                                "unit": "1000 tokens",
+                                "pricePerUnit": {"USD": "0.015"},
+                            },
+                        }
+                    }
+                }
+            },
+        }
+
+        result = extract_model_pricing_from_product(product)
+
+        assert result is not None
+        assert result["model_id"] == "anthropic.claude-3-5-sonnet-20241022-v2:0"
+        assert result["input_price"] == Decimal("0.003")
+        assert result["output_price"] == Decimal("0.015")
+
+    def test_extract_model_pricing_missing_model_id(self):
+        """Test extracting pricing when model ID is missing."""
+        extract_model_pricing_from_product = load_handler("pricing-refresh").extract_model_pricing_from_product
+
+        product = {
+            "product": {
+                "attributes": {}  # No modelId
+            },
+            "terms": {},
+        }
+
+        result = extract_model_pricing_from_product(product)
+        assert result is None
+
+    def test_extract_model_pricing_missing_on_demand(self):
+        """Test extracting pricing when OnDemand terms are missing."""
+        extract_model_pricing_from_product = load_handler("pricing-refresh").extract_model_pricing_from_product
+
+        product = {
+            "product": {
+                "attributes": {
+                    "modelId": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                }
+            },
+            "terms": {},  # No OnDemand
+        }
+
+        result = extract_model_pricing_from_product(product)
+        assert result is None
 
 
-def test_conflict_reloads_and_rebuilds_against_winner(refresh):
-    module, _ = refresh
-    result = module.publish.return_value
-    module.publish.side_effect = [module.PointerConflictError(), result]
-    module.read_active.side_effect = [SimpleNamespace(revision=1, rows=(template(),)), SimpleNamespace(revision=2, rows=(template(),))]
-    assert module.handler({}, None)["status"] == "published"
-    assert module.publish.call_args.args[1] == 2
+class TestFallbackPricing:
+    """Tests for fallback pricing logic."""
+
+    def test_fallback_pricing_has_common_models(self):
+        """Test that fallback pricing includes common models."""
+        # Claude 3.5 Sonnet
+        assert "anthropic.claude-3-5-sonnet-20241022-v2:0" in MODEL_PRICING
+        # Claude 3.5 Haiku
+        assert "anthropic.claude-3-5-haiku-20241022-v1:0" in MODEL_PRICING
+        # Claude 3 Haiku
+        assert "anthropic.claude-3-haiku-20240307-v1:0" in MODEL_PRICING
+        # Amazon Titan
+        assert "amazon.titan-text-express-v1" in MODEL_PRICING
+        # Default fallback
+        assert "default" in MODEL_PRICING
+
+    def test_fallback_pricing_has_valid_structure(self):
+        """Test that all pricing entries have valid structure."""
+        for model_id, pricing in MODEL_PRICING.items():
+            assert "input" in pricing, f"Missing 'input' for {model_id}"
+            assert "output" in pricing, f"Missing 'output' for {model_id}"
+            assert isinstance(pricing["input"], Decimal), f"'input' not Decimal for {model_id}"
+            assert isinstance(pricing["output"], Decimal), f"'output' not Decimal for {model_id}"
+            assert pricing["input"] >= 0, f"Negative input price for {model_id}"
+            assert pricing["output"] >= 0, f"Negative output price for {model_id}"
+
+    def test_default_pricing_is_reasonable(self):
+        """Test that default pricing is a reasonable conservative estimate."""
+        default = MODEL_PRICING["default"]
+        # Default should be similar to Claude 3.5 Sonnet (a middle-tier model)
+        assert default["input"] == Decimal("0.003")
+        assert default["output"] == Decimal("0.015")
 
 
-def test_caller_cannot_shrink_manifest(refresh):
-    module, _ = refresh
-    with pytest.raises(ValueError):
-        module.handler({"required_variants": []}, None)
-    module.fetch_rates.assert_not_called()
+@pytest.mark.skipif(
+    not _has_psycopg2(),
+    reason="psycopg2 not installed (Lambda-only dependency)",
+)
+class TestHandlerIntegration:
+    """Integration tests for the handler function."""
 
+    @patch(f"{_PRICING_HANDLER}.get_db_connection")
+    @patch(f"{_PRICING_HANDLER}.boto3.client")
+    def test_handler_with_pricing_api_failure_uses_fallback(self, mock_boto_client, mock_get_db_connection):
+        """Test that handler falls back to hardcoded pricing when API fails."""
+        # Mock pricing client to raise exception
+        mock_pricing_client = MagicMock()
+        mock_pricing_client.get_paginator.return_value.paginate.side_effect = Exception("Pricing API throttled")
+        mock_boto_client.return_value = mock_pricing_client
 
-def test_all_transport_failures_return_no_fresh_values(refresh, monkeypatch):
-    module, _ = refresh
-    monkeypatch.undo()
-    monkeypatch.setattr(module, "fetch_source", Mock(side_effect=OSError("network unreachable")))
-    rows, failures = module.fetch_rates((template("openai.gpt-oss-120b", context="flat"),), module.time.monotonic() + 2)
-    assert rows == () and len(failures) == len(module.CARD_SLUGS) + 1
+        # Mock database connection
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        mock_get_db_connection.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_get_db_connection.return_value.__exit__ = MagicMock(return_value=False)
 
+        handler = load_handler("pricing-refresh").handler
 
-def test_unparseable_fetched_source_is_rejected(refresh, monkeypatch):
-    module, _ = refresh
-    monkeypatch.undo()
-    monkeypatch.setattr(module, "fetch_source", Mock(return_value=b"unexpected document"))
-    with pytest.raises(module.SourceValidationError):
-        module.fetch_rates((template(),), module.time.monotonic() + 2)
+        event = {"source": "aws.events"}
+        context = MagicMock()
 
+        result = handler(event, context)
 
-def test_source_age_metric_uses_oldest_retained_row(refresh, monkeypatch):
-    module, _ = refresh
-    monkeypatch.undo()
-    client = Mock()
-    monkeypatch.setattr(module.boto3, "client", lambda *args, **kwargs: client)
-    first = replace(template(), verified_at="2026-09-01T00:00:00+00:00")
-    second = replace(first, region="us-east-2", verified_at="2026-09-10T00:00:00+00:00")
-    module.emit_metrics({"PricingRefreshPartial": 1}, rows=(first, second))
-    metrics = client.put_metric_data.call_args.kwargs["MetricData"]
-    source = next(item for item in metrics if item["MetricName"] == "PricingSourceVerifiedAgeHours")
-    oldest = next(item for item in metrics if item["MetricName"] == "PricingOldestVerifiedAgeHours")
-    assert source["Value"] == oldest["Value"]
-    assert {item["Name"] for item in source["Dimensions"]} == {"FunctionName", "ModelId", "Source"}
-    assert source["Value"] >= 11 * 24
-
-
-def test_gzip_source_is_decoded_and_bounded(refresh, monkeypatch):
-    import gzip
-    import io
-
-    module, _ = refresh
-    monkeypatch.undo()
-
-    class Response(io.BytesIO):
-        url = "https://b0.p.awsstatic.com/source"
-
-    payload = b'{"manifest":"real gzip transport"}'
-    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response(gzip.compress(payload)))
-    assert module.fetch_source(Response.url, 1024, module.time.monotonic() + 2) == payload
-    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response(gzip.compress(b"x" * 10000)))
-    with pytest.raises(module.SourceValidationError, match="expanded source"):
-        module.fetch_source(Response.url, 1024, module.time.monotonic() + 2)
-    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response(gzip.compress(payload)[:-4]))
-    with pytest.raises(module.SourceValidationError, match="invalid gzip"):
-        module.fetch_source(Response.url, 1024, module.time.monotonic() + 2)
-
-
-def test_coordinated_claude_sources_refresh_all_rates_and_partial_retains(refresh, monkeypatch):
-    from pathlib import Path
-
-    from pricing_policy.aws_sources import CARD_BASE, CARD_SLUGS, CATALOG_BASE
-    from pricing_policy.claude_sources import PRICING_PAGE_URL, TOKEN_MAP_URL
-    from pricing_policy.policy import load_snapshot
-
-    module, _ = refresh
-    monkeypatch.undo()
-    fixtures = Path(__file__).parents[1] / "pricing_policy" / "fixtures" / "aws"
-    snapshot = load_snapshot("2026-09-12.2")
-    monkeypatch.setattr(module, "CARD_SLUGS", {model: slug for model, slug in CARD_SLUGS.items() if model in snapshot.models})
-    sources = {CARD_BASE + slug + ".md": (fixtures / (slug + ".md")).read_bytes() for slug in CARD_SLUGS.values()}
-    sources[CATALOG_BASE + "/us-east-1/index.json"] = (fixtures / "oss-us-east-1.json").read_bytes()
-    sources[PRICING_PAGE_URL] = (fixtures / "claude" / "pricing-widgets.html").read_bytes()
-    sources[TOKEN_MAP_URL] = (fixtures / "claude" / "token-map.json").read_bytes()
-    monkeypatch.setattr(module, "fetch_source", lambda url, *args: sources[url])
-    rows, failures = module.fetch_rates(snapshot.rates, module.time.monotonic() + 20, snapshot.models)
-    assert len(rows) == 1336 and not failures
-    assert {r.variant_key for r in rows} == snapshot.required_variants
-
-    def missing_map(url, *args):
-        if url == TOKEN_MAP_URL:
-            raise OSError("unavailable map")
-        return sources[url]
-
-    monkeypatch.setattr(module, "fetch_source", missing_map)
-    rows, failures = module.fetch_rates(snapshot.rates, module.time.monotonic() + 20, snapshot.models)
-    assert len(rows) == 330 and failures == (TOKEN_MAP_URL,)
-    candidate = assemble_candidate(snapshot.rates, rows, snapshot.required_variants)
-    assert len(candidate.retained_keys) == 1006
-    assert all(r.model_id.startswith("openai.") for r in rows)
-
-
-def test_gpt6_sol_luna_refresh_includes_cache_rates(refresh, monkeypatch):
-    from pathlib import Path
-
-    from pricing_policy import load_snapshot
-    from pricing_policy.aws_sources import CARD_BASE, CARD_SLUGS
-
-    module, _ = refresh
-    monkeypatch.undo()
-    fixtures = Path(__file__).parents[1] / "pricing_policy" / "fixtures" / "aws"
-    cards = {model: slug for model, slug in CARD_SLUGS.items() if model in {"openai.gpt-6-sol", "openai.gpt-6-luna"}}
-    monkeypatch.setattr(module, "CARD_SLUGS", cards)
-    sources = {CARD_BASE + slug + ".md": (fixtures / (slug + ".md")).read_bytes() for slug in cards.values()}
-    monkeypatch.setattr(module, "fetch_source", lambda url, *args: sources[url])
-    snapshot = load_snapshot()
-    templates = tuple(row for row in snapshot.rates if row.model_id in cards)
-    rows, failures = module.fetch_rates(templates, module.time.monotonic() + 20, snapshot.models)
-    assert len(rows) == 152 and not failures
-    assert {row.variant_key for row in rows} == {row.variant_key for row in templates}
-    assert all(row.cache_read_price_per_1k_tokens == row.input_price_per_1k_tokens / 10 for row in rows)
-
-
-def test_claude_source_metric_classification(refresh, monkeypatch):
-    from pricing_policy.policy import load_snapshot
-
-    module, _ = refresh
-    monkeypatch.undo()
-    client = Mock()
-    monkeypatch.setattr(module.boto3, "client", lambda *args, **kwargs: client)
-    row = next(r for r in load_snapshot("2026-09-12.2").rates if r.model_id.startswith("anthropic."))
-    module.emit_metrics({"PricingRefreshSuccess": 1}, rows=(row,))
-    metric = next(v for v in client.put_metric_data.call_args.kwargs["MetricData"] if v["MetricName"] == "PricingSourceVerifiedAgeHours")
-    assert {"Name": "Source", "Value": "pricing_page"} in metric["Dimensions"]
-
-
-def test_manual_partial_report_preserves_partial_metrics(refresh):
-    module, commits = refresh
-    module.fetch_rates.return_value = module.fetch_rates.return_value[0], ("https://failed-source",)
-    result = module.handler({"report_partial": True}, None)
-    assert result["partial"] is True
-    assert result["failed_sources"] == ["https://failed-source"]
-    assert result["fresh_variants"] == 1
-    assert len(commits) == 2
-    assert module.emit_metrics.call_args.args[0]["PricingRefreshPartial"] == 1
-    assert "PricingRefreshSuccess" not in module.emit_metrics.call_args.args[0]
-
-
-@pytest.mark.parametrize("value", ["false", 1, None])
-def test_partial_reporting_flag_is_strict(refresh, value):
-    module, _ = refresh
-    with pytest.raises(ValueError, match="boolean"):
-        module.handler({"report_partial": value}, None)
-    module.publish.assert_not_called()
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["source"] == "fallback"
+        assert body["fallback_models_loaded"] > 0
+        assert body["api_models_updated"] == 0

@@ -16,7 +16,6 @@ import type { InvocationItem } from '@/types/activity';
 
 export interface ActivityCardListProps {
   items: InvocationItem[];
-  liveStreamEnabled?: boolean;
   onDetailClick: (item: InvocationItem) => void;
   onTranscriptClick: (invocationId: string) => void;
 }
@@ -25,7 +24,7 @@ export interface ActivityCardListProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export function ActivityCardList({ items, onDetailClick, onTranscriptClick, liveStreamEnabled }: ActivityCardListProps) {
+export function ActivityCardList({ items, onDetailClick, onTranscriptClick }: ActivityCardListProps) {
   return (
     <div
       className="divide-y divide-gray-200 dark:divide-gray-700"
@@ -37,7 +36,6 @@ export function ActivityCardList({ items, onDetailClick, onTranscriptClick, live
         <ActivityCard
           key={item.invocation_id}
           item={item}
-          liveStreamEnabled={liveStreamEnabled}
           onDetailClick={onDetailClick}
           onTranscriptClick={onTranscriptClick}
         />

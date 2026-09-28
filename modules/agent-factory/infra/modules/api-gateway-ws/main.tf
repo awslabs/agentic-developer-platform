@@ -3,15 +3,6 @@ resource "aws_apigatewayv2_api" "ws" {
   protocol_type              = "WEBSOCKET"
   route_selection_expression = "$request.body.action"
   tags                       = var.tags
-
-  # This is the only network-layer control available on a WEBSOCKET API. API
-  # Gateway v2 supports no resource policy for that protocol and WAFv2 does not
-  # support WebSocket APIs, so while the execute-api hostname is enabled the API
-  # answers from any address on the internet with the $connect authorizer as its
-  # sole gate — no IP allowlist, and no ZTNA tunnel in the path even where every
-  # other public surface has one. Disabling it leaves the custom domain as the
-  # only route in.
-  disable_execute_api_endpoint = var.disable_execute_api_endpoint
 }
 
 resource "aws_apigatewayv2_integration" "ingest" {
@@ -126,7 +117,6 @@ resource "aws_lambda_permission" "ws_default" {
 }
 
 resource "aws_cloudwatch_log_group" "ws" {
-  #checkov:skip=CKV_AWS_338: Agent WebSocket logs use an explicitly bounded 30-day operational retention.
   name              = "/aws/apigateway/${var.name_prefix}-gateway-ws"
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn

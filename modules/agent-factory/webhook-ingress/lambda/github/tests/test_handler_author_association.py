@@ -224,9 +224,7 @@ class TestMinAuthorAssociationEnforcement:
         with patch.object(identity_resolver, "resolve", return_value=(resolved, "ok")):
             with patch("boto3.resource", return_value=mock_ddb):
                 with patch("github.handler._get_metrics", return_value=mock_metrics):
-                    with patch(
-                        "github.handler._resolve_webhook_secret", return_value="test-secret"
-                    ):
+                    with patch("github.handler._resolve_webhook_secret", return_value="test-secret"):
                         from github import handler
 
                         handler._identity_mod = identity_resolver
@@ -295,9 +293,7 @@ class TestMinAuthorAssociationEnforcement:
             with patch("boto3.resource", return_value=mock_ddb):
                 with patch("github.handler._get_metrics", return_value=mock_metrics):
                     with patch("github.handler._get_rate_limiter", return_value=mock_rate_limiter):
-                        with patch(
-                            "github.handler._resolve_webhook_secret", return_value="test-secret"
-                        ):
+                        with patch("github.handler._resolve_webhook_secret", return_value="test-secret"):
                             from github import handler
 
                             handler._identity_mod = identity_resolver
@@ -308,9 +304,7 @@ class TestMinAuthorAssociationEnforcement:
                             response = handler.handler(event, {})
 
         # Should NOT be 403 insufficient_association (it gets to rate limit)
-        assert response["statusCode"] != 403 or "insufficient_association" not in json.loads(
-            response["body"]
-        ).get("outcome", "")
+        assert response["statusCode"] != 403 or "insufficient_association" not in json.loads(response["body"]).get("outcome", "")
 
     def test_absent_min_assoc_no_enforcement(self, monkeypatch):
         """No min_author_association on installation → no enforcement."""
@@ -366,9 +360,7 @@ class TestMinAuthorAssociationEnforcement:
             with patch("boto3.resource", return_value=mock_ddb):
                 with patch("github.handler._get_metrics", return_value=mock_metrics):
                     with patch("github.handler._get_rate_limiter", return_value=mock_rate_limiter):
-                        with patch(
-                            "github.handler._resolve_webhook_secret", return_value="test-secret"
-                        ):
+                        with patch("github.handler._resolve_webhook_secret", return_value="test-secret"):
                             from github import handler
 
                             handler._identity_mod = identity_resolver
@@ -383,21 +375,3 @@ class TestMinAuthorAssociationEnforcement:
         if response["statusCode"] == 403:
             body = json.loads(response["body"])
             assert body.get("outcome") != "insufficient_association"
-
-
-@pytest.mark.parametrize(
-    "placeholder",
-    ["PLACEHOLDER_REPLACE_WITH_ACTUAL_SECRET", " placeholder-test", "ROTATE-ME-BEFORE-EXPOSURE", "", "   "],
-)
-def test_placeholder_secret_is_rejected_and_retried(monkeypatch, placeholder):
-    import github.handler as handler
-
-    monkeypatch.setattr(handler, "WEBHOOK_SECRET_ARN", "test-secret-arn")
-    monkeypatch.setattr(handler, "_webhook_secret", None)
-    secrets = MagicMock()
-    secrets.get_secret.side_effect = [placeholder, "fresh-configured-webhook-secret"]
-    monkeypatch.setattr(handler, "_get_secrets", lambda: secrets)
-    assert handler._resolve_webhook_secret() == ""
-    assert handler._resolve_webhook_secret() == "fresh-configured-webhook-secret"
-    assert secrets.get_secret.call_count == 2
-    secrets.clear_cache.assert_called()

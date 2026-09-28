@@ -91,8 +91,8 @@ export async function getAgent(clientId: string): Promise<Agent> {
  * Get agent credentials (client_id and client_secret)
  * WARNING: This is typically a one-time operation. Store the secret securely.
  */
-export async function getAgentCredentials(clientId: string, orgId?: string): Promise<AgentCredentials> {
-  return apiClient.get<AgentCredentials>(`/admin/agents/${encodeURIComponent(clientId)}/credentials${orgId ? `?${new URLSearchParams({ org_id: orgId })}` : ''}`);
+export async function getAgentCredentials(clientId: string): Promise<AgentCredentials> {
+  return apiClient.get<AgentCredentials>(`/admin/agents/${clientId}/credentials`);
 }
 
 /**
@@ -100,10 +100,9 @@ export async function getAgentCredentials(clientId: string, orgId?: string): Pro
  */
 export async function updateAgent(
   clientId: string,
-  request: UpdateAgentRequest,
-  orgId?: string
+  request: UpdateAgentRequest
 ): Promise<Agent> {
-  return apiClient.put<Agent>(`/admin/agents/${encodeURIComponent(clientId)}${orgId ? `?${new URLSearchParams({ org_id: orgId })}` : ''}`, request);
+  return apiClient.put<Agent>(`/admin/agents/${clientId}`, request);
 }
 
 /**

@@ -137,8 +137,6 @@ export class VaultGatewayClient {
     }
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated + host-pinned at construction via validateBaseUrl({pinHost}); only static internal API paths are interpolated
     const resp = await fetch(url, {
-      // Keep credentials and request bodies on the configured destination (S21).
-      redirect: 'error',
       method: 'GET',
       headers: {
         'X-Internal-Api-Key': this.apiKey,
@@ -156,8 +154,6 @@ export class VaultGatewayClient {
     const url = `${this.baseUrl}${path}`;
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated + host-pinned at construction via validateBaseUrl({pinHost}); only static internal API paths are interpolated
     const resp = await fetch(url, {
-      // Keep credentials and request bodies on the configured destination (S21).
-      redirect: 'error',
       method: 'POST',
       headers: {
         'X-Internal-Api-Key': this.apiKey,

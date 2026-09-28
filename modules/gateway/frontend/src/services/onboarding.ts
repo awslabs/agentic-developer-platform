@@ -1,4 +1,3 @@
-import { deploymentSetting } from '@/config/runtime';
 import { apiClient } from './api';
 
 // Types for the onboarding flow
@@ -58,7 +57,7 @@ export async function submitAccessRequest(
   payload: AccessRequestPayload
 ): Promise<Response> {
   const token = (await import('./auth')).getAccessToken();
-  const baseUrl = deploymentSetting('VITE_API_URL') || '/api';
+  const baseUrl = import.meta.env.VITE_API_URL || '/api';
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };

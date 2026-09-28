@@ -100,21 +100,15 @@ class TestUnknownInstallation:
             (None, "unknown_installation"),
             (
                 ResolvedIdentity(
-                    tenant_id="acme-hackathon",
-                    org_id="acme-hackathon",
+                    tenant_id="sophos-hackathon",
+                    org_id="sophos-hackathon",
                     user_id="u_xyz",
                     user_provisioning_mode="strict",
                 ),
                 "ok",
             ),
         ]
-        # Issue #2724: the return type is AutoRegisterResult(tenant_id,
-        # authoritative). Routing keys off tenant_id, so a fail-open (non-
-        # authoritative) registration must still resolve and dispatch — only
-        # credential provisioning is withheld.
-        from handler import AutoRegisterResult
-
-        mock_auto_reg.return_value = AutoRegisterResult("acme-hackathon", False)
+        mock_auto_reg.return_value = "sophos-hackathon"
         mock_log.return_value.log_event = MagicMock()
 
         # Patch downstream dispatch bits so the handler can complete
@@ -133,12 +127,12 @@ class TestUnknownInstallation:
 
             # Payload carries the org login via repository.owner.login
             payload = _labeled_payload(installation_id=888888)
-            payload["repository"]["owner"] = {"login": "acme-hackathon"}
+            payload["repository"]["owner"] = {"login": "sophos-hackathon"}
             event = _make_event("issues", payload)
             result = handler(event, None)
 
         assert result["statusCode"] == 202
-        mock_auto_reg.assert_called_once_with(888888, "acme-hackathon")
+        mock_auto_reg.assert_called_once_with(888888, "sophos-hackathon")
         assert mock_resolver.return_value.resolve.call_count == 2
 
 

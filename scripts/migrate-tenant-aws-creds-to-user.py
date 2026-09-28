@@ -18,7 +18,7 @@ Usage:
 
 Mapping file format (JSON):
     {
-        "acme-test": {
+        "sophos-test": {
             "admin_user_id": "cognito-sub-uuid-here",
             "admin_email": "alice@example.com"
         }

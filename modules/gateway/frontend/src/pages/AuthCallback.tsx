@@ -12,7 +12,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { Spinner } from '@/components/ui/Spinner';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
-import { handleOAuthCallback, buildLoginUrl, consumePostLoginRedirect } from '@/services/auth';
+import { handleOAuthCallback, buildLoginUrl } from '@/services/auth';
 
 export default function AuthCallback() {
   const [searchParams] = useSearchParams();
@@ -34,80 +34,32 @@ export default function AuthCallback() {
           return;
         }
 
-        // Check if this is a callback from the GitHub auth broker (Issue #520)
+        // Check if this is a broker callback (tokens in query params)
         const brokerSource = searchParams.get('source');
         if (brokerSource === 'github_broker') {
-          const {
-            storeTokens,
-            parseIdTokenForUser,
-            getBrokerState,
-            exchangeBrokerCode,
-          } = await import('@/services/auth');
+          // Tokens come directly from the GitHub auth broker Lambda (Issue #520)
+          const idToken = searchParams.get('id_token');
+          const accessToken = searchParams.get('access_token');
+          const refreshToken = searchParams.get('refresh_token');
+          const expiresIn = searchParams.get('expires_in');
 
-          // Issue #4133: verify this callback belongs to a login THIS browser
-          // started. Without it, an attacker-crafted callback URL drops their
-          // session into the victim's browser (login CSRF / session fixation).
-          // Single-use: getBrokerState clears as it reads.
-          const storedState = getBrokerState();
-          const returnedState = searchParams.get('state');
-          const brokerCode = searchParams.get('code');
-
-          // Two transports are accepted during rollout: the #4133 exchange code,
-          // and the legacy tokens-in-query redirect from a broker Lambda that has
-          // not been republished yet. The SPA bundle and the Lambda deploy on
-          // separate workflows, so rejecting the old shape here would take out
-          // every login in the skew window (the #3999 lockout class).
-          let tokens: Awaited<ReturnType<typeof exchangeBrokerCode>>;
-
-          if (brokerCode) {
-            // State is MANDATORY on the code transport — a broker new enough to
-            // issue codes always echoes the nonce back.
-            if (!storedState || storedState !== returnedState) {
-              setError(
-                'This sign-in link did not come from a login started in this browser. Please try again.'
-              );
-              setIsProcessing(false);
-              return;
-            }
-            tokens = await exchangeBrokerCode(brokerCode, storedState);
-          } else {
-            const idToken = searchParams.get('id_token');
-            const accessToken = searchParams.get('access_token');
-
-            if (!idToken || !accessToken) {
-              setError('Invalid broker response — missing tokens. Please try again.');
-              setIsProcessing(false);
-              return;
-            }
-
-            // Legacy transport only: an old broker cannot echo a nonce, so a
-            // missing returnedState is tolerated. When it IS present it must
-            // match. Tracked in #4197: drop this branch and make state
-            // unconditional once the broker Lambda is republished everywhere.
-            if (returnedState && storedState !== returnedState) {
-              setError(
-                'This sign-in link did not come from a login started in this browser. Please try again.'
-              );
-              setIsProcessing(false);
-              return;
-            }
-
-            tokens = {
-              id_token: idToken,
-              access_token: accessToken,
-              refresh_token: searchParams.get('refresh_token') || '',
-              expires_in: parseInt(searchParams.get('expires_in') || '3600', 10),
-              token_type: 'Bearer',
-            };
+          if (!idToken || !accessToken) {
+            setError('Invalid broker response — missing tokens. Please try again.');
+            setIsProcessing(false);
+            return;
           }
 
-          storeTokens(tokens);
+          // Store tokens using the existing auth service
+          const { storeTokens, parseIdTokenForUser } = await import('@/services/auth');
+          storeTokens({
+            id_token: idToken,
+            access_token: accessToken,
+            refresh_token: refreshToken || '',
+            expires_in: parseInt(expiresIn || '3600', 10),
+            token_type: 'Bearer',
+          });
 
-          // Issue #4133 defence-in-depth: drop the code/token material from the
-          // address bar so it does not persist in history or leak via Referer.
-          window.history.replaceState({}, '', '/auth/callback');
-
-          const user = parseIdTokenForUser(tokens.id_token);
+          const user = parseIdTokenForUser(idToken);
           if (!user) {
             setError('Failed to parse user from token. Please try again.');
             setIsProcessing(false);
@@ -116,14 +68,12 @@ export default function AuthCallback() {
 
           setAuthState({
             user,
-            token: tokens.access_token,
+            token: accessToken,
             isAuthenticated: true,
             isLoading: false,
           });
 
-          // Return to the deep link the user was originally headed to (e.g.
-          // the CLI approval page), falling back to the dashboard.
-          navigate(consumePostLoginRedirect() ?? '/', { replace: true });
+          navigate('/', { replace: true });
           return;
         }
 
@@ -147,8 +97,8 @@ export default function AuthCallback() {
           isLoading: false,
         });
 
-        // Return to the original deep link, else the role-appropriate dashboard
-        navigate(consumePostLoginRedirect() ?? '/', { replace: true });
+        // Redirect to role-appropriate dashboard
+        navigate('/', { replace: true });
       } catch (err) {
         console.error('OAuth callback error:', err);
         setError(

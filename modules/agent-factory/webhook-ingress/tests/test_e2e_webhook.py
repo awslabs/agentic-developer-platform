@@ -490,10 +490,9 @@ class TestWebhookE2E:
             f"No webhook-events row for tenant={test_tenant['tenant_id']} "
             f"pr={pr_number} — dispatch row was never written"
         )
-        # PR opened on an agent/issue-* branch dispatches the Codex reviewer
-        # through the standard persona field and queue contract.
-        assert item.get("persona") == "agent-codex-reviewer", (
-            f"Expected 'agent-codex-reviewer' persona, got '{item.get('persona')}'"
+        # PR opened on an agent/issue-* branch dispatches the reviewer persona
+        assert item.get("persona") == "reviewer", (
+            f"Expected 'reviewer' persona, got '{item.get('persona')}'"
         )
         assert item.get("event_type") == "pull_request"
         assert item.get("action") == "opened"

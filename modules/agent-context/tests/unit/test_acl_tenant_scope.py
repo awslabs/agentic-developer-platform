@@ -1,7 +1,7 @@
 """Unit tests for tenant/individual scoping in the Door ACL filter.
 
 Validates the security-critical invariants of E8 multi-tenancy (Issue #1772):
-- Unowned shared repos require public visibility; legacy private ownership denies
+- Shared repos (tenant_id=NULL) visible to any caller with principal match
 - Per-tenant repos visible only to same-tenant callers with principal match
 - Per-individual repos visible only to matching owner_sub (no principal check)
 - Cross-tenant repos invisible (fail-closed)
@@ -86,14 +86,14 @@ class TenantAwareFakeACLStore:
                 allowed.add(repo["repo_name"])
                 continue
 
-            # Path 1: Shared — no tenant/owner and positively public
+            # Path 1: Shared — tenant_id IS NULL, principals match
             if repo_tenant is None:
-                if not repo_owner and PUBLIC_SENTINEL in repo["principals"]:
+                if self._principals_match(repo["principals"], principal):
                     allowed.add(repo["repo_name"])
                 continue
 
             # Path 2: Per-tenant — tenant_id matches caller, principals match
-            if not repo_owner and principal.tenant_id and repo_tenant == principal.tenant_id:
+            if principal.tenant_id and repo_tenant == principal.tenant_id:
                 if self._principals_match(repo["principals"], principal):
                     allowed.add(repo["repo_name"])
 
@@ -115,7 +115,7 @@ class FailingACLStore:
 
 # Standard repos for testing all visibility paths
 STANDARD_REPOS = [
-    # Unowned rows: public is shared; private ownership requires reconciliation
+    # Shared repos (tenant_id=NULL) — visible to any authenticated caller
     {
         "repo_name": "org/public-lib",
         "principals": [PUBLIC_SENTINEL],
@@ -220,12 +220,12 @@ def _make_hits(*repos: str) -> list[SearchHit]:
 
 
 # ---------------------------------------------------------------------------
-# Unowned repos — public rows are shared; private rows fail closed
+# Shared repos (tenant_id=NULL) — visible to all principals that match
 # ---------------------------------------------------------------------------
 
 
 class TestSharedRepos:
-    """Unowned rows are shared only when their ACL declares public visibility."""
+    """Repos with tenant_id=NULL are visible to any caller whose principals match."""
 
     def test_shared_public_visible_to_all(
         self, scoped_store: TenantAwareFakeACLStore, alice_acme: CallerPrincipal
@@ -244,13 +244,13 @@ class TestSharedRepos:
         result = filter_results(hits, charlie_globex, scoped_store)
         assert len(result) == 1
 
-    def test_unowned_private_denied_despite_matching_principals(
+    def test_shared_private_requires_principals(
         self, scoped_store: TenantAwareFakeACLStore, alice_acme: CallerPrincipal
     ) -> None:
-        """A matching principal cannot substitute for missing private ownership."""
+        """Shared private repo requires principals match (alice is listed)."""
         hits = _make_hits("org/shared-private")
         result = filter_results(hits, alice_acme, scoped_store)
-        assert result == []
+        assert len(result) == 1
 
     def test_shared_private_denies_unlisted_caller(
         self, scoped_store: TenantAwareFakeACLStore, charlie_globex: CallerPrincipal
@@ -263,12 +263,12 @@ class TestSharedRepos:
     def test_shared_visible_without_tenant_headers(
         self, scoped_store: TenantAwareFakeACLStore, no_tenant_caller: CallerPrincipal
     ) -> None:
-        """Caller without tenant headers sees public shared content only."""
+        """Caller without tenant headers still sees shared repos (principals match)."""
         hits = _make_hits("org/public-lib", "org/shared-private")
         result = filter_results(hits, no_tenant_caller, scoped_store)
         result_repos = {h.repo_name for h in result}
         assert "org/public-lib" in result_repos
-        assert "org/shared-private" not in result_repos
+        assert "org/shared-private" in result_repos
 
 
 # ---------------------------------------------------------------------------
@@ -456,8 +456,8 @@ class TestCrossTenantIsolation:
         assert "org/public-lib" in alice_repos
         assert "org/public-lib" in charlie_repos
 
-        # Neither caller can read private content with unknown ownership
-        assert "org/shared-private" not in alice_repos
+        # Alice sees shared-private (she's in principals), Charlie doesn't
+        assert "org/shared-private" in alice_repos
         assert "org/shared-private" not in charlie_repos
 
         # Each sees own tenant repo
@@ -640,12 +640,12 @@ class TestHeaderExtractionTenant:
 
 
 # ---------------------------------------------------------------------------
-# Regression: public shared corpus remains available; unowned private denies
+# Regression: existing shared-corpus queries unchanged
 # ---------------------------------------------------------------------------
 
 
 class TestRegressionSharedCorpus:
-    """Retain public shared reads while denying ambiguous private ownership."""
+    """Existing shared-corpus behavior must not change when scoping is enabled."""
 
     def test_existing_public_repos_still_visible(
         self, scoped_store: TenantAwareFakeACLStore
@@ -661,17 +661,17 @@ class TestRegressionSharedCorpus:
         result = filter_results(hits, random_user, scoped_store)
         assert len(result) == 1
 
-    def test_existing_unowned_private_repos_require_ownership_reconciliation(
+    def test_existing_shared_private_repos_unchanged(
         self, scoped_store: TenantAwareFakeACLStore
     ) -> None:
-        """Legacy private rows deny even a listed principal until ownership is known."""
-        # Alice is in principals, but missing ownership must still deny
+        """Shared private repos (tenant_id=NULL) still require principal match."""
+        # Alice is in principals → sees it
         alice = CallerPrincipal(
             github_login="alice", github_teams=[], tenant_id="acme", owner_sub=""
         )
         hits = _make_hits("org/shared-private")
         result = filter_results(hits, alice, scoped_store)
-        assert result == []
+        assert len(result) == 1
 
         # Random user NOT in principals → denied
         random_user = CallerPrincipal(

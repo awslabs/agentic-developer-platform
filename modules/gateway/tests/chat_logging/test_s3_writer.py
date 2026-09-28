@@ -161,7 +161,6 @@ class TestChatLogS3Writer:
 
             assert result is True
             mock_client.put_object.assert_called_once()
-            assert mock_client.put_object.call_args.kwargs["IfNoneMatch"] == "*"
 
     @pytest.mark.asyncio
     async def test_write_log_circuit_open(self, s3_writer, sample_timestamp, circuit_breaker):

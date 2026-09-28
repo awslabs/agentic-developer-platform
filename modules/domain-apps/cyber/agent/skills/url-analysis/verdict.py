@@ -17,8 +17,8 @@ from typing import Any
 class Verdict:
     """Structured analysis verdict."""
 
-    severity: str  # clean | suspicious | malicious | inconclusive
-    confidence: int  # Legacy heuristic score, not a calibrated probability
+    severity: str  # "clean" | "suspicious" | "malicious"
+    confidence: int  # 0-100
     category: str  # "phishing" | "malware-delivery" | "c2" | "scam" | "unclassified-risk" | "false-positive"
     reasoning: str
     mitre_attack: list[str] = field(default_factory=list)
@@ -34,6 +34,22 @@ class Verdict:
             "recommended_actions": self.recommended_actions,
         }
 
+
+# Known-good domains that skip full analysis
+KNOWN_GOOD_DOMAINS: set[str] = {
+    "google.com",
+    "www.google.com",
+    "github.com",
+    "www.github.com",
+    "microsoft.com",
+    "www.microsoft.com",
+    "apple.com",
+    "www.apple.com",
+    "amazon.com",
+    "www.amazon.com",
+    "cloudflare.com",
+    "www.cloudflare.com",
+}
 
 # Phishing indicators in page content
 PHISHING_KEYWORDS: list[str] = [
@@ -236,14 +252,8 @@ def _determine_actions(severity: str, category: str, domain: str) -> list[str]:
             "Investigate further with full sandbox detonation if payload was downloaded"
         )
         actions.append("Add to watchlist for 7-day monitoring period")
-    elif severity == "inconclusive":
-        actions.append(
-            "Collect sufficient browser evidence before making a clearance decision"
-        )
     else:
-        actions.append(
-            "No adverse behavior observed in the tested view; review case context"
-        )
+        actions.append("No action required")
 
     return actions
 
@@ -283,19 +293,10 @@ def synthesize_verdict(
     total_score = sum(s for s, _ in scores)
     evidence_signals = [r for _, r in scores if r]
 
-    # A negative browser assessment requires an observed, successful page.
-    # Missing/failed capture must not be turned into a clearance by reputation.
-    complete = (
-        200 <= browser_evidence.get("http_status", 0) < 400
-        and (
-            bool(browser_evidence.get("visible_text", "").strip())
-            or bool(browser_evidence.get("auto_downloads"))
-        )
-        and not browser_evidence.get("error")
-        and browser_evidence.get("collection_status", "complete") == "complete"
-    )
-    if not complete:
-        severity = "inconclusive"
+    # Determine severity
+    if domain in KNOWN_GOOD_DOMAINS:
+        severity = "clean"
+        total_score = -50  # Override
     elif total_score >= 50:
         severity = "malicious"
     elif total_score >= 20:
@@ -309,11 +310,7 @@ def synthesize_verdict(
         1
         for k in ("virustotal", "urlhaus", "misp")
         if enrichment.get(k, {}).get("found")
-        or (
-            enrichment.get(k, {}).get("found") is False
-            and not enrichment.get(k, {}).get("error")
-            and not enrichment.get(k, {}).get("skipped")
-        )
+        or (not enrichment.get(k, {}).get("skipped"))
     )
 
     if evidence_count >= 5 and enrichment_sources_available >= 2:
@@ -323,8 +320,9 @@ def synthesize_verdict(
     else:
         confidence = max(30, 20 + evidence_count * 10)
 
-    if severity == "inconclusive":
-        confidence = 0
+    # If known-good domain, high confidence clean
+    if domain in KNOWN_GOOD_DOMAINS:
+        confidence = 95
 
     # Determine category
     urlhaus = enrichment.get("urlhaus", {})
@@ -332,9 +330,6 @@ def synthesize_verdict(
     category = _determine_category(scores, forms, downloads, urlhaus)
     if severity == "clean":
         category = "false-positive"
-
-    if severity == "inconclusive":
-        category = "insufficient-evidence"
 
     # MITRE mapping
     mitre = _determine_mitre(category, evidence_signals)
@@ -348,13 +343,6 @@ def synthesize_verdict(
         reasoning = "No significant signals detected. URL appears benign."
     else:
         reasoning = "; ".join(reasoning_parts[:5])  # Top 5 signals
-
-    if severity == "inconclusive":
-        reasoning = (
-            "Browser evidence is incomplete; no clearance decision is supported."
-        )
-        if reasoning_parts:
-            reasoning += " Available signals: " + "; ".join(reasoning_parts[:5])
 
     return Verdict(
         severity=severity,

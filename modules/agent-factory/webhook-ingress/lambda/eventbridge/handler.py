@@ -140,18 +140,6 @@ def handle_eventbridge(event: dict, context) -> dict:
             {"error": "persona_not_allowed", "allowed": identity_result.allowed_personas},
         )
 
-    service_event = None
-    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
-        from common.agent_authority import AuthorityProvisionError
-        from common.service_authority import VerifiedServiceEvent
-
-        try:
-            service_event = VerifiedServiceEvent.from_native_event(
-                event=event, identity=identity_result
-            )
-        except AuthorityProvisionError:
-            return _response(403, {"error": "service_source_not_verified"})
-
     # 6. Per-service rate limit (uses service_identity as the tenant key)
     rate_limiter = _get_rate_limiter()
     rate_result = rate_limiter.check_and_increment(service_identity_key)
@@ -250,7 +238,6 @@ def handle_eventbridge(event: dict, context) -> dict:
         payload=payload,
         intent_trigger="eventbridge_rule",
         intent_label=None,
-        **({"trusted_service_event": service_event} if service_event is not None else {}),
     )
 
     latency_ms = (time.time() - start_time) * 1000
@@ -272,8 +259,8 @@ def handle_eventbridge(event: dict, context) -> dict:
         {
             "status": "accepted",
             "message_id": spawn_result.message_id,
-            "correlation_id": spawn_result.correlation_id if service_event else correlation_id,
-            "is_human_rooted": spawn_result.is_human_rooted if service_event else False,
+            "correlation_id": correlation_id,
+            "is_human_rooted": False,
         },
     )
 

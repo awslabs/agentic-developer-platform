@@ -17,7 +17,6 @@
 # =============================================================================
 
 resource "aws_cloudwatch_log_group" "ingestion" {
-  #checkov:skip=CKV_AWS_338: Knowledge ingestion logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/adp/${var.environment}/knowledge-layer/ingestion"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn
@@ -26,7 +25,6 @@ resource "aws_cloudwatch_log_group" "ingestion" {
 }
 
 resource "aws_cloudwatch_log_group" "door" {
-  #checkov:skip=CKV_AWS_338: Knowledge door logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/adp/${var.environment}/knowledge-layer/door"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn

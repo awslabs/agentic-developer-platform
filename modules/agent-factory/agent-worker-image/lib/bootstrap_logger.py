@@ -54,14 +54,23 @@ class CloudWatchBootstrapHandler(logging.Handler):
         self._ensure_client()
 
     def _ensure_client(self) -> None:
-        """Create boto3 client and a stream in the provisioned log group."""
+        """Create boto3 client and ensure log group/stream exist."""
         if self._failed:
             return
         try:
             self._client = boto3.client("logs", region_name=self._region)
-            # Terraform owns this log group and its retention. Workers only
-            # create streams. A missing group degrades to stdout, not privileged
-            # infrastructure creation or an AlreadyExists call on every run.
+            # Create log group (idempotent)
+            try:
+                self._client.create_log_group(logGroupName=self._log_group)
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ResourceAlreadyExistsException":
+                    raise
+            # Set retention (7 days — bootstrap logs are transient diagnostics)
+            try:
+                self._client.put_retention_policy(logGroupName=self._log_group, retentionInDays=7)
+            except ClientError:
+                pass  # Non-fatal: retention is a nice-to-have
+
             # Create log stream (idempotent)
             try:
                 self._client.create_log_stream(

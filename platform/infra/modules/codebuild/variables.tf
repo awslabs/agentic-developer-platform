@@ -29,11 +29,6 @@ variable "account_id" {
   type        = string
 }
 
-variable "aws_region" {
-  description = "AWS region — used to build the log-group and ECR repository ARNs the per-project build policies are scoped to (A18, #5674)"
-  type        = string
-}
-
 variable "ecr_registry" {
   description = "ECR registry URL e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com (passed as REGISTRY env var to CodeBuild projects)"
   type        = string

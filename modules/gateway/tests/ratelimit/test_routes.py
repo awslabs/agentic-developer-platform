@@ -66,7 +66,7 @@ class TestRateLimitRoutes:
         )
 
     @pytest.fixture
-    def admin_app(self, service, admin_context, durable_rate_limit_store):
+    def admin_app(self, service, admin_context):
         """Provide a FastAPI app with admin context.
 
         Issue #133: Updated to override get_current_user dependency
@@ -83,18 +83,11 @@ class TestRateLimitRoutes:
             return admin_context
 
         app.dependency_overrides[get_current_user] = override_get_current_user
-        from src.shared.database import get_db
-
-        async def override_db():
-            async with durable_rate_limit_store() as session:
-                yield session
-
-        app.dependency_overrides[get_db] = override_db
 
         return app
 
     @pytest.fixture
-    def user_app(self, service, user_context, durable_rate_limit_store):
+    def user_app(self, service, user_context):
         """Provide a FastAPI app with regular user context.
 
         Issue #133: Updated to override get_current_user dependency
@@ -111,13 +104,6 @@ class TestRateLimitRoutes:
             return user_context
 
         app.dependency_overrides[get_current_user] = override_get_current_user
-        from src.shared.database import get_db
-
-        async def override_db():
-            async with durable_rate_limit_store() as session:
-                yield session
-
-        app.dependency_overrides[get_db] = override_db
 
         return app
 

@@ -31,7 +31,7 @@ export function validateBaseUrl(url: string, opts: ValidateBaseUrlOptions = {}):
   try {
     parsed = new URL(url);
   } catch {
-    throw new Error('validateBaseUrl: invalid URL');
+    throw new Error(`validateBaseUrl: invalid URL: ${url}`);
   }
 
   // 2. Protocol check
@@ -41,40 +41,29 @@ export function validateBaseUrl(url: string, opts: ValidateBaseUrlOptions = {}):
     // Allowed only when explicitly opted in (internal cluster hosts)
   } else {
     throw new Error(
-      `validateBaseUrl: blocked protocol "${parsed.protocol}". ` +
+      `validateBaseUrl: blocked protocol "${parsed.protocol}" in URL: ${url}. ` +
         (allowHttp ? 'Only http: and https: are allowed.' : 'Only https: is allowed.'),
     );
   }
 
-  // 3. Inline credentials — a URL may carry "user:pass@" before the host. That leaks the
-  // secret into logs and lets a hostile host read as a trusted one ("https://gateway
-  // .internal@evil.example.com" targets evil.example.com). Callers that validate their
-  // own destinations already reject this inline; enforce it here so callers relying on
-  // this helper are held to the same standard.
-  if (parsed.username || parsed.password) {
-    throw new Error(
-      'validateBaseUrl: credentials in URL are not allowed',
-    );
-  }
-
-  // 4. Host/IP blocking — prevent loopback, metadata, link-local
+  // 3. Host/IP blocking — prevent loopback, metadata, link-local
   const hostname = parsed.hostname.toLowerCase();
 
   if (isBlockedHost(hostname)) {
     throw new Error(
-      `validateBaseUrl: blocked host "${hostname}". ` +
+      `validateBaseUrl: blocked host "${hostname}" in URL: ${url}. ` +
         'Loopback, metadata, and link-local addresses are not allowed.',
     );
   }
 
-  // 5. Host pinning — exact match required when configured
+  // 4. Host pinning — exact match required when configured
   if (pinHost && hostname !== pinHost.toLowerCase()) {
     throw new Error(
-      `validateBaseUrl: host "${hostname}" does not match pinned host "${pinHost}"`,
+      `validateBaseUrl: host "${hostname}" does not match pinned host "${pinHost}". URL: ${url}`,
     );
   }
 
-  // 6. Return normalized origin (scheme + host + port)
+  // 5. Return normalized origin (scheme + host + port)
   return parsed.origin;
 }
 

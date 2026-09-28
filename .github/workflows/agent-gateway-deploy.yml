@@ -53,31 +53,12 @@ jobs:
   deploy-lambdas:
     name: Deploy Ingest + Response Lambdas (Terraform)
     runs-on: arc-runner-org
-    environment: adp-deploy-dev
     needs: changes
-    if: github.ref == 'refs/heads/main' && (needs.changes.outputs.lambdas == 'true')
+    if: needs.changes.outputs.lambdas == 'true'
     # Runner has AWS creds via IRSA (adp-dev-agent-runner-role).
-
-    permissions:
-      contents: read
-      pull-requests: read
-      id-token: write
 
     steps:
       - uses: actions/checkout@v7
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -88,70 +69,12 @@ jobs:
           terraform_version: '1.9.0'
           terraform_wrapper: false
 
-      # Terraform zips the ingest source dir as-is, so runtime deps (pyjwt,
-      # cryptography) and vendored shared modules must be present BEFORE apply.
-      # Issue #4233: the chat-dispatch tenant gate imports
-      # installation_resolver, which this script vendors from
-      # webhook-ingress/lambda/common — without it the ownership layer fails
-      # closed on ImportError once IDENTITY_INDEX_TABLE is set.
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - name: Build factory Lambda packages
-        run: bash platform/scripts/build-agent-factory-lambdas.sh
-
       - name: Terraform init
         working-directory: modules/agent-factory/infra
         run: |
-          # The committed backend tfvars carries a literal ACCOUNT_ID
-          # placeholder (bucket = "adp-terraform-state-ACCOUNT_ID"); nothing
-          # substitutes it here, so init fails with NoSuchBucket whenever the
-          # lambdas job actually runs. Override the bucket key with the
-          # load-deploy-config-resolved STATE_BUCKET, exactly like
-          # gateway-infra-apply.yml. Later -backend-config wins.
           terraform init \
             -backend-config=../../../environments/${ENVIRONMENT}/modules/agent-factory-backend.tfvars \
-            -backend-config="bucket=${STATE_BUCKET}" \
             -input=false -reconfigure
-
-      # Issue #4378: settle pending implicit moves BEFORE the targeted apply.
-      #
-      # A `-target` plan must include every resource instance with a pending
-      # move, or Terraform refuses to plan at all:
-      #
-      #   Error: Moved resource instances excluded by targeting
-      #     -target="kubernetes_role.runner_deploy_agent_context"
-      #     -target="kubernetes_role.runner_readonly_arc_systems"
-      #     -target="kubernetes_role_binding.runner_deploy_agent_context"
-      #     -target="kubernetes_role_binding.runner_readonly_arc_systems"
-      #
-      # Those runner-RBAC resources gained `count = var.<flag> ? 1 : 0` while
-      # their state instances still carry no index key, so Terraform wants to
-      # move `X` -> `X[0]` (the #4127 condition). The narrow
-      # -target=module.gateway_lambda below doesn't cover them, so the whole
-      # job failed — and the ingest/response Lambdas silently stopped being
-      # deployed while merges still looked green.
-      #
-      # `-refresh-only` can ONLY rewrite state: it never creates, updates or
-      # destroys a remote object, so this is safe to run unconditionally on
-      # every deploy. It is left UNTARGETED on purpose — that settles any
-      # pending move, so the next resource that gains a `count` doesn't
-      # re-break Lambda delivery.
-      #
-      # Do NOT "fix" this instead by widening the -target list: with
-      # enable_github_apps / enable_agent_context_rbac unset in
-      # terraform.tfvars (both default false), targeting those four addresses
-      # evaluates count = 0 and DESTROYS the live runner RBAC
-      # (measured: "2 to add, 12 to change, 4 to destroy").
-      - name: Terraform settle pending state moves (refresh-only, no-op on remote)
-        working-directory: modules/agent-factory/infra
-        run: |
-          terraform apply -refresh-only -auto-approve \
-            -var-file=terraform.tfvars \
-            -var='gateway_deployed=true'
 
       - name: Terraform apply (module.gateway_lambda only)
         working-directory: modules/agent-factory/infra

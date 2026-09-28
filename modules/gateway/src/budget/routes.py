@@ -21,7 +21,6 @@ from src.shared.schemas.budget import (
     PeriodType,
 )
 
-from .read_authorization import budget_read_scope
 from .service import BudgetService
 
 router = APIRouter(prefix="/budgets", tags=["budgets"])
@@ -64,15 +63,12 @@ def get_budget_service(session: AsyncSession = Depends(get_db)) -> BudgetService
 async def get_budget(
     budget_id: str,
     current_user: TokenContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
     budget_service: BudgetService = Depends(get_budget_service),
 ):
     """Retrieve a specific budget configuration."""
-    scope = await budget_read_scope(db, current_user)
     budget = await budget_service.get_budget(budget_id, current_user.org_id)
     if not budget:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Budget not found")
-    await scope.require(budget.entity_type, budget.entity_id)
     return budget
 
 
@@ -81,12 +77,9 @@ async def get_budgets_for_entity(
     entity_type: EntityType,
     entity_id: str,
     current_user: TokenContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
     budget_service: BudgetService = Depends(get_budget_service),
 ):
     """Get all budget configurations for a specific entity."""
-    scope = await budget_read_scope(db, current_user)
-    await scope.require(entity_type, entity_id)
     return await budget_service.get_budgets_for_entity(entity_type, entity_id, current_user.org_id)
 
 
@@ -99,12 +92,9 @@ async def get_budget_status(
     entity_id: str,
     period_type: PeriodType = Query(..., description="Budget period type"),
     current_user: TokenContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
     budget_service: BudgetService = Depends(get_budget_service),
 ):
     """Get current budget status and usage for an entity."""
-    scope = await budget_read_scope(db, current_user)
-    await scope.require(entity_type, entity_id)
     status_response = await budget_service.get_budget_status(entity_type, entity_id, period_type, current_user.org_id)
     if not status_response:
         raise HTTPException(
@@ -119,12 +109,9 @@ async def get_budget_usage(
     entity_id: str,
     period_type: PeriodType = Query(..., description="Budget period type"),
     current_user: TokenContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
     budget_service: BudgetService = Depends(get_budget_service),
 ):
     """Get usage statistics for an entity's budget."""
-    scope = await budget_read_scope(db, current_user)
-    await scope.require(entity_type, entity_id)
     usage = await budget_service.get_budget_usage(entity_type, entity_id, period_type, current_user.org_id)
     if not usage:
         raise HTTPException(
@@ -153,39 +140,26 @@ async def get_budget_summary(
     entity_type: str,
     entity_id: str,
     current_user: TokenContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
     budget_service: BudgetService = Depends(get_budget_service),
 ):
     """Get comprehensive budget summary including hierarchy and usage."""
-    scope = await budget_read_scope(db, current_user)
-    await scope.require(entity_type, entity_id)
     return await budget_service.get_budget_summary(entity_type, entity_id, current_user.org_id)
 
 
 @router.get("/organization/overview")
 async def get_organization_budget_overview(
     current_user: TokenContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
     budget_service: BudgetService = Depends(get_budget_service),
 ):
     """Get organization-wide budget overview including all entities."""
-    scope = await budget_read_scope(db, current_user)
-    overview = await budget_service.get_organization_budget_overview(current_user.org_id)
-    overview["entities"] = {
-        kind: [row for row in rows if await scope.allows(kind, row["entity_id"])] for kind, rows in overview.get("entities", {}).items()
-    }
-    overview["alerts"] = [row for row in overview.get("alerts", []) if await scope.allows(row["entity_type"], row["entity_id"])]
-    return overview
+    return await budget_service.get_organization_budget_overview(current_user.org_id)
 
 
 @router.get("/organization/alerts")
 async def get_budget_alerts(
     threshold_percent: float = Query(80.0, ge=0, le=100, description="Alert threshold percentage"),
     current_user: TokenContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
     budget_service: BudgetService = Depends(get_budget_service),
 ):
     """Get budget alerts for entities approaching or exceeding their budgets."""
-    scope = await budget_read_scope(db, current_user)
-    alerts = await budget_service.get_budget_alerts(current_user.org_id, threshold_percent)
-    return [row for row in alerts if await scope.allows(row["entity_type"], row["entity_id"])]
+    return await budget_service.get_budget_alerts(current_user.org_id, threshold_percent)

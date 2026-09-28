@@ -375,7 +375,7 @@ class TestUnderstandGoSymbols:
         from door.structural_backend import understand
 
         hits = await understand(
-            "GoogleCloudPlatform/microservices-demo::frontendServer",
+            "microservices-demo::frontendServer",
             s3_client=mock_s3_client_go,
             bucket="test-bucket",
             prefix="code-indexes",
@@ -391,7 +391,7 @@ class TestUnderstandGoSymbols:
         from door.structural_backend import understand
 
         hits = await understand(
-            "GoogleCloudPlatform/microservices-demo::checkoutService",
+            "microservices-demo::checkoutService",
             s3_client=mock_s3_client_go,
             bucket="test-bucket",
             prefix="code-indexes",
@@ -407,7 +407,7 @@ class TestUnderstandGoSymbols:
         from door.structural_backend import understand
 
         hits = await understand(
-            "GoogleCloudPlatform/microservices-demo::Quote",
+            "microservices-demo::Quote",
             s3_client=mock_s3_client_go,
             bucket="test-bucket",
             prefix="code-indexes",
@@ -423,7 +423,7 @@ class TestUnderstandGoSymbols:
         from door.structural_backend import understand
 
         hits = await understand(
-            "GoogleCloudPlatform/microservices-demo::CreateQuoteFromCount",
+            "microservices-demo::CreateQuoteFromCount",
             s3_client=mock_s3_client_go,
             bucket="test-bucket",
             prefix="code-indexes",

@@ -6,12 +6,6 @@ Verifies:
 - Malformed JSON returns 400
 - ACL filtering is applied to results
 - Server handles missing backends gracefully
-
-Verb-shape tests here take the ``acl_store_live`` fixture (tests/unit/conftest.py).
-Their subject is the response envelope, and since #5658 a Door with no reachable
-ACL store refuses ACL-enforced verbs outright rather than returning an empty
-envelope — so without a reachable store these would be asserting on a refusal.
-The refusal itself is covered by the dedicated store-gate tests.
 """
 
 from __future__ import annotations
@@ -120,7 +114,7 @@ class TestSearchVerb:
     """Verify the search verb routing."""
 
     @pytest.mark.asyncio
-    async def test_search_empty_query(self, client, acl_store_live):
+    async def test_search_empty_query(self, client):
         resp = await client.post(
             "/call",
             content=json.dumps(
@@ -133,7 +127,7 @@ class TestSearchVerb:
         assert body["results"] == []
 
     @pytest.mark.asyncio
-    async def test_search_returns_valid_structure(self, client, acl_store_live):
+    async def test_search_returns_valid_structure(self, client):
         resp = await client.post(
             "/call",
             content=json.dumps(
@@ -156,7 +150,7 @@ class TestUnderstandVerb:
     """Verify the understand verb routing."""
 
     @pytest.mark.asyncio
-    async def test_understand_empty_target(self, client, acl_store_live):
+    async def test_understand_empty_target(self, client):
         resp = await client.post(
             "/call",
             content=json.dumps({"name": "understand", "arguments": {"target": ""}}).encode(),
@@ -166,7 +160,7 @@ class TestUnderstandVerb:
         assert "target" in body
 
     @pytest.mark.asyncio
-    async def test_understand_returns_valid_structure(self, client, acl_store_live):
+    async def test_understand_returns_valid_structure(self, client):
         resp = await client.post(
             "/call",
             content=json.dumps(
@@ -188,7 +182,7 @@ class TestImpactVerb:
     """Verify the impact verb routing."""
 
     @pytest.mark.asyncio
-    async def test_impact_empty_target(self, client, acl_store_live):
+    async def test_impact_empty_target(self, client):
         resp = await client.post(
             "/call",
             content=json.dumps({"name": "impact", "arguments": {"target": ""}}).encode(),
@@ -198,7 +192,7 @@ class TestImpactVerb:
         assert body["affected"] == []
 
     @pytest.mark.asyncio
-    async def test_impact_returns_valid_structure(self, client, acl_store_live):
+    async def test_impact_returns_valid_structure(self, client):
         resp = await client.post(
             "/call",
             content=json.dumps(
@@ -221,7 +215,7 @@ class TestBrowseVerb:
     """Verify the browse verb routing."""
 
     @pytest.mark.asyncio
-    async def test_browse_returns_valid_structure(self, client, acl_store_live):
+    async def test_browse_returns_valid_structure(self, client):
         resp = await client.post(
             "/call",
             content=json.dumps(
@@ -264,7 +258,7 @@ class TestSearchMemoryScope:
     """Verify search with scope=memory routes through recall_memory."""
 
     @pytest.mark.asyncio
-    async def test_search_memory_no_experience_tool_returns_empty(self, client, acl_store_live):
+    async def test_search_memory_no_experience_tool_returns_empty(self, client):
         """When experience_tool is None, search scope=memory returns empty."""
         resp = await client.post(
             "/call",
@@ -281,7 +275,7 @@ class TestSearchMemoryScope:
         assert body["total"] == 0
 
     @pytest.mark.asyncio
-    async def test_search_memory_with_experience_tool_returns_results(self, client, acl_store_live):
+    async def test_search_memory_with_experience_tool_returns_results(self, client):
         """When experience_tool is configured, search scope=memory returns recall results."""
         import math
         import uuid

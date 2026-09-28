@@ -15,6 +15,7 @@ Tests:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,29 +25,23 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
+    _PROVIDER_GITHUB_INSTALL,
     install_callback,
 )
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Organization, User
 from src.shared.models.vault import MagicLinkNonce
-from tests.admin import install_setup_fixtures as setup_fixtures
-from tests.admin.install_setup_fixtures import (
-    bind_real_org_control,
-    issue_install_nonce,
-)
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-offline_setup_boundaries = setup_fixtures.offline_setup_boundaries
-
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest.fixture(autouse=True)
-def _configure_github_app(monkeypatch, offline_setup_boundaries):
+def _configure_github_app(monkeypatch):
     """Block Secrets Manager and DDB in unit tests."""
     from src.admin.connections.github_app_provider import _reset_provider_for_testing
 
@@ -144,9 +139,7 @@ def _mock_github_client(
     client.delete_installation = AsyncMock(return_value=None)
     client.list_installation_repositories = AsyncMock(return_value=2)
     client.list_installation_repository_names = AsyncMock(return_value=["target-org/repo-one", "target-org/repo-two"])
-    # These human-routing cases model an unavailable optional bot lookup.
-    client.get_bot_user = AsyncMock(return_value={})
-    return bind_real_org_control(client)
+    return client
 
 
 async def _seed_user_and_nonce(
@@ -168,7 +161,17 @@ async def _seed_user_and_nonce(
     db.add(user)
     await db.commit()
 
-    nonce = await issue_install_nonce(db, user, jti=jti)
+    nonce = MagicLinkNonce(
+        jti=jti,
+        provider=_PROVIDER_GITHUB_INSTALL,
+        provider_user_id=cognito_sub,
+        channel_context=None,
+        target_user_id=user_id,
+        expires_at=datetime.now(UTC) + timedelta(minutes=15),
+        consumed_at=None,
+    )
+    db.add(nonce)
+    await db.commit()
     return user, nonce
 
 
@@ -251,7 +254,17 @@ class TestInstallCallbackAutoSwitch:
         assert result1["success"] is True
 
         # Seed a second nonce for the reinstall
-        await issue_install_nonce(db_session, user, jti="second-jti")
+        nonce2 = MagicLinkNonce(
+            jti="second-jti",
+            provider=_PROVIDER_GITHUB_INSTALL,
+            provider_user_id="sub-installer",
+            channel_context=None,
+            target_user_id="user-installer-001",
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            consumed_at=None,
+        )
+        db_session.add(nonce2)
+        await db_session.commit()
 
         # Reinstall — should be a no-op
         result2 = await install_callback(
@@ -269,7 +282,7 @@ class TestInstallCallbackAutoSwitch:
     async def test_personal_install_no_switch(self, db_session: AsyncSession, org_in_db):
         """Personal-account install → no switch, switched_from is None."""
         await _seed_user_and_nonce(db_session)
-        gh = _mock_github_client(installation_id=999, account_type="User", account_login="alice", account_github_id=12345)
+        gh = _mock_github_client(account_type="User", account_login="alice")
 
         result = await install_callback(
             installation_id=999,
@@ -349,12 +362,12 @@ class TestRedirectSuccessParams:
 
         response = _redirect_success(
             123,
-            installed="acme-hackathon",
+            installed="sophos-hackathon",
             switched_from="org-previous-001",
         )
         assert response.status_code == 302
         location = response.headers["location"]
-        assert "installed=acme-hackathon" in location
+        assert "installed=sophos-hackathon" in location
         assert "switched_from=org-previous-001" in location
         assert "success=1" in location
 

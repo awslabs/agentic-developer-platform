@@ -164,45 +164,6 @@ const depthCappedResponse: InvocationChainResponse = {
   depth_capped: true,
 };
 
-/**
- * Issue #3964: a chain whose middle node was deliberately stopped.
- *
- * Shaped as parent → aborted child so the assertions below can prove the aborted
- * node renders as itself while its siblings keep their own glyphs — the chain view
- * reads `STATUS_GLYPHS[status] ?? STATUS_GLYPHS.no_op`, so a status missing from
- * that map does not throw, it quietly renders a stopped run as "✗ No-op".
- */
-const abortedChainResponse: InvocationChainResponse = {
-  correlation_id: 'chain-aborted',
-  root_human_id: 'user-001',
-  is_human_rooted: true,
-  items: [
-    {
-      invocation_id: 'inv-root',
-      invoked_at: '2026-09-15T10:00:00Z',
-      channel: 'github',
-      status: 'complete',
-      topic: 'Root that finished',
-      persona: 'ops',
-      parent_invocation_id: null,
-      children: [
-        {
-          invocation_id: 'inv-aborted',
-          invoked_at: '2026-09-15T10:05:00Z',
-          channel: 'github',
-          status: 'aborted',
-          topic: 'Run an operator stopped',
-          persona: 'developer',
-          parent_invocation_id: 'inv-root',
-          children: [],
-        },
-      ],
-    },
-  ],
-  total_count: 2,
-  depth_capped: false,
-};
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -365,82 +326,5 @@ describe('InvocationChain Component', () => {
     expect(screen.getByText('ops')).toBeInTheDocument();
     expect(screen.getByText('developer')).toBeInTheDocument();
     expect(screen.getByText('reviewer')).toBeInTheDocument();
-  });
-
-  // -------------------------------------------------------------------------
-  // Issue #3964: aborted status in the chain view
-  // -------------------------------------------------------------------------
-
-  it('renders an aborted node with its own glyph, not the no-op fallback', async () => {
-    // The specific regression this guards: `STATUS_GLYPHS[status] ?? no_op` means a
-    // status missing from the glyph map renders silently as "✗ No-op" — telling an
-    // operator that the run they deliberately stopped never ran at all.
-    mockGetMyChain.mockResolvedValue(abortedChainResponse);
-    renderChain({ correlationId: 'chain-aborted' });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('invocation-chain')).toBeInTheDocument();
-    });
-
-    const abortedNode = screen.getByTestId('chain-node-inv-aborted');
-    expect(abortedNode).toHaveTextContent('■');
-    expect(abortedNode).not.toHaveTextContent('✗');
-  });
-
-  it('styles an aborted node amber rather than red', async () => {
-    // Amber, matching budget_stopped: a deliberate stop is not a fault, and red
-    // would send the operator to investigate their own intervention.
-    mockGetMyChain.mockResolvedValue(abortedChainResponse);
-    renderChain({ correlationId: 'chain-aborted' });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('invocation-chain')).toBeInTheDocument();
-    });
-
-    const glyph = screen
-      .getByTestId('chain-node-inv-aborted')
-      .querySelector('[aria-hidden="true"].text-amber-600');
-    expect(glyph, 'aborted glyph is not styled amber').not.toBeNull();
-    expect(glyph).toHaveTextContent('■');
-  });
-
-  it('leaves sibling statuses in the chain untouched', async () => {
-    // Adding a status must not perturb the rest of the map. The completed root and
-    // the aborted child render as themselves, side by side.
-    mockGetMyChain.mockResolvedValue(abortedChainResponse);
-    renderChain({ correlationId: 'chain-aborted' });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('invocation-chain')).toBeInTheDocument();
-    });
-
-    expect(screen.getByTestId('chain-node-inv-root')).toHaveTextContent('✓');
-    expect(screen.getByText('Run an operator stopped')).toBeInTheDocument();
-  });
-
-  it('does not borrow the aborted glyph for a provider native interruption', async () => {
-    // Harness-neutral contract (#3964): only a confirmed ADP abort finalization is
-    // `aborted`. A native interrupt string that somehow reaches the chain view must
-    // fall through to the neutral fallback, NOT be pattern-matched onto `aborted`.
-    mockGetMyChain.mockResolvedValue({
-      ...abortedChainResponse,
-      items: [
-        {
-          ...abortedChainResponse.items[0],
-          children: [
-            { ...abortedChainResponse.items[0].children[0], status: 'AbortError' },
-          ],
-        },
-      ],
-    });
-    renderChain({ correlationId: 'chain-aborted' });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('invocation-chain')).toBeInTheDocument();
-    });
-
-    const node = screen.getByTestId('chain-node-inv-aborted');
-    expect(node).not.toHaveTextContent('■');
-    expect(node).toHaveTextContent('✗');
   });
 });

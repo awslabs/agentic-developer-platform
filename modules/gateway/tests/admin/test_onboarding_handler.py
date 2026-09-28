@@ -18,19 +18,6 @@ from src.shared.models.onboarding import TenantAccessRequest
 from src.shared.models.organization import Organization
 from src.shared.schemas.auth import TokenContext
 
-# Ordinary handler fixtures model the server-side Cognito read explicitly.
-# The unsigned bearer below exercises request plumbing, never identity authority.
-_provider_claims = {}
-
-
-@pytest.fixture(autouse=True)
-def subject_bound_cognito_record(monkeypatch):
-    from src.admin.onboarding import handler
-
-    _provider_claims.clear()
-    monkeypatch.setattr(handler, "_fetch_github_identity_from_cognito", lambda sub: handler._extract_from_claims(_provider_claims))
-
-
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
@@ -106,16 +93,9 @@ async def app_client(db_engine, new_user_context):
 
 @pytest.fixture
 async def admin_app_client(db_engine, admin_context):
-    """Create test client with admin auth override.
-
-    Issue #4018: the access-request routes no longer depend on ``require_admin``
-    (they resolve authority via AccessControl), so overriding it here would be a
-    silent no-op. ``admin_context`` carries ``is_admin=True``, which resolves to
-    PLATFORM_ADMIN from the token claim — the platform-admin path these tests
-    exercise.
-    """
+    """Create test client with admin auth override."""
     from src.app import create_app
-    from src.auth.dependencies import get_current_user
+    from src.auth.dependencies import get_current_user, require_admin
     from src.shared.database import get_db
 
     app = create_app()
@@ -130,6 +110,7 @@ async def admin_app_client(db_engine, admin_context):
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = override_auth
+    app.dependency_overrides[require_admin] = override_auth
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -167,8 +148,6 @@ def _fake_bearer(claims: dict) -> str:
     The handler's _decode_jwt_claims just base64-decodes the middle segment;
     signature is irrelevant for these tests (auth is overridden upstream).
     """
-    _provider_claims.clear()
-    _provider_claims.update(claims)
     import base64 as _b64
     import json as _json
 
@@ -509,14 +488,14 @@ async def test_admin_approve_503_when_flag_off(admin_app_client, db_engine):
 
 
 # ---------------------------------------------------------------------------
-# Admin deny — preserves global account
+# Admin deny — calls AdminDeleteUser
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true", "COGNITO_USER_POOL_ID": "us-east-1_testpool"})
-async def test_admin_deny_preserves_cognito_user(admin_app_client, db_engine):
-    """Tenant request denial does not authorize global account deletion."""
+async def test_admin_deny_deletes_cognito_user(admin_app_client, db_engine):
+    """Deny calls AdminDeleteUser on the Cognito sub."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         req = TenantAccessRequest(
@@ -539,18 +518,21 @@ async def test_admin_deny_preserves_cognito_user(admin_app_client, db_engine):
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "denied"
-    mock_cognito.admin_delete_user.assert_not_called()
+    mock_cognito.admin_delete_user.assert_called_once_with(
+        UserPoolId="us-east-1_testpool",
+        Username="sub-to-deny",
+    )
 
 
 # ---------------------------------------------------------------------------
-# Admin deny — repeated request is idempotent
+# Admin deny — UserNotFoundException treated as success
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true", "COGNITO_USER_POOL_ID": "us-east-1_testpool"})
-async def test_admin_deny_repeated_request_is_idempotent(admin_app_client, db_engine):
-    """Repeated denial retains the global account and request-only outcome."""
+async def test_admin_deny_user_not_found_is_idempotent(admin_app_client, db_engine):
+    """Deny treats UserNotFoundException as idempotent success."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         req = TenantAccessRequest(
@@ -571,24 +553,21 @@ async def test_admin_deny_repeated_request_is_idempotent(admin_app_client, db_en
 
     with patch("boto3.client", return_value=mock_cognito):
         resp = await admin_app_client.post("/admin/access-requests/req-deny2/deny")
-        repeated = await admin_app_client.post("/admin/access-requests/req-deny2/deny")
-        assert repeated.status_code == 200
-        mock_cognito.admin_delete_user.assert_not_called()
 
-    # Request-only denial succeeds without consulting Cognito
+    # Should succeed — UserNotFoundException is idempotent
     assert resp.status_code == 200
     assert resp.json()["status"] == "denied"
 
 
 # ---------------------------------------------------------------------------
-# Admin deny — no provider operation
+# Admin deny — Cognito failure emits metric
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USER_IDENTITY_INDEX_V2_WRITE": "true", "COGNITO_USER_POOL_ID": "us-east-1_testpool"})
-async def test_admin_deny_requires_no_cognito_operation(admin_app_client, db_engine):
-    """Provider deletion errors cannot affect a request-only denial."""
+async def test_admin_deny_cognito_failure_emits_metric(admin_app_client, db_engine):
+    """Deny emits OnboardingDeny.CognitoDeleteFailure on non-UserNotFound errors."""
     factory = async_sessionmaker(db_engine, expire_on_commit=False)
     async with factory() as session:
         req = TenantAccessRequest(
@@ -611,14 +590,13 @@ async def test_admin_deny_requires_no_cognito_operation(admin_app_client, db_eng
 
     with (
         patch("boto3.client", return_value=mock_cognito),
-        patch("src.admin.onboarding.approval.emit_metric") as mock_metric,
+        patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
     ):
         resp = await admin_app_client.post("/admin/access-requests/req-deny3/deny")
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "denied"
-    mock_metric.assert_not_called()
-    mock_cognito.admin_delete_user.assert_not_called()
+    mock_metric.assert_called_with("ADP/Onboarding", "OnboardingDeny.CognitoDeleteFailure")
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +630,7 @@ async def test_ddb_write_failure_best_effort(admin_app_client, db_engine):
             "src.admin.identity.identity_index_writer.IdentityIndexWriter",
             return_value=mock_writer,
         ),
-        patch("src.admin.onboarding.approval.emit_metric") as mock_metric,
+        patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
     ):
         resp = await admin_app_client.post("/admin/access-requests/req-ddb/approve")
 
@@ -708,14 +686,14 @@ class TestCognitoUserPoolIdResolution:
 
 class TestSyncCognitoRoleClaims:
     def test_sets_role_org_team_attributes(self):
-        from src.admin import cognito_claims
+        from src.admin.onboarding import approval
 
         mock_client = MagicMock()
         with (
             patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
             patch("boto3.client", return_value=mock_client),
         ):
-            cognito_claims.sync_cognito_role_claims(
+            approval._sync_cognito_role_claims(
                 cognito_sub="sub-abc",
                 org_id="acme",
                 role="org_admin",
@@ -734,42 +712,42 @@ class TestSyncCognitoRoleClaims:
         assert attrs["custom:department_id"] == "dept-1"
 
     def test_skips_and_metrics_when_pool_id_missing(self):
-        from src.admin import cognito_claims
+        from src.admin.onboarding import approval
 
         with (
             patch.dict(os.environ, {}, clear=True),
             patch("boto3.client") as mock_boto,
-            patch("src.admin.cognito_claims.emit_metric") as mock_metric,
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
         ):
-            cognito_claims.sync_cognito_role_claims(cognito_sub="sub-abc", org_id="acme", role="org_admin", team_id="t")
+            approval._sync_cognito_role_claims(cognito_sub="sub-abc", org_id="acme", role="org_admin", team_id="t")
 
         mock_boto.assert_not_called()
         mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncSkipped")
 
     def test_failure_is_best_effort(self):
-        from src.admin import cognito_claims
+        from src.admin.onboarding import approval
 
         mock_client = MagicMock()
         mock_client.admin_update_user_attributes.side_effect = Exception("cognito down")
         with (
             patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
             patch("boto3.client", return_value=mock_client),
-            patch("src.admin.cognito_claims.emit_metric") as mock_metric,
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
         ):
             # Must not raise — approval already committed.
-            cognito_claims.sync_cognito_role_claims(cognito_sub="sub-abc", org_id="acme", role="org_admin", team_id="t")
+            approval._sync_cognito_role_claims(cognito_sub="sub-abc", org_id="acme", role="org_admin", team_id="t")
         mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")
 
     def test_email_signup_no_listusers_on_common_path(self):
         """Email-signup user (username == sub): first attempt succeeds, no ListUsers."""
-        from src.admin import cognito_claims
+        from src.admin.onboarding import approval
 
         mock_client = MagicMock()
         with (
             patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
             patch("boto3.client", return_value=mock_client),
         ):
-            cognito_claims.sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
+            approval._sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
 
         mock_client.admin_update_user_attributes.assert_called_once()
         assert mock_client.admin_update_user_attributes.call_args.kwargs["Username"] == "sub-uuid"
@@ -786,7 +764,7 @@ class TestSyncCognitoRoleClaims:
     def test_github_user_falls_back_to_listusers_by_sub(self):
         """GitHub user (username GitHub_<id> != sub): first attempt raises
         UserNotFound → ListUsers-by-sub resolves the real username → retry succeeds."""
-        from src.admin import cognito_claims
+        from src.admin.onboarding import approval
 
         mock_client = MagicMock()
         mock_client.admin_update_user_attributes.side_effect = [self._user_not_found_error(), None]
@@ -794,9 +772,9 @@ class TestSyncCognitoRoleClaims:
         with (
             patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
             patch("boto3.client", return_value=mock_client),
-            patch("src.admin.cognito_claims.emit_metric") as mock_metric,
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
         ):
-            cognito_claims.sync_cognito_role_claims(cognito_sub="c4d8c4a8-uuid", org_id="acme", role="org_admin", team_id="t")
+            approval._sync_cognito_role_claims(cognito_sub="c4d8c4a8-uuid", org_id="acme", role="org_admin", team_id="t")
 
         mock_client.list_users.assert_called_once()
         lu_kwargs = mock_client.list_users.call_args.kwargs
@@ -808,7 +786,7 @@ class TestSyncCognitoRoleClaims:
 
     def test_listusers_empty_is_best_effort(self):
         """ListUsers returns no user: warn + metric, no raise (approval still commits)."""
-        from src.admin import cognito_claims
+        from src.admin.onboarding import approval
 
         mock_client = MagicMock()
         mock_client.admin_update_user_attributes.side_effect = self._user_not_found_error()
@@ -816,9 +794,9 @@ class TestSyncCognitoRoleClaims:
         with (
             patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
             patch("boto3.client", return_value=mock_client),
-            patch("src.admin.cognito_claims.emit_metric") as mock_metric,
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
         ):
-            cognito_claims.sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
+            approval._sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
 
         mock_client.list_users.assert_called_once()
         assert mock_client.admin_update_user_attributes.call_count == 1  # no retry
@@ -826,7 +804,7 @@ class TestSyncCognitoRoleClaims:
 
     def test_retry_failure_is_best_effort(self):
         """ListUsers resolves but the retry raises: warn + metric, no raise."""
-        from src.admin import cognito_claims
+        from src.admin.onboarding import approval
 
         mock_client = MagicMock()
         mock_client.admin_update_user_attributes.side_effect = [
@@ -837,9 +815,9 @@ class TestSyncCognitoRoleClaims:
         with (
             patch.dict(os.environ, {"BG_COGNITO_USER_POOL_ID": "us-east-1_pool"}, clear=True),
             patch("boto3.client", return_value=mock_client),
-            patch("src.admin.cognito_claims.emit_metric") as mock_metric,
+            patch("src.admin.onboarding.approval._emit_metric") as mock_metric,
         ):
-            cognito_claims.sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
+            approval._sync_cognito_role_claims(cognito_sub="sub-uuid", org_id="acme", role="org_admin", team_id="t")
 
         assert mock_client.admin_update_user_attributes.call_count == 2
         mock_metric.assert_called_with("ADP/Onboarding", "OnboardingApproval.CognitoClaimSyncFailure")

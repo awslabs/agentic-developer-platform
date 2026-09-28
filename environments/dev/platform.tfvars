@@ -19,84 +19,18 @@ eks_node_max_size       = 10
 # Adds CloudWatch metric + log ingestion cost (bounded by cluster size).
 enable_container_insights = true
 
-# Enforce NetworkPolicy (#4999). Until this was set, the cluster ran no
-# network-policy enforcement agent, so all four existing policies were inert:
-# worker egress was not actually restricted, and the agent control-listener
-# ingress boundary that evaluation #3967 must prove (check W1-04) could not be
-# proven because a deny-all policy let traffic through.
-#
-# ORDERING IS LOAD-BEARING. This must not be applied until the ADOT collector
-# egress policy has already been applied by the webhook-ingress module
-# (modules/agent-factory/webhook-ingress/infra/scaledjob-netpol.tf). The
-# namespace's default-deny-egress selects all pods; before that policy existed
-# the collector matched no allow rule, so enabling enforcement first stops all
-# agent traces/metrics/logs with no error visible anywhere. See
-# docs/runbooks/network-policy-enforcement.md for the ordered procedure,
-# post-apply verification and rollback.
-enable_network_policy_controller = true
-
 # Human operator role(s) that need EKS cluster-admin, beyond the deploying
 # caller and the CI runner (those two are added automatically in main.tf).
-# Without an entry here, a CI apply (running as agent-runner-role) can destroy a
-# human operator's access entry and lock them out of kubectl.
-#
-# Intentionally EMPTY in the shipped repo (issue #4027). This previously
-# hardcoded ADP's own dev-account role ARN, which broke every self-managed
-# deploy: applied as-is it grants a *foreign* account's role cluster-admin on
-# the customer's cluster, and rewritten to the local account by deploy.sh it
-# names a role that doesn't exist in an IAM Identity Center account — the same
-# `InvalidParameterException: invalid principal` this issue fixes for the
-# deployer. Account-specific by nature, so it can't be derived or shipped.
-#
-# Operators: set your own durable operator ARN(s) per-invocation via
-#   export TF_VAR_extra_cluster_admin_principal_arns='["arn:aws:iam::<acct>:role/<Role>"]'
-# Prefer a stable IAM role over an Identity Center permission-set role: the
-# AWSReservedSSO_<PermissionSet>_<suffix> name changes if the permission set is
-# re-provisioned, and it differs per permission set — so an access entry derived
-# from an SSO session is not durable. principal_arn is ForceNew, so a changed
-# name means destroy+create of the access entry on the next apply.
-# distinct() in main.tf dedupes if the deployer is already listed here.
-#
-# NOT assigned here, deliberately — same reason as eks_public_access_cidrs
-# below. A `-var-file` assignment OVERRIDES TF_VAR_ environment variables, so
-# an explicit `= []` on this line would silently defeat every TF_VAR_ override:
-# CI's passthrough (platform-infra-apply.yml reads the EXTRA_CLUSTER_ADMIN_ARNS
-# repository variable) and the operator export above would both be ignored, and
-# the apply would destroy the operator's access entry anyway. The variable's
-# declared default in platform/infra/variables.tf is already [], so leaving it
-# unassigned keeps the shipped repo portable AND keeps the override working.
-# Set EXTRA_CLUSTER_ADMIN_ARNS (repo variable) to this account's operator ARNs.
+# "Admin" is this account's human-operator role; without it here, a CI apply
+# (running as agent-runner-role) would destroy Admin's access entry and lock
+# human operators out of kubectl. Account-specific by nature, hence in tfvars
+# rather than derived. distinct() dedupes if a future deployer IS Admin.
+extra_cluster_admin_principal_arns = [
+  "arn:aws:iam::879318057152:role/Admin",
+]
 
 # `eks_public_access_cidrs` is intentionally NOT set here so the repo stays
 # portable. Set it per-invocation via:
 #   export TF_VAR_eks_public_access_cidrs='["<your.public.ip>/32"]'
 # The deploy-all.sh and preflight-check.sh scripts autodetect the operator's IP
 # when this variable is unset.
-
-# Per-repository encryption overrides: four existing workload repositories use
-# AES256, verified by read-only ECR inventory on 2026-09-25. The skill registry
-# uses KMS and must retain that configuration. Without these overrides, a terraform
-# apply that changes image_tag_mutability would ALSO plan to replace (destroy +
-# recreate) these workload repositories due to the encryption mismatch — the #5003 drift.
-# These overrides make Terraform match the live state so that the mutability
-# convergence (#6120) can be applied in isolation. Encryption migration is
-# tracked separately in #5003; do not remove these overrides until that issue
-# resolves the drift intentionally.
-ecr_repository_encryption = {
-  "adp-gateway" = {
-    encryption_type = "AES256"
-  }
-  "adp-agent-runtime" = {
-    encryption_type = "AES256"
-  }
-  "adp-agent-gateway" = {
-    encryption_type = "AES256"
-  }
-  "adp-chat-agent" = {
-    encryption_type = "AES256"
-  }
-}
-
-# The legacy customer-source role must not regain platform Kubernetes access.
-agent_legacy_worker_admin_retired      = true
-agent_authority_legacy_workers_drained = true

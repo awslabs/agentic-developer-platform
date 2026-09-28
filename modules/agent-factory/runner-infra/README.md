@@ -292,7 +292,8 @@ github-actions-runner/
 │   └── terraform.tfvars     # Your configuration (git-ignored)
 │
 ├── helm/                     # Helm chart configurations
-│   └── arc-controller-values.yaml
+│   ├── arc-controller-values.yaml
+│   └── arc-runner-set-values.yaml.tpl
 │
 ├── scripts/                  # Automation scripts
 │   ├── deploy.sh            # Deploy all infrastructure

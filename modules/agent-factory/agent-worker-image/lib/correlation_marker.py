@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 
 from lib.marker_signing import compute_signature
 
@@ -34,33 +33,6 @@ def prepend_correlation_marker(body: str, *, dispatch_persona: str | None = None
     Returns:
         Body with marker prepended, or original body unchanged.
     """
-    from lib.status_gateway_client import StatusGatewayError, authority_enabled
-
-    if authority_enabled():
-        # Complete fields come from protected state, not mutable environment
-        # variables. Never load a shared key or fall back to local signing here.
-        from lib.run_service_client import own_marker_fields
-
-        try:
-            fields = own_marker_fields()
-        except StatusGatewayError:
-            logger.warning("Run-bound marker service unavailable; no marker added")
-            return body
-        parts = [
-            f"adp-correlation:{fields['correlation_id']}",
-            f"adp-root-human:{fields['root_human_id']}",
-            f"adp-is-human-rooted:{fields['is_human_rooted']}",
-            f"adp-invocation:{fields['invocation_id']}",
-            f"adp-chain-depth:{fields['chain_depth']}",
-            f"adp-sig:{fields['signature']}",
-        ]
-        if dispatch_persona and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", dispatch_persona):
-            parts.append(f"adp-dispatch:{dispatch_persona}")
-        # Refresh an old prefix rather than carrying another run's attribution
-        # through this helper. The legacy no-op contract below stays unchanged.
-        clean_body = re.sub(r"\A<!--\s+adp-correlation:[^\n]*?-->\n?", "", body, count=1)
-        return f"<!-- {' '.join(parts)} -->\n" + clean_body
-
     # Idempotency: don't double-prepend
     if "<!-- adp-correlation:" in body[:500]:
         return body

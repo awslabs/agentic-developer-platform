@@ -14,25 +14,10 @@ import os
 import time
 import urllib.request
 import urllib.error
-import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-
-class _NoResolverRedirect(urllib.request.HTTPRedirectHandler):
-    """Identity resolution has one endpoint; never forward its internal key."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if fp is not None:
-            fp.close()
-        raise urllib.error.HTTPError(req.full_url, code, "resolver redirect refused", headers, None)
-
-
-def _open_resolver(req, *, timeout):
-    return urllib.request.build_opener(_NoResolverRedirect()).open(req, timeout=timeout)
-
 
 # Feature flag — when False, resolver is bypassed entirely.
 ENABLE_USER_IDENTITIES = os.environ.get("ENABLE_USER_IDENTITIES", "").lower() in (
@@ -132,24 +117,6 @@ def resolve_user(
     if cached is not None:
         return cached
 
-    # Only an explicitly configured HTTP(S) endpoint may receive the internal key.
-    # Plain HTTP remains supported for the existing internal service endpoint.
-    try:
-        endpoint = urllib.parse.urlsplit(RESOLVER_BASE_URL)
-        if (
-            endpoint.scheme not in {"http", "https"}
-            or not endpoint.hostname
-            or endpoint.username is not None
-            or endpoint.password is not None
-            or endpoint.query
-            or endpoint.fragment
-        ):
-            raise ValueError("invalid resolver endpoint")
-        endpoint.port  # Reject malformed ports before creating a request.
-    except ValueError:
-        logger.error("Invalid resolver endpoint configuration")
-        return None
-
     # Call the gateway endpoint
     url = f"{RESOLVER_BASE_URL.rstrip('/')}/internal/v1/resolve-user"
     payload: dict[str, Any] = {
@@ -169,7 +136,7 @@ def resolve_user(
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     try:
-        with _open_resolver(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             body = json.loads(resp.read())
             result = ResolvedUser(
                 user_id=body["user_id"],
@@ -191,9 +158,9 @@ def resolve_user(
             # Cache 404s too — prevents spamming the user with links on every message
             _cache_set(provider, provider_user_id, result_404)
             return result_404
-        logger.error("resolve-user returned HTTP %d", e.code)
+        logger.error("resolve-user returned HTTP %d: %s", e.code, e.reason)
         return None
 
-    except Exception:
-        logger.error("resolve-user call failed")
+    except Exception as e:
+        logger.error("resolve-user call failed: %s", e)
         return None

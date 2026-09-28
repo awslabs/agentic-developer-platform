@@ -7,7 +7,7 @@
  * admin toggle visibility, error/retry UI, trigger badges, chain view.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -21,7 +21,6 @@ vi.mock('@/services/activity', () => ({
   getAllInvocations: vi.fn(),
   getMyInvocationChain: vi.fn(),
   getAdminInvocationChain: vi.fn(),
-  getMyInvocationDetail: vi.fn(),
 }));
 
 // Mock the permissions hook
@@ -29,7 +28,7 @@ vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: vi.fn(),
 }));
 
-import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationChain, getMyInvocationDetail } from '@/services/activity';
+import { getMyInvocations, getMyChains, getAllInvocations, getMyInvocationChain } from '@/services/activity';
 import { usePermissions } from '@/hooks/usePermissions';
 
 const mockGetMine = getMyInvocations as ReturnType<typeof vi.fn>;
@@ -63,10 +62,6 @@ function makeInvocation(overrides: Partial<InvocationItem> = {}): InvocationItem
     root_human_id: 'user-001',
     is_human_rooted: true,
     correlation_id: 'chain-001',
-    // Issue #4020: only non-run statuses ever carry a reason
-    skip_reason: null,
-    // Issue #4187: only budget_stopped runs ever carry a stop reason
-    stop_reason: null,
     ...overrides,
   };
 }
@@ -119,12 +114,9 @@ function renderAgentActivity(initialRoute = '/') {
  * The component defaults to "By chain" view (issue #1662), which disables the
  * flat query (getMyInvocations). Tests that assert on flat-table rows, status
  * badges, trigger columns, etc. need the "By run" view active.
- *
- * Issue #4022: accepts an optional pre-built `user` so fake-timer tests can
- * pass a session configured with `advanceTimers` (a default `userEvent.setup()`
- * waits on real timers and would hang under `vi.useFakeTimers()`).
  */
-async function renderAgentActivityFlat(user = userEvent.setup()) {
+async function renderAgentActivityFlat() {
+  const user = userEvent.setup();
   const result = renderAgentActivity();
 
   // Wait for the default chain view to load
@@ -232,27 +224,6 @@ describe('AgentActivity Page', () => {
     expect(screen.getByText('Refactor auth')).toBeInTheDocument();
   });
 
-  it('opens a story review through its chain and highlights the reviewer without requiring direct run ownership', async () => {
-    mockGetMyChain.mockResolvedValue({
-      correlation_id: 'orch:attempt-1', root_human_id: 'user-001', is_human_rooted: true,
-      total_count: 2, depth_capped: false,
-      items: [{
-        invocation_id: 'orch:attempt-1', persona: 'developer', status: 'complete',
-        invoked_at: '2026-09-15T14:18:00Z', topic: 'Develop story',
-        children: [{
-          invocation_id: 'review:1', persona: 'reviewer', status: 'in_progress',
-          invoked_at: '2026-09-15T14:54:00Z', topic: 'Review story', children: [],
-        }],
-      }],
-    });
-    renderAgentActivity('/activity?chain=orch%3Aattempt-1&highlight=review%3A1');
-    const reviewer = await screen.findByTestId('chain-node-review:1');
-    expect(within(reviewer).getByRole('button')).toHaveClass('bg-blue-50');
-    expect(screen.getByTestId('chain-node-orch:attempt-1')).toBeVisible();
-    expect(mockGetMyChain.mock.calls[0][0]).toBe('orch:attempt-1');
-    expect(getMyInvocationDetail).not.toHaveBeenCalled();
-  });
-
   it('"next" follows last_key; empty page with non-null last_key still shows working "next"', async () => {
     const user = userEvent.setup();
 
@@ -318,243 +289,6 @@ describe('AgentActivity Page', () => {
     expect(table.getByText('Rejected')).toBeInTheDocument();
     expect(table.getByText('Rate limited')).toBeInTheDocument();
     expect(table.getByText('No-op')).toBeInTheDocument();
-  });
-
-  // ---------------------------------------------------------------------------
-  // Issue #4020: skip/block reasons on the board
-  // ---------------------------------------------------------------------------
-
-  describe('skip reasons (Issue #4020)', () => {
-    /**
-     * The summary cell, located relative to the topic it sits beside.
-     *
-     * Needed because the reason legitimately appears twice in a row — once in
-     * the badge's sr-only text and once here — so a table-wide text query is
-     * ambiguous and cannot tell the two apart.
-     */
-    function summaryCellFor(topic: string): HTMLElement {
-      const cells = within(screen.getByRole('table')).getAllByRole('cell');
-      const topicIdx = cells.findIndex((c) => c.textContent === topic);
-      expect(topicIdx).toBeGreaterThanOrEqual(0);
-      return cells[topicIdx + 1];
-    }
-
-    it('renders the two new non-run statuses', async () => {
-      mockGetMine.mockResolvedValue({
-        items: [
-          makeInvocation({
-            invocation_id: 'inv-b1',
-            status: 'blocked',
-            topic: 'blocked-topic',
-            skip_reason: 'self_re_trigger',
-          }),
-          makeInvocation({
-            invocation_id: 'inv-b2',
-            status: 'skipped',
-            topic: 'skipped-topic',
-            skip_reason: 'idempotency_merged_pr',
-          }),
-        ],
-        last_key: null,
-      });
-
-      await renderAgentActivityFlat();
-
-      // Scoped to the table — the status <select> renders the same labels.
-      const table = within(screen.getByRole('table'));
-      expect(table.getByText('Blocked')).toBeInTheDocument();
-      expect(table.getByText('Skipped')).toBeInTheDocument();
-    });
-
-    it('puts the reason in the badge tooltip', async () => {
-      mockGetMine.mockResolvedValue({
-        items: [
-          makeInvocation({
-            invocation_id: 'inv-r1',
-            status: 'no_op',
-            topic: 'noop-topic',
-            skip_reason: 'no_mention',
-          }),
-        ],
-        last_key: null,
-      });
-
-      await renderAgentActivityFlat();
-
-      // The badge label's parent <span> carries the title. Previously this was a
-      // bare "✗ No-op" with nothing to hover.
-      const badge = within(screen.getByRole('table')).getByText('No-op').closest('span')!;
-      expect(badge.parentElement).toHaveAttribute(
-        'title',
-        expect.stringContaining('No agent was mentioned'),
-      );
-    });
-
-    it('exposes the reason to screen readers, not only on hover', async () => {
-      // title= is mouse-only. Without the sr-only copy, keyboard and
-      // screen-reader users would be left with the original unexplained badge.
-      mockGetMine.mockResolvedValue({
-        items: [
-          makeInvocation({
-            invocation_id: 'inv-r2',
-            status: 'blocked',
-            topic: 'blocked-topic',
-            skip_reason: 'chain_depth_exceeded',
-          }),
-        ],
-        last_key: null,
-      });
-
-      await renderAgentActivityFlat();
-
-      expect(within(screen.getByRole('table')).getByText(/depth limit/)).toBeInTheDocument();
-    });
-
-    it('uses the reason as the summary cell for non-runs', async () => {
-      // A non-run has no work to summarize, so the cell used to be a bare
-      // em-dash — the reason makes the board scannable without opening rows.
-      mockGetMine.mockResolvedValue({
-        items: [
-          makeInvocation({
-            invocation_id: 'inv-r3',
-            status: 'no_op',
-            topic: 'noop-topic',
-            summary: null,
-            skip_reason: 'label_unmapped',
-          }),
-        ],
-        last_key: null,
-      });
-
-      await renderAgentActivityFlat();
-
-      expect(summaryCellFor('noop-topic')).toHaveTextContent(
-        /not mapped to any agent persona/,
-      );
-    });
-
-    it('prefers a real summary over the reason when both exist', async () => {
-      mockGetMine.mockResolvedValue({
-        items: [
-          makeInvocation({
-            invocation_id: 'inv-r4',
-            status: 'no_op',
-            topic: 'noop-topic',
-            summary: 'A real summary',
-            skip_reason: 'no_mention',
-          }),
-        ],
-        last_key: null,
-      });
-
-      await renderAgentActivityFlat();
-
-      const cell = summaryCellFor('noop-topic');
-      expect(cell).toHaveTextContent('A real summary');
-      // The reason still reaches the badge, but must not displace real content.
-      expect(cell).not.toHaveTextContent(/No agent was mentioned/);
-    });
-
-    it('never shows a reason next to a status that did run', async () => {
-      // Regression guard: a stale skip_reason on a completed row must not render
-      // "why nothing ran" beside a run that did.
-      mockGetMine.mockResolvedValue({
-        items: [
-          makeInvocation({
-            invocation_id: 'inv-r5',
-            status: 'complete',
-            topic: 'done-topic',
-            summary: null,
-            skip_reason: 'no_mention',
-          }),
-        ],
-        last_key: null,
-      });
-
-      await renderAgentActivityFlat();
-
-      expect(
-        within(screen.getByRole('table')).queryByText(/No agent was mentioned/),
-      ).not.toBeInTheDocument();
-    });
-
-    it.each(['blocked', 'skipped'])(
-      'status=%s from the URL requests non-triggering rows',
-      async (status) => {
-        // Without this the new filter options would always come back empty: the
-        // API excludes non-triggering statuses unless asked for them.
-        const queryClient = createTestQueryClient();
-        const { unmount } = render(
-          <QueryClientProvider client={queryClient}>
-            <MemoryRouter initialEntries={[`/activity?status=${status}`]}>
-              <AgentActivity />
-            </MemoryRouter>
-          </QueryClientProvider>,
-        );
-
-        await waitFor(() => {
-          expect(mockGetMine).toHaveBeenCalled();
-        });
-
-        const params = mockGetMine.mock.calls[0][0];
-        expect(params.status).toBe(status);
-        expect(params.include_non_triggering).toBe(true);
-
-        unmount();
-      },
-    );
-
-    it('offers Blocked and Skipped as status filter options', async () => {
-      mockGetMine.mockResolvedValue({ items: [], last_key: null });
-
-      await renderAgentActivityFlat();
-
-      const select = screen.getByLabelText(/status/i);
-      const values = Array.from(select.querySelectorAll('option')).map((o) => o.value);
-      expect(values).toContain('blocked');
-      expect(values).toContain('skipped');
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Issue #4187: runs a spend cap stopped
-  // ---------------------------------------------------------------------------
-
-  describe('budget-stopped runs (Issue #4187)', () => {
-    it('renders budget_stopped with its own label, not as a failure', async () => {
-      // The whole reason for a distinct status: "Failed" beside a run a cap
-      // deliberately stopped sends operators to debug correct behaviour.
-      mockGetMine.mockResolvedValue({
-        items: [
-          makeInvocation({
-            invocation_id: 'inv-cap1',
-            status: 'budget_stopped',
-            topic: 'capped-topic',
-            stop_reason: 'run_cap_exceeded',
-          }),
-        ],
-        last_key: null,
-      });
-
-      await renderAgentActivityFlat();
-
-      // Scoped to the table — the status <select> renders the same label.
-      const table = within(screen.getByRole('table'));
-      expect(table.getByText('Budget stopped')).toBeInTheDocument();
-      expect(table.queryByText('Failed')).not.toBeInTheDocument();
-    });
-
-    it('offers Budget stopped as a status filter option', async () => {
-      // Without the filter option an operator cannot answer "what did my caps
-      // stop this week", which is the question the feature creates.
-      mockGetMine.mockResolvedValue({ items: [], last_key: null });
-
-      await renderAgentActivityFlat();
-
-      const select = screen.getByLabelText(/status/i);
-      const values = Array.from(select.querySelectorAll('option')).map((o) => o.value);
-      expect(values).toContain('budget_stopped');
-    });
   });
 
   it('renders source_url as clickable repo#N link; null shows "(no external link)"', async () => {
@@ -966,204 +700,5 @@ describe('AgentActivity Page', () => {
     expect(screen.getByRole('table')).toBeInTheDocument();
     // Cards should NOT be rendered
     expect(screen.queryByTestId('activity-card-inv-wide-1')).not.toBeInTheDocument();
-  });
-
-  // ---------------------------------------------------------------------------
-  // Issue #4022: auto-refresh (30 s poll) + freshness caption
-  //
-  // These are behavioural, not option-shape, assertions: asserting that the
-  // query options object "contains refetchInterval" would pass against a poll
-  // that never fires. Fake timers are net-new harness work in this file, so
-  // each timer test owns its own setup/teardown rather than a shared
-  // beforeEach — the rest of the suite runs on real timers.
-  // ---------------------------------------------------------------------------
-
-  it('refetches the flat list on the 30 s poll interval without user action', async () => {
-    // `shouldAdvanceTime` is load-bearing: RTL's `waitFor` only auto-advances
-    // *Jest* fake timers, so under a plain `vi.useFakeTimers()` every
-    // `waitFor`/`userEvent` await polls against a frozen clock and hangs.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-      await renderAgentActivityFlat(user);
-
-      const callsBeforePoll = mockGetMine.mock.calls.length;
-      expect(callsBeforePoll).toBe(1);
-
-      // Just short of the interval — still no extra fetch.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(29_000);
-      });
-      expect(mockGetMine).toHaveBeenCalledTimes(callsBeforePoll);
-
-      // Cross 30 s → one more fetch, with the same params (no cursor reset).
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2_000);
-      });
-      expect(mockGetMine).toHaveBeenCalledTimes(callsBeforePoll + 1);
-      expect(mockGetMine.mock.calls[1][0].last_key).toBeUndefined();
-
-      // And it keeps polling, rather than firing once.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(30_000);
-      });
-      expect(mockGetMine).toHaveBeenCalledTimes(callsBeforePoll + 2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('poll tick preserves the active filter and does not reset pagination', async () => {
-    // `shouldAdvanceTime` is load-bearing: RTL's `waitFor` only auto-advances
-    // *Jest* fake timers, so under a plain `vi.useFakeTimers()` every
-    // `waitFor`/`userEvent` await polls against a frozen clock and hangs.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-      await renderAgentActivityFlat(user);
-
-      await user.selectOptions(screen.getByLabelText('Filter by status'), 'failed');
-      await waitFor(() => {
-        expect(mockGetMine.mock.calls.at(-1)![0].status).toBe('failed');
-      });
-      const callsAfterFilter = mockGetMine.mock.calls.length;
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(30_000);
-      });
-
-      expect(mockGetMine.mock.calls.length).toBe(callsAfterFilter + 1);
-      // The poll refetches the CURRENT key — filter intact, still page 1.
-      expect(mockGetMine.mock.calls.at(-1)![0].status).toBe('failed');
-      expect(mockGetMine.mock.calls.at(-1)![0].last_key).toBeUndefined();
-      expect(screen.getByText('Page 1')).toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('keeps the previous page on screen while the next page is in flight', async () => {
-    const user = userEvent.setup();
-
-    mockGetMine.mockResolvedValueOnce(mockResponseWithCursor);
-    await renderAgentActivityFlat(user);
-
-    expect(screen.getByText('Implement Agent Activity page')).toBeInTheDocument();
-
-    // Hold page 2 in flight so we can observe the transition state.
-    let releasePage2: (value: InvocationListResponse) => void = () => {};
-    mockGetMine.mockImplementationOnce(
-      () => new Promise<InvocationListResponse>((resolve) => { releasePage2 = resolve; }),
-    );
-
-    await user.click(screen.getByRole('button', { name: /^next$/i }));
-    await waitFor(() => {
-      expect(mockGetMine).toHaveBeenCalledTimes(2);
-    });
-
-    // placeholderData: keepPreviousData — the table shows the old rows rather
-    // than blanking to a skeleton.
-    expect(screen.getByText('Implement Agent Activity page')).toBeInTheDocument();
-
-    releasePage2({
-      items: [makeInvocation({ invocation_id: 'inv-page2', topic: 'Second page run' })],
-      last_key: null,
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('Second page run')).toBeInTheDocument();
-    });
-  });
-
-  it('disables both paginator buttons while a page transition is in flight', async () => {
-    const user = userEvent.setup();
-
-    // Page 1 with a cursor, so Next starts enabled.
-    mockGetMine.mockResolvedValueOnce(mockResponseWithCursor);
-    await renderAgentActivityFlat(user);
-    expect(screen.getByRole('button', { name: /^next$/i })).not.toBeDisabled();
-
-    let releasePage2: (value: InvocationListResponse) => void = () => {};
-    mockGetMine.mockImplementationOnce(
-      () => new Promise<InvocationListResponse>((resolve) => { releasePage2 = resolve; }),
-    );
-
-    await user.click(screen.getByRole('button', { name: /^next$/i }));
-
-    // With placeholder data, `data` is never undefined mid-fetch, so
-    // `hasNextPage` no longer falls to false on its own — isPlaceholderData is
-    // what keeps the controls inert during the transition.
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /^next$/i })).toBeDisabled();
-    });
-    expect(screen.getByRole('button', { name: /previous/i })).toBeDisabled();
-
-    releasePage2({ items: mockItems.slice(3), last_key: null });
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /previous/i })).not.toBeDisabled();
-    });
-  });
-
-  it('two Next clicks inside one fetch window advance exactly one page', async () => {
-    const user = userEvent.setup();
-
-    mockGetMine.mockResolvedValueOnce(mockResponseWithCursor);
-    await renderAgentActivityFlat(user);
-
-    let releasePage2: (value: InvocationListResponse) => void = () => {};
-    mockGetMine.mockImplementationOnce(
-      () => new Promise<InvocationListResponse>((resolve) => { releasePage2 = resolve; }),
-    );
-
-    const nextBtn = screen.getByRole('button', { name: /^next$/i });
-    await user.click(nextBtn);
-    await waitFor(() => {
-      expect(mockGetMine).toHaveBeenCalledTimes(2);
-    });
-
-    // Second click lands inside the fetch window. Without the
-    // isPlaceholderData gate this would push a second entry onto cursorStack
-    // using the STALE last_key — duplicating a page and requiring two Back
-    // presses to move one page.
-    await user.click(nextBtn);
-
-    releasePage2({ items: mockItems.slice(3), last_key: null });
-
-    await waitFor(() => {
-      expect(screen.getByText('Page 2')).toBeInTheDocument();
-    });
-    expect(mockGetMine).toHaveBeenCalledTimes(2);
-    expect(mockGetMine.mock.calls[1][0].last_key).toBe('inv-003');
-
-    // One Back press returns to page 1 — the cursor stack advanced once, not twice.
-    await user.click(screen.getByRole('button', { name: /previous/i }));
-    await waitFor(() => {
-      expect(screen.getByText('Page 1')).toBeInTheDocument();
-    });
-  });
-
-  it('renders the last-updated caption once data has loaded', async () => {
-    await renderAgentActivityFlat();
-
-    const caption = screen.getByTestId('last-updated');
-    await waitFor(() => {
-      expect(caption).toHaveTextContent(/Updated/);
-    });
-  });
-});
-
-
-describe('Codex developer activity', () => {
-  it('shows the native developer run and supports selecting its persona', async () => {
-    setupNonAdmin();
-    mockGetMyChains.mockResolvedValue({ chains: [], next_cursor: null, page_size: 20 });
-    mockGetMine.mockResolvedValue({ items: [makeInvocation({ persona: 'agent-codex-developer', topic: 'Codex is implementing the issue', status: 'in_progress' })], next_cursor: null, page_size: 20 });
-    const user = userEvent.setup();
-    await renderAgentActivityFlat(user);
-    expect(await screen.findByText('Codex is implementing the issue')).toBeInTheDocument();
-    const filter = screen.getByRole('combobox', { name: 'Filter by persona' });
-    await user.selectOptions(filter, 'agent-codex-developer');
-    await waitFor(() => expect(mockGetMine).toHaveBeenLastCalledWith(expect.objectContaining({ persona: 'agent-codex-developer' })));
   });
 });

@@ -3,12 +3,6 @@
  *
  * Issue #562: Self-serve AWS account connect UI.
  * Issue #3389: GitHub PAT vault registration flow.
- * Issue #4746 (#4692 · R5): the Bedrock account selector is mounted in the AWS Accounts
- *   section — no new screen (ruling 2). Somebody who has just connected an account is
- *   already asking "may I send my model calls through it?", and this is where they ask it.
- *   The section's own rows now render `AwsConnectionRow`, the component the selector uses,
- *   so the two lists of AWS accounts on this page cannot describe an account differently
- *   (§6.6).
  *
  * URL: /settings/credentials
  */
@@ -17,8 +11,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { listCredentials, deleteCredential, extractCredentialError, type CredentialItem } from '@/services/credentials';
 import RegisterGitHubPat from '@/components/RegisterGitHubPat';
-import { AwsConnectionRow } from '@/components/aws/AwsConnectionRow';
-import { BedrockAccountSelector } from '@/components/aws/BedrockAccountSelector';
 
 export default function SettingsCredentials() {
   const [credentials, setCredentials] = useState<CredentialItem[]>([]);
@@ -109,12 +101,28 @@ export default function SettingsCredentials() {
             ) : (
               <div className="space-y-2 mb-3">
                 {awsCredentials.map((cred) => (
-                  <AwsConnectionRow
+                  <div
                     key={cred.id}
-                    label={cred.label}
-                    accountId={cred.scopes?.account_id}
-                    status={cred.scopes?.status}
+                    className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-md"
                   >
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg">&#x1F517;</span>
+                      <div>
+                        <span className="font-medium">{cred.label}</span>
+                        <span className="text-sm text-gray-500 ml-2">
+                          {cred.scopes?.account_id || ''}
+                        </span>
+                      </div>
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded ${
+                          cred.scopes?.status === 'verified'
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-yellow-100 text-yellow-700'
+                        }`}
+                      >
+                        {cred.scopes?.status || 'pending'}
+                      </span>
+                    </div>
                     <button
                       onClick={() => handleDelete(cred)}
                       disabled={deletingId === cred.id}
@@ -122,7 +130,7 @@ export default function SettingsCredentials() {
                     >
                       {deletingId === cred.id ? 'Removing...' : 'Remove'}
                     </button>
-                  </AwsConnectionRow>
+                  </div>
                 ))}
               </div>
             )}
@@ -132,13 +140,6 @@ export default function SettingsCredentials() {
             >
               + Connect AWS Account
             </Link>
-
-            {/* #4746 (§6.4). Inside this section rather than a section of its own: the
-                question it answers is about these accounts, and ruling 2 forbids a new
-                screen. Rendered even with no accounts connected — "your calls go to the
-                platform's account" is the answer then, and it is the fact that makes
-                connecting one worth doing. */}
-            <BedrockAccountSelector />
           </section>
 
           {/* GitHub PAT Section */}

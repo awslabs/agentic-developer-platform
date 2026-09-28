@@ -185,27 +185,3 @@ def test_shellcheck_clean() -> None:
         ["shellcheck", str(RUN_CODEX)], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stdout + result.stderr
-
-
-@pytest.mark.parametrize("persona", ["reviewer", "codex"])
-def test_shared_policy_reaches_delegation_once_and_restores_repo_file(tmp_path, persona):
-    import shutil
-
-    personas = tmp_path / "personas"
-    shutil.copytree(HERE.parents[1] / "rules/personas", personas)
-    cwd = tmp_path / "work"
-    cwd.mkdir()
-    (cwd / "example.ts").write_text("export const answer = 42;\n")
-    original = b"# Repository instructions\nPreserve this file exactly.\n"
-    (cwd / "AGENTS.md").write_bytes(original)
-    captured = tmp_path / "captured.md"
-    stub = _write_stub(tmp_path, 'cp -f AGENTS.md "$CAPTURED_PROMPT"\n')
-    result = _run(["review", "example.ts"], cwd=cwd, env={
-        "CODEX_BIN": str(stub), "CODEX_DISTILLED_DIR": str(personas / "codex-distilled"),
-        "AGENT_TYPE": persona, "CAPTURED_PROMPT": str(captured),
-        "CODEX_RUNS_DIR": str(tmp_path / "runs"), "CODEX_EVENTS_FILE": str(tmp_path / "events.jsonl"),
-    })
-    assert result.returncode == 0, result.stderr
-    policy = (personas / "shared/human-communication.md").read_text()
-    assert captured.read_text().count(policy) == 1
-    assert (cwd / "AGENTS.md").read_bytes() == original

@@ -37,8 +37,7 @@ _tracer = get_tracer("knowledge-layer.sqs-worker")
 
 from config import settings
 from github_auth import InstallationRevokedError, mint_github_token, mint_installation_token
-from scope import ScopeValidationError, parse_scope
-from source_admission import SourceAdmissionError, validate_source
+from scope import parse_scope
 from status_callback import emit_status_callback
 
 AWS_REGION = settings.aws_region
@@ -425,27 +424,9 @@ def main():
     steps = message.get("steps", [])
     registry_asset_id = message.get("registry_asset_id")
     installation_id = message.get("installation_id")  # Per-pod auth (#2088)
-    # Issue #5663 (A09): the gateway's server-minted authority for THIS asset.
-    # Opaque here by design — the worker forwards it verbatim on every status
-    # callback and never constructs or modifies it. Absent on messages published
-    # before the gateway change; the gateway counts those as unbound rather than
-    # trusting the body.
-    callback_grant = message.get("callback_grant")
 
-    # Require an explicit ownership envelope; missing or invalid scope is fatal
-    # (#5658): the old behaviour downgraded it to shared, which published
-    # tenant- or user-scoped content to the prefix every tenant can read. The
-    # message is abandoned without deleting the receipt, so it retries and then
-    # lands in the DLQ for inspection rather than being silently mis-ingested.
-    try:
-        scope = parse_scope(message.get("scope"))
-        validate_source(
-            content_type, source, scope, default_bucket=settings.s3_bucket_name,
-            allowlist=settings.s3_source_allowlist, allow_infra=True,
-        )
-    except (ScopeValidationError, SourceAdmissionError) as e:
-        log.error("Refusing message with unsatisfiable scope: %s", e)
-        sys.exit(1)
+    # Parse scope envelope (backward-compatible: defaults to shared if absent)
+    scope = parse_scope(message.get("scope"))
 
     # Export scope as env vars for child processes (S3 prefix routing in #1773)
     scope_env = scope.to_env()
@@ -492,7 +473,6 @@ def main():
                 status_detail={"reason": "access_revoked"},
                 error=error_msg,
                 tenant_id=scope.tenant_id,
-                callback_grant=callback_grant,
             )
             # Fail-closed: delete message (no retry — installation won't come back)
             # and exit. The asset status surfaces the revocation to the user.
@@ -518,7 +498,7 @@ def main():
     update_dynamo_status(source, content_type, "processing", tags=tags)
 
     # Emit status callback: worker "processing" → gateway "indexing" (#2049)
-    safe_emit(emit_status_callback, registry_asset_id, "indexing", tenant_id=scope.tenant_id, callback_grant=callback_grant)
+    safe_emit(emit_status_callback, registry_asset_id, "indexing", tenant_id=scope.tenant_id)
 
     # Root span wrapping the entire ingestion run — child spans per stage
     # are created by StageTracker and become children via trace context propagation
@@ -580,7 +560,6 @@ def main():
                 "steps": {s: "ok" for s in steps},
             },
             tenant_id=scope.tenant_id,
-            callback_grant=callback_grant,
         )
 
         # Emit ingestion duration metric (fail-open)
@@ -631,7 +610,6 @@ def main():
             },
             error=error_msg,
             tenant_id=scope.tenant_id,
-            callback_grant=callback_grant,
         )
         # End root span + flush before exit (fail-open)
         try:

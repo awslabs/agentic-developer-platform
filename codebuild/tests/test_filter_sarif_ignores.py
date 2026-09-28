@@ -1,84 +1,126 @@
-"""Exercise positive scope evidence and conservative retention on malformed input."""
+"""Tests for filter-sarif-ignores.py prefix matching logic."""
 
-import importlib.util
+from __future__ import annotations
+
 import json
 import sys
+import tempfile
 from pathlib import Path
+
 import pytest
+import yaml
 
-spec = importlib.util.spec_from_file_location(
-    "scoped_filter", Path(__file__).parents[1] / "filter-sarif-ignores.py"
+# Add parent directory to path so we can import the module
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from importlib.util import module_from_spec, spec_from_file_location
+
+# Load the module from its file path (hyphenated filename)
+_spec = spec_from_file_location(
+    "filter_sarif_ignores",
+    Path(__file__).resolve().parent.parent / "filter-sarif-ignores.py",
 )
-m = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = m
-spec.loader.exec_module(m)
+_mod = module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+
+load_ignore_cves = _mod.load_ignore_cves
+filter_sarif = _mod.filter_sarif
 
 
-@pytest.mark.parametrize(
-    "name,kind,expected",
-    [
-        ("stdlib", "go-module", True),
-        ("stdlib", "deb", False),
-        ("stdlib", None, False),
-        (None, "go-module", False),
-        ("other", "go-module", False),
-    ],
-)
-def test_all_constraints_need_evidence(name, kind, expected):
-    sel = m.IgnoreSelector("CVE-2026-1234", "stdlib", "go-module")
-    assert (
-        m.match_result("CVE-2026-1234-stdlib", [sel], name, kind).suppressed is expected
-    )
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        {"vulnerability": "CVE-2026-1234"},
-        {
-            "vulnerability": "CVE-2026-1234",
-            "package": {"name": "stdlib", "version": "1.0"},
-        },
-        {
-            "vulnerability": "CVE-2026-1234",
-            "package": {"name": "stdlib"},
-            "image": "only-this-image",
-        },
-        {"vulnerability": "CVE-2026-1234", "package": {"type": "go-module"}},
-    ],
-)
-def test_unscoped_or_unsupported_rules_do_not_broaden(entry):
-    sel = m.IgnoreSelector.from_config_entry(entry)
-    assert not m.match_result(
-        "CVE-2026-1234-stdlib", [sel], "stdlib", "go-module"
-    ).suppressed
-
-
-@pytest.mark.parametrize(
-    "rule_id", ["CVE-2026-12345-stdlib", "CVE-2026-1234x", "GHSA-abcd-efgh-ijkl-stdlib"]
-)
-def test_no_prefix_or_unreviewed_alias_match(rule_id):
-    assert not m.match_result(
-        rule_id, [m.IgnoreSelector("CVE-2026-1234", "stdlib")], "stdlib", "go-module"
-    ).suppressed
-
-
-def test_real_grype_metadata_multiple_runs_and_ambiguity(tmp_path):
-    rid = "CVE-2026-1234-stdlib"
-    rule = {"id": rid, "help": {"text": "Package: stdlib\nType: go-module\n"}}
-    runs = [
-        {"tool": {"driver": {"rules": rules}}, "results": [{"ruleId": rid}]}
-        for rules in [
-            [rule],
-            [],
-            [rule, rule],
-            [dict(rule, help={"text": "Package: other\nType: go-module\n"})],
+def _make_sarif(rule_ids: list[str]) -> dict:
+    """Build a minimal SARIF structure with the given ruleIds."""
+    return {
+        "runs": [
+            {
+                "results": [{"ruleId": rid} for rid in rule_ids],
+            }
         ]
-    ]
-    p = tmp_path / "input.json"
-    p.write_text(json.dumps({"runs": runs}))
-    result, removed = m.filter_sarif(
-        str(p), [m.IgnoreSelector("CVE-2026-1234", "stdlib", "go-module")]
-    )
-    assert [len(x["results"]) for x in result["runs"]] == [0, 1, 1, 1]
-    assert len(removed) == 1 and removed[0]["scope_verified"]
+    }
+
+
+def _write_sarif(tmp_path: Path, rule_ids: list[str]) -> str:
+    sarif_file = tmp_path / "test.sarif"
+    sarif_file.write_text(json.dumps(_make_sarif(rule_ids)))
+    return str(sarif_file)
+
+
+def _write_config(tmp_path: Path, cves: list[str]) -> str:
+    config_file = tmp_path / ".grype.yaml"
+    config = {"ignore": [{"vulnerability": cve} for cve in cves]}
+    config_file.write_text(yaml.dump(config))
+    return str(config_file)
+
+
+class TestPrefixMatching:
+    """Test that ruleId prefix matching works correctly."""
+
+    def test_suffix_package_is_filtered(self, tmp_path: Path):
+        """CVE-2025-22871-stdlib IS filtered when CVE-2025-22871 is ignored."""
+        sarif_path = _write_sarif(tmp_path, ["CVE-2025-22871-stdlib"])
+        ignore_cves = {"CVE-2025-22871"}
+
+        result = filter_sarif(sarif_path, ignore_cves)
+
+        assert result["runs"][0]["results"] == []
+
+    def test_different_suffix_is_filtered(self, tmp_path: Path):
+        """CVE-2025-22871-net/http IS filtered when CVE-2025-22871 is ignored."""
+        sarif_path = _write_sarif(tmp_path, ["CVE-2025-22871-net/http"])
+        ignore_cves = {"CVE-2025-22871"}
+
+        result = filter_sarif(sarif_path, ignore_cves)
+
+        assert result["runs"][0]["results"] == []
+
+    def test_similar_prefix_not_filtered(self, tmp_path: Path):
+        """CVE-2025-2287-something is NOT filtered when CVE-2025-22871 is ignored.
+
+        This guards against false prefix matches where a shorter CVE number
+        accidentally matches the start of a longer one.
+        """
+        sarif_path = _write_sarif(tmp_path, ["CVE-2025-2287-something"])
+        ignore_cves = {"CVE-2025-22871"}
+
+        result = filter_sarif(sarif_path, ignore_cves)
+
+        assert len(result["runs"][0]["results"]) == 1
+        assert result["runs"][0]["results"][0]["ruleId"] == "CVE-2025-2287-something"
+
+    def test_exact_match_still_filtered(self, tmp_path: Path):
+        """A ruleId exactly equal to CVE-2025-22871 (no suffix) IS filtered."""
+        sarif_path = _write_sarif(tmp_path, ["CVE-2025-22871"])
+        ignore_cves = {"CVE-2025-22871"}
+
+        result = filter_sarif(sarif_path, ignore_cves)
+
+        assert result["runs"][0]["results"] == []
+
+    def test_non_ignored_cve_preserved(self, tmp_path: Path):
+        """CVEs not in the ignore set are preserved in output."""
+        sarif_path = _write_sarif(
+            tmp_path, ["CVE-2025-22871-stdlib", "CVE-2099-99999-pkg"]
+        )
+        ignore_cves = {"CVE-2025-22871"}
+
+        result = filter_sarif(sarif_path, ignore_cves)
+
+        assert len(result["runs"][0]["results"]) == 1
+        assert result["runs"][0]["results"][0]["ruleId"] == "CVE-2099-99999-pkg"
+
+    def test_multiple_ignore_rules(self, tmp_path: Path):
+        """Multiple CVEs in ignore set all get filtered by prefix."""
+        sarif_path = _write_sarif(
+            tmp_path,
+            [
+                "CVE-2023-45853-zlib1g",
+                "CVE-2024-52308-gh",
+                "CVE-2025-22871-stdlib",
+                "CVE-2099-11111-safe",
+            ],
+        )
+        ignore_cves = {"CVE-2023-45853", "CVE-2024-52308", "CVE-2025-22871"}
+
+        result = filter_sarif(sarif_path, ignore_cves)
+
+        assert len(result["runs"][0]["results"]) == 1
+        assert result["runs"][0]["results"][0]["ruleId"] == "CVE-2099-11111-safe"

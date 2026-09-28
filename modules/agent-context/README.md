@@ -105,12 +105,7 @@ The Knowledge Layer is multi-tenant. Every request is scoped by the caller's ide
 
 ### Identity headers
 
-The Door reads these request headers (set by the trusted dispatch layer — webhook Lambda → SQS → agent worker — never by agent code):
-
-Every caller must also present `X-Internal-Api-Key`, the shared secret the gateway's internal plane uses (`door/auth.py`; only `/health` is exempt). `manifests/networkpolicy.yaml` additionally restricts which namespaces can reach port 5100.
-
-> **What those controls do and don't do** (issue #4073, finding #8). They establish that the caller is a legitimate in-cluster workload. They do **not** make the headers below unforgeable: the secret is shared by all Door callers and the policy admits whole namespaces, so an authenticated caller can still claim another login, team, tenant or subject id. Cross-tenant isolation rests on the Door's fail-closed ACL filtering (`door/acl.py`) and the personal-context owner read-filter — not on these headers being trustworthy. This README previously stated that a NetworkPolicy prevented external injection; no such policy existed, and nothing authenticated the caller.
-
+The Door reads these request headers (set by the trusted ingress / sidecar; a NetworkPolicy prevents external injection):
 
 | Header | Meaning |
 |---|---|
@@ -128,7 +123,7 @@ The `repositories` table carries nullable `tenant_id` and `owner_sub` columns. T
 3. **Per-individual** (`owner_sub = caller's sub`) — visible unconditionally to that user.
 4. **Cross-tenant** — excluded (fail-closed).
 
-> **Tenant isolation:** `TENANT_SCOPE_ENABLED` defaults to `true`. Disabling tenant scoping or Door authentication requires the explicit `DOOR_SECURITY_PROFILE=development` profile; production refuses either opt-out. The deployment pins the production profile and tenant scoping. The cross-tenant gate is validated by `tests/integration/test_cross_tenant_isolation.py` (E8 security gate, #1777).
+> **Kill switch:** tenant scoping is gated by `TENANT_SCOPE_ENABLED` (default `false`). When off, the Door runs a legacy principal-only query with **no tenant isolation**. It must be set to `"true"` in the deployment's ConfigMap for isolation to be enforced. The cross-tenant gate is validated by `tests/integration/test_cross_tenant_isolation.py` (E8 security gate, #1777).
 
 ### Project scoping (E9 #1728)
 
@@ -360,7 +355,7 @@ cp config.env config.local.env
 
 `deploy.sh` performs (roughly): configure kubectl → deploy S3 Files storage + namespace/SA/RBAC → LiteLLM proxy → semantic/S3-Vectors wiring → Zoekt → DeepWiki → codegraph → run DB migrations (`migration-job.yaml`) → ingestion ScaledJob + refresh CronJob → validation.
 
-> **Isolation defaults:** tenant scoping is on in code and the shipped ConfigMap. Project filtering is an optional organizational view, independent of the tenant boundary. Configuration changes require the normal rollout because envFrom ConfigMap changes do not restart existing pods.
+> **Enabling isolation:** a fresh deploy ships with `TENANT_SCOPE_ENABLED`/`PROJECT_FILTER_ENABLED` **off** unless set in `manifests/agent-context-configmap.yaml`. Set them to `"true"` and `rollout restart deploy/context-mcp` for the change to take effect (envFrom ConfigMap changes do not auto-restart pods).
 
 ### Teardown
 
@@ -426,8 +421,7 @@ Key variables (see `config.env` for the full set):
 
 | Flag | Default | Effect |
 |---|---|---|
-| `TENANT_SCOPE_ENABLED` | `true` | Enforce tenant/owner isolation; disabling requires the development profile |
-| `DOOR_SECURITY_PROFILE` | `production` | Only explicit `development` permits authentication or tenant-scoping opt-outs |
+| `TENANT_SCOPE_ENABLED` | `false` | Enforce tenant/owner isolation (off ⇒ legacy principal-only, **no isolation**) |
 | `PROJECT_FILTER_ENABLED` | `false` | Enable project-scoped retrieval |
 | `SEMANTIC_SEARCH_ENABLED` | `false` | Enable S3 Vectors semantic search in `search` |
 | `NEPTUNE_ENABLED` | `false` | Use Neptune graph for `understand`/`impact` |

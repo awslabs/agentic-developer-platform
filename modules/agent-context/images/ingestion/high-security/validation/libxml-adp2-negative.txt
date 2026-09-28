@@ -1,2 +1,0 @@
-test: /tmp/test.c:24: main: Assertion `xmlOutputBufferWriteEscape(out, BAD_CAST "x", NULL) == -1' failed.
-Aborted (core dumped)

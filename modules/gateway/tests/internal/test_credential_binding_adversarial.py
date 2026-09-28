@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -33,6 +34,7 @@ from src.internal.assume_role_routes import router as assume_role_router
 from src.internal.credential_routes import get_secrets_manager as cr_get_secrets_manager
 from src.internal.credential_routes import router as credential_router
 from src.shared.database import get_db
+from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.models.vault import UserCredential
@@ -169,26 +171,7 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _fake_token_context(*, credential_scopes: list[str] | None = None) -> MagicMock:
-    """Issue #6050: build a minimal mock TokenContext for registry scope gating."""
-    ctx = MagicMock()
-    ctx.credential_scopes = credential_scopes if credential_scopes is not None else []
-    ctx.scope = "internal"
-    ctx.user_id = "worker-test"
-    ctx.org_id = "org-adv"
-    ctx.requires_run_identity = False
-    return ctx
-
-
-# Issue #6050: default token_context with raw-read scope for adversarial tests
-# that exercise credential-raw-read. These tests focus on binding/authorization
-# behavior and need the scope gate to pass.
-_DEFAULT_RAW_READ_CTX = _fake_token_context(credential_scopes=["credential:raw-read"])
-
-
-def _make_raw_read_app(
-    db_session: AsyncSession, mock_sm=None, *, token_context=_DEFAULT_RAW_READ_CTX, run=_INVOCATION_ATTACKER, user=_ATTACKER_USER_ID
-) -> TestClient:
+def _make_raw_read_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     app = FastAPI()
     app.include_router(credential_router)
 
@@ -198,11 +181,6 @@ def _make_raw_read_app(
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[cr_get_secrets_manager] = lambda: mock_sm
-
-    from tests.internal.broker_fixture import install_broker_fixture
-
-    install_broker_fixture(app, user=user, run=run, tenant="org-adv", token_context=token_context)
-
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -216,9 +194,6 @@ def _make_assume_role_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[ar_get_secrets_manager] = lambda: mock_sm
-    from tests.internal.broker_fixture import install_broker_fixture
-
-    install_broker_fixture(app, user=_ATTACKER_USER_ID, run=_INVOCATION_ATTACKER, tenant="org-adv")
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -293,6 +268,7 @@ class TestA1EnvVarInjectionRawRead:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -335,6 +311,7 @@ class TestA1EnvVarInjectionRawRead:
         settings = _settings_mock(enforce=False)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -362,8 +339,15 @@ class TestA1EnvVarInjectionRawRead:
             )
 
         # Shadow mode succeeds, but resolves to ATTACKER's credential
-        assert resp.status_code == 403
-        mock_sm.get_secret.assert_not_called()
+        assert resp.status_code == 200
+        # Verify audit shows drift
+        stmt = select(AuditLog).where(AuditLog.event_type == "vault_credential_raw_read")
+        result = await db.execute(stmt)
+        audits = result.scalars().all()
+        drift_audits = [a for a in audits if a.details.get("binding_drift_detected") is True]
+        assert len(drift_audits) >= 1
+        # Crucially: the authorized_user_id in audit is the ATTACKER, not victim
+        assert drift_audits[0].details["authorized_user_id"] == _ATTACKER_USER_ID
 
 
 # ===========================================================================
@@ -380,6 +364,7 @@ class TestA2AssumeRoleInjection:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.assume_role_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -415,6 +400,7 @@ class TestA2AssumeRoleInjection:
         settings = _settings_mock(enforce=False)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.assume_role_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -443,8 +429,12 @@ class TestA2AssumeRoleInjection:
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
 
-        assert resp.status_code == 403
-        mock_sm.get_secret.assert_not_called()
+        assert resp.status_code == 200
+        # STS session tags must use the REGISTRY user (attacker), NOT victim
+        call_kwargs = mock_sts_client.assume_role.call_args[1]
+        tags = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
+        assert tags["adp:user_id"] == _ATTACKER_USER_ID
+        assert tags["adp:user_id"] != _VICTIM_USER_ID
 
 
 # ===========================================================================
@@ -461,6 +451,7 @@ class TestA4DepthGating:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -494,7 +485,7 @@ class TestA4DepthGating:
         assert resp.status_code == 403
         detail = resp.json()["detail"]
         assert detail["error"] == "credential_binding_failed"
-        assert "Authenticated run" in detail["message"]
+        assert "No authorized user" in detail["message"]
 
     @pytest.mark.asyncio
     async def test_a4_assume_role_empty_authorized_user_denied(self, db):
@@ -502,6 +493,7 @@ class TestA4DepthGating:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.assume_role_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -550,6 +542,7 @@ class TestA5LongHorizonRefresh:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -558,7 +551,7 @@ class TestA5LongHorizonRefresh:
             mock_get_table.return_value = mock_table
             mock_table.query.return_value = _mock_ddb_query_response(_ATTACKER_USER_ID, _INVOCATION_LONG_HORIZON)
 
-            client = _make_raw_read_app(db, mock_sm, run=_INVOCATION_LONG_HORIZON)
+            client = _make_raw_read_app(db, mock_sm)
 
             # Multiple requests simulating refresh over a long run
             for i in range(5):
@@ -597,6 +590,7 @@ class TestA7HappyPath:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -636,6 +630,7 @@ class TestA7HappyPath:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.assume_role_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -687,6 +682,7 @@ class TestImprovisedInvocationReplay:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -717,17 +713,18 @@ class TestImprovisedInvocationReplay:
         # Enforce mode: body user != registry user → 403 drift
         assert resp.status_code == 403
         detail = resp.json()["detail"]
-        assert detail["error"] == "credential_binding_failed"
+        assert detail["error"] == "credential_authorization_drift"
 
     @pytest.mark.asyncio
     async def test_replay_with_matching_body_user_id(self, db):
         """More sophisticated attack: attacker sets body.user_id=victim AND
         uses victim's invocation_id. Registry returns victim → matches body.
 
-        This documents the legacy shared-secret vulnerability, not a security
-        guarantee. Agent-authored code can send arbitrary HTTP bodies regardless
-        of the bootstrap environment. Protected workers require signed run and
-        pod proofs before this lookup (test_bootstrap_routes covers refusal).
+        This succeeds because the binding resolves correctly — BUT the attacker
+        would need to control the pod environment (ADP_MESSAGE_ID is from the
+        trusted SQS envelope, not agent-writable). If they somehow spoofed it,
+        they'd get the victim's cred. This tests the boundary holds if SQS
+        envelope trust is maintained.
         """
         mock_sm = MagicMock()
         mock_sm.get_secret.return_value = "ghp_victim_secret_LEAKED"
@@ -735,6 +732,7 @@ class TestImprovisedInvocationReplay:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -761,13 +759,12 @@ class TestImprovisedInvocationReplay:
                 },
             )
 
-        # Legacy exposure remains until the protected cohort and IAM isolation
-        # are activated. Never enable shared-secret access for coding workers.
+        # This succeeds — the boundary relies on ADP_MESSAGE_ID being
+        # set by the trusted SQS envelope, not agent-controlled.
+        # If the env var trust is broken, this is a vulnerability.
         # For now, document that the gateway trusts the invocation_id
         # — the trust boundary is at the pod environment level.
-        assert resp.status_code == 403
-        mock_sm.get_secret.assert_not_called()
-        mock_table.query.assert_not_called()
+        assert resp.status_code == 200
 
 
 # ===========================================================================
@@ -784,6 +781,7 @@ class TestImprovisedEmptyInvocationId:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -814,6 +812,7 @@ class TestImprovisedEmptyInvocationId:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -849,6 +848,7 @@ class TestImprovisedEmptyInvocationId:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -902,6 +902,7 @@ class TestImprovisedDDBEdgeCases:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -945,6 +946,7 @@ class TestImprovisedDDBEdgeCases:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -991,6 +993,7 @@ class TestImprovisedDDBEdgeCases:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -1043,6 +1046,7 @@ class TestImprovisedCredentialIsolation:
         settings = _settings_mock(enforce=True)
 
         with (
+            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,

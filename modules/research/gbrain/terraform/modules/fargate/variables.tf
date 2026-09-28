@@ -75,21 +75,3 @@ variable "execution_role_arn" {
   description = "IAM role ARN for ECS task execution"
   type        = string
 }
-
-variable "container_command" {
-  description = "Optional explicit runtime command"
-  type        = list(string)
-  default     = null
-}
-
-variable "container_entrypoint" {
-  description = "Optional explicit runtime entrypoint"
-  type        = list(string)
-  default     = null
-}
-
-variable "container_environment" {
-  description = "Optional complete ordered environment list for an existing deployment"
-  type        = list(object({ name = string, value = string }))
-  default     = null
-}

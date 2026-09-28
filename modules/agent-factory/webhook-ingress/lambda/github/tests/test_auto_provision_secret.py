@@ -26,8 +26,6 @@ os.environ.setdefault("RATE_LIMITS_TABLE", "adp-dev-rate-limits")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("ENVIRONMENT", "dev")
 
-from handler import AutoRegisterResult
-
 
 class TestAutoProvisionTenantSecret:
     """Tests for _auto_provision_tenant_github_app_secret."""
@@ -205,46 +203,21 @@ class TestAutoRegisterCallsProvision:
             "isBase64Encoded": False,
         }
 
-        # Issue #2724: authoritative=True — the gate vouched for this tenant, so
-        # the per-tenant App secret may be seeded.
-        with patch(
-            "handler._auto_register_installation",
-            return_value=AutoRegisterResult("neworg", True),
-        ) as mock_register:
+        with patch("handler._auto_register_installation", return_value="neworg") as mock_register:
             result = handler(event, None)
 
         assert result["statusCode"] == 200
-        # auto_register called first, then provision. Issue #4047 added the
-        # bypass_negative_cache kwarg (True here — `created` is a fresh install
-        # and must always re-resolve); TestInstallationEventBypass in
-        # test_auto_register_guard.py owns asserting that flag's value per action.
-        mock_register.assert_called_once_with(
-            12345, "neworg", bypass_negative_cache=True
-        )
+        # auto_register called first, then provision
+        mock_register.assert_called_once_with(12345, "neworg")
         mock_provision.assert_called_once_with("neworg", 12345)
 
     @patch("handler._auto_provision_tenant_github_app_secret")
     @patch("handler._get_events_log")
     @patch("handler._get_signature")
-    def test_installation_created_no_provision_when_register_returns_none(
+    def test_installation_created_no_provision_when_register_fails(
         self, mock_sig, mock_log, mock_provision
     ):
-        """A None return from auto-register must NOT provision a secret.
-
-        Issue #4030 narrowed what None *means*: it now signals "no routable
-        forward row was persisted" rather than "something, anything, threw."
-        With that narrowing the guard is exactly right — provisioning a secret
-        for a tenant nothing dispatches to would be the inverse of the bug.
-
-        The complementary case (forward row written, reverse row failed → tenant
-        IS returned, so provisioning DOES run) is covered by
-        ``test_auto_register_guard.py::TestPartialWriteSplit``.
-
-        Issue #2724 added a SECOND reason not to provision — a tenant_id that is
-        present but non-authoritative (fail-open registration). That case is
-        ``TestNonAuthoritativeRegistration`` below; this test still covers the
-        "no tenant at all" half.
-        """
+        """When DDB auto-register returns None, SM provision is NOT called."""
         mock_sig.return_value.verify_github_signature.return_value = True
         mock_log.return_value.log_event = MagicMock()
 
@@ -266,10 +239,7 @@ class TestAutoRegisterCallsProvision:
             "isBase64Encoded": False,
         }
 
-        with patch(
-            "handler._auto_register_installation",
-            return_value=AutoRegisterResult(None, False),
-        ):
+        with patch("handler._auto_register_installation", return_value=None):
             result = handler(event, None)
 
         assert result["statusCode"] == 200
@@ -319,150 +289,9 @@ class TestAutoRegisterCallsProvision:
             "isBase64Encoded": False,
         }
 
-        with patch(
-            "handler._auto_register_installation",
-            return_value=AutoRegisterResult("selfhealorg", True),
-        ) as mock_reg:
+        with patch("handler._auto_register_installation", return_value="selfhealorg") as mock_reg:
             handler(event, None)
 
         # Provision was called after register
         mock_reg.assert_called_once_with(77777, "selfhealorg")
         mock_provision.assert_called_once_with("selfhealorg", 77777)
-
-
-class TestNonAuthoritativeRegistration:
-    """Issue #2724 (slice B): a tenant_id is not a licence to copy credentials.
-
-    The gate fails OPEN on an unreachable gateway or absent provenance, so
-    ``_auto_register_installation`` can return a usable ``tenant_id`` for an org
-    nobody vouched for. Routing on it is fine (a webhook we can't place is worse
-    than one we place on the org login). Seeding
-    ``adp/<env>/tenants/<tenant>/github-app`` is NOT: that copies the PLATFORM
-    App's private key, which is what turns "installed a public App" into "holds
-    credentials that can act as ADP". Both call sites must therefore key
-    provisioning off ``authoritative``, not off ``tenant_id``.
-    """
-
-    @patch("handler._auto_provision_tenant_github_app_secret")
-    @patch("handler._get_events_log")
-    @patch("handler._get_signature")
-    def test_installation_event_skips_provision_when_not_authoritative(
-        self, mock_sig, mock_log, mock_provision
-    ):
-        """Fail-open registration on the installation.created path → no secret."""
-        mock_sig.return_value.verify_github_signature.return_value = True
-        mock_log.return_value.log_event = MagicMock()
-
-        from handler import handler
-
-        payload = {
-            "action": "created",
-            "installation": {"id": 12345, "account": {"login": "unvouched-org"}},
-            "sender": {"id": 999, "login": "installer"},
-        }
-        event = {
-            "headers": {
-                "x-github-event": "installation",
-                "content-type": "application/json",
-                "x-hub-signature-256": "sha256=fake",
-            },
-            "body": json.dumps(payload),
-            "isBase64Encoded": False,
-        }
-
-        with patch(
-            "handler._auto_register_installation",
-            return_value=AutoRegisterResult("unvouched-org", False),
-        ):
-            result = handler(event, None)
-
-        assert result["statusCode"] == 200
-        mock_provision.assert_not_called()
-
-    @patch("handler._auto_provision_tenant_github_app_secret")
-    @patch("handler._get_metrics")
-    @patch("handler._get_rate_limiter")
-    @patch("handler._get_identity_resolver")
-    @patch("handler._get_events_log")
-    @patch("handler._get_signature")
-    def test_self_heal_skips_provision_when_not_authoritative(
-        self, mock_sig, mock_log, mock_resolver, mock_rate, mock_metrics, mock_provision
-    ):
-        """Same rule on the self-heal path — and the retry still runs.
-
-        The retry matters: withholding the secret must not also withhold
-        routing, or a gateway blip would drop legitimate webhooks.
-        """
-        mock_sig.return_value.verify_github_signature.return_value = True
-        mock_log.return_value.log_event = MagicMock()
-        mock_metrics.return_value.record_rejected = MagicMock()
-        mock_metrics.return_value.flush = MagicMock()
-        mock_resolver.return_value.resolve.side_effect = [
-            (None, "unknown_installation"),
-            (None, "unknown_installation"),
-        ]
-
-        from handler import handler
-
-        payload = {
-            "action": "created",
-            "issue": {"number": 1},
-            "comment": {"body": "@agent-developer hello"},
-            "installation": {"id": 77777},
-            "repository": {"full_name": "unvouched/repo", "owner": {"login": "unvouched"}},
-            "organization": {"login": "unvouched"},
-            "sender": {"id": 888, "login": "user"},
-        }
-        event = {
-            "headers": {
-                "x-github-event": "issue_comment",
-                "content-type": "application/json",
-                "x-hub-signature-256": "sha256=fake",
-            },
-            "body": json.dumps(payload),
-            "isBase64Encoded": False,
-        }
-
-        with patch(
-            "handler._auto_register_installation",
-            return_value=AutoRegisterResult("unvouched", False),
-        ):
-            handler(event, None)
-
-        mock_provision.assert_not_called()
-        # Routing still self-healed: resolve was retried after the register.
-        assert mock_resolver.return_value.resolve.call_count == 2
-
-    @patch("handler._auto_provision_tenant_github_app_secret")
-    @patch("handler._get_events_log")
-    @patch("handler._get_signature")
-    def test_denied_registration_provisions_nothing(self, mock_sig, mock_log, mock_provision):
-        """A denied installation (gate said not_a_known_tenant) provisions nothing."""
-        mock_sig.return_value.verify_github_signature.return_value = True
-        mock_log.return_value.log_event = MagicMock()
-
-        from handler import handler
-
-        payload = {
-            "action": "created",
-            "installation": {"id": 12345, "account": {"login": "attacker-org"}},
-            "sender": {"id": 999, "login": "attacker"},
-        }
-        event = {
-            "headers": {
-                "x-github-event": "installation",
-                "content-type": "application/json",
-                "x-hub-signature-256": "sha256=fake",
-            },
-            "body": json.dumps(payload),
-            "isBase64Encoded": False,
-        }
-
-        with patch(
-            "handler._auto_register_installation",
-            return_value=AutoRegisterResult(None, False),
-        ):
-            result = handler(event, None)
-
-        assert result["statusCode"] == 200  # webhook is ACKed, just not acted on
-        mock_provision.assert_not_called()

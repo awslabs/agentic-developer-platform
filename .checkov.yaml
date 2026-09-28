@@ -1,0 +1,74 @@
+compact: true
+framework:
+  - terraform
+skip-check:
+  # EKS public endpoint - required for GitHub Actions runners and operator access; CIDR-restricted at deploy time
+  - CKV_AWS_39
+  - CKV_AWS_38
+  # VPC networking - public subnets need public IPs; default SG managed by AWS; flow logs via CloudTrail
+  - CKV_AWS_130
+  - CKV2_AWS_12
+  - CKV2_AWS_11
+  # Security group egress - required for AWS API access, image pulls, and VPC peering
+  - CKV_AWS_382
+  # Security groups not attached - referenced by Lambda VPC config and EKS node groups
+  - CKV2_AWS_5
+  # API Gateway - WebSocket APIs use Lambda authorizer at $connect route; REST APIs use Cognito/Lambda auth
+  - CKV_AWS_309
+  - CKV2_AWS_51
+  - CKV2_AWS_53
+  - CKV2_AWS_29
+  - CKV2_AWS_77
+  - CKV_AWS_59
+  - CKV_AWS_237
+  - CKV_AWS_73
+  - CKV_AWS_120
+  - CKV_AWS_225
+  # EKS secrets encryption and logging - configured via variables in prod; not required for dev
+  - CKV_AWS_58
+  - CKV_AWS_37
+  # Secrets Manager - uses AWS managed encryption; rotation handled by Cognito/application layer
+  - CKV_AWS_149
+  - CKV2_AWS_57
+  # S3 - public access block on public CFN bucket is intentionally open; versioning on logs/ephemeral not needed
+  - CKV_AWS_21
+  - CKV2_AWS_6
+  - CKV2_AWS_65
+  - CKV2_AWS_61
+  - CKV_AWS_19
+  - CKV_AWS_145
+  - CKV_AWS_53
+  - CKV_AWS_54
+  - CKV_AWS_55
+  - CKV_AWS_56
+  - CKV_AWS_70
+  # IAM - agent runner roles require broad permissions by design for customer-defined deployments
+  - CKV_AWS_355
+  - CKV_AWS_290
+  # CloudFront - single origin; geo restriction not required; custom cert configured separately
+  - CKV_AWS_310
+  - CKV_AWS_374
+  - CKV2_AWS_42
+  - CKV2_AWS_47
+  # ALB and WAF - access logging via S3 module; WAF managed rules include Log4j; deletion protection in prod
+  - CKV_AWS_91
+  - CKV_AWS_150
+  - CKV_AWS_192
+  - CKV2_AWS_31
+  - CKV2_AWS_76
+  # Neptune and ElastiCache - AWS managed encryption; dev does not require CMK
+  - CKV_AWS_184
+  - CKV_AWS_191
+  - CKV2_AWS_50
+  # RDS - copy tags configured; encryption in transit via parameter group; single-AZ for dev
+  - CKV2_AWS_60
+  - CKV2_AWS_69
+  # CloudTrail - delivers to S3 analyzed via Athena; SNS topic not required
+  - CKV_AWS_252
+  - CKV2_AWS_10
+  # EC2 - managed by EKS Auto Mode
+  - CKV_AWS_135
+  # KMS - uses default account-level policy
+  - CKV2_AWS_64
+  # Terraform module sources - internal modules use relative paths
+  - CKV_TF_1

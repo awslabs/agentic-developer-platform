@@ -259,7 +259,6 @@ class ChatLogS3Writer:
             Key=s3_key,
             Body=body.encode("utf-8"),
             ContentType="application/json",
-            IfNoneMatch="*",
         )
 
     @staticmethod

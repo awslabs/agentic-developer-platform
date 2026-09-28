@@ -72,7 +72,7 @@ SAMPLE_ENVELOPE_NO_TOKEN_SOURCE = {
 class TestPatKillSwitch:
     """ADP_PAT_EXECUTION_ENABLED flag gates the entire PAT branch."""
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_flag_absent_means_app_path(self, mock_raw_read, mock_urlopen):
         """When ADP_PAT_EXECUTION_ENABLED is unset, returns App mode."""
@@ -84,7 +84,7 @@ class TestPatKillSwitch:
         mock_raw_read.assert_not_called()
         mock_urlopen.assert_not_called()
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_flag_false_means_app_path(self, mock_raw_read, mock_urlopen):
         """When ADP_PAT_EXECUTION_ENABLED=false, PAT path is dead."""
@@ -95,7 +95,7 @@ class TestPatKillSwitch:
         assert result.token_mode == "app"
         mock_raw_read.assert_not_called()
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_flag_true_with_pat_source_enters_pat_path(self, mock_raw_read, mock_urlopen):
         """When flag=true and token_source=pat, resolves PAT."""
@@ -114,7 +114,7 @@ class TestPatKillSwitch:
         assert result.token == "ghp_test123"
         assert result.github_login == "jane-dev"
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_flag_1_enables_pat_branch(self, mock_raw_read, mock_urlopen):
         """When ADP_PAT_EXECUTION_ENABLED=1, PAT path is active."""
@@ -135,7 +135,7 @@ class TestPatKillSwitch:
 class TestPatResolutionLogic:
     """C1: PAT resolution via gateway credential client."""
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_pat_resolution_calls_raw_read_correctly(self, mock_raw_read, mock_urlopen):
         """raw_read called with correct kwargs from envelope."""
@@ -160,7 +160,7 @@ class TestPatResolutionLogic:
             purpose="entrypoint: PAT resolution for execution token",
         )
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_pat_not_found_raises_runtime_error(self, mock_raw_read, mock_urlopen):
         """GatewayCredentialError → RuntimeError (no App fallback)."""
@@ -174,7 +174,7 @@ class TestPatResolutionLogic:
                 environ={"ADP_PAT_EXECUTION_ENABLED": "true"},
             )
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_absent_token_source_skips_pat_branch(self, mock_raw_read, mock_urlopen):
         """When token_source is absent, returns App mode."""
@@ -185,7 +185,7 @@ class TestPatResolutionLogic:
         assert result.token_mode == "app"
         mock_raw_read.assert_not_called()
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_app_token_source_skips_pat_branch(self, mock_raw_read, mock_urlopen):
         """When token_source='app', returns App mode."""
@@ -201,7 +201,7 @@ class TestPatResolutionLogic:
 class TestPatZeroTokenGuard:
     """C4: PAT validation before clone."""
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_pat_validate_success_returns_login(self, mock_raw_read, mock_urlopen):
         """Valid PAT → returns github_login from GET /user."""
@@ -219,7 +219,7 @@ class TestPatZeroTokenGuard:
         assert result.github_login == "jane-dev"
         assert result.token == "ghp_valid_token"
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_pat_validate_401_raises_expired(self, mock_raw_read, mock_urlopen):
         """401 from GET /user → RuntimeError about expired/revoked."""
@@ -240,7 +240,7 @@ class TestPatZeroTokenGuard:
                 environ={"ADP_PAT_EXECUTION_ENABLED": "true"},
             )
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_pat_validate_403_raises_permissions(self, mock_raw_read, mock_urlopen):
         """403 from GET /user → RuntimeError about permissions."""
@@ -261,7 +261,7 @@ class TestPatZeroTokenGuard:
                 environ={"ADP_PAT_EXECUTION_ENABLED": "true"},
             )
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_pat_validate_500_raises_generic(self, mock_raw_read, mock_urlopen):
         """Other HTTP errors → generic RuntimeError."""
@@ -286,7 +286,7 @@ class TestPatZeroTokenGuard:
 class TestTokenModeProvenance:
     """C5: token_mode is set correctly for DDB write."""
 
-    @patch("entrypoint.open_authenticated")
+    @patch("urllib.request.urlopen")
     @patch.object(GatewayCredentialClient, "raw_read")
     def test_pat_resolution_sets_mode_pat(self, mock_raw_read, mock_urlopen):
         """Successful PAT resolution → token_mode='pat'."""

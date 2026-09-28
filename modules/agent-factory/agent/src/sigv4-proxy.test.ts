@@ -279,9 +279,7 @@ describe('sigv4-proxy idle timeout and error handling (issue #1223)', () => {
   it('response idle watchdog destroys proxyRes after RESP_IDLE_MS of silence', async () => {
     jest.useFakeTimers();
 
-    // Mirrors RESP_IDLE_MS in sigv4-proxy.ts (widened 180s → 600s so the
-    // watchdog no longer severs healthy-but-quiet long turns; see #4450).
-    const RESP_IDLE_MS = 600_000;
+    const RESP_IDLE_MS = 180_000;
     let destroyCalled = false;
     let destroyError: Error | undefined;
 
@@ -325,8 +323,7 @@ describe('sigv4-proxy idle timeout and error handling (issue #1223)', () => {
   it('response idle watchdog resets on data events — does not fire prematurely', async () => {
     jest.useFakeTimers();
 
-    // Mirrors RESP_IDLE_MS in sigv4-proxy.ts (see #4450).
-    const RESP_IDLE_MS = 600_000;
+    const RESP_IDLE_MS = 180_000;
     let destroyCalled = false;
 
     const proxyRes = {
@@ -352,20 +349,20 @@ describe('sigv4-proxy idle timeout and error handling (issue #1223)', () => {
     proxyRes.on('data', bumpIdle);
     proxyRes.on('end', () => clearTimeout(idleTimeout));
 
-    // Advance 590s (close to but before the 600s timeout)
-    jest.advanceTimersByTime(590_000);
+    // Advance 170s (close to but before the 180s timeout)
+    jest.advanceTimersByTime(170_000);
     expect(destroyCalled).toBe(false);
 
     // Emit a data event — this resets the timer
     const dataHandlers = proxyRes.listeners['data'] || [];
     dataHandlers.forEach(h => h(Buffer.from('chunk')));
 
-    // Advance another 590s (still within 600s of last data)
-    jest.advanceTimersByTime(590_000);
+    // Advance another 170s (still within 180s of last data)
+    jest.advanceTimersByTime(170_000);
     expect(destroyCalled).toBe(false);
 
     // Advance past the timeout from last data event
-    jest.advanceTimersByTime(11_000); // 590+11 = 601s since last data > 600s
+    jest.advanceTimersByTime(11_000); // 170+11 = 181s since last data > 180s
     expect(destroyCalled).toBe(true);
 
     jest.useRealTimers();

@@ -74,35 +74,17 @@ class PoolService(IPoolService):
 
         logger.info(f"PoolService initialized with {len(self._accounts)} accounts")
 
-    async def get_client(self, credentials: Any | None = None, *, single_attempt: bool = False) -> Any:
+    async def get_client(self) -> Any:
         """Get a Bedrock client from the pool using round-robin distribution.
-
-        Args:
-            credentials: Accepted only to satisfy :class:`IPoolService`, and
-                **rejected if supplied**. Issue #4744 (#4692 · R3) implements
-                per-principal routing on ``SimplePoolService``, which is what
-                ``src/app.py`` actually wires; this class is not constructed anywhere
-                in ``src/`` (design note §2 finding 2) and its selection policy is
-                round-robin *for throughput*, which is the exact opposite of
-                deterministic per-principal routing. Silently ignoring credentials
-                here would mean a routed call served by a round-robin-chosen account —
-                a wrong-account bug — so it raises instead. Reviving this class for
-                routing means replacing the selector, not passing this argument.
 
         Returns:
             A PoolClient wrapper with account info and Bedrock client
 
         Raises:
-            NotImplementedError: If ``credentials`` is supplied.
             AllAccountsUnhealthyError: When all accounts in the pool are unhealthy (US-9.4)
             NoAccountsConfiguredError: When no accounts are configured
             PoolExhaustedError: When all accounts fail to serve the request
         """
-        if single_attempt:
-            raise NotImplementedError("PoolService does not support bounded policy requests; use SimplePoolService")
-        if credentials is not None:
-            raise NotImplementedError("PoolService does not support per-principal Bedrock routing; SimplePoolService does (#4744)")
-
         if not self._accounts:
             raise NoAccountsConfiguredError()
 

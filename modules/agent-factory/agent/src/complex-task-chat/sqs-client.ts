@@ -18,11 +18,6 @@ import {
 import type { AgUiEvent } from './ag-ui-events';
 
 export interface TaskPayload {
-  /** Model selected for the authenticated human by the trusted producer. */
-  model_resolved?: string;
-  /** Server-registered run capability, distinct from the SQS delivery id. */
-  message_id?: string;
-  arrived_at?: string;
   task_id: string;
   session_id: string;
   message: string;
@@ -51,10 +46,6 @@ export interface TaskPayload {
   connection_id?: string;
   channel?: string;
   platform_data?: Record<string, unknown>;
-  /** Opaque tenant-qualified owner stamped by the ingest Lambda. */
-  owner_principal?: string;
-  /** Immutable gateway session incarnation (`created_at`). */
-  session_generation?: number;
 }
 
 export interface TaskResponse {
@@ -79,8 +70,6 @@ export interface TaskResponse {
   connection_id?: string;
   channel?: string;
   channel_metadata?: Record<string, unknown>;
-  owner_principal?: string;
-  session_generation?: number;
 }
 
 /**
@@ -102,8 +91,6 @@ export interface ProgressMessage {
   connection_id?: string;
   channel?: string;
   channel_metadata?: Record<string, unknown>;
-  owner_principal?: string;
-  session_generation?: number;
 }
 
 /**
@@ -129,26 +116,6 @@ export interface AgUiEventEnvelope {
   connection_id?: string;
   channel?: string;
   channel_metadata?: Record<string, unknown>;
-  owner_principal?: string;
-  session_generation?: number;
-}
-
-export function deliveryRoutingForTask(task: TaskPayload): {
-  thread_id?: string;
-  connection_id?: string;
-  channel?: string;
-  channel_metadata?: Record<string, unknown>;
-  owner_principal?: string;
-  session_generation?: number;
-} {
-  return {
-    thread_id: task.thread_id,
-    connection_id: task.connection_id,
-    channel: task.channel,
-    channel_metadata: task.platform_data,
-    owner_principal: task.owner_principal,
-    session_generation: task.session_generation,
-  };
 }
 
 export class SqsClient {

@@ -1,16 +1,5 @@
-/**
- * CLI Setup page (route `/setup`, unchanged).
- *
- * Issue #4159 restructured this page. It was titled "Claude Code Setup" while
- * actually covering two tools, and the reading order was convoluted: Codex was
- * buried inside the Claude Code numbered flow and the download buttons sat below
- * the step that told users to go find them. It is now a common "connect your
- * machine" section, tool tabs, and a shared verify step
- * — all owned by `SetupInstructions`, which also hosts the download cards and
- * the Connect CLI panel so nothing forward-references a later section.
- */
-
 import { SetupInstructions } from '@/components/setup/SetupInstructions';
+import { ScriptDownloadList } from '@/components/setup/ScriptDownload';
 import { Card, CardTitle, Alert } from '@/components/ui';
 import { useAuth } from '@/hooks/useAuth';
 
@@ -22,147 +11,14 @@ export default function ClaudeSetup() {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-          CLI Setup
+          Claude Code Setup
         </h1>
         <p className="text-gray-500 dark:text-gray-400 mt-1">
-          Use Claude Code, Codex, Hermes or Kimi Code on your machine with the platform gateway as the backend.
+          Configure Claude Code to use the platform
         </p>
       </div>
 
-      {/* Approval note (Issue #4146 / #4144): an approved-but-org-less user, or one
-          whose CLI session outlived their org assignment, gets a 409 on every
-          inference call. Make that self-explanatory rather than a support ticket. */}
-      <Alert variant="warning" title="Waiting on approval?">
-        Until a platform administrator approves your account and assigns it to an organization,
-        inference calls are rejected with HTTP 409{' '}
-        <code className="font-mono">user_not_assigned_to_org</code> — setup will look correct but
-        every request will fail. You can request access from{' '}
-        <a
-          href="/settings/connections"
-          className="underline text-primary-700 dark:text-primary-300"
-        >
-          Settings → Connections
-        </a>
-        .
-      </Alert>
-
-      {/* Sections 1-3: connect your machine → per-tool tabs → verify.
-          Owns ScriptDownloadList and ConnectCliPanel (Issue #4159). */}
-      <SetupInstructions />
-
-      {/* Troubleshooting */}
-      <Card>
-        <CardTitle>Troubleshooting</CardTitle>
-        <div className="mt-4 space-y-4 text-sm text-gray-700 dark:text-gray-300">
-          <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white">
-              401 Unauthorized — token expired
-            </h4>
-            <p className="mt-1">
-              Your stored refresh token is no longer valid, so the helper cannot mint a token.
-              Re-run{' '}
-              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                adp login
-              </code>{' '}
-              and approve in the browser — one click, no token to copy. This applies to Claude
-              Code, Codex, Hermes and Kimi Code — they share the same ADP login.
-            </p>
-          </div>
-          <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white">
-              Hermes asks you to run setup
-            </h4>
-            <p className="mt-1">
-              Run{' '}
-              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                adp hermes setup
-              </code>{' '}
-              to refresh the ADP configuration, then launch with{' '}
-              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                adp hermes
-              </code>
-              . If Hermes does not recognize the configuration commands, update Hermes first.
-            </p>
-          </div>
-          <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white">
-              Kimi ADP adapter is not installed
-            </h4>
-            <p className="mt-1">
-              Ask your platform administrator to install and configure the Kimi ADP adapter on
-              this machine, then run{' '}
-              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                adp kimi --version
-              </code>{' '}
-              to verify it. The adapter is a separate prerequisite for the ADP Kimi launcher.
-            </p>
-          </div>
-          <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white">
-              adp login fails — web sign-in not enabled
-            </h4>
-            <p className="mt-1">
-              This deployment has not provisioned the CLI sign-in backend yet (an administrator
-              needs to apply the gateway infrastructure). Until then, use the headless fallback in
-              the Sign in step:{' '}
-              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                adp import
-              </code>{' '}
-              with a revealed refresh token.
-            </p>
-          </div>
-          <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white">
-              409 Conflict — pending approval
-            </h4>
-            <p className="mt-1">
-              A{' '}
-              <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded font-mono">
-                user_not_assigned_to_org
-              </code>{' '}
-              error means your account is not yet approved and assigned to an organization. Your
-              setup is fine — it will start working once an administrator approves you. Nothing to
-              reconfigure.
-            </p>
-          </div>
-          <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white">
-              429 Too Many Requests — rate limit
-            </h4>
-            <p className="mt-1">
-              You've hit your rate limit. Wait a moment and try again, or contact your administrator
-              to increase your limits.
-            </p>
-          </div>
-          <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white">
-              402 Payment Required — budget exceeded
-            </h4>
-            <p className="mt-1">
-              Your requests are being blocked by a budget cap. Contact your organization or
-              department administrator to review your budget allocation.
-            </p>
-          </div>
-          <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white">
-              Connection Issues
-            </h4>
-            <p className="mt-1">
-              Ensure you can reach the Gateway URL from your network. If you're behind a
-              corporate firewall, you may need to configure proxy settings.
-            </p>
-          </div>
-        </div>
-      </Card>
-
-      {/* Info alert */}
-      <Alert variant="info" title="About the platform">
-        The platform provides a secure, managed way to reach Amazon Bedrock from your CLI tools.
-        It handles authentication, rate limiting, cost tracking, and usage monitoring automatically.
-      </Alert>
-
-      {/* User info if authenticated — reference material, so it sits at the bottom
-          rather than between the user and the first setup step (Issue #4159). */}
+      {/* User info if authenticated */}
       {isAuthenticated && user && (
         <Card>
           <CardTitle>Your Access Information</CardTitle>
@@ -206,6 +62,62 @@ export default function ClaudeSetup() {
           </div>
         </Card>
       )}
+
+      {/* Info alert */}
+      <Alert variant="info" title="About the platform">
+        The platform provides a secure, managed way to access Amazon Bedrock from Claude Code.
+        It handles authentication, rate limiting, cost tracking, and usage monitoring automatically.
+      </Alert>
+
+      {/* Setup instructions */}
+      <SetupInstructions />
+
+      {/* Script downloads */}
+      <ScriptDownloadList />
+
+      {/* Troubleshooting */}
+      <Card>
+        <CardTitle>Troubleshooting</CardTitle>
+        <div className="mt-4 space-y-4 text-sm text-gray-700 dark:text-gray-300">
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              Authentication Errors
+            </h4>
+            <p className="mt-1">
+              If you see "401 Unauthorized" errors, your credentials may have expired.
+              Run the <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">bg-auth</code> script
+              again to refresh your session.
+            </p>
+          </div>
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              Rate Limit Errors
+            </h4>
+            <p className="mt-1">
+              If you see "429 Too Many Requests" errors, you've hit your rate limit.
+              Wait a moment and try again, or contact your administrator to increase your limits.
+            </p>
+          </div>
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              Budget Exceeded
+            </h4>
+            <p className="mt-1">
+              If your requests are being blocked due to budget limits, contact your
+              organization or department administrator to review your budget allocation.
+            </p>
+          </div>
+          <div>
+            <h4 className="font-semibold text-gray-900 dark:text-white">
+              Connection Issues
+            </h4>
+            <p className="mt-1">
+              Ensure you can reach the Gateway URL from your network. If you're behind a
+              corporate firewall, you may need to configure proxy settings.
+            </p>
+          </div>
+        </div>
+      </Card>
 
       {/* Support */}
       <Card>

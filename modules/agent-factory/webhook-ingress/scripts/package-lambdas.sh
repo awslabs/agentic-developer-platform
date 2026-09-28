@@ -28,7 +28,7 @@ COMMON_DIR="$LAMBDA_DIR/common"
 # In-process modules: bundled into EVERY standalone Lambda zip (like common/),
 # never emitted as their own zip. Add a dir here when its handler is invoked
 # in-process by another Lambda rather than deployed as its own function.
-IN_PROCESS_MODULES=("eventbridge" "task_api")
+IN_PROCESS_MODULES=("eventbridge")
 
 # Returns 0 if "$1" is an in-process module (should be bundled, not standalone).
 _is_in_process_module() {

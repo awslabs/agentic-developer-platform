@@ -10,46 +10,15 @@
 #
 
 # Package the Lambda code
-# Issue #4849: multi-source archive so the shared membership_eligibility reader
-# ships alongside the handler. The handler imports it lazily inside a try/except,
-# so a missing file degrades to a logged warning rather than a cold-start
-# ImportError — but see modules/gateway/infra/modules/budget-lambda/main.tf:80
-# (#4391) for what happens when a shared module a handler needs is left out of the
-# archive: the Lambda ImportErrors on cold start and the whole function stops.
 data "archive_file" "pre_signup" {
   type        = "zip"
+  source_file = "${path.module}/lambda/pre_signup.py"
   output_path = "${path.module}/lambda/pre_signup.zip"
-
-  # Issue #4848: the handler source lives at modules/gateway/lambda/pre-signup/,
-  # where every other gateway Lambda lives and where the test harness
-  # (tests/lambda/_handler_loader.py) already resolves. It used to live in this
-  # Terraform module, which is build-output territory (pre_signup.zip is written
-  # next to it and gitignored) and outside the collected test tree -- so the
-  # packaged copy had no tests while an unpackaged duplicate had 18, and the two
-  # silently drifted (#4849 landed shadow-mode code in one of them only).
-  #
-  # `filename` stays "pre_signup.py" even though the source is handler.py: it is
-  # what the zip's internal module name must be for the `handler =
-  # "pre_signup.handler"` setting on aws_lambda_function.pre_signup below to
-  # resolve. Renaming either without the other is a
-  # Runtime.ImportModuleError on every invocation, i.e. a sign-in outage. Setting
-  # it explicitly is exactly why this is a multi-source archive rather than
-  # `source_file`, which would name the entry handler.py and break the handler string.
-  source {
-    content  = file("${path.root}/../lambda/pre-signup/handler.py")
-    filename = "pre_signup.py"
-  }
-
-  source {
-    content  = file("${path.root}/../lambda/shared/membership_eligibility.py")
-    filename = "membership_eligibility.py"
-  }
 }
 
 # IAM Role for the Lambda function
 resource "aws_iam_role" "pre_signup" {
-  permissions_boundary = var.automation_permissions_boundary_arn
-  name                 = "${var.name_prefix}-pre-signup-role"
+  name = "${var.name_prefix}-pre-signup-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -99,7 +68,7 @@ resource "aws_iam_role_policy" "pre_signup_dynamodb" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = concat([
+    Statement = [
       {
         Effect = "Allow"
         Action = [
@@ -121,23 +90,7 @@ resource "aws_iam_role_policy" "pre_signup_dynamodb" {
         ]
         Resource = [var.kms_key_arn]
       }
-      # Issue #4849: read the membership-eligibility projection (member_org_ids on
-      # the identity-index rows). GetItem only — this Lambda is a reader; the
-      # gateway API is the sole writer of these tables. ARNs arrive as a variable
-      # rather than a cross-module reference: the tables live in the gateway ROOT
-      # module, and referencing back into the root from here would close the
-      # documented cloudfront -> api_gateway -> broker -> cloudfront dependency
-      # loop (modules/gateway/infra/main.tf:723-736).
-      # Conditional because an empty Resource list is a malformed policy, not an
-      # empty grant — it fails the apply.
-      ], length(var.identity_index_table_arns) > 0 ? [
-      {
-        Sid      = "IdentityIndexProjectionRead"
-        Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
-        Resource = var.identity_index_table_arns
-      }
-    ] : [])
+    ]
   })
 }
 
@@ -189,19 +142,6 @@ resource "aws_lambda_function" "pre_signup" {
       ALLOWLIST_TABLE         = aws_dynamodb_table.signup_allowlist.name
       GITHUB_TOKEN_SECRET_ARN = var.github_token_secret_arn
       LOG_LEVEL               = var.environment == "prod" ? "INFO" : "DEBUG"
-
-      # Issue #4844: 'open' mode now requires this acknowledgement in BOTH copies
-      # of the allowlist (the broker has required it since #3986). Code and env var
-      # ship in this same apply — splitting them is the ALLOWLIST_MODE /
-      # ALLOW_OPEN_SIGNUP outage recorded in CLAUDE.md.
-      ALLOW_OPEN_SIGNUP = var.pre_signup_allow_open_signup ? "true" : "false"
-
-      # Issue #4849: membership-eligibility projection tables (shadow-mode read).
-      # Env var and code ship in this same apply — the ALLOWLIST_MODE /
-      # ALLOW_OPEN_SIGNUP outage recorded in CLAUDE.md came from splitting them.
-      IDENTITY_INDEX_TABLE        = var.identity_index_table_name
-      USER_IDENTITY_INDEX_TABLE   = var.user_identity_index_table_name
-      USER_IDENTITY_INDEX_V2_READ = var.user_identity_index_v2_read
     }
   }
 
@@ -214,7 +154,6 @@ resource "aws_lambda_function" "pre_signup" {
 
 # CloudWatch Log Group for Lambda
 resource "aws_cloudwatch_log_group" "pre_signup" {
-  #checkov:skip=CKV_AWS_338: Cognito trigger logs use an explicitly bounded 7- or 30-day operational retention.
   name              = "/aws/lambda/${var.name_prefix}-pre-signup-trigger"
   retention_in_days = var.environment == "prod" ? 30 : 7
   kms_key_id        = var.cloudwatch_kms_key_arn

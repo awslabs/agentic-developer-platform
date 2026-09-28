@@ -10,22 +10,13 @@ The function performs, in order:
   3. Self-re-trigger guard (same as last_triggered_persona on channel)
   4. Cross-persona loop guard (A->B->A->B alternation detection)
   5. Depth guard (MAX_CHAIN_DEPTH)
-  6. Envelope build
-  7. Webhook-events capture (DDB chain row)
-  8. Pointer write + provenance write
-  9. SQS publish
-
-Issue #5663 (A09): steps 7 and 8 are in that order deliberately. The chain's
-webhook-events row is the server-owned record the gateway checks a provenance
-assertion against, so it has to exist before the provenance POST — otherwise the
-origin post of every new chain is unverifiable. See the comment at the call site.
+  6. Pointer write (with recent_triggered_personas merge)
+  7. Provenance write
+  8. Envelope build
+  9. Webhook-events capture (DDB row BEFORE SQS)
+  10. SQS publish
 
 Returns SpawnResult indicating success (with message_id) or block (with reason).
-
-Issue #4020: a blocked spawn now also writes a ``status="blocked"`` webhook-events
-row carrying the block reason, so the Activity UI can explain the block instead of
-showing nothing at all. The guards evaluate exactly as before — only bookkeeping
-was added, and it is best-effort so it can never fail the webhook.
 """
 
 from __future__ import annotations
@@ -59,8 +50,6 @@ class SpawnResult:
     success: bool
     message_id: str | None = None
     block_reason: str | None = None
-    correlation_id: str | None = None
-    is_human_rooted: bool = False
 
 
 def spawn_persona(
@@ -82,11 +71,8 @@ def spawn_persona(
     intent_label: str | None = None,
     model_requested: str | None = None,
     model_resolved: str | None = None,
-    model_canonical: str | None = None,
     aws_label: str | None = None,
     token_source: str | None = None,
-    trusted_human_event=None,
-    trusted_service_event=None,
 ) -> SpawnResult:
     """Validate guards, write lineage, build envelope, publish to SQS.
 
@@ -110,12 +96,7 @@ def spawn_persona(
         intent_trigger: Trigger string (e.g. "mentioned", "issue_labeled").
         intent_label: Optional label that triggered this (for issues.labeled).
         model_requested: Raw alias the user typed in /model directive (issue #2279).
-        model_resolved: LEGACY assignment -- the Bedrock model ID this run
-            actually executes, or None if rejected/absent. Unchanged by PMM-07
-            so ``report_only`` cannot alter live behaviour.
-        model_canonical: The strict published (PMM-07 *proposed*) resolution of
-            the same directive, or None when the authority never published it.
-            Recorded as protected proposal metadata only; never executed.
+        model_resolved: Validated Bedrock model ID, or None if rejected/absent.
         aws_label: Validated AWS credential label from /aws-label directive
             (issue #3574).
         token_source: Issue #3385 (C3) — "pat" when the tenant's identity-index
@@ -125,14 +106,6 @@ def spawn_persona(
         SpawnResult with success=True and message_id, or success=False and
         block_reason explaining why the spawn was blocked.
     """
-    # --- Guards 0-5 ---
-    # Each guard records a block_reason rather than returning directly, so every
-    # blocked spawn funnels through the SINGLE Activity-row write below.
-    # Issue #4020: these returns previously happened before
-    # _capture_invocation_event, so a guard-blocked trigger produced NO Activity
-    # row at all — the operator's @agent-... comment simply vanished.
-    block_reason: str | None = None
-
     # --- Guard 0: installation_id validation (Issue #2336) ---
     # Reject messages with installation_id=0/None before they reach SQS.
     # A dispatch with no valid installation will deterministically crash the
@@ -146,16 +119,17 @@ def spawn_persona(
             event_type,
         )
         _emit_metric("InvalidInstallationIdBlocked", {"persona": persona})
-        block_reason = "invalid_installation_id"
+        return SpawnResult(success=False, block_reason="invalid_installation_id")
 
     # --- Guard 1: Persona validation ---
-    elif persona not in VALID_PERSONAS:
+    if persona not in VALID_PERSONAS:
         logger.warning("spawn_persona: unknown persona %r — blocking", persona)
         _emit_metric("UnknownPersonaBlocked", {"persona": persona})
-        block_reason = "unknown_persona"
+        return SpawnResult(success=False, block_reason="unknown_persona")
 
     # --- Guards 2-5: Only apply to bot senders ---
-    elif _is_bot_sender(sender):
+    is_bot = _is_bot_sender(sender)
+    if is_bot:
         block = _apply_bot_guards(
             persona=persona,
             correlation_ctx=correlation_ctx,
@@ -163,46 +137,20 @@ def spawn_persona(
             sender=sender,
         )
         if block is not None:
-            block_reason = block.block_reason
+            return block
 
-    if block_reason is not None:
-        # Issue #4020: record the block in Activity so "why didn't my agent run"
-        # is answerable from the UI.
-        #
-        # Wrapped HERE, at the call site, and not only inside the helper. The
-        # property that matters is "a guard block cannot become a webhook 500" —
-        # a guard block is benign and returns 200, and GitHub retries 5xx, so a
-        # transient DDB problem would produce a redelivery storm (the issue's
-        # impact analysis calls this out explicitly). That property belongs where
-        # the response is decided, rather than depending on a helper's internals
-        # staying exhaustively guarded through future edits. The helper's own
-        # try/except remains, for the specific-reason log line.
-        try:
-            _capture_blocked_event(
-                tenant_id=tenant_id,
-                actor_user_id=actor_user_id,
-                sender=sender,
-                event_type=event_type,
-                action=action,
-                installation_id=installation_id,
-                repo=repo,
-                persona=persona,
-                payload=payload,
-                correlation_ctx=correlation_ctx,
-                block_reason=block_reason,
-            )
-        except Exception as e:  # noqa: BLE001 — bookkeeping must never fail the webhook
-            logger.warning(
-                "spawn_persona: blocked-row write raised for reason=%s (non-fatal): %s",
-                block_reason,
-                e,
-            )
-        return SpawnResult(success=False, block_reason=block_reason)
-
-    # --- Step 5.5: the chain hop actually happened — advance the depth ---
-    # Issue #4268: THE single increment point. Everything below describes the run
-    # being spawned, not the run that asked, so it gets its own depth.
-    spawned_ctx = _advance_chain_depth(correlation_ctx)
+    # --- Step 6: Write pointer + provenance (fail-soft) ---
+    _write_pointer_and_provenance(
+        persona=persona,
+        correlation_ctx=correlation_ctx,
+        channel_key=channel_key,
+        resolved_identity=resolved_identity,
+        actor_user_id=actor_user_id,
+        event_type=event_type,
+        action=action,
+        repo=repo,
+        payload=payload,
+    )
 
     # --- Step 7: Build envelope ---
     cognito_sub = actor_user_id if resolved_identity.user_kind == "human" else ""
@@ -216,104 +164,18 @@ def spawn_persona(
         installation_id=installation_id,
         repo=repo,
         payload=payload,
-        correlation_ctx=spawned_ctx,
+        correlation_ctx=correlation_ctx,
         intent_trigger=intent_trigger,
         intent_label=intent_label,
         model_requested=model_requested,
         model_resolved=model_resolved,
-        model_canonical=model_canonical,
         aws_label=aws_label,
         token_source=token_source,
     )
 
-    # Preference lookup uses the already-resolved chain owner. It changes only
-    # the model passed to the existing worker, never credential authority.
-    if (
-        os.environ.get("PERSONA_MODEL_MAPPING_ENABLED", "false").lower() == "true"
-        and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true"
-        and spawned_ctx.get("is_human_rooted") is True
-    ):
-        from common.persona_model_client import (
-            ModelSelectionError,
-            select_persona_model,
-        )
-
-        try:
-            # The raw directive is retained for worker diagnostics, but only a
-            # validated override may enter model selection. Re-submitting a
-            # rejected alias here would defeat the handler's lenient fallback.
-            selection_envelope = dict(envelope)
-            if model_requested is not None:
-                selection_envelope["model_requested"] = model_resolved
-            envelope = select_persona_model(
-                selection_envelope, user_id=spawned_ctx.get("root_human_id", "")
-            )
-            if model_requested is not None:
-                envelope["model_requested"] = model_requested
-        except ModelSelectionError:
-            logger.exception("Saved persona model selection failed; no work published")
-            try:
-                _capture_blocked_event(
-                    tenant_id=tenant_id,
-                    actor_user_id=actor_user_id,
-                    sender=sender,
-                    event_type=event_type,
-                    action=action,
-                    installation_id=installation_id,
-                    repo=repo,
-                    persona=persona,
-                    payload=payload,
-                    correlation_ctx=spawned_ctx,
-                    block_reason="persona_model_selection_unavailable",
-                )
-            except Exception:
-                logger.warning(
-                    "Unable to record model-selection refusal", exc_info=True
-                )
-            return SpawnResult(
-                success=False, block_reason="persona_model_selection_unavailable"
-            )
-
-    # Under delegated authority, no adapter may bypass the protected publisher.
-    # Agent-originated requests need the gateway dispatch path; caller-controlled
-    # parent/root fields and bot-comment marker HMACs cannot mint human authority.
-    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
-        from common.agent_authority import (
-            AuthorityProvisionError,
-            VerifiedHumanEvent,
-            provision_human_dispatch,
-        )
-        from common.service_authority import (
-            VerifiedServiceEvent,
-            provision_service_dispatch,
-        )
-        from common.sqs_publisher import prepare_envelope
-
-        if not isinstance(trusted_human_event, VerifiedHumanEvent) and not isinstance(
-            trusted_service_event, VerifiedServiceEvent
-        ):
-            return SpawnResult(
-                success=False, block_reason="delegated_dispatch_required"
-            )
-        try:
-            if isinstance(trusted_human_event, VerifiedHumanEvent):
-                envelope = provision_human_dispatch(
-                    envelope=prepare_envelope(envelope), event=trusted_human_event
-                )
-            else:
-                envelope = provision_service_dispatch(
-                    envelope=prepare_envelope(envelope), event=trusted_service_event
-                )
-            spawned_ctx = {**spawned_ctx, **envelope["correlation"]}
-        except (AuthorityProvisionError, ValueError):
-            return SpawnResult(success=False, block_reason="authority_provision_failed")
-
     # --- Step 8: Capture invocation event to DDB BEFORE SQS ---
     # Issue #3174: read tenant credential chain depth policy (fail-soft).
     max_cred_depth = _get_max_credential_chain_depth(installation_id)
-    # Persist the server-owned event before publication and provenance emission.
-    # Gateway verification uses the authenticated run's exact event key; this
-    # ordering alone does not authenticate a legacy provenance producer.
     _capture_invocation_event(
         envelope=envelope,
         tenant_id=tenant_id,
@@ -325,22 +187,8 @@ def spawn_persona(
         repo=repo,
         persona=persona,
         payload=payload,
-        correlation_ctx=spawned_ctx,
+        correlation_ctx=correlation_ctx,
         max_credential_chain_depth=max_cred_depth,
-    )
-
-    # Persist the final authorized lineage, after provisioning has succeeded and
-    # after the chain row above exists for the gateway to verify this POST against.
-    _write_pointer_and_provenance(
-        persona=persona,
-        correlation_ctx=spawned_ctx,
-        channel_key=channel_key,
-        resolved_identity=resolved_identity,
-        actor_user_id=actor_user_id,
-        event_type=event_type,
-        action=action,
-        repo=repo,
-        payload=payload,
     )
 
     # --- Step 9: Publish to SQS ---
@@ -356,77 +204,7 @@ def spawn_persona(
         persona,
         message_id,
     )
-    return SpawnResult(
-        success=True,
-        message_id=message_id,
-        correlation_id=spawned_ctx.get("correlation_id"),
-        is_human_rooted=bool(spawned_ctx.get("is_human_rooted", False)),
-    )
-
-
-def _advance_chain_depth(correlation_ctx: dict) -> dict:
-    """Return a copy of ``correlation_ctx`` holding the SPAWNED run's depth (#4268).
-
-    This is the one place ``chain_depth`` advances. It is called only after every
-    guard has passed, which is precisely the condition the counter is supposed to
-    measure: one agent has actually caused another agent to start.
-
-    Why it moved here. Depth used to be incremented per webhook EVENT on the
-    chain, in ``determine_correlation``. That value is persisted on the row for
-    every outcome — including the ``no_op`` rows the ingest Lambda writes and then
-    discards — and the next event inherits the newest row's depth. So events that
-    started nothing advanced the counter that gates starting things: an
-    orchestrator posting routine status comments drove its own chain to
-    ``chain_depth`` 290 against ``MAX_CHAIN_DEPTH`` 8 with two real generations,
-    and was then refused with ``chain_depth_exceeded``. 679 of those rows were
-    ``event_type_unhandled`` — event types with no handler at all.
-
-    Semantics, unchanged from what Guard 5 and the #3174 credential policy already
-    assume: the depth on a run's row is the run's own generation. A run spawned
-    directly by a human/service (``is_new_chain``) is generation 0 — the existing
-    "depth 0 == human-initiated" convention ``_compute_authorized_user_id`` is
-    written against. Every subsequent hop is caller + 1, so a chain of N genuine
-    generations reports depth N-1 at its head and the cap still bounds recursion
-    at ``MAX_CHAIN_DEPTH`` generations.
-
-    A caller cannot use this to reset depth. The inherited value still comes from
-    server-written state only (``handler._resolve_pointer_provenance`` reads the
-    ``webhook-events`` GSI per #4129, ``agent_trigger._resolve_chain_depth`` 422s
-    on absent/malformed/negative per #4128), and ``is_new_chain`` is False on
-    every chain-continuation branch — a bot cannot present a continuation as a
-    fresh root.
-
-    Returns a shallow copy so the caller's context (used for the ``blocked`` row,
-    where no run started and the depth must NOT advance) is left untouched.
-    """
-    advanced = dict(correlation_ctx)
-    if correlation_ctx.get("is_new_chain"):
-        # This spawn IS the root generation — nothing spawned it.
-        advanced["chain_depth"] = 0
-        advanced["credential_chain_depth"] = 0
-        return advanced
-
-    caller_depth = correlation_ctx.get("chain_depth", 0)
-    if not isinstance(caller_depth, int) or isinstance(caller_depth, bool):
-        # Non-int depth reaching here would silently disable Guard 5 on the next
-        # hop. The upstream resolvers reject these (#4128), so this is a
-        # defensive floor, not a supported input.
-        logger.warning(
-            "spawn_persona: non-integer chain_depth=%r in correlation_ctx — "
-            "treating the spawned run as a root generation",
-            caller_depth,
-        )
-        caller_depth = 0
-    advanced["chain_depth"] = caller_depth + 1
-
-    # Issue #5365: the conservative depth the credential horizon is measured on
-    # advances in lockstep. It is only ever >= chain_depth, so it can withhold
-    # vault authority but never extend it — see _compute_authorized_user_id.
-    credential_depth = correlation_ctx.get("credential_chain_depth")
-    if not isinstance(credential_depth, int) or isinstance(credential_depth, bool):
-        credential_depth = caller_depth
-    advanced["credential_chain_depth"] = max(credential_depth, caller_depth) + 1
-    return advanced
+    return SpawnResult(success=True, message_id=message_id)
 
 
 def _is_bot_sender(sender: dict) -> bool:
@@ -490,21 +268,13 @@ def _apply_bot_guards(
         return SpawnResult(success=False, block_reason="cross_persona_loop")
 
     # Guard 5: Depth cap
-    #
-    # Issue #5365: protected dispatch supplies the authenticated caller's own
-    # generation; the shared-IAM legacy route supplies only its server-observed
-    # head and refuses a selected ancestor. The cap itself is unchanged. Include
-    # the source invocation in the log so a refusal is actionable.
     chain_depth = correlation_ctx.get("chain_depth", 0)
     if chain_depth >= MAX_CHAIN_DEPTH:
         logger.info(
-            "spawn_persona: depth guard blocked — %s at depth %d >= max %d "
-            "(caller invocation=%s correlation=%s)",
+            "spawn_persona: depth guard blocked — %s at depth %d >= max %d",
             persona,
             chain_depth,
             MAX_CHAIN_DEPTH,
-            correlation_ctx.get("parent_invocation_id") or "unknown",
-            correlation_ctx.get("correlation_id") or "unknown",
         )
         _emit_metric(
             "ChainDepthExceeded", {"persona": persona, "depth": str(chain_depth)}
@@ -600,12 +370,11 @@ def _build_envelope(
     intent_label: str | None,
     model_requested: str | None = None,
     model_resolved: str | None = None,
-    model_canonical: str | None = None,
     aws_label: str | None = None,
     token_source: str | None = None,
 ) -> dict:
     """Build the normalized webhook envelope for SQS."""
-    envelope: dict = {
+    envelope = {
         "version": "1.0",
         "channel": "github",
         "tenant_id": tenant_id,
@@ -642,13 +411,6 @@ def _build_envelope(
             "is_human_rooted": correlation_ctx.get("is_human_rooted", True),
             "parent_invocation_id": correlation_ctx.get("parent_invocation_id"),
             "chain_depth": correlation_ctx.get("chain_depth", 0),
-            # Issue #5365: unlike a local-only guard value, the conservative
-            # credential horizon must survive the queue boundary.  Omitting it
-            # lets one forged shallow hop erase the higher depth before the next
-            # dispatch and restore the root human's vault authority.
-            "credential_chain_depth": correlation_ctx.get(
-                "credential_chain_depth", correlation_ctx.get("chain_depth", 0)
-            ),
         },
         "payload": payload,
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -657,15 +419,10 @@ def _build_envelope(
     # model_requested = raw alias the user typed; model_resolved = validated
     # Bedrock model ID (or None if rejected). Worker reads model_resolved to
     # override ANTHROPIC_MODEL; uses model_requested for the warning message.
-    # ``model_canonical`` is the PMM-07 *proposed* resolution and is deliberately
-    # a separate key: the worker keys execution off ``model_resolved`` alone, so
-    # adding the proposal cannot change which model runs.
     if model_requested is not None:
         envelope["model_requested"] = model_requested
     if model_resolved is not None:
         envelope["model_resolved"] = model_resolved
-    if model_canonical is not None:
-        envelope["model_canonical"] = model_canonical
     # Issue #3574: Thread /aws-label through the envelope. The worker uses this
     # to pass label= to the gateway's assume-role endpoint, selecting a specific
     # linked account within the authorized user's vault.
@@ -677,11 +434,6 @@ def _build_envelope(
     if token_source is not None:
         envelope["token_source"] = token_source
     envelope["message_id"] = str(uuid.uuid4())
-    repository_id = payload.get("repository", {}).get("id")
-    if type(repository_id) is int and repository_id > 0:
-        envelope["source_ref"]["provider_repository_id"] = repository_id
-    if os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true":
-        envelope["work_claim_required"] = True
     return envelope
 
 
@@ -758,13 +510,7 @@ def _compute_authorized_user_id(
     if not is_human_rooted:
         return ""
 
-    # Issue #5365: use the separately persisted conservative horizon when a
-    # dispatch route supplies it. It advances and serializes across every hop,
-    # so a later shallow cap depth cannot restore root-human vault authority.
-    # Older producers omit it and retain their existing ``chain_depth`` policy.
-    chain_depth = correlation_ctx.get("credential_chain_depth")
-    if not isinstance(chain_depth, int) or isinstance(chain_depth, bool):
-        chain_depth = correlation_ctx.get("chain_depth", 0)
+    chain_depth = correlation_ctx.get("chain_depth", 0)
     if chain_depth >= max_credential_chain_depth:
         return ""
 
@@ -823,10 +569,6 @@ def _capture_invocation_event(
             cognito_sub=cognito_sub,
             max_credential_chain_depth=max_credential_chain_depth,
         )
-        if event_type == "eventbridge":
-            # Standing dispatch approval delegates agent actions, not the
-            # approving human's personal credential vault.
-            authorized_user_id = ""
 
         # Derive topic from issue/PR title
         issue_title = payload.get("issue", {}).get("title", "")
@@ -862,110 +604,12 @@ def _capture_invocation_event(
             correlation_id=correlation_ctx.get("correlation_id"),
             parent_invocation_id=correlation_ctx.get("parent_invocation_id"),
             chain_depth=correlation_ctx.get("chain_depth"),
-            credential_chain_depth=correlation_ctx.get(
-                "credential_chain_depth", correlation_ctx.get("chain_depth")
-            ),
             root_human_id=root_human,
             is_human_rooted=is_human_rooted,
             authorized_user_id=authorized_user_id,
-            actor_kind="service" if event_type == "eventbridge" else None,
-            actor_user_id=actor_user_id if event_type == "eventbridge" else None,
-            create_only=os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower()
-            == "true",
         )
     except Exception as e:
         logger.warning("spawn_persona: capture_invocation_event failed: %s", e)
-
-
-def _capture_blocked_event(
-    *,
-    tenant_id: str,
-    actor_user_id: str,
-    sender: dict,
-    event_type: str,
-    action: str,
-    installation_id: int,
-    repo: str,
-    persona: str,
-    payload: dict,
-    correlation_ctx: dict,
-    block_reason: str,
-) -> None:
-    """Write a ``blocked`` Activity row for a guard-blocked spawn. Issue #4020.
-
-    The guard returns above used to fire BEFORE ``_capture_invocation_event``, so
-    a blocked trigger left no trace anywhere the operator could see — the Activity
-    feed showed nothing at all, and the only record was a CloudWatch log line and
-    a metric datapoint. "Why didn't my review run?" was unanswerable from the UI.
-
-    The row carries ``status="blocked"`` plus the guard's existing
-    ``block_reason`` verbatim (the reason strings are reused, not reinvented).
-
-    Best-effort by construction, and deliberately so: a guard block is a benign,
-    expected outcome that returns HTTP 200. If bookkeeping could raise, a DDB
-    blip would convert every blocked delivery into a 500 and GitHub would retry
-    it — turning an observability improvement into a redelivery storm. There is
-    no envelope, so the row gets an auto-generated event_id like the other
-    terminal-at-ingress statuses (no_op, rate_limited).
-    """
-    try:
-        from common.webhook_events import WebhookEventLogger
-
-        table_name = os.environ.get("EVENTS_TABLE", "")
-        if not table_name:
-            return
-
-        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-        event_logger = WebhookEventLogger(table_name=table_name, region=region)
-
-        # Issue #2042: attribute to the human root for human-rooted chains so the
-        # row lands in the originating human's Activity view, matching the
-        # successful-dispatch path.
-        root_human = correlation_ctx.get("root_human_id")
-        is_human_rooted = correlation_ctx.get("is_human_rooted")
-        effective_user_id = (
-            root_human if (is_human_rooted and root_human) else actor_user_id
-        )
-
-        issue_title = payload.get("issue", {}).get("title", "")
-        pr_title = payload.get("pull_request", {}).get("title", "")
-        topic = (issue_title or pr_title or "(untitled)")[:120]
-
-        issue_url = payload.get("issue", {}).get("html_url", "")
-        pr_url = payload.get("pull_request", {}).get("html_url", "")
-        source_url = issue_url or pr_url or None
-
-        issue_number = payload.get("issue", {}).get("number")
-        if issue_number is None:
-            issue_number = payload.get("pull_request", {}).get("number")
-
-        event_logger.log_event(
-            tenant_id=tenant_id,
-            channel="github",
-            event_type=event_type,
-            action=action,
-            installation_id=str(installation_id),
-            repo=repo,
-            status="blocked",
-            skip_reason=block_reason,
-            user_id=effective_user_id or "unattributed",
-            github_login=sender.get("login", "") or None,
-            persona=persona,
-            topic=topic,
-            source_url=source_url,
-            issue_number=issue_number,
-            correlation_id=correlation_ctx.get("correlation_id"),
-            parent_invocation_id=correlation_ctx.get("parent_invocation_id"),
-            chain_depth=correlation_ctx.get("chain_depth"),
-            root_human_id=root_human,
-            is_human_rooted=is_human_rooted,
-        )
-    except Exception as e:
-        logger.warning(
-            "spawn_persona: capture_blocked_event failed for reason=%s (non-fatal): %s",
-            block_reason,
-            e,
-        )
 
 
 def _emit_metric(metric_name: str, dimensions: dict[str, str]) -> None:

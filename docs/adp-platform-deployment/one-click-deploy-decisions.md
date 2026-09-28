@@ -86,27 +86,58 @@ manifest.
 
 ### Q5. Deploy-capable IAM tier
 
-**Security decision (#5687, A24):** Never widen an inspection or routing role for
-bootstrap. The published `aws_role_deploy_v1.yaml` contract is a separate role
-and contains an explicit foundation action inventory, deployment-name and tag
-scope, exact principal plus External ID trust, default-off optional capabilities,
-and separate bootstrap/runtime semantics.
+**Decision:** Ship a new `deploy-write.cfn.yaml` template granting
+`AdministratorAccess` (no tag-scoped conditions). Safety lives at the trust
+boundary + an ADP-authored permission boundary — NOT tag-scoped permissions.
+Offer tier selection at connect time (not a separate upgrade step). The Connect-AWS
+dialog gains a "Permission level" radio: **Read-only** (default, existing) |
+**Deploy-capable** (new template).
 
-IAM mutation and outbound role assumption are categorically denied. IAM has no
-condition key that can validate the initial trust document passed to
-`CreateRole`, so granting direct role creation would permit persistent arbitrary
-cross-account trust even with a permissions boundary. The contract therefore
-does not create runtime roles and is not a full deployment credential.
-Destructive operations are a separate default-off capability and are limited to
-deployment-named or deployment-tagged resources. Deleting the stack removes the
-temporary role and inline policy without leaving an out-of-stack grant.
+**Why NOT tag-scoped `AdministratorAccess`:** A provisioning role creates resources
+that don't have tags yet. `aws:ResourceTag` conditions fail on `Create*` calls
+(the tag doesn't exist at evaluation time). `aws:RequestTag` only works for services
+that support tag-on-create with that condition key — many don't (verified: the
+platform creates 53+ IAM roles, EKS clusters, RDS instances, VPCs — all must be
+created before they can be tagged). This is the fundamental reason tag-scoped
+permissions don't work for infra provisioning.
 
-Hosted execution remains disabled until registration, request authorization, a
-trust-validating role-provisioning mechanism, complete action inventory, and
-end-to-end tests are complete. The config
-loader rejects legacy `customer_account` inputs, so a linked inspection or
-routing role cannot select an apply or destroy target. Self-managed deployment
-with customer-controlled temporary bootstrap credentials remains supported.
+**Minimum viable policy shape:**
+- **Identity policy:** `AdministratorAccess` (AWS managed policy). Matches the
+  existing `full-admin.cfn.yaml` pattern at
+  `modules/agent-factory/agent-worker-image/aws/full-admin.cfn.yaml:94-95`.
+- **Permission boundary (optional, customer-inspectable):** An ADP-authored
+  boundary policy (`ADP-Deploy-Boundary`) embedded in the same CFN template.
+  Modeled after the runner boundary at
+  `modules/agent-factory/runner-infra/infrastructure/iam.tf:83-176`:
+  - `DenyDangerousActions`: IAM user creation, Organizations, billing, account
+    settings (same deny list as runner boundary lines 156-174).
+  - Region lock (optional param): `aws:RequestedRegion` condition restricts to
+    customer-specified deploy region(s).
+  - The boundary is **advisory** (customer can inspect/modify it in their account)
+    and **does not break deploy flows** — it only prevents escalation paths ADP
+    will never use.
+
+**Trust-boundary controls (existing, no changes needed):**
+- `sts:ExternalId` (confused-deputy guard) — `aws_role_v1.yaml:44`
+- `aws:PrincipalArn` locked to gateway IRSA role — `aws_role_v1.yaml:45`
+- `aws:RequestTag/adp:user_id` session-tag requirement — `aws_role_v1.yaml:46`
+- CFN-installed (customer owns the stack, can uninstall/revoke instantly)
+- Customer-side SCPs and service control policies (proven enforced on #2899)
+
+**Storage:** `user_credentials.scopes.permission_tier` = `"readonly"` | `"deploy"`.
+Deploy module validates this on `POST /deploys`.
+
+**Upgrade path for existing connections:** "Upgrade to deploy-capable" button in
+Settings → Connections → CFN stack-update URL → re-verify → update scopes.
+
+**Rationale:** Industry norm for SaaS-deploys-into-your-account (Spacelift, env0,
+Terraform Cloud) is broad permissions with trust-boundary safety. The existing
+`full-admin.cfn.yaml` already grants plain `AdministratorAccess` for the hosted
+agent path. The runner-infra boundary policy proves the deny-list boundary pattern
+works in production. A separate "enable deploy" upgrade step is worse UX (two
+clicks, confusing state).
+
+**Follow-up:** #3039 (revised to AdministratorAccess + permission boundary approach)
 
 ---
 

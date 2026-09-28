@@ -78,9 +78,8 @@ sudo gitlab-ctl restart
 # Check GitLab is running
 sudo gitlab-ctl status
 
-# Check readiness through the private HTTPS listener. GitLab's relative URL
-# root applies to its internal Route53 name too.
-curl -sk https://gitlab.dev.adp.internal/gitlab/-/readiness | jq .status
+# Check readiness endpoint
+curl -sk https://gitlab.dev.adp.internal/-/readiness | jq .status
 
 # Check database migrations are current
 sudo gitlab-rake db:migrate:status | tail -5

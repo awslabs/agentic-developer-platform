@@ -1,33 +1,3 @@
----
-# =============================================================================
-# Issue #5675: Pod Security Admission on the gateway namespace.
-# =============================================================================
-# Third layer of the container hardening. The image (Dockerfile, USER 65532) and
-# the workload (deployment.yaml securityContext) are both enforced already; this
-# constrains anything that reaches the namespace by some OTHER route, so a new
-# workload cannot quietly arrive as root.
-#
-# Every namespace occupant was assessed before enabling enforcement:
-#
-#   1. Deployment bedrockgateway — compliant as of this story.
-#   2. Job gateway-migrate-* (scripts/migrate-before-rollout.py) — deep-copies
-#      the Deployment pod spec, so compliant via (1). Verified, not assumed.
-#   3. Pods eval-cli-onboarding-*, eval-bgt-*, bedrock-routing (platform/evals,
-#      lib/pod.sh laptop_pod_spec) still need root to provision stock images at
-#      runtime, so they now run in the dedicated adp-gateway-evals namespace.
-#
-# platform/scripts/deploy-all.sh applies this file only after the hardened
-# Deployment is Ready, then verifies that the Deployment and migration Job are
-# accepted while a privileged probe is rejected. The automatic gateway workflow
-# intentionally performs no cluster-scoped namespace mutations.
-#
-# The `restricted` level itself matches modules/domain-apps/superplane/k8s/
-# 00-namespace.yaml, the only namespace in this repo already at that standard.
-#
-# NOTE: platform/k8s/namespaces.yaml also declares this namespace. Both carry
-# these labels, because either file may be applied last and a namespace lacking
-# them would otherwise silently drop enforcement.
-# =============================================================================
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -35,9 +5,3 @@ metadata:
   labels:
     app.kubernetes.io/name: bedrockgateway
     app.kubernetes.io/part-of: bedrock-gateway
-    pod-security.kubernetes.io/enforce: restricted
-    pod-security.kubernetes.io/enforce-version: latest
-    pod-security.kubernetes.io/warn: restricted
-    pod-security.kubernetes.io/warn-version: latest
-    pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/audit-version: latest

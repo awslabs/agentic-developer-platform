@@ -1,2 +1,0 @@
-{"task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999"}
-{"awaiting_input_release": "/home/ubuntu/task-delivery-tmp/live-run/clarify3/release-input", "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999"}

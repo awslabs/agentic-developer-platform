@@ -430,6 +430,7 @@ class TestStageTrackerSpans:
         and StageTracker creates child spans within it, the trace context propagation
         makes stage spans children of the root span.
         """
+        from opentelemetry import trace
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import (
@@ -453,11 +454,10 @@ class TestStageTrackerSpans:
         exporter = _ListExporter()
         provider = TracerProvider(resource=Resource.create({"service.name": "test"}))
         provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
 
         try:
-            # OTel only permits setting the global provider once. Keep this
-            # test independent of earlier real tracing initialization.
-            tracer = provider.get_tracer("test-root-span")
+            tracer = trace.get_tracer("test-root-span")
 
             # Simulate sqs-worker: create root span wrapping stage spans
             with tracer.start_as_current_span("ingestion_run", attributes={"asset_id": "org/repo"}):
@@ -495,6 +495,8 @@ class TestStageTrackerSpans:
 
         finally:
             provider.shutdown()
+            # Reset global tracer provider
+            trace.set_tracer_provider(trace.NoOpTracerProvider())
 
 
 # ---------------------------------------------------------------------------
