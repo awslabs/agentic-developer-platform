@@ -26,25 +26,7 @@ gateway_authority_managed_policies = true
 persona_model_mapping_enabled = true
 
 # Protected worker source f1f776f59fd3be3ba9956d90c646a7d39ce1af02; reviewed Codex deadline and refusal reporting.
-# Browser broker keeps its independently reviewed image below.
 agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:cdde81fb9cf747676942136c2e68de51bf7e3bb6dd9bbeefee613abcaac69d1e"
-
-# The matching broker and worker support session-owner capabilities.
-domain_app_images = {
-  cyber-browser = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24"
-}
-
-domain_app_settings = {
-  cyber = {
-    common_crawl_partitions = "CC-MAIN-2026-39,CC-MAIN-2026-34,CC-MAIN-2026-30,CC-MAIN-2026-25,CC-MAIN-2026-21,CC-MAIN-2026-17"
-    session_owner_routing   = "true"
-    # Retain the observed native-browser rollout and drained legacy broker.
-    task_url_tools_enabled = "true"
-    browser_mode           = "native"
-    browser_broker_enabled = "false"
-    tools_endpoint         = "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/tools/cyber"
-  }
-}
 
 # Task API T4 was OOMKilled at 8Gi during worker regression tests (2026-09-24).
 # Reserve additional node capacity as well as raising the per-worker ceiling.
