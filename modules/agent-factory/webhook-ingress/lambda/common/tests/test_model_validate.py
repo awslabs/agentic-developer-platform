@@ -319,3 +319,14 @@ class TestMalformedGeneratedCatalogueIsContained:
         assert module.resolve_canonical_override("sonnet46") == (
             "global.anthropic.claude-sonnet-4-6"
         )
+
+
+@pytest.mark.parametrize("alias", ["gpt6-astra", "gpt6-sol", "gpt6-luna"])
+def test_codex_choices_are_exact_and_leave_claude_assignment_unchanged(alias):
+    from common.model_validate import resolve_codex_assignment
+    model = "openai.gpt-6-" + alias.split("-")[-1]
+    assert resolve_codex_assignment(alias) == model
+    assert resolve_codex_assignment(model) == model
+    assert resolve_legacy_assignment(alias) is None
+    assert resolve_codex_assignment("sonnet46") is None
+    assert resolve_codex_assignment("openai.unpublished") is None

@@ -104,7 +104,9 @@ def _string_list(value: object) -> list[str] | None:
     return list(value)
 
 
-def _load_catalogue() -> dict:
+def _load_catalogue(
+    filename="persona_model_catalogue.json", compatibility_class="claude-agent-sdk"
+) -> dict:
     """Read the generated catalogue, containing every malformed shape.
 
     Validation happens before any module global is derived from the result, so
@@ -113,7 +115,7 @@ def _load_catalogue() -> dict:
     invent a model from a local fallback.
     """
     try:
-        raw = Path(__file__).with_name("persona_model_catalogue.json").read_text(
+        raw = Path(__file__).with_name(filename).read_text(
             encoding="utf-8"
         )
         value = json.loads(raw)
@@ -130,7 +132,7 @@ def _load_catalogue() -> dict:
     allowed_patterns = _string_list(value.get("allowed_patterns"))
     if (
         value.get("schema_version") != 1
-        or value.get("compatibility_class") != "claude-agent-sdk"
+        or value.get("compatibility_class") != compatibility_class
         or aliases is None
         or canonical_ids is None
         or allowed_patterns is None
@@ -221,3 +223,18 @@ def resolve_and_validate(
     :func:`resolve_canonical_override` explicitly.
     """
     return resolve_legacy_assignment(alias, persona_allowed_models, tenant_patterns)
+
+
+_CODEX_CATALOGUE = _load_catalogue("codex_model_catalogue.json", "codex-sdk")
+
+
+def resolve_codex_assignment(alias: str) -> str | None:
+    """Resolve an explicit Codex choice without changing Claude legacy behavior."""
+    normalized = alias.strip()
+    model = _CODEX_CATALOGUE["aliases"].get(normalized.lower(), normalized)
+    if model not in _CODEX_CATALOGUE["canonical_model_ids"]:
+        return None
+    allowed = any(
+        fnmatch.fnmatch(model, p) for p in _CODEX_CATALOGUE["allowed_patterns"]
+    )
+    return model if allowed else None

@@ -2031,10 +2031,19 @@ def handler(event: dict, context) -> dict:
     model_resolved = None
     model_canonical = None
     if model_requested:
-        from common.model_validate import resolve_canonical_override, resolve_legacy_assignment
+        from common.model_validate import (
+            resolve_canonical_override,
+            resolve_codex_assignment,
+            resolve_legacy_assignment,
+        )
+        from common.personas import PERSONA_COMPATIBILITY_CLASS
 
-        model_resolved = resolve_legacy_assignment(model_requested)
-        model_canonical = resolve_canonical_override(model_requested)
+        if PERSONA_COMPATIBILITY_CLASS.get(intent.persona) == "codex-sdk":
+            model_resolved = resolve_codex_assignment(model_requested)
+            model_canonical = model_resolved
+        else:
+            model_resolved = resolve_legacy_assignment(model_requested)
+            model_canonical = resolve_canonical_override(model_requested)
         if model_resolved:
             logger.info(
                 "handler: /model directive resolved %r -> %r (proposed=%r)",
