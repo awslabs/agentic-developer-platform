@@ -101,7 +101,10 @@ async def reconcile(args):
                 )
             except Exception as exc:
                 # No SQL parameters, tokens or conversation content in logs.
-                report["skipped"].append({"request_id": row.request_id, "reason": type(exc).__name__})
+                skipped = {"request_id": row.request_id, "reason": type(exc).__name__}
+                if type(exc) is ValueError:
+                    skipped["detail"] = str(exc)
+                report["skipped"].append(skipped)
         encoded = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(encoded).hexdigest()
         report.update(

@@ -16,6 +16,8 @@ Sources reviewed on September 28, 2026:
 An audited call with 2 uncached input, 201,153 cache-read, 480 cache-write and
 1,169 output tokens was recorded as $0.622440; the published price is $0.058437.
 This establishes an ADP accounting overstatement, not an AWS invoice error.
+The audited developer invocation had 207 calls over 22.4 minutes: $78.375687
+recorded versus $7.133013 at the published rates ($3.50/min versus $0.32/min).
 The current-day sample of 188 service requests reconciled exactly with Cloud
 Agents ($85.838292). The page now polls the spend and budget endpoints every
 30 seconds so active spend becomes visible while the page remains open.
