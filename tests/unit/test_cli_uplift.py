@@ -10815,6 +10815,7 @@ def test_knowledge_nightly_is_selected_and_has_no_dispatch(tmp_path):
         "status": "preview",
         "detail": {"effect": "soft removal; index artifacts retained"},
     }
+    cli.binary = str(tmp_path / "adp")
     evidence = {}
     module.knowledge(cli, evidence)
     assert evidence["live_acceptance"].startswith("held:")
@@ -10823,6 +10824,360 @@ def test_knowledge_nightly_is_selected_and_has_no_dispatch(tmp_path):
         not {"--yes", "reindex", "add", "commit", "submit"}.intersection(call.args[0])
         for call in cli.method_calls
     )
+    # Issue #6437: the observed exit/error pair is retained on success too, so a
+    # later run has a baseline to compare a regression against.
+    observed = evidence["invalid_status_target"]
+    assert observed["exit_code"] == 1 and observed["error_code"] == "usage_error"
+    assert observed["envelope"] == "present"
+    assert observed["invocation"].endswith("knowledge status not-a-uuid --json")
+
+
+@pytest.mark.parametrize(
+    ("code", "envelope", "expected"),
+    [
+        # Issue #6437: the reproduced cause — the dispatcher's pre-dispatch tenant
+        # resolution failed and returned no envelope at all. The case must still
+        # fail, and must now say what it saw instead of only naming the refusal.
+        (5, None, "exit 5, error None, envelope absent"),
+        (
+            2,
+            {"status": "failed", "error": {"code": "authentication_required"}},
+            "exit 2, error 'authentication_required', envelope present",
+        ),
+        # A genuine regression: the target reached the gateway instead of being
+        # refused locally.
+        (0, {"status": "ok", "detail": {}}, "exit 0, error None, envelope present"),
+    ],
+)
+def test_knowledge_nightly_retains_actual_invalid_target_evidence(
+    tmp_path, code, envelope, expected
+):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.binary = str(tmp_path / "adp")
+    cli.run.side_effect = [
+        (0, {"status": "ok", "detail": {"items": []}}),
+        (code, envelope),
+    ]
+    cli.json.return_value = {
+        "status": "preview",
+        "detail": {"effect": "soft removal; index artifacts retained"},
+    }
+    evidence = {}
+    with pytest.raises(common.RemoteError) as failure:
+        module.knowledge(cli, evidence)
+    assert "Invalid knowledge target was not refused locally" in str(failure.value)
+    assert expected in str(failure.value)
+    # Retained on the evidence too, not only in the message.
+    assert evidence["invalid_status_target"]["exit_code"] == code
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        [{"error": {"code": "usage_error"}}],
+        {"status": "failed", "error": "not an object"},
+    ],
+)
+def test_knowledge_nightly_retains_malformed_response_before_assertion(
+    tmp_path, invalid
+):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.binary = str(tmp_path / "adp")
+    cli.run.side_effect = [
+        (0, {"status": "ok", "detail": {"items": []}}),
+        (1, invalid),
+    ]
+    cli.json.return_value = {
+        "status": "preview",
+        "detail": {"effect": "artifacts retained"},
+    }
+    evidence = {}
+    with pytest.raises(
+        common.RemoteError, match="Invalid knowledge target was not refused locally"
+    ):
+        module.knowledge(cli, evidence)
+    assert evidence["invalid_status_target"]["exit_code"] == 1
+    assert evidence["invalid_status_target"]["error_code"] is None
+    assert evidence["invalid_status_target"]["invocation_path"] == str(tmp_path / "adp")
+    assert evidence["invalid_status_target"]["envelope"] == (
+        "present" if isinstance(invalid, dict) else "invalid:list"
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        '[{"error":{"code":"usage_error"}}]',
+        '{"status":"failed","command":"knowledge status","error":{"code":"usage_error","message":"token=private-password"}}',
+    ],
+)
+def test_cli_evidence_preserves_bounded_redacted_stdout_and_stderr(
+    tmp_path, monkeypatch, output
+):
+    _, common = shipped_script(tmp_path, "story_reads")
+    monkeypatch.setattr(
+        common,
+        "bounded",
+        lambda *args, **kwargs: (1, output, "token=private-password HTTP 429"),
+    )
+    cli = common.Cli(tmp_path / "installed" / "adp", {}, [])
+    diagnostics = {}
+    code, payload = cli.run(
+        ["knowledge", "status", "not-a-uuid"], expected=None, diagnostics=diagnostics
+    )
+    assert code == 1
+    assert isinstance(payload, list) == output.startswith("[")
+    assert diagnostics["stderr"]["http_status"] == ["429"]
+    assert diagnostics["stderr"]["bytes"] > 0
+    if isinstance(payload, dict):
+        assert diagnostics["stdout_error_envelope"]["error"]["code"] == "usage_error"
+        assert diagnostics["stdout_error_envelope"]["error"]["message"]["bytes"] > 0
+    else:
+        assert diagnostics["stdout_error_envelope"] == {"shape": "list"}
+    assert "private-password" not in str(diagnostics)
+
+
+def test_knowledge_e32_failure_retains_installed_diagnostics(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "story_reads")
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    for name in ("adp", "adp-tenant.py", "adp-knowledge.py"):
+        (installed / name).write_text(name)
+    symlink = tmp_path / "adp"
+    symlink.symlink_to(installed / "adp")
+    responses = iter(
+        [
+            (0, json.dumps({"status": "ok", "detail": {"items": []}}), ""),
+            (
+                0,
+                json.dumps(
+                    {"status": "preview", "detail": {"effect": "artifacts retained"}}
+                ),
+                "",
+            ),
+            (
+                5,
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "command": "adp tenant",
+                        "error": {
+                            "code": "too_many_requests",
+                            "message": "HTTP 429 token=private-password",
+                        },
+                    }
+                ),
+                "token=private-password HTTP 429",
+            ),
+        ]
+    )
+    monkeypatch.setattr(common, "bounded", lambda *args, **kwargs: next(responses))
+    evidence = {}
+    cli = common.Cli(symlink, {}, [])
+    with pytest.raises(common.RemoteError, match="exit 5, error 'too_many_requests'"):
+        module.knowledge(cli, evidence)
+    observed = evidence["invalid_status_target"]
+    assert observed["invocation_path"] == str(symlink)
+    assert observed["resolved_dispatcher_path"] == str(installed / "adp")
+    assert (
+        observed["served_helpers"]["adp-knowledge.py"]
+        == hashlib.sha256(b"adp-knowledge.py").hexdigest()
+    )
+    assert observed["stdout_error_envelope"]["error"]["code"] == "too_many_requests"
+    assert observed["stderr"]["http_status"] == ["429"]
+    assert observed["stdout"]["bytes"] > 0
+    assert "private-password" not in json.dumps(evidence)
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "last_stdout", "last_stderr", "error_code", "failure_kind"),
+    [
+        (
+            5,
+            "",
+            "bash: adp-tenant.py: command not found token=private-value",
+            None,
+            "command_not_found",
+        ),
+        (
+            5,
+            json.dumps(
+                {
+                    "status": "failed",
+                    "command": "adp tenant",
+                    "error": {
+                        "code": "tenant_identity_changed",
+                        "message": "token=private-value",
+                    },
+                }
+            ),
+            "PermissionError: token=private-value",
+            "tenant_identity_changed",
+            "permission_denied",
+        ),
+        (
+            5,
+            json.dumps(
+                {
+                    "status": "failed",
+                    "command": "adp tenant",
+                    "error": {
+                        "code": "invalid_response",
+                        "message": "Malformed membership response: token=private-value",
+                    },
+                }
+            ),
+            "PermissionError: token=private-value",
+            "invalid_response",
+            "permission_denied",
+        ),
+        (
+            4,
+            json.dumps(
+                {
+                    "status": "failed",
+                    "command": "adp tenant",
+                    "error": {
+                        "code": "tenant_selection_required",
+                        "message": "Select a tenant: token=private-value",
+                    },
+                }
+            ),
+            "PermissionError: token=private-value",
+            "tenant_selection_required",
+            "permission_denied",
+        ),
+    ],
+)
+def test_e32_failure_diagnostics_survive_emission_and_report(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    exit_code,
+    last_stdout,
+    last_stderr,
+    error_code,
+    failure_kind,
+):
+    module, common = shipped_script(tmp_path, "story_reads")
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    for name in ("adp", "adp-tenant.py", "adp-knowledge.py"):
+        (installed / name).write_text(name)
+    binary = tmp_path / "adp"
+    binary.symlink_to(installed / "adp")
+    monkeypatch.setattr(common, "assert_owned_instance", lambda config: None)
+    monkeypatch.setattr(common, "load_session", lambda config: {"org_id": "native"})
+    monkeypatch.setattr(module, "_write_session", lambda *args: None)
+    responses = iter(
+        [
+            (0, json.dumps({"status": "ok", "detail": {"items": []}}), ""),
+            (
+                0,
+                json.dumps(
+                    {"status": "preview", "detail": {"effect": "artifacts retained"}}
+                ),
+                "",
+            ),
+            (exit_code, last_stdout, last_stderr),
+        ]
+    )
+    monkeypatch.setattr(common, "bounded", lambda *args, **kwargs: next(responses))
+    payload = tmp_path / "payload.json"
+    payload.write_text(
+        json.dumps(
+            {
+                "cli_path": str(binary),
+                "mode": "knowledge",
+                "org_id": "native",
+                "region": "us-east-1",
+                "sts_endpoint": "https://sts.example.test",
+                "gateway_url": "https://gateway.example.test",
+            }
+        )
+    )
+    assert common.run_script(module.execute, [str(payload)]) == 1
+    emitted = json.loads(capsys.readouterr().out)
+    matrix = cases.new_matrix(("nightly",))
+    context = {
+        "document": {"instance_id": "i-owned"},
+        "matrix": matrix,
+        "record": lambda case_id, status, detail: cases.record(
+            matrix, case_id, status, detail
+        ),
+        "transcript": [],
+        "manifest": Mock(),
+        "correlation": {},
+        "fault": None,
+    }
+    stages.journeys_stage(
+        {"region": "us-east-1"},
+        {"journey": lambda purpose: lambda instance, context: emitted},
+    )(context)
+    evaluation_id = "adp-e2e-20260928-120000-abcdef"
+    document = report.build(
+        matrix=matrix,
+        suites=("nightly",),
+        config=config.validate(config_fixture()),
+        evaluation_id=evaluation_id,
+        attempt_id=evaluation_id + "-a1",
+        cleanup_ok=False,
+        timing={
+            "started_at": "2026-09-28T12:00:00Z",
+            "ended_at": "2026-09-28T12:00:01Z",
+            "duration_seconds": 1,
+        },
+        correlation={},
+    )
+    artifact = report.write(tmp_path / "artifact", document, matrix, evaluation_id)
+    published = json.loads(Path(artifact["report"]).read_text())
+    row = next(row for row in published["cases"] if row["id"] == "E32")
+    observed = row["detail"]["invalid_status_target"]
+    assert row["status"] == cases.FAILED
+    assert published["status"] != cases.PASSED
+    assert observed["exit_code"] == exit_code
+    assert observed["error_code"] == error_code
+    if error_code is None:
+        assert observed["envelope"] == "absent"
+        assert observed["stdout_error_envelope"] == {"shape": "NoneType"}
+    else:
+        assert observed["stdout_error_envelope"]["error"]["code"] == error_code
+    assert observed["stderr"]["failure_kinds"] == [failure_kind]
+    assert observed["invocation"].endswith("knowledge status not-a-uuid --json")
+    assert observed["invocation_path"] == str(binary)
+    assert observed["resolved_dispatcher_path"] == str(installed / "adp")
+    for name in ("adp", "adp-tenant.py", "adp-knowledge.py"):
+        assert (
+            observed["served_helpers"][name]
+            == hashlib.sha256(name.encode()).hexdigest()
+        )
+    assert "private-value" not in Path(artifact["report"]).read_text()
+    assert "private-value" not in Path(artifact["junit"]).read_text()
+
+
+def test_cli_error_codes_are_bounded_machine_fields_not_free_text(tmp_path):
+    _, common = shipped_script(tmp_path, "story_reads")
+    for unsafe in (
+        "my_secret",
+        "arbitrary_code",
+        "tenant-identity-changed",
+        "long" * 30,
+    ):
+        assert (
+            common.safe_error_envelope({"error": {"code": unsafe}})["error"]["code"]
+            == "<redacted>"
+        )
+    for code in (
+        "tenant_identity_changed",
+        "invalid_response",
+        "tenant_selection_required",
+    ):
+        assert (
+            common.safe_error_envelope({"error": {"code": code}})["error"]["code"]
+            == code
+        )
 
 
 @pytest.mark.parametrize("status", [401, 429, 500])

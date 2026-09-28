@@ -15,7 +15,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import adp_common as common
 
-ASSETS = "/api/agent-context/assets"
+# Issue #6437: paths are joined onto the deployment's API base, and
+# adp_common.gateway_url() always ends that base in "/api". Carrying a second
+# "/api" here sent every asset request to /api/api/agent-context/assets, which
+# the gateway does not serve — and E32 accepts an HTTP 404 as "this deployment
+# has no indexing", so the resulting 404 was swallowed rather than reported.
+# src/knowledge/routes.py mounts /api/agent-context/assets at the app root.
+ASSETS = "/agent-context/assets"
 TERMINAL = {"indexed", "completed", "ready", "failed", "error", "removed"}
 
 
@@ -463,12 +469,37 @@ def bulk(args, client):
         )
 
 
+def refuse_malformed_target(args):
+    """Refuse a malformed target locally, before any deployment state is read.
+
+    Issue #6437: `execute` received `common.Api()` as an argument, so building the
+    client — which resolves the deployment registry and takes a local lease on it
+    — happened BEFORE `identifier()` rejected the target. A malformed identifier
+    then surfaced as whatever the configuration failed with (`gateway_not_configured`,
+    exit 2) instead of the documented usage refusal (`usage_error`, exit 1). A
+    refusal that changes meaning with unrelated environment state is not local.
+
+    `identifier` is pure, so a well-formed value is unaffected by being checked
+    here as well as inside `execute`.
+    """
+    for name in ("asset_id", "run"):
+        value = getattr(args, name, None)
+        if value is not None:
+            identifier(value)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    validate_only = bool(argv and argv[0] == "--validate-target")
+    if validate_only:
+        argv = argv[1:]
     as_json = "--json" in argv
     args = None
     try:
         args = parser().parse_args(argv)
+        refuse_malformed_target(args)
+        if validate_only:
+            return 0
         return common.emit(execute(args, common.Api()), as_json)
     except KeyboardInterrupt:
         mutation = (

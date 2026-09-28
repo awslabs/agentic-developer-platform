@@ -2022,6 +2022,17 @@ main() {
     local command="${1:-}"
     shift || true
 
+    local validate_knowledge=false
+    case "${command}:${1:-}" in
+        knowledge:show|knowledge:delete|knowledge:status|knowledge:watch|knowledge:reindex)
+            validate_knowledge=true ;;
+        admin:indexing)
+            if [ "${2:-}" = "show" ]; then validate_knowledge=true; fi ;;
+    esac
+    if [ "${validate_knowledge}" = true ] && [ -f "$(adp_dir)/adp-knowledge.py" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$(adp_dir)/adp-knowledge.py" --validate-target "${command}" "$@" || return $?
+    fi
+
     # Resolve before dispatch, so every verb below — and every child process —
     # sees one pinned deployment.
     #
@@ -2084,8 +2095,26 @@ main() {
         *)
             if [ "${local_tool_setup}" = false ] && [ "${1:-}" != "--help" ] && [ "${1:-}" != "-h" ] && ! { [ "${command}" = "admin" ] && [ "${1:-}" = "login" ]; }; then
                 local tenant_exports
+                # Issue #6437: this stdout is captured so it can be eval'd, which
+                # also meant a FAILED resolution had its only diagnosis thrown
+                # away — the caller saw a bare non-zero exit and EMPTY stdout. A
+                # --json consumer then could not tell a tenant/login/gateway
+                # failure from the verb's own refusal, and reported it as
+                # whichever check happened to run next. Ask the helper for the
+                # same output format the caller asked for, and replay what it
+                # said instead of discarding it.
+                local tenant_status=0
+                local tenant_format=""
+                local tenant_argument
+                for tenant_argument in "$@"; do
+                    if [ "${tenant_argument}" = "--json" ]; then tenant_format="--json"; fi
+                done
                 if [ -f "$(adp_dir)/adp-tenant.py" ]; then
-                    tenant_exports="$(python3 "$(adp_dir)/adp-tenant.py" --resolve-env "${requested_tenant}")" || return $?
+                    tenant_exports="$(python3 "$(adp_dir)/adp-tenant.py" --resolve-env "${requested_tenant}" ${tenant_format})" || tenant_status=$?
+                    if [ "${tenant_status}" -ne 0 ]; then
+                        if [ -n "${tenant_exports}" ]; then printf '%s\n' "${tenant_exports}"; fi
+                        return "${tenant_status}"
+                    fi
                     eval "${tenant_exports}"
                     resolve_deployment "${requested_deployment}"
                 elif [ -n "${requested_tenant}${ADP_TENANT:-}" ]; then

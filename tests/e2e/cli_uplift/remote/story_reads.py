@@ -7,6 +7,7 @@ usage reconciliation and active remote controls retain separate acceptance.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import uuid
@@ -537,6 +538,27 @@ def bedrock_lifecycle(cli, evidence):
     )
 
 
+def served_helpers(binary):
+    """Digests of the served helpers on the invocation path (Issue #6437).
+
+    Binds an observed CLI behaviour to the exact bytes that produced it, so a
+    "helper works in isolation" claim can be checked against what was installed.
+    Returns None rather than failing the case if the directory cannot be read: a
+    missing digest is recorded as missing, and never substitutes for a result.
+    """
+    try:
+        directory = Path(binary).resolve().parent
+        return {
+            name: hashlib.sha256(path.read_bytes()).hexdigest()
+            if path.is_file()
+            else None
+            for name in ("adp", "adp-knowledge.py", "adp-tenant.py")
+            for path in (directory / name,)
+        }
+    except (OSError, TypeError, ValueError):
+        return None
+
+
 def knowledge(cli, evidence):
     # Optional indexing deployments may explicitly refuse discovery. That is
     # dependency coverage, never evidence that assets were indexed or retrieved.
@@ -559,6 +581,12 @@ def knowledge(cli, evidence):
             "Unexpected knowledge discovery failure",
         )
         evidence["discovery"] = "unavailable-or-forbidden"
+        # Issue #6437: the refusal branch accepts a 404, which also masks a client
+        # that asked for a path the gateway does not serve. Record which status was
+        # actually returned so the two are tellable apart in the report.
+        evidence["discovery_refusal"] = next(
+            (status for status in (403, 404, 503) if f"HTTP {status}" in message), None
+        )
     absent = str(uuid.uuid4())
     preview = cli.json(["knowledge", "delete", absent])
     common.require(
@@ -566,10 +594,51 @@ def knowledge(cli, evidence):
         and "artifacts retained" in (preview.get("detail") or {}).get("effect", ""),
         "Knowledge delete preview omitted retained artifact semantics",
     )
-    code, invalid = cli.run(["knowledge", "status", "not-a-uuid"], expected=None)
+    argv = ["knowledge", "status", "not-a-uuid"]
+    diagnostics = {}
+    code, invalid = cli.run(argv, expected=None, diagnostics=diagnostics)
+    safe_envelope = common.safe_error_envelope(invalid)
+    envelope_shape = (
+        "present"
+        if isinstance(invalid, dict)
+        else "absent"
+        if invalid is None
+        else "invalid:" + type(invalid).__name__
+    )
+    # Issue #6437: run 36266688285 recorded only the sentence below, which is
+    # equally true of a dispatcher-level tenant/login failure and of a real
+    # regression in the refusal — so the report could not explain itself and the
+    # isolated helper looked fine. Retain what the CLI actually did. The assertion
+    # is unchanged: an unexpected response is still a failure, never a pass.
+    observed = {
+        "invocation": common.sanitize([cli.binary, *argv, "--json"]),
+        "invocation_path": str(Path(cli.binary).absolute()),
+        "resolved_dispatcher_path": str(Path(cli.binary).resolve()),
+        "exit_code": code,
+        "envelope": envelope_shape,
+        "stdout": diagnostics.get("stdout"),
+        "stderr": diagnostics.get("stderr"),
+        "stdout_error_envelope": diagnostics.get(
+            "stdout_error_envelope", safe_envelope
+        ),
+        "error_code": safe_envelope.get("error", {}).get("code"),
+        "served_helpers": served_helpers(cli.binary),
+    }
+    evidence["invalid_status_target"] = observed
+    evidence["detail"] = {
+        "discovery": evidence["discovery"],
+        "invalid_status_target": observed,
+        **(
+            {"discovery_refusal": evidence["discovery_refusal"]}
+            if "discovery_refusal" in evidence
+            else {}
+        ),
+    }
     common.require(
-        code == 1 and (invalid.get("error") or {}).get("code") == "usage_error",
-        "Invalid knowledge target was not refused locally",
+        code == 1 and observed["error_code"] == "usage_error",
+        "Invalid knowledge target was not refused locally: "
+        f"exit {observed['exit_code']}, error {observed['error_code']!r}, "
+        f"envelope {observed['envelope']}",
     )
     evidence["cases"] = ["discovery", "soft-delete-preview", "invalid-status-target"]
     evidence["live_acceptance"] = (

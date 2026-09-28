@@ -274,6 +274,85 @@ def sanitize(argv):
     return " ".join(parts)
 
 
+def output_diagnostic(text):
+    """Retain bounded output identity without publishing untrusted CLI text."""
+    raw = (text or "").encode("utf-8", errors="replace")
+    statuses = re.findall(r"\bHTTP\s+([1-5][0-9]{2})\b", text or "")[:4]
+    signatures = {
+        "command_not_found": r"\bcommand not found\b",
+        "connection_refused": r"\b(?:ConnectionRefusedError|connection refused)\b",
+        "file_not_found": r"\b(?:FileNotFoundError|no such file or directory)\b",
+        "permission_denied": r"\b(?:PermissionError|permission denied)\b",
+        "timeout": r"\b(?:TimeoutError|timed out|timeout)\b",
+        "tls_verification_failed": r"\b(?:SSLCertVerificationError|certificate verify failed)\b",
+        "traceback": r"\bTraceback \(most recent call last\)",
+    }
+    return {
+        "bytes": len(raw),
+        "redacted": REDACTED if raw else "",
+        "http_status": statuses,
+        "failure_kinds": [
+            name
+            for name, pattern in signatures.items()
+            if re.search(pattern, text or "", re.IGNORECASE)
+        ],
+    }
+
+
+def safe_error_envelope(payload):
+    """Keep CLI machine codes, never unchecked gateway error or credential text."""
+    if not isinstance(payload, dict):
+        return {"shape": type(payload).__name__}
+    error = payload.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    status = payload.get("status")
+    command = payload.get("command")
+    allowed_codes = {
+        "authentication_required",
+        "budget_exhausted",
+        "dependency_pending",
+        "deployment_mismatch",
+        "gateway_not_configured",
+        "gateway_unavailable",
+        "http_error",
+        "invalid_response",
+        "operation_failed",
+        "permission_denied",
+        "request_timeout",
+        "stale_revision",
+        "tenant_identity_changed",
+        "tenant_selection_required",
+        "too_many_requests",
+        "unknown_mutation_outcome",
+        "usage_error",
+    }
+    safe_code = (
+        code
+        if isinstance(code, str) and code in allowed_codes
+        else REDACTED
+        if code is not None
+        else None
+    )
+    return {
+        "status": status
+        if isinstance(status, str) and status in {"failed", "ok", "pending"}
+        else REDACTED,
+        "command": command
+        if isinstance(command, str)
+        and command in {"knowledge", "knowledge status", "adp tenant"}
+        else REDACTED,
+        "error": {
+            "code": safe_code,
+            "message": output_diagnostic(
+                error.get("message") if isinstance(error.get("message"), str) else ""
+            )
+            if isinstance(error, dict)
+            else None,
+            "shape": type(error).__name__,
+        },
+    }
+
+
 def bounded(argv, *, env, timeout, cwd=None, stdin=None):
     """Run a command in its own process group and kill the group on timeout.
 
@@ -329,6 +408,7 @@ class Cli:
         timeout=None,
         json_output=True,
         stdin_text=None,
+        diagnostics=None,
     ):
         argv = [self.binary, *[str(a) for a in args]]
         if json_output:
@@ -346,12 +426,20 @@ class Cli:
         if json_output:
             for line in reversed((out or "").splitlines()):
                 line = line.strip()
-                if line.startswith("{"):
+                if line.startswith("{") or (
+                    diagnostics is not None and line.startswith("[")
+                ):
                     try:
                         payload = json.loads(line)
                         break
                     except ValueError:
                         continue
+        if diagnostics is not None:
+            diagnostics.update(
+                stdout=output_diagnostic(out),
+                stderr=output_diagnostic(err),
+                stdout_error_envelope=safe_error_envelope(payload),
+            )
         if expected is not None and code != expected:
             raise RemoteError(
                 f"`{sanitize(argv)}` exited {code}, expected {expected}"

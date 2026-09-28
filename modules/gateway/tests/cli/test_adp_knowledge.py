@@ -1,9 +1,16 @@
 """Knowledge CLI safety contracts; no live configuration or provider calls."""
 
+import base64
 import importlib.util
 import json
+import os
+import subprocess
+import threading
+import time
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -279,3 +286,170 @@ def test_worker_complete_run_contract_is_usable_only_with_verified_stages():
         assert result["status"] == "pending" and result["detail"]["usable"] is False
     failed = k.status_result({**value, "stages": [{"stage": "s3_upload", "status": "failed"}]})
     assert failed["status"] == "failed" and failed["detail"]["usable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #6437 — E32 regressions across the dispatcher/helper boundary.
+#
+# Every test above drives `k.execute` directly with a Mock client, which is why
+# three real defects were invisible to them: a Mock accepts any request path, and
+# `k.execute` is never reached by the dispatcher's pre-dispatch tenant resolution.
+# The tests below run the installed `adp` dispatcher as a subprocess against a
+# stand-in gateway, so the path, the exit code and the emitted envelope are all
+# observed rather than assumed.
+# ---------------------------------------------------------------------------
+
+STATUS_PATH = f"/api/agent-context/assets/{ASSET_ID}/status"
+
+
+def _fixture_token():
+    claims = {"sub": "human", "org_id": "home", "iss": "pool"}
+    encoded = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return "e30." + encoded + ".sig"
+
+
+@pytest.fixture
+def served_cli(tmp_path):
+    """The installed dispatcher, a signed-in HOME, and a gateway that records paths."""
+    calls: list[tuple[str, str]] = []
+    faults: dict[str, int] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def respond(self, data, status=200):
+            payload = json.dumps(data).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):  # noqa: N802 -- BaseHTTPRequestHandler protocol
+            calls.append(("GET", self.path))
+            if self.path.endswith("/workspaces"):
+                self.respond({"items": [{"org_id": "home", "name": "Home"}]})
+            elif self.path == STATUS_PATH:
+                self.respond({"asset_id": ASSET_ID, "status": "queued", "stages": [{"stage": "fetch", "status": "queued"}]})
+            else:
+                # Anything else is a path the gateway does not serve. Answering 404
+                # is what let a doubled "/api" prefix pass as "indexing unavailable".
+                self.respond({"detail": "Not Found"}, 404)
+
+        def do_POST(self):  # noqa: N802 -- BaseHTTPRequestHandler protocol
+            calls.append(("POST", self.path))
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length)) if length else {}
+            if self.path.endswith("/workspaces/context"):
+                if faults.get("tenant_context"):
+                    self.respond({"error": "too_many_requests"}, faults["tenant_context"])
+                    return
+                self.respond({"tenant_id": body.get("org_id"), "identity": "human", "membership_id": "m", "context_token": "signed.lease.value"})
+            else:
+                self.respond({"detail": "Not Found"}, 404)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    home = tmp_path / "served-home"
+    directory = home / ".bedrock-gateway"
+    directory.mkdir(mode=0o700, parents=True)
+    (directory / "config.json").write_text(json.dumps({"gateway_url": f"http://127.0.0.1:{server.server_port}/api"}))
+    fixture_session = {
+        "access_token": _fixture_token(),
+        "id_token": _fixture_token(),
+        "refresh_token": "fixture",
+        "expires_at": int(time.time()) + 3600,
+    }
+    (directory / "tokens.json").write_text(json.dumps(fixture_session))
+    os.chmod(directory / "tokens.json", 0o600)
+
+    def run(*args):
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(("ADP_", "BG_"))}
+        environment.update(HOME=str(home), ADP_TENANT="home")
+        return subprocess.run(["bash", str(CLI / "adp"), *args], env=environment, text=True, capture_output=True, timeout=60)
+
+    try:
+        yield SimpleNamespace(run=run, calls=calls, faults=faults, directory=directory)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def envelope_from(result):
+    for line in reversed(result.stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            return json.loads(line)
+    raise AssertionError(f"no JSON envelope on stdout (exit {result.returncode})")
+
+
+def test_served_cli_refuses_malformed_status_target_locally(served_cli):
+    """E32's third case: the refusal is the CLI's own, not the gateway's."""
+    result = served_cli.run("knowledge", "status", "not-a-uuid", "--json")
+    assert result.returncode == 1, envelope_from(result)
+    assert envelope_from(result)["error"]["code"] == "usage_error"
+    # No indexing mutation, and no read of the asset registry either: a malformed
+    # target must never become a request.
+    assert not [path for _, path in served_cli.calls if "agent-context" in path]
+
+
+def test_served_cli_valid_status_reaches_canonical_asset_path(served_cli):
+    """The other half of E32's contract: a well-formed target reaches the real API.
+
+    Asserting the exact path is the check that was missing. `ASSETS` carried a
+    second "/api" that adp_common.gateway_url() already appends, so this request
+    used to land on /api/api/agent-context/assets/... and answer 404 — which E32
+    accepts as "this deployment has no indexing".
+    """
+    result = served_cli.run("knowledge", "status", ASSET_ID, "--json")
+    observed = envelope_from(result)
+    assert ("GET", STATUS_PATH) in served_cli.calls
+    assert not [path for _, path in served_cli.calls if "/api/api/" in path]
+    assert observed["command"] == "knowledge status" and observed["status"] == "pending"
+    assert observed["detail"]["asset_id"] == ASSET_ID
+
+
+def test_served_cli_tenant_resolution_failure_is_reported_not_swallowed(served_cli):
+    """Valid targets still report tenant failures before reaching the asset API."""
+    served_cli.faults["tenant_context"] = 429
+    result = served_cli.run("knowledge", "status", ASSET_ID, "--json")
+    assert result.returncode != 0
+    observed = envelope_from(result)
+    assert observed["status"] == "failed"
+    assert observed["command"] == "adp tenant"
+    assert observed["error"]["code"] == "too_many_requests"
+    assert not [path for _, path in served_cli.calls if "agent-context" in path]
+
+
+@pytest.mark.parametrize("args", [("knowledge", "status", "not-a-uuid"), ("admin", "indexing", "show", "--run", "not-a-uuid")])
+def test_served_cli_refuses_bad_target_before_tenant_failure(served_cli, args):
+    served_cli.faults["tenant_context"] = 429
+    result = served_cli.run(*args, "--json")
+    assert result.returncode == 1
+    assert envelope_from(result)["error"]["code"] == "usage_error"
+    assert served_cli.calls == []
+
+
+@pytest.mark.parametrize("args", [("knowledge", "status", "not-a-uuid"), ("admin", "indexing", "show", "--run", "not-a-uuid")])
+def test_served_cli_refuses_bad_target_without_auth_or_deployment(served_cli, args):
+    (served_cli.directory / "tokens.json").unlink()
+    (served_cli.directory / "config.json").unlink()
+    result = served_cli.run(*args, "--json")
+    assert result.returncode == 1
+    assert envelope_from(result)["error"]["code"] == "usage_error"
+    assert served_cli.calls == []
+
+
+def test_malformed_target_refusal_does_not_depend_on_gateway_configuration(capsys):
+    """A local refusal must not change meaning with unrelated environment state.
+
+    conftest leaves HOME with no gateway configuration, so building the API client
+    fails. `common.Api()` used to be constructed as an argument to `execute`, ahead
+    of the target check, turning the documented usage refusal into
+    `gateway_not_configured` (exit 2).
+    """
+    assert k.main(["knowledge", "status", "not-a-uuid", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out.strip())["error"]["code"] == "usage_error"
+    assert k.main(["admin", "indexing", "show", "--run", "not-a-uuid", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out.strip())["error"]["code"] == "usage_error"
