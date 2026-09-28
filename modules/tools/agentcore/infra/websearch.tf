@@ -86,10 +86,12 @@ resource "aws_bedrockagentcore_gateway_target" "websearch" {
         }
         configuration {
           name = "WebSearch"
-          parameter_values = jsonencode({ domainFilter = {
-            include = var.websearch_target_includes
-            exclude = var.websearch_target_excludes
-          } })
+          parameter_values = jsonencode(length(var.websearch_target_includes) + length(var.websearch_target_excludes) == 0 ? {} : {
+            domainFilter = merge(
+              length(var.websearch_target_includes) > 0 ? { include = var.websearch_target_includes } : {},
+              length(var.websearch_target_excludes) > 0 ? { exclude = var.websearch_target_excludes } : {}
+            )
+          })
         }
       }
     }

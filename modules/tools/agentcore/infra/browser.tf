@@ -188,6 +188,10 @@ resource "kubernetes_deployment" "browser" {
             value = var.aws_region
           }
           env {
+            name  = "AWS_DEFAULT_REGION"
+            value = var.aws_region
+          }
+          env {
             name  = "CYBER_BROWSER_SESSION_SECONDS"
             value = tostring(var.browser_session_seconds)
           }
