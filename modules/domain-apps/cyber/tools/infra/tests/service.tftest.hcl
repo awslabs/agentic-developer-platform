@@ -16,7 +16,7 @@ variables { aws_account_id = "123456789012" }
 run "disabled_creates_nothing" {
   command = plan
   assert {
-    condition     = length(aws_lambda_function.service) == 0 && length(aws_dynamodb_table.operations) == 0 && length(aws_api_gateway_resource.cyber) == 0 && length(aws_iam_role_policy.worker) == 0 && length(aws_api_gateway_resource.code_interpreter) == 0
+    condition     = length(aws_lambda_function.service) == 0 && length(aws_dynamodb_table.operations) == 0 && length(aws_api_gateway_resource.cyber) == 0 && length(aws_iam_role_policy.worker) == 0 && length(aws_api_gateway_resource.websearch) == 0 && length(aws_api_gateway_resource.code_interpreter) == 0
     error_message = "The tools service must be opt-in."
   }
 }
@@ -24,6 +24,10 @@ run "enabled_route_is_scoped_and_image_is_immutable" {
   command = plan
   variables {
     enabled                     = true
+    websearch_enabled           = true
+    websearch_gateway_url       = "https://example.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"
+    websearch_gateway_arn       = "arn:aws:bedrock-agentcore:us-east-1:123456789012:gateway/example"
+    websearch_target            = "websearch-target"
     vpc_id                      = "vpc-0123456789abcdef0"
     endpoint_security_group_ids = ["sg-0123456789abcdef0"]
     subnet_ids                  = ["subnet-0123456789abcdef0"]
@@ -41,8 +45,12 @@ run "enabled_route_is_scoped_and_image_is_immutable" {
     sample_bucket_arn = "arn:aws:s3:::sample-bucket"
   }
   assert {
-    condition = aws_api_gateway_method.common_crawl[0].authorization == "AWS_IAM" && aws_lambda_permission.common_crawl[0].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/tools/cyber/common-crawl"
+    condition     = aws_api_gateway_method.common_crawl[0].authorization == "AWS_IAM" && aws_lambda_permission.common_crawl[0].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/tools/cyber/common-crawl"
     error_message = "Archive Lambda invocation must be restricted to the exact route."
+  }
+  assert {
+    condition     = aws_api_gateway_method.websearch[0].authorization == "AWS_IAM" && aws_lambda_permission.websearch[0].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/tools/websearch" && jsondecode(aws_iam_role_policy.websearch_gateway[0].policy).Statement[0].Resource == "arn:aws:bedrock-agentcore:us-east-1:123456789012:gateway/example" && jsondecode(aws_iam_role_policy.websearch_worker["arn:aws:iam::123456789012:role/task-worker"].policy).Statement[0].Resource == "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/tools/websearch"
+    error_message = "Web Search must use a scoped IAM route and gateway."
   }
   assert {
     condition     = length(aws_security_group.service) == 1 && length(aws_security_group.service[0].ingress) == 0 && one(aws_security_group.service[0].egress).from_port == 443 && one(aws_security_group.service[0].egress).to_port == 443
@@ -89,4 +97,35 @@ run "wildcard_backend_queue_is_rejected" {
   command = plan
   variables { queue_arns = ["arn:aws:sqs:us-east-1:123456789012:*"] }
   expect_failures = [var.queue_arns]
+}
+
+run "dedicated_gateway_pins_connector_and_target_restrictions" {
+  command = plan
+  variables {
+    enabled                   = true
+    websearch_create_gateway  = true
+    websearch_enabled         = true
+    websearch_target_includes = ["source.example"]
+    websearch_target_excludes = ["blocked.example"]
+    image_uri                 = "123456789012.dkr.ecr.us-east-1.amazonaws.com/cyber-tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    rest_api_id               = "abc123"
+    tools_parent_resource_id  = "tools123"
+    api_execution_arn         = "arn:aws:execute-api:us-east-1:123456789012:abc123"
+    stage_name                = "dev"
+    worker_role_arns          = ["arn:aws:iam::123456789012:role/task-worker"]
+    authority_endpoint        = "https://gateway.example/internal/v1/agent/task"
+    authority_invoke_arns = [
+      "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/internal/v1/agent/task/tool-authorize",
+      "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/internal/v1/agent/task/artifact"
+    ]
+    sample_bucket_arn = "arn:aws:s3:::sample-bucket"
+  }
+  assert {
+    condition     = aws_bedrockagentcore_gateway.websearch[0].authorizer_type == "AWS_IAM" && aws_bedrockagentcore_gateway_target.websearch[0].target_configuration[0].mcp[0].connector[0].source[0].connector_id == "web-search" && aws_bedrockagentcore_gateway_target.websearch[0].target_configuration[0].mcp[0].connector[0].source[0].version == "1.2.0"
+    error_message = "A dedicated gateway must be IAM only with a version-pinned Web Search connector."
+  }
+  assert {
+    condition     = jsondecode(aws_bedrockagentcore_gateway_target.websearch[0].target_configuration[0].mcp[0].connector[0].configuration[0].parameter_values).domainFilter.include == ["source.example"] && jsondecode(aws_bedrockagentcore_gateway_target.websearch[0].target_configuration[0].mcp[0].connector[0].configuration[0].parameter_values).domainFilter.exclude == ["blocked.example"]
+    error_message = "Target-level filters must be preserved independently of caller filters."
+  }
 }

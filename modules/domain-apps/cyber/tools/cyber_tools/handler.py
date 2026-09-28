@@ -16,11 +16,13 @@ from cyber_tools.operations import CyberBody, CyberOperations, validate_payload
 
 def lambda_handler(event, context):
     authority = None
+    validated = False
     try:
         if event.get("httpMethod") != "POST" or event.get("resource") not in {
             "/tools/cyber",
             "/tools/cyber/common-crawl",
             "/tools/code-interpreter",
+            "/tools/websearch",
         }:
             raise HTTPException(404, "Not found")
         require_worker(
@@ -47,6 +49,10 @@ def lambda_handler(event, context):
         else:
             body = CyberBody.model_validate_json(raw)
             validate_payload(body.operation, body.payload)
+        if (body.operation == "search") != (
+            event.get("resource") == "/tools/websearch"
+        ):
+            raise HTTPException(404, "Tool is unavailable on this transport")
         if body.operation.startswith("browser_"):
             raise HTTPException(404, "Browser tools run in the Task worker")
         if (
@@ -55,12 +61,26 @@ def lambda_handler(event, context):
             and body.operation != "cancel_jobs"
         ):
             raise HTTPException(404, "Tool is unavailable on this transport")
-        cleanup = body.operation in ({"close", "cancel_jobs"} if code_route else {"cancel_jobs"})
-        if code_route and not cleanup and os.environ.get("ADP_CODE_INTERPRETER_ENABLED", "false").lower() != "true":
+        cleanup = body.operation in (
+            {"close", "cancel_jobs"} if code_route else {"cancel_jobs"}
+        )
+        if (
+            code_route
+            and not cleanup
+            and os.environ.get("ADP_CODE_INTERPRETER_ENABLED", "false").lower()
+            != "true"
+        ):
             raise HTTPException(503, "Code Interpreter unavailable")
         if (
-            not cleanup and not code_route
-            and os.environ.get("ADP_TASK_CYBER_ENABLED", "false").lower() != "true"
+            not cleanup
+            and not code_route
+            and os.environ.get(
+                "ADP_WEBSEARCH_ENABLED"
+                if body.operation == "search"
+                else "ADP_TASK_CYBER_ENABLED",
+                "false",
+            ).lower()
+            != "true"
         ):
             raise HTTPException(503, "Cyber tools unavailable")
         authority = TaskAuthorityClient(
@@ -72,9 +92,14 @@ def lambda_handler(event, context):
 
         def authorize():
             return authority.authorize(
-                attempt=attempt, tool=("code_interpreter." if code_route else "cyber.") + body.operation, cleanup=cleanup
+                attempt=attempt,
+                tool="websearch.search"
+                if body.operation == "search"
+                else ("code_interpreter." if code_route else "cyber.") + body.operation,
+                cleanup=cleanup,
             )
 
+        validated = True
         verified = authorize()
         backend = CyberBackends()
         if body.operation.startswith("common_crawl_"):
@@ -93,14 +118,21 @@ def lambda_handler(event, context):
             identifier = os.environ.get("ADP_CODE_INTERPRETER_ID", "")
             if not identifier:
                 raise HTTPException(503, "Code Interpreter resource unavailable")
-            service = CodeInterpreter(repo, authority, identifier, revalidate=lambda: authorize().identity)
+            service = CodeInterpreter(
+                repo, authority, identifier, revalidate=lambda: authorize().identity
+            )
             result = service.execute(verified.identity, body)
         else:
             service = CyberOperations(
-                repo, authority, backend, revalidate=lambda: authorize().identity,
+                repo,
+                authority,
+                backend,
+                revalidate=lambda: authorize().identity,
                 remaining_ms=getattr(context, "get_remaining_time_in_millis", None),
             )
-            result = service.execute(verified.identity, body.operation_id, body.operation, body.payload)
+            result = service.execute(
+                verified.identity, body.operation_id, body.operation, body.payload
+            )
         if authorize().identity != verified.identity:
             raise HTTPException(403, "Task authority changed")
         return response(200, result)
@@ -109,6 +141,14 @@ def lambda_handler(event, context):
             error.status_code, {"code": "tool_refused", "message": error.detail}
         )
     except (ValidationError, ValueError, TypeError):
+        if validated:
+            return response(
+                503,
+                {
+                    "code": "outcome_unavailable",
+                    "message": "Tool outcome unavailable; retain operation identity",
+                },
+            )
         return response(
             422, {"code": "invalid_request", "message": "Invalid cyber tool request"}
         )

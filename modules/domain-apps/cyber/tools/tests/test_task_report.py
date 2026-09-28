@@ -99,7 +99,7 @@ def test_missing_sources_are_explicit_and_untrusted_image_types_are_never_embedd
     text = render_report(report=report, context={"inputs": {}, "steps": []})[
         "content"
     ].decode()
-    assert text.count("This source was not investigated") == 2
+    assert text.count("This source was not investigated") == 3
     assert "No tool operations were recorded" in text
 
 

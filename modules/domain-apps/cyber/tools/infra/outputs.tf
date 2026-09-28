@@ -7,3 +7,4 @@ output "api_stage_deployment_required" {
   value       = var.enabled
   description = "The shared API owner must publish a deployment containing this route; this stack never modifies its stage."
 }
+output "websearch_route_execution_arn" { value = var.enabled ? "${var.api_execution_arn}/${var.stage_name}/POST/tools/websearch" : null }

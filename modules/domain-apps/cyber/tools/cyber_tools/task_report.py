@@ -58,8 +58,12 @@ def render_report(*, report, context):
             for f in report.get("findings", [])
             if source_ids.intersection(f.get("evidence_refs", []))
         ]
+        section_id = (
+            "websearch" if prefix == "websearch"
+            else "archive" if prefix.endswith("common_crawl") else "browser"
+        )
         blocks = [
-            f'<section id="{"archive" if prefix.endswith("common_crawl") else "browser"}"><div class="eyebrow">EVIDENCE SOURCE</div><h2>{title}</h2><p class="muted">{intro}</p>'
+            f'<section id="{section_id}"><div class="eyebrow">EVIDENCE SOURCE</div><h2>{title}</h2><p class="muted">{intro}</p>'
         ]
         if not source_steps:
             blocks.append(
@@ -79,6 +83,8 @@ def render_report(*, report, context):
                 blocks.append(
                     f'<p class="notice">{esc(step["tool"])}: {esc(step["operation_status"])}. This is not confirmed evidence.</p>'
                 )
+                if prefix == "websearch" and step["operation_status"] == "unknown":
+                    blocks.append('<p class="notice">One search may have been charged (estimated up to USD 0.007, excluding Gateway/model charges); reconcile with provider billing. Do not repeat an uncertain query.</p>')
                 continue
             if result.get("captures"):
                 captures = result["captures"][:30]
@@ -90,6 +96,16 @@ def render_report(*, report, context):
                         f'<tr><td>{esc(capture.get("fetch_time", "Unknown"))}</td><td class="url">{esc(capture.get("url", ""))}</td><td>{esc(capture.get("fetch_status", "Unknown"))}</td></tr>'
                     )
                 blocks.append("</tbody></table></div></details>")
+            if prefix == "websearch":
+                for source in result.get("results", [])[:25]:
+                    url = source.get("url", "")
+                    if url.startswith(("https://", "http://")):
+                        blocks.append(
+                            f'<p>{esc(source.get("title", "Source"))} · <a href="{esc(url)}" rel="noreferrer noopener">{esc(url)}</a> · {esc(source.get("publishedDate", ""))} {citation}<br>{esc(source.get("text", "")[:1200])}</p>'
+                        )
+                if result.get("results_truncated"):
+                    blocks.append('<p class="notice">Web Search sources were truncated by the Task result bound; coverage is incomplete.</p>')
+                blocks.append(f'<p class="muted">Searches: {esc(result.get("query_count", 0))}; estimated search charge USD {esc(result.get("estimated_search_usd", 0))}, excluding Gateway/model charges (not settled cost).</p>')
             image = result.get("image") or {}
             if image.get("media_type") in {"image/jpeg", "image/png"}:
                 try:
@@ -181,10 +197,11 @@ def render_report(*, report, context):
         css,
         "</style></head><body><main>",
         f'<header><h1>DOMAIN MRI</h1><p class="subject">{esc(subject)}</p><div class="meta">Task {esc(context.get("task_id", ""))}<br>Investigation started {esc(context.get("started_at", ""))} · timestamps in UTC</div></header>',
-        '<nav aria-label="Report sections"><a href="#verdict">Verdict</a><a href="#archive">Common Crawl</a><a href="#browser">Live browsing</a><a href="#steps">Investigation steps</a><a href="#coverage">Coverage</a><a href="#evidence">Evidence index</a></nav>',
+        '<nav aria-label="Report sections"><a href="#verdict">Verdict</a><a href="#websearch">Web Search</a><a href="#archive">Common Crawl</a><a href="#browser">Live browsing</a><a href="#steps">Investigation steps</a><a href="#coverage">Coverage</a><a href="#evidence">Evidence index</a></nav>',
         f'<section id="verdict"><div class="verdict-banner {tone}"><div class="verdict-label">VERDICT</div><h2>{esc(verdict)}</h2></div><h3>Reasoning and confidence</h3><p class="verdict">{esc(summary)}</p><h3>Evidence supporting the assessment</h3><ul class="findings">',
         "".join(map(finding, report.get("findings", []))),
         '</ul><p class="muted">The assessment reflects the recorded evidence and stated coverage. Confidence is shown per finding.</p></section>',
+        source_section("websearch", "What Web Search returned", "Current external references; dates and snippets are provider-supplied, not safety conclusions."),
         source_section(
             "cyber.common_crawl",
             "What Common Crawl showed",

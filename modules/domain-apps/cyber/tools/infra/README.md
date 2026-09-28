@@ -118,3 +118,8 @@ python3 -m pytest modules/domain-apps/cyber/tools/infra/tests/test_package_contr
 Terraform tests use a mocked provider. They validate default-off behavior,
 immutable-image admission and exact IAM route scope, and do not establish live
 network reachability or queue/application trust.
+
+Web Search's optional dedicated IAM Gateway/target, pinned connector version,
+exact IAM route and disabled-by-default rollout are specified in
+`docs/tools/agentcore-integration.md`. Existing Browser and Common Crawl routes
+are not switched by this stack.

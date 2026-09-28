@@ -78,13 +78,18 @@ resource "aws_lambda_function" "service" {
   reserved_concurrent_executions = 10
   environment {
     variables = merge(var.backend_environment, {
-      ADP_TASK_CYBER_ENABLED       = tostring(var.capability_enabled)
-      ADP_CODE_INTERPRETER_ENABLED = tostring(var.code_interpreter_enabled)
-      ADP_CODE_INTERPRETER_ID      = var.code_interpreter_identifier
-      CYBER_TOOLS_TABLE            = aws_dynamodb_table.operations[0].name
-      CYBER_TOOLS_WORKER_ROLES     = join(",", sort(tolist(var.worker_role_arns)))
-      ADP_TASK_AUTHORITY_ENDPOINT  = var.authority_endpoint
-      CYBER_SAMPLE_BUCKET          = trimprefix(var.sample_bucket_arn, "arn:aws:s3:::")
+      ADP_TASK_CYBER_ENABLED          = tostring(var.capability_enabled)
+      ADP_WEBSEARCH_ENABLED           = tostring(var.websearch_enabled)
+      ADP_WEBSEARCH_GATEWAY_URL       = (var.websearch_create_gateway ? aws_bedrockagentcore_gateway.websearch[0].gateway_url : var.websearch_gateway_url)
+      ADP_WEBSEARCH_REGION            = var.aws_region
+      ADP_WEBSEARCH_TARGET            = var.websearch_create_gateway ? aws_bedrockagentcore_gateway_target.websearch[0].name : var.websearch_target
+      ADP_WEBSEARCH_CONNECTOR_VERSION = "1.2.0"
+      CYBER_TOOLS_TABLE               = aws_dynamodb_table.operations[0].name
+      CYBER_TOOLS_WORKER_ROLES        = join(",", sort(tolist(var.worker_role_arns)))
+      ADP_TASK_AUTHORITY_ENDPOINT     = var.authority_endpoint
+      CYBER_SAMPLE_BUCKET             = trimprefix(var.sample_bucket_arn, "arn:aws:s3:::")
+      ADP_CODE_INTERPRETER_ENABLED    = tostring(var.code_interpreter_enabled)
+      ADP_CODE_INTERPRETER_ID         = var.code_interpreter_identifier
     })
   }
   dynamic "vpc_config" {
@@ -98,6 +103,10 @@ resource "aws_lambda_function" "service" {
     precondition {
       condition     = length(var.endpoint_security_group_ids) == 0 || var.vpc_id != ""
       error_message = "Endpoint ingress rules require the service-owned Lambda security group via vpc_id."
+    }
+    precondition {
+      condition     = !var.websearch_enabled || var.websearch_create_gateway || (var.websearch_gateway_arn != "" && var.websearch_gateway_url != "" && var.websearch_target != "" && startswith(var.websearch_gateway_arn, "arn:aws:bedrock-agentcore:${var.aws_region}:${var.aws_account_id}:gateway/"))
+      error_message = "Enabled Web Search requires a same-account, same-region pinned gateway and target."
     }
     precondition {
       condition     = var.api_execution_arn == "arn:aws:execute-api:${var.aws_region}:${var.aws_account_id}:${var.rest_api_id}" && alltrue([for arn in var.worker_role_arns : startswith(arn, "arn:aws:iam::${var.aws_account_id}:role/")])

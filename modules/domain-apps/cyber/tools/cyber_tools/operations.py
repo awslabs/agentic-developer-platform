@@ -57,6 +57,10 @@ class CyberBody(BaseModel):
 
 
 def validate_payload(operation, payload):
+    if operation == "search":
+        from cyber_tools.websearch import SearchInput
+        SearchInput.model_validate(payload)
+        return
     if operation.startswith(("common_crawl_", "browser_")):
         from cyber_tools.url_contract import validate_url_payload
         return validate_url_payload(operation, payload)
@@ -531,7 +535,7 @@ class CyberOperations:
                 "task_id": identity.task_id,
                 "operation_id": operation_id,
                 "operation_status": "unknown",
-                "result": {"status": "unknown"},
+                "result": {"status": "unknown", **({"potential_query_count": 1, "max_estimated_search_usd": 0.007} if operation == "search" else {})},
                 "error_code": "cyber_outcome_unknown",
             }
         sample = (
@@ -646,6 +650,13 @@ class CyberOperations:
                 self.put_job(identity, job_id, {**job, "status": "not_started"})
         elif operation == "result":
             result = self.backend.result(job)
+        elif operation == "search":
+            from cyber_tools.websearch import search
+            def authorize_search():
+                self.task(identity)
+                if self.revalidate is not None and self.revalidate() != identity:
+                    raise HTTPException(403, "Cyber authority changed")
+            result = search(payload, before_search=authorize_search)
         elif operation.startswith(("common_crawl_", "browser_")):
             result = self.backend.url_tools.execute(
                 identity, operation, payload, task, digest, self.repo, self.evidence, self.revalidate

@@ -137,3 +137,137 @@ failed and cancelled computations publish factual progress. Existing browser and
 Common Crawl transports are unchanged. The service test workflow uses the same
 boto3 version as the Lambda image and validates requests against its service model;
 these offline checks do not establish real-provider execution or sandbox isolation.
+
+## Web Search implementation (#6634)
+
+The Browser section above is the unchanged design checkpoint from #6637; **Web
+Search** is implemented here. There is no direct client authentication or
+model-proxy change. `POST /tools/websearch` is AWS_IAM, accepts only operation
+`search` under the existing Task attempt/operation envelope, and maps it to the
+exact `websearch.search` grant. Current principal policy, frozen Task grant and
+current persona tools must all permit that operation. The Task host routes the
+SDK's `tool.request` via its protected `ADP_TASK_TOOL_ROUTES` registry. No
+client-supplied tenant, principal or URL is authoritative. Browser stays
+`local:cyber_tools.task_browser.TaskBrowser` and Common Crawl stays on HTTP.
+
+A runnable request body (same UUID/Task rules as above):
+
+```json
+{"schema_version":"1.0","attempt":{"run":{"task_id":"tsk_00000000-0000-4000-8000-000000000001","invocation_id":"00000000-0000-4000-8000-000000000002","generation":1},"runtime_attempt_id":"00000000-0000-4000-8000-000000000003"},"operation_id":"00000000-0000-4000-8000-000000000004","operation":"search","payload":{"query":"example.org current security report","maxResults":2,"filters":{"domainFilter":{"include":["example.org"],"exclude":["ads.example.org"]},"publishedDateFilter":{"from":"2026-01-01T00:00:00Z"}}}}
+```
+
+`payload` is a strict object: required `query` (1–200 characters), optional
+`maxResults` (integer 1–25, default 10), optional `filters` with
+`domainFilter.include`/`exclude` (up to 100 lowercase domains each) and/or
+`publishedDateFilter.from`/`to` (ISO-8601 UTC seconds, inclusive; from <= to).
+Unknown fields, operations, paths, types and invalid limits fail with HTTP 422
+`{"code":"invalid_request","message":"Invalid Web Search tool request"}` or
+404 `tool_refused`, before `tools/list` or `tools/call`. Missing/revoked grant,
+wrong IAM role, different attempt/Task or mismatched scope fail before the paid
+call. For a confirmed operation the response is:
+
+```json
+{"schema_version":"1.0","task_id":"tsk_00000000-0000-4000-8000-000000000001","operation_id":"00000000-0000-4000-8000-000000000004","operation_status":"confirmed","result":{"status":"completed","results":[{"url":"https://example.org/report","title":"Report","publishedDate":"2026-09-01","text":"Bounded excerpt"}],"query_count":1,"estimated_search_usd":0.007,"pricing_source":"https://aws.amazon.com/bedrock/agentcore/pricing/"},"artifact":{"artifact_id":"art_00000000-0000-4000-8000-000000000005","content_type":"application/json","content_sha256":"<64 lowercase hex digits>","byte_length":420}}
+```
+
+`results=[]` has `status="empty"` (still confirmed and charged); a timeout,
+throttle or transport loss returns HTTP 503 `outcome_unavailable` with no
+query/error/credential details. A subsequent request with the same
+`operation_id`/payload reads the durable claim and returns `operation_status:
+"unknown"`, `result.status:"unknown"`, `result.potential_query_count:1`,
+`result.max_estimated_search_usd:0.007`, `error_code:"cyber_outcome_unknown"`;
+never automatically repeat an uncertain paid search. A changed payload under
+the same ID returns HTTP 409. Deduplication also uses the canonical payload
+plus attempt digest, so identical queries do not incur duplicate searches.
+Claims are fenced by the current Task version, attempt, state and the existing
+128-operation/Task cap. No search sessions, bulk index or new cancellation API
+are created; Task cancellation/revocation stops new starts, but cannot undo an
+already dispatched paid call. The artifact keeps bounded snippets (1200 chars),
+URL (2048), title (300), date (40), total result JSON (20 KiB);
+a `results_truncated` flag marks sources dropped at this bound; the SDK publishes sanitized start and
+completion/failure/uncertainty progress without the query, and the HTML report
+retains clickable source URLs/titles/dates and artifact citations. Provider
+charges are estimates/counts, not settled cost or token usage. The AWS pricing
+page listed $7 per 1,000 searches on 2026-09-28, plus Gateway and model charges;
+recheck before rollout.
+
+### Provider ownership and deployment
+
+`modules/domain-apps/cyber/tools/infra/websearch.tf` owns the IAM route,
+stage-qualified invoke permissions and (when `websearch_create_gateway=true`)
+a dedicated AWS_IAM AgentCore Gateway + target `connector_id=web-search`,
+**version 1.2.0**, target-level include/exclude lists and a Gateway service role
+restricted to `InvokeGateway` on its exact ARN and `InvokeWebSearch` on
+`arn:aws:bedrock-agentcore:<region>:aws:tool/web-search.v1`. Alternatively,
+use a **qualified existing** same-account/region IAM Gateway and target; provide
+its exact `websearch_gateway_arn`, `websearch_gateway_url` and
+`websearch_target`, pinned to 1.2.0 with its target-level policy and service
+role verified by the operator. Do not attach this service to an unqualified
+JWT-only gateway. The Lambda IAM role receives `InvokeGateway` on that gateway
+only. Discovery calls `tools/list` and checks the target-qualified
+`<target>___WebSearch` schema includes `query/maxResults/filters`; `tools/call`
+uses that discovered name, not the bare `WebSearch`. Target-level filters are
+always applied by AWS and cannot be widened by Task request filters.
+
+Both `enabled` (infrastructure) and `websearch_enabled` (paid-operation admission)
+default false. `websearch_target_includes` and `websearch_target_excludes`
+default empty. Runtime reads `ADP_WEBSEARCH_ENABLED`,
+`ADP_WEBSEARCH_GATEWAY_URL`, `ADP_WEBSEARCH_REGION`,
+`ADP_WEBSEARCH_TARGET`, `ADP_WEBSEARCH_CONNECTOR_VERSION=1.2.0`. In the app
+platform-integration module, `websearch_enabled=false` leaves the worker's
+`ADP_TASK_TOOL_ROUTES` without `websearch.search`; setting it true derives
+`https://<shared-api>/<stage>/tools/websearch` from `tools_endpoint`. Operator
+must configure persona/principal grants explicitly (no wildcard), include
+`task_tool_invoke_resources` in the protected worker invoke boundary for the exact stage-qualified route if a
+separate boundary is enforced, publish the reviewed shared API deployment,
+then enable app worker routing and Lambda admission. This stack does **not**
+auto-publish the shared API stage or deploy on merge. Use
+`modules/domain-apps/cyber/tools/infra/build-image.sh` and `deploy.sh plan`
+with the verified immutable image and repository's normal app-worker rollout;
+read their README for exact inputs. Terraform `init -backend=false`/`validate`
+and local tests need no account or AWS provisioning. Restore both enable flags
+to false first to roll back new searches (keep existing browser/CC routes),
+then remove exact persona/principal grants; preserve the DynamoDB operation
+store and shared login state for existing receipts. Only after retention review
+remove the dedicated target/Gateway/IAM resources through the owning Terraform
+state; never destroy a reused/shared gateway.
+
+Later **authorized** live smoke (operator only): follow
+`docs/adp-platform-deployment/deploy-with-agent.md`, confirm `aws sts
+get-caller-identity` for the chosen `AWS_PROFILE` and get account approval
+before deployment. Verify account, region (`us-east-1`, `eu-west-1`, or
+`ap-northeast-1`), quota, target version and IAM/protected invoke boundary.
+Submit one Task with `websearch.search` and `maxResults=1`, request restrictive
+domain/date filters, observe `tools/list`/`tools/call`, artifact citation and
+HTML source link. Test a denied Task separately (zero charge-producing calls),
+record receipt IDs privately and AWS billing/CloudTrail evidence without query
+contents or credentials. One permitted search estimates **$0.007** plus
+Gateway/model fees; set a strict one-search budget and do not retry unknown
+outcomes. Disable worker route/admission, then remove only smoke-created
+resources after receipts are retained. Local mocked tests are **not** live AWS
+qualification.
+
+Local verification (mocked AgentCore transport, isolated config):
+
+```bash
+uv venv --system-site-packages /tmp/adp-6634-tests
+uv pip install --python /tmp/adp-6634-tests/bin/python 'pytest>=8,<9' 'moto[dynamodb]>=5,<6'
+BG_CONFIG_DIR="$(mktemp -d)" PYTHONPATH=modules/agent-factory/agent-worker-image:modules/domain-apps/cyber/tools:modules/tools \
+  /tmp/adp-6634-tests/bin/python -m pytest -q modules/domain-apps/cyber/tools/tests/test_websearch.py
+npm --prefix modules/agent-factory/task-agents/investigator ci --include=dev --ignore-scripts
+npm --prefix modules/agent-factory/task-agents/investigator run build
+npm --prefix modules/agent-factory/task-agents/cyber ci --ignore-scripts
+npm --prefix modules/agent-factory/task-agents/cyber run build
+BG_CONFIG_DIR="$(mktemp -d)" npm --prefix modules/agent-factory/task-agents/cyber test
+terraform -chdir=modules/domain-apps/cyber/tools/infra init -backend=false -input=false
+terraform -chdir=modules/domain-apps/cyber/tools/infra validate
+```
+
+### Web Search review fixes
+
+Web Search follows bounded discovery cursors, rechecks Task authority immediately
+before the paid query, accepts standard MCP success envelopes and CRLF event
+streams, and reads at most 256 KiB of provider response before failing closed.
+Snippet truncation is disclosed even when the number of sources is unchanged.
+Shared handler/SDK/configuration now preserve Code Interpreter operations as well
+as the existing default browser and Common Crawl paths.

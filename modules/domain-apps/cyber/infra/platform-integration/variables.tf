@@ -73,3 +73,13 @@ variable "task_url_tools_enabled" {
   default     = false
   description = "Enable URL tool routing after the Lambda and native Task worker pass acceptance."
 }
+
+variable "websearch_enabled" {
+  description = "Publish the IAM Web Search Task route only after qualification. Existing browser routes remain active."
+  type        = bool
+  default     = false
+  validation {
+    condition     = !var.websearch_enabled || var.tools_endpoint != ""
+    error_message = "Enabling Web Search requires the existing cyber tools endpoint."
+  }
+}

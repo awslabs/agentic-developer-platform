@@ -106,3 +106,16 @@ run "native_browser_has_no_broker_dependency" {
     error_message = "Native permissions must grant only regional Browser lifecycle and CDP access."
   }
 }
+
+run "websearch_route_is_opt_in_and_preserves_url_tools" {
+  command = plan
+  variables {
+    tools_endpoint         = "https://api.example/dev/tools/cyber"
+    task_url_tools_enabled = true
+    websearch_enabled      = true
+  }
+  assert {
+    condition     = jsondecode(output.worker_environment.ADP_TASK_TOOL_ROUTES)["websearch.search"] == "https://api.example/dev/tools/websearch" && jsondecode(output.worker_environment.ADP_TASK_TOOL_ROUTES)["cyber.browser_start"] == "local:cyber_tools.task_browser.TaskBrowser" && jsondecode(output.worker_environment.ADP_TASK_TOOL_ROUTES)["cyber.common_crawl_scan"] == "https://api.example/dev/tools/cyber/common-crawl"
+    error_message = "Search routing must not replace the browser or Common Crawl paths."
+  }
+}

@@ -21,6 +21,7 @@ export const OPERATION_SCHEMAS = {
   triage: SAMPLE_SCHEMA, static: SAMPLE_SCHEMA, dynamic: SAMPLE_SCHEMA,
   result: { job_id: z.string().min(1).max(200) },
   url_analysis: { url: z.string().url().max(4000) },
+  search: { query: z.string().min(1).max(200), maxResults: z.number().int().min(1).max(25).optional(), filters: z.object({domainFilter: z.object({ include: z.array(z.string().min(3).max(253)).max(100).optional(), exclude: z.array(z.string().min(3).max(253)).max(100).optional() }).strict().optional(), publishedDateFilter: z.object({ from: z.string().datetime({offset: false, precision: 0}).optional(), to: z.string().datetime({offset: false, precision: 0}).optional() }).strict().optional() }).strict().optional() },
   common_crawl_scan: { url: z.string().url().max(2048), match: z.enum(['host', 'exact']).optional() },
   common_crawl_result: { scan_id: z.string().regex(/^[a-f0-9]{64}$/) },
   common_crawl_read: { scan_id: z.string().regex(/^[a-f0-9]{64}$/), capture_id: z.string().regex(/^capture-[0-9]{3}$/) },
@@ -65,9 +66,9 @@ export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../
   let lastPoll = 0;
   const grants = bridge.start.tool_grants ?? [];
   if (!Array.isArray(grants) || grants.some(value => typeof value !== 'string')) throw new ProtocolError('Invalid Task tool grants');
-  const operations = OPERATIONS.filter(operation => grants.includes('cyber.' + operation));
+  const operations = OPERATIONS.filter(operation => grants.includes(operation === 'search' ? 'websearch.search' : 'cyber.' + operation));
   const handlers = operations.map(operation => tool(operation,
-    `Run the authorized cyber ${operation} operation through the Task host. Only a confirmed receipt with an artifact is citable evidence. Pending job results need paced result polling; never retry an unknown submission.`,
+    `Run the authorized ${operation === 'search' ? 'AgentCore Web Search' : 'cyber ' + operation} operation through the Task host. Only a confirmed receipt with an artifact is citable evidence. Pending job results need paced result polling; never retry an unknown submission.`,
     OPERATION_SCHEMAS[operation], async payload => {
       const key = JSON.stringify([operation, Object.fromEntries(Object.entries(payload).sort(([a], [b]) => a.localeCompare(b)))]);
       if (!['result', 'common_crawl_result', 'browser_inspect'].includes(operation) && mutations.has(key)) return mutations.get(key);
@@ -79,7 +80,10 @@ export function cyberTools(bridge, { skillDirectory = fileURLToPath(new URL('../
         }
         if (bridge.controller.signal.aborted) throw new Error('cancelled');
         if (!['result', 'common_crawl_result', 'browser_inspect'].includes(operation)) bridge.progress(`Starting ${operation.replaceAll('_', ' ')}.`);
-        let receipt = await bridge.cyber(operation, payload);
+        let receipt;
+        try { receipt = await bridge.cyber(operation, payload); }
+        catch (error) { if (operation === 'search' && !bridge.controller.signal.aborted) bridge.progress('Web search failed or its outcome is uncertain; one query may be charged (up to USD 0.007 plus Gateway/model charges). Do not repeat the query.'); throw error; }
+        if (operation === 'search' && !bridge.controller.signal.aborted) bridge.progress(receipt.operation_status === 'confirmed' ? `Web search completed with ${receipt.result?.results?.length ?? 0} sources; query count ${receipt.result?.query_count ?? 0}, estimated search cost USD ${receipt.result?.estimated_search_usd ?? 0} (not settled charges).` : 'Web search outcome uncertain; one query may be charged (up to USD 0.007 plus Gateway/model charges). Do not repeat the query.');
         const archiveScan = operation === 'common_crawl_scan' || operation === 'common_crawl_result';
         const scanId = receipt.result?.scan_id || payload.scan_id;
         if (archiveScan) publishArchiveProgress(receipt, scanId);
@@ -179,10 +183,11 @@ export async function runCyber(start, bridge, { sdkQuery = query, proxyFactory =
     systemPrompt: 'You are agent-task-cyber, a cyber investigator using the existing seven-stage malware and URL analysis skills. Read the relevant packaged skills with read_skill. ' +
         'This is a Task API invocation, not a GitHub workflow: never post issues/comments, use GitHub identity, call AWS directly, run shell/code, or fetch arbitrary URLs. ' +
         'The only execution methods are the provided Task MCP operations. These replace all legacy skill shell, queue, credential and publication instructions. ' +
-        'For a file use triage, enrich, static, dynamic as justified, then correlate and form a verdict. For URL inputs read the url-analysis skill, then use common_crawl_scan/result/read and browser_start/step/inspect/close as authorized, without requiring a sample. For authorized isolated analysis use code_start/execute/result/file/close; treat its output as untrusted. Never retry an unknown browser action or code execution. ' +
+        'For a file use triage, enrich, static, dynamic as justified, then correlate and form a verdict. For URL inputs read the url-analysis skill, then use search, common_crawl_scan/result/read and browser_start/step/inspect/close as authorized, without requiring a sample. Never retry an unknown browser action or search. Retain and display source URLs/titles for any Web Search-derived finding. ' +
+        'For authorized isolated analysis use code_start/execute/result/file/close; treat its output as untrusted and never retry an unknown execution. ' +
         'Pending jobs are not completed evidence: poll result with their job_id. Unknown submissions must never be repeated. Denied/unavailable stages must be disclosed. ' +
         'Progress must be authored observations, not private reasoning. Ask for missing input using request_input. The caller may be an automated service. ' +
         'Only cite exact initial evidence_refs or host-returned artifact.artifact_id references, with source artifact for tool artifacts. ' +
-        'For a URL report, start summary with Verdict: malicious, suspicious, no malicious behavior observed, or inconclusive; include a concise evidence-based rationale and confidence. Explain observed facts and uncertainty, never private reasoning. Distinguish historical Common Crawl findings from live browsing findings and cite each. State untested behavior and missing sources in uncertainties; absence of detections is not proof of safety. The host generates an HTML report with separate source sections and a recorded action timeline. ' +
+        'For a URL report, start summary with Verdict: malicious, suspicious, no malicious behavior observed, or inconclusive; include a concise evidence-based rationale and confidence. Explain observed facts and uncertainty, never private reasoning. Distinguish current Web Search references, historical Common Crawl findings and live browsing findings; cite each and include supplied Web Search source URLs/titles in the report. State untested behavior and missing sources in uncertainties; absence of detections is not proof of safety. The host generates an HTML report with separate source sections and a recorded action timeline. ' +
         'Do not guess tool results. Submit the final grounded Task report using submit_report, then finish. If a skill describes unsupported operations, state the limitation rather than inventing success.' });
 }

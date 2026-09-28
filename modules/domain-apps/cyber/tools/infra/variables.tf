@@ -200,3 +200,57 @@ variable "common_crawl_policy" {
   type        = string
   default     = ""
 }
+
+variable "websearch_gateway_url" {
+  description = "Existing IAM-authorized AgentCore Gateway /mcp endpoint with a version-pinned web-search target."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.websearch_gateway_url == "" || can(regex("^https://[a-z0-9-]+\\.gateway\\.bedrock-agentcore\\.[a-z0-9-]+\\.amazonaws\\.com/mcp$", var.websearch_gateway_url))
+    error_message = "Supply an AgentCore Gateway HTTPS /mcp endpoint."
+  }
+}
+variable "websearch_gateway_arn" {
+  description = "Exact existing gateway ARN for the Lambda caller policy."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.websearch_gateway_arn == "" || can(regex("^arn:aws:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:gateway/[a-zA-Z0-9-]+$", var.websearch_gateway_arn))
+    error_message = "Supply the exact gateway ARN, no wildcard."
+  }
+}
+variable "websearch_target" {
+  description = "Name of the existing connectorId web-search target pinned to version 1.2.0."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.websearch_target == "" || can(regex("^[A-Za-z0-9_-]{1,64}$", var.websearch_target))
+    error_message = "Supply a target name without wildcards."
+  }
+}
+variable "websearch_enabled" {
+  description = "Admit new paid search operations only after the target, permissions and worker routes are qualified."
+  type        = bool
+  default     = false
+}
+variable "websearch_create_gateway" {
+  description = "Create a dedicated IAM AgentCore Gateway and pinned web-search target instead of reusing a qualified existing one."
+  type        = bool
+  default     = false
+}
+variable "websearch_target_includes" {
+  type    = list(string)
+  default = []
+  validation {
+    condition     = length(var.websearch_target_includes) <= 100 && alltrue([for domain in var.websearch_target_includes : can(regex("^[a-z0-9.-]+\\.[a-z]{2,}$", domain))])
+    error_message = "Supply up to 100 lowercase domain names."
+  }
+}
+variable "websearch_target_excludes" {
+  type    = list(string)
+  default = []
+  validation {
+    condition     = length(var.websearch_target_excludes) <= 100 && alltrue([for domain in var.websearch_target_excludes : can(regex("^[a-z0-9.-]+\\.[a-z]{2,}$", domain))])
+    error_message = "Supply up to 100 lowercase domain names."
+  }
+}

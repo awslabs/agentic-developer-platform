@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { OPERATIONS, HostBridge, frame } from '../src/protocol.mjs';
 import { normalizeRequest, streamedMessage, startProxy } from '../src/model-proxy.mjs';
 import { groundedReport, runCyber, TOOL_NAMES, cyberTools } from '../src/driver.mjs';
-const start = () => ({ tool_grants: OPERATIONS.map(name => 'cyber.' + name), task_id: 'tsk_' + randomUUID(), instructions: 'Investigate', inputs: { url: 'https://example.com' }, limits: { max_turns: 4, max_output_tokens_per_turn: 2000 } });
+const start = () => ({ tool_grants: OPERATIONS.map(name => name === 'search' ? 'websearch.search' : 'cyber.' + name), task_id: 'tsk_' + randomUUID(), instructions: 'Investigate', inputs: { url: 'https://example.com' }, limits: { max_turns: 4, max_output_tokens_per_turn: 2000 } });
 const report = () => ({ summary: 'Evidence insufficient', findings: [], uncertainties: ['No external analysis available'], recommendations: [], evidence_refs: [] });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 test('SDK normalization strips transport/cache metadata and preserves tool semantics', () => {
@@ -198,6 +198,24 @@ test('SDK system-role reminders use the Anthropic system field without changing 
  assert.throws(()=>normalizeRequest({messages:[messages[0],{role:'system',content:[{type:'tool_use',id:'bad'}]}]},8001));
 });
 
+test('SDK Web Search uses exact grant and Task-host routing with citable artifact and progress', async () => {
+ const writes=[];
+ const bridge=new HostBridge({...start(),tool_grants:['websearch.search']},value=>writes.push(value));
+ const handler=cyberTools(bridge).find(value=>value.name==='search');
+ assert.ok(handler);
+ assert.ok(!cyberTools(new HostBridge({...start(),tool_grants:[]},()=>{})).some(value=>value.name==='search'));
+ const searching=handler.handler({query:'indicator report',maxResults:1,filters:{domainFilter:{include:['source.example']}}});
+ await tick();
+ const request=writes.find(value=>value.type==='tool.request');
+ assert.equal(request.tool,'websearch.search');
+ assert.equal(request.payload.filters.domainFilter.include[0],'source.example');
+ bridge.receive({...request,type:'tool.result',operation_status:'confirmed',result:{status:'completed',results:[{url:'https://source.example/report',title:'Report',text:'Evidence'}],query_count:1,estimated_search_usd:0.007},artifact:{artifact_id:'art_source'}});
+ const response=await searching;
+ assert.equal(response.isError,false);
+ assert.match(response.content[0].text,/source.example\/report/);
+ assert.match(response.content[0].text,/art_source/);
+ assert.ok(writes.some(value=>value.type==='progress' && /estimated search cost/.test(value.message)));
+});
 
 test('Code execution blocks a final report until terminal result or confirmed close', async () => {
   const bridge = new HostBridge({...start(), tool_grants: ['execute','result','close'].map(n=>'code_interpreter.'+n)},()=>{});

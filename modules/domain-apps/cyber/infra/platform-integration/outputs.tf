@@ -20,6 +20,7 @@ output "worker_environment" {
     ADP_CYBER_TOOLS_ENDPOINT = var.tools_endpoint
     ADP_TASK_TOOL_ROUTES = jsonencode(merge(
       { for op in ["triage", "static", "dynamic", "result", "url_analysis", "enrich"] : "cyber.${op}" => var.tools_endpoint },
+      var.websearch_enabled ? { "websearch.search" = replace(var.tools_endpoint, "/tools/cyber", "/tools/websearch") } : {},
       var.task_url_tools_enabled ? merge(
         { for op in ["common_crawl_scan", "common_crawl_result", "common_crawl_read"] : "cyber.${op}" => "${var.tools_endpoint}/common-crawl" },
         { for op in ["browser_start", "browser_step", "browser_close", "browser_inspect", "browser_cleanup"] : "cyber.${op}" => "local:cyber_tools.task_browser.TaskBrowser" }
