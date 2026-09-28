@@ -1,0 +1,42 @@
+{
+  "flow_slug": "cyclic-example",
+  "title": "Deliberately invalid: the edge set contains a cycle",
+  "org_id": "org-example",
+  "spec_revision": "issue-4120-r1",
+  "nodes": [
+    {
+      "address": "cyclic-example/epic-1/wave-1/first",
+      "kind": "story",
+      "title": "First story — depends on third, which depends back on this"
+    },
+    {
+      "address": "cyclic-example/epic-1/wave-1/second",
+      "kind": "story",
+      "title": "Second story"
+    },
+    {
+      "address": "cyclic-example/epic-1/wave-1/third",
+      "kind": "story",
+      "title": "Third story — closes the loop back to first"
+    },
+    {
+      "address": "cyclic-example/epic-1/wave-1/eval",
+      "kind": "eval",
+      "title": "Wave 1 evaluation"
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "cyclic-example/epic-1/wave-1/first",
+      "to_address": "cyclic-example/epic-1/wave-1/second"
+    },
+    {
+      "from_address": "cyclic-example/epic-1/wave-1/second",
+      "to_address": "cyclic-example/epic-1/wave-1/third"
+    },
+    {
+      "from_address": "cyclic-example/epic-1/wave-1/third",
+      "to_address": "cyclic-example/epic-1/wave-1/first"
+    }
+  ]
+}

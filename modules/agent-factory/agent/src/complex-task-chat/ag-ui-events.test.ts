@@ -6,7 +6,7 @@
  * they verify the shape of events against required fields.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from '@jest/globals';
 import {
   AgUiEventType,
   agUiTimestamp,

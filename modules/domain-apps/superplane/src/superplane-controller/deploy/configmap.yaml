@@ -1,0 +1,159 @@
+# ============================================================================
+# Superplane ConfigMaps
+# ============================================================================
+# 1. superplane-config: General controller configuration
+# 2. superplane-onboard-scripts: Onboarding scripts from poc/eks-hybrid-skypilot/
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: superplane-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: superplane-controller
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: superplane
+data:
+  # EKS cluster name - set to your cluster name
+  EKS_CLUSTER_NAME: "superplane-test"
+  # AWS region for the EKS cluster
+  AWS_REGION: "us-east-1"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: superplane-onboard-scripts
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: superplane-controller
+    app.kubernetes.io/component: onboarding
+    app.kubernetes.io/part-of: superplane
+  annotations:
+    superplane.ai/source: "poc/eks-hybrid-skypilot/"
+    superplane.ai/description: >-
+      Onboarding scripts that handle the full node lifecycle:
+      IAM/SSM setup, SkyPilot GPU provisioning, Cilium CNI install,
+      WireGuard tunnel, and validation.
+data:
+  # -----------------------------------------------------------------------
+  # onboard-node.sh - Main entry point for node onboarding
+  # -----------------------------------------------------------------------
+  # This script orchestrates the full onboarding sequence:
+  #   1. Create IAM role + SSM activation
+  #   2. Provision GPU node via SkyPilot + join EKS
+  #   3. Install Cilium CNI + NVIDIA device plugin
+  #   4. Setup WireGuard VPN
+  #   5. Validate everything works
+  #
+  # Usage:
+  #   ./onboard-node.sh                    # Full onboarding (single node)
+  #   ./onboard-node.sh --num-nodes 2      # Multi-node
+  #   ./onboard-node.sh --from 3           # Resume from step 3
+  #   ./onboard-node.sh --skip-wireguard   # Skip WireGuard
+  # -----------------------------------------------------------------------
+  onboard-node.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    FROM_STEP=1
+    SKIP_WIREGUARD=false
+    NUM_NODES=1
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --from) FROM_STEP="$2"; shift 2 ;;
+            --skip-wireguard) SKIP_WIREGUARD=true; shift ;;
+            --num-nodes) NUM_NODES="$2"; shift 2 ;;
+            --help|-h)
+                echo "Usage: $0 [--from N] [--skip-wireguard] [--num-nodes N]"
+                exit 0 ;;
+            *) echo "Unknown option: $1"; exit 1 ;;
+        esac
+    done
+
+    echo "============================================"
+    echo "Hybrid Node Onboarding"
+    echo "============================================"
+
+    if [[ ! -f "${SCRIPT_DIR}/config.local.env" ]]; then
+        echo "ERROR: config.local.env not found in ${SCRIPT_DIR}"
+        echo "Generate it from the controller with the appropriate cluster settings."
+        exit 1
+    fi
+
+    source "${SCRIPT_DIR}/config.local.env"
+
+    echo "Cluster:    ${CLUSTER_NAME:-unset}"
+    echo "Region:     ${AWS_REGION:-unset}"
+    echo "Cloud:      ${CLOUD:-unset}"
+    echo "GPU Type:   ${GPU_TYPE:-unset}"
+    echo "Num Nodes:  ${NUM_NODES}"
+    echo "From Step:  ${FROM_STEP}"
+    echo "============================================"
+
+    # Step 1: IAM + SSM setup
+    if [[ ${FROM_STEP} -le 1 ]]; then
+        echo "[Step 1/5] Setting up IAM role and SSM activation..."
+        if [[ -f "${SCRIPT_DIR}/02-setup-iam-ssm.sh" ]]; then
+            bash "${SCRIPT_DIR}/02-setup-iam-ssm.sh"
+        else
+            echo "WARN: 02-setup-iam-ssm.sh not found, using pre-configured SSM credentials"
+        fi
+    fi
+
+    # Step 2: Provision GPU node via SkyPilot
+    if [[ ${FROM_STEP} -le 2 ]]; then
+        echo "[Step 2/5] Provisioning GPU node via SkyPilot..."
+        sky launch -y -c "${CLUSTER_NAME}-gpu" \
+            --cloud "${CLOUD:-aws}" \
+            --gpus "${GPU_TYPE:-H100}:1" \
+            --num-nodes "${NUM_NODES}" \
+            --disk-size "${DISK_SIZE_GB:-256}" \
+            --down || true
+    fi
+
+    # Step 3: Join node to EKS
+    if [[ ${FROM_STEP} -le 3 ]]; then
+        echo "[Step 3/5] Joining node to EKS cluster..."
+        if [[ -f "${SCRIPT_DIR}/04-join-node.sh" ]]; then
+            bash "${SCRIPT_DIR}/04-join-node.sh"
+        fi
+    fi
+
+    # Step 4: Install Cilium CNI
+    if [[ ${FROM_STEP} -le 4 ]]; then
+        echo "[Step 4/5] Installing Cilium CNI and NVIDIA device plugin..."
+        if [[ -f "${SCRIPT_DIR}/05-install-cilium.sh" ]]; then
+            bash "${SCRIPT_DIR}/05-install-cilium.sh"
+        fi
+    fi
+
+    # Step 5: WireGuard tunnel
+    if [[ ${FROM_STEP} -le 5 ]] && [[ "${SKIP_WIREGUARD}" != "true" ]]; then
+        echo "[Step 5/5] Setting up WireGuard tunnel..."
+        if [[ -f "${SCRIPT_DIR}/08-setup-wireguard.sh" ]]; then
+            bash "${SCRIPT_DIR}/08-setup-wireguard.sh"
+        fi
+    fi
+
+    echo "============================================"
+    echo "Onboarding complete!"
+    echo "============================================"
+
+  # -----------------------------------------------------------------------
+  # config.env - Template configuration (controller generates config.local.env)
+  # -----------------------------------------------------------------------
+  config.env: |
+    # Superplane Node Onboarding Configuration
+    # This file is auto-generated by the superplane-controller.
+    # Do not edit manually.
+    export CLUSTER_NAME="${EKS_CLUSTER_NAME}"
+    export AWS_REGION="${AWS_REGION}"
+    export CLOUD="${CLOUD}"
+    export GPU_TYPE="${GPU_TYPE}"
+    export GPU_COUNT="${GPU_COUNT}"
+    export DISK_SIZE_GB="${DISK_SIZE_GB}"
+    export K8S_VERSION="${K8S_VERSION}"
+    export SSM_ACTIVATION_ID="${SSM_ACTIVATION_ID}"
+    export SSM_ACTIVATION_CODE="${SSM_ACTIVATION_CODE}"
+    export WIREGUARD_ENABLED="${WIREGUARD_ENABLED}"

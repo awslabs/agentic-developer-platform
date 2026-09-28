@@ -1,0 +1,80 @@
+name: Orchestration Review Contract Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/orchestration-review/**'
+      - 'modules/agent-factory/agent-worker-image/lib/review*'
+      - 'modules/agent-factory/agent-worker-image/lib/codex_review_delivery.py'
+      - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/agent-factory/agent-worker-image/adp_review/**'
+      - 'modules/agent-factory/agent-worker-image/tests/test_review*'
+      - 'modules/agent-factory/agent-worker-image/tests/test_codex_review_delivery.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_entrypoint.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
+      - 'modules/gateway/src/orchestration/review*'
+      - 'modules/gateway/src/agentauth/artifact_service.py'
+      - 'modules/gateway/src/agentauth/review_upload.py'
+      - '.github/workflows/orchestration-review-contract-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/orchestration-review/**'
+      - 'modules/agent-factory/agent-worker-image/lib/review*'
+      - 'modules/agent-factory/agent-worker-image/lib/codex_review_delivery.py'
+      - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/agent-factory/agent-worker-image/adp_review/**'
+      - 'modules/agent-factory/agent-worker-image/tests/test_review*'
+      - 'modules/agent-factory/agent-worker-image/tests/test_codex_review_delivery.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_entrypoint.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
+      - 'modules/gateway/src/orchestration/review*'
+      - 'modules/gateway/src/agentauth/artifact_service.py'
+      - 'modules/gateway/src/agentauth/review_upload.py'
+      - '.github/workflows/orchestration-review-contract-tests.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-contract-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Review contract and worker delivery
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: pip install pytest pytest-timeout 'pydantic>=2,<3' 'boto3>=1.34' 'requests>=2.31' 'PyJWT[crypto]>=2.9'
+      - name: Validate golden contract and actual worker producer
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          # Keep hosted worker/queue credentials and endpoints out of offline tests.
+          keep = {'PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'LD_LIBRARY_PATH'}
+          env = {key: value for key, value in os.environ.items() if key in keep}
+          env['AWS_EC2_METADATA_DISABLED'] = 'true'
+          subprocess.run([sys.executable, '-m', 'pytest',
+                          'contracts/orchestration-review/v1/test_review_result_contract.py',
+                          '-q', '--tb=short', '--timeout=60'], env=env, check=True)
+          worker = Path('modules/agent-factory/agent-worker-image').resolve()
+          env['PYTHONPATH'] = str(worker)
+          subprocess.run([sys.executable, '-m', 'pytest',
+                          'tests/test_review_result_writer.py', 'tests/test_review_delivery.py',
+                          'tests/test_codex_review_delivery.py', 'tests/test_review_cycle_input.py',
+                          'tests/test_status_gateway_client.py', 'tests/test_entrypoint.py',
+                          '-q', '--tb=short', '--timeout=60'], cwd=worker, env=env, check=True)
+          PY

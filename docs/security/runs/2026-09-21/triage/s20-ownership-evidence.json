@@ -1,0 +1,434 @@
+{
+  "schema_version": 2,
+  "work_package": "S20",
+  "issue": 5619,
+  "source_plan": {
+    "commit": "42ade12e0f09570179c86a75a1c224cabab77cb4",
+    "path": "docs/security/runs/2026-09-21/work-packages.md"
+  },
+  "contract_projection": {
+    "path": "docs/security/runs/2026-09-21/triage/s20-ownership-contracts.json",
+    "sha256": "c89a617572317c1a6ee8774d2736123eedb87bcded9d7f977411ade15610f3aa"
+  },
+  "identity_attestation": {
+    "commit": "4683b3ea479c7609a08f99677d9625a5e99895d9",
+    "path": "doc/ai-dlc-engine/ai-dlc-topology-preview.json",
+    "sha256": "8cb7ce37479ab6140a41d9640bea034f2598eb7d97c74f2f752dbaedf8388b47",
+    "scope": "issue numbers and exact work-package titles only"
+  },
+  "record_key_digest": "SHA-256 of sorted compact JSON [tool,artifact,result_index] tuples, one tuple per line",
+  "compared_existing_work_packages": [
+    "S01",
+    "S02",
+    "S03",
+    "S04",
+    "S05",
+    "S06",
+    "S07",
+    "S08",
+    "S09",
+    "S10",
+    "S11",
+    "S12",
+    "S13",
+    "S14",
+    "S15",
+    "S16",
+    "S17",
+    "S18",
+    "S19"
+  ],
+  "work_packages": [
+    {
+      "id": "S01",
+      "issue": 5600,
+      "title": "[Security 2026-09-21] S01: Remediate Superplane controller runtime and embedded Helm dependencies",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S02",
+      "issue": 5601,
+      "title": "[Security 2026-09-21] S02: Remove or replace the vulnerable ecdsa dependency in Superplane API",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S03",
+      "issue": 5602,
+      "title": "[Security 2026-09-21] S03: Refresh the pinned SkyPilot image and its bundled vulnerable packages",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S04",
+      "issue": 5603,
+      "title": "[Security 2026-09-21] S04: Validate and harden agent gateway/knowledge outbound destinations",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S05",
+      "issue": 5604,
+      "title": "[Security 2026-09-21] S05: Validate fixed-origin GitHub API SSRF alerts",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S06",
+      "issue": 5605,
+      "title": "[Security 2026-09-21] S06: Update the agent npm dependency tree",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S07",
+      "issue": 5606,
+      "title": "[Security 2026-09-21] S07: Update the frontend npm dependency tree",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S08",
+      "issue": 5607,
+      "title": "[Security 2026-09-21] S08: Resolve the Git blob SHA-1 scanner finding without changing Git semantics",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S09",
+      "issue": 5608,
+      "title": "[Security 2026-09-21] S09: Constrain historical-analysis Python execution and resolve its alert",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S10",
+      "issue": 5609,
+      "title": "[Security 2026-09-21] S10: Revalidate and enforce verified gateway caller identity",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S11",
+      "issue": 5610,
+      "title": "[Security 2026-09-21] S11: Revalidate tenant identity resolution and external account ownership",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S12",
+      "issue": 5611,
+      "title": "[Security 2026-09-21] S12: Bind vault credentials and worker authority to the verified run",
+      "inventory_role": "existing-owner"
+    },
+    {
+      "id": "S13",
+      "issue": 5612,
+      "title": "[Security 2026-09-21] S13: Revalidate admin role ceilings and Cognito privilege boundaries",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S14",
+      "issue": 5613,
+      "title": "[Security 2026-09-21] S14: Constrain CI runner IAM escalation in both infrastructure trees",
+      "inventory_role": "existing-owner"
+    },
+    {
+      "id": "S15",
+      "issue": 5614,
+      "title": "[Security 2026-09-21] S15: Secure knowledge ingestion execution, source access and tenant ACLs together",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S16",
+      "issue": 5615,
+      "title": "[Security 2026-09-21] S16: Enforce chat session and artifact ownership across ingress and retrieval",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S17",
+      "issue": 5616,
+      "title": "[Security 2026-09-21] S17: Secure cyber worker script execution and tenant-scoped object access",
+      "inventory_role": "existing-owner"
+    },
+    {
+      "id": "S18",
+      "issue": 5617,
+      "title": "[Security 2026-09-21] S18: Make budget reservation, settlement and transcripts use trusted request identity",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S19",
+      "issue": 5618,
+      "title": "[Security 2026-09-21] S19: Restore trustworthy one-off scan coverage and severity reporting",
+      "inventory_role": "reviewed-no-assignment"
+    },
+    {
+      "id": "S20",
+      "issue": 5619,
+      "title": "[Security 2026-09-21] S20: Triage all unscored scanner errors into actionable findings",
+      "inventory_role": "triage-owner"
+    },
+    {
+      "id": "S21",
+      "issue": 5620,
+      "title": "[Security 2026-09-21] S21: Integrate fixes, reconcile AWS Security Agent results and verify the complete run",
+      "inventory_role": "existing-owner"
+    }
+  ],
+  "open_record_partition": {
+    "record_count": 396,
+    "record_keys_sha256": "805dddb8b184003d80636007a8960d494fbb9f147477787395b13ac304092605",
+    "existing_owner_record_count": 62,
+    "unowned_followon_record_count": 334
+  },
+  "existing_owner_mappings": [
+    {
+      "owner": "S12",
+      "issue": 5611,
+      "title": "[Security 2026-09-21] S12: Bind vault credentials and worker authority to the verified run",
+      "classification": "existing-work-package",
+      "record_count": 27,
+      "record_keys_sha256": "a44b078d19fb7ff59bc0f0f721ab5eef3144c0e675e82eab4eb79376ca65bf01",
+      "files": [
+        "modules/agent-context/terraform/kms.tf",
+        "modules/agent-factory/infra/kms.tf",
+        "modules/agent-factory/webhook-ingress/infra/kms.tf",
+        "modules/gateway/cloudwatch-agent/terraform/kms.tf",
+        "modules/gateway/cloudwatch-agent/terraform/main.tf",
+        "modules/gateway/infra/kms.tf",
+        "platform/infra/kms.tf",
+        "platform/infra/modules/iam/main.tf"
+      ],
+      "decision_basis": "The KMS grants and worker execution policies directly control the vault/worker authority named by S12."
+    },
+    {
+      "owner": "S14",
+      "issue": 5613,
+      "title": "[Security 2026-09-21] S14: Constrain CI runner IAM escalation in both infrastructure trees",
+      "classification": "existing-work-package",
+      "record_count": 27,
+      "record_keys_sha256": "ecf19d9759103774a52916bca06ca6abe042dbe4fbeb84faec7c43b2e1791776",
+      "files": [
+        "modules/agent-factory/infra/modules/runner-iam/main.tf",
+        "modules/agent-factory/runner-infra/infrastructure/iam.tf",
+        "platform/infra/modules/codebuild/main.tf"
+      ],
+      "decision_basis": "Both runner IAM trees and the shared CodeBuild administrator role are CI escalation surfaces named by S14; the CodeBuild record remains open under that existing owner."
+    },
+    {
+      "owner": "S17",
+      "issue": 5616,
+      "title": "[Security 2026-09-21] S17: Secure cyber worker script execution and tenant-scoped object access",
+      "classification": "existing-work-package",
+      "record_count": 4,
+      "record_keys_sha256": "9843705d60417c199faaaf38fe598f8807f33445d5effaca91b868c1f25c5868",
+      "files": [
+        "modules/domain-apps/cyber/infra/ecr.tf",
+        "modules/domain-apps/cyber/infra/kms.tf"
+      ],
+      "decision_basis": "The cyber ECR and KMS policies are worker infrastructure within the cyber execution and object-access boundary named by S17."
+    },
+    {
+      "owner": "S21",
+      "issue": 5620,
+      "title": "[Security 2026-09-21] S21: Integrate fixes, reconcile AWS Security Agent results and verify the complete run",
+      "classification": "existing-work-package",
+      "record_count": 4,
+      "record_keys_sha256": "efa7554582ce5c42bf3f40868a59be97e1b3b76a43b251b9dd0f83319cb27fce",
+      "files": [
+        "platform/infra/modules/ecr/main.tf"
+      ],
+      "decision_basis": "The shared platform ECR tag policy is reserved for S21 by the S20 assignment boundary for shared release pins and global scanner dispositions."
+    }
+  ],
+  "unowned_followons": [
+    {
+      "followon": "FOLLOWON-A",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 10,
+      "record_keys_sha256": "a97d5e899defdc4b935ac215629587387c69a19505b96510521e6aa966e42871",
+      "files": [
+        "modules/agent-factory/actions/setup-beads/action.yml",
+        "modules/gateway/cli/install.sh",
+        "modules/source-control/gitlab/infra/user_data.sh",
+        "platform/scripts/deploy-all.sh",
+        "platform/scripts/install-prereqs.sh"
+      ],
+      "additional_scope_files": []
+    },
+    {
+      "followon": "FOLLOWON-B",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 6,
+      "record_keys_sha256": "7fe90740f14f0568cc051292bfee64f2eb1c507f04ef6df7e2c8707505221e9e",
+      "files": [
+        "modules/domain-apps/superplane/src/superplane-api/app/services/scanner.py"
+      ],
+      "additional_scope_files": []
+    },
+    {
+      "followon": "FOLLOWON-C",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 4,
+      "record_keys_sha256": "11b81f8bbaec36d88f7b843ab1a2e1768db95d650625e88e3cc17c74c3081041",
+      "files": [
+        "modules/agent-factory/runner-infra/infrastructure/eks.tf",
+        "modules/domain-apps/cyber/infra/eks.tf"
+      ],
+      "additional_scope_files": [
+        "modules/agent-factory/runner-infra/infrastructure/variables.tf",
+        "modules/domain-apps/cyber/infra/variables.tf"
+      ]
+    },
+    {
+      "followon": "FOLLOWON-D-DEFAULT-SG",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 3,
+      "record_keys_sha256": "73c156d56a8869bd0ad9b7b65596404895e54cd7e45b5f6c0e6bf9dc7609b17c",
+      "files": [
+        "modules/domain-apps/cyber/infra/vpc.tf",
+        "modules/domain-apps/superplane/infra/workspaces/network.tf",
+        "platform/infra/modules/networking/main.tf"
+      ],
+      "additional_scope_files": []
+    },
+    {
+      "followon": "FOLLOWON-D-IMDSV2",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 1,
+      "record_keys_sha256": "a74d29b257a9c4416670583fd93233690eb23bbc0ed2579c9b05a2faff4a4b91",
+      "files": [
+        "platform/infra/gvisor-nodegroup.tf"
+      ],
+      "additional_scope_files": []
+    },
+    {
+      "followon": "FOLLOWON-D-SECRET-ROTATION",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 15,
+      "record_keys_sha256": "3b9d1eae287a010969508a30f3facd728a2e70eaf9f6af9858f0f13ada33dc7e",
+      "files": [
+        "modules/agent-factory/webhook-ingress/infra/engine-command-signing.tf",
+        "modules/agent-factory/webhook-ingress/infra/secrets.tf",
+        "modules/domain-apps/cyber/infra/peering.tf",
+        "modules/gateway/infra/modules/cognito/github_idp.tf",
+        "modules/gateway/infra/modules/cognito/main.tf",
+        "modules/research/gbrain/terraform/main.tf",
+        "modules/research/gbrain/terraform/modules/rds/main.tf",
+        "modules/source-control/gitlab/infra/secrets.tf",
+        "modules/source-control/gitlab/infra/ssm.tf"
+      ],
+      "additional_scope_files": []
+    },
+    {
+      "followon": "FOLLOWON-E",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 244,
+      "record_keys_sha256": "0f0418040241dd75fa8898fae018ba80d31f6daed35094375418e52db3c60e99",
+      "files": [
+        "modules/agent-context/kubernetes/codegraph-deployment.yaml",
+        "modules/agent-context/manifests/codegraph.yaml",
+        "modules/agent-context/manifests/context-mcp.yaml",
+        "modules/agent-context/manifests/deepwiki.yaml",
+        "modules/agent-context/manifests/litellm-proxy.yaml",
+        "modules/agent-context/manifests/personal-context-synthesis-cronjob.yaml",
+        "modules/agent-context/manifests/repo-refresh-cronjob.yaml",
+        "modules/agent-context/manifests/vuln-scan-cronjob.yaml",
+        "modules/agent-context/manifests/zoekt.yaml",
+        "modules/agent-factory/agent/k8s/image-prepull-daemonset.yaml",
+        "modules/domain-apps/superplane/k8s/40-skypilot-api.yaml",
+        "modules/domain-apps/superplane/migrations/job.yaml",
+        "modules/domain-apps/superplane/src/superplane-api/deploy/db-migrate-job.yaml",
+        "modules/domain-apps/superplane/src/superplane-api/deploy/db-seed-job.yaml",
+        "modules/domain-apps/superplane/src/superplane-api/deploy/deployment.yaml",
+        "modules/domain-apps/superplane/src/superplane-api/deploy/integration-test.yaml",
+        "modules/domain-apps/superplane/src/superplane-controller/deploy/controller.yaml",
+        "modules/domain-apps/superplane/src/superplane-platform-monitor/deploy/deployment.yaml",
+        "modules/gateway/cli/examples/k8s-agent.yaml",
+        "modules/gateway/k8s/deployment.yaml"
+      ],
+      "additional_scope_files": []
+    },
+    {
+      "followon": "FOLLOWON-F",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 41,
+      "record_keys_sha256": "ed73e7a86a0d0e3c8a1c9b15352cf0fe12ffd7ff525e9b7512e4e2602e96a6b6",
+      "files": [
+        ".github/workflows/_deploy-eks.yml",
+        ".github/workflows/agent-context-deploy.yml",
+        ".github/workflows/agent-context-infra-apply.yml",
+        ".github/workflows/agent-context-infra-destroy.yml",
+        ".github/workflows/agent-context-verb-ops.yml",
+        ".github/workflows/agent-factory-infra-destroy.yml",
+        ".github/workflows/credential-binding-adversarial-e2e.yml",
+        ".github/workflows/credential-binding-flip.yml",
+        ".github/workflows/e2e-chat-playwright.yml",
+        ".github/workflows/e2e-new-ui-playwright.yml",
+        ".github/workflows/engine-bridge-smoke-seed.yml",
+        ".github/workflows/eval-cli-uplift.yml",
+        ".github/workflows/gateway-deploy.yml",
+        ".github/workflows/gateway-infra-apply.yml",
+        ".github/workflows/gateway-infra-destroy.yml",
+        ".github/workflows/gbrain-infra-destroy.yml",
+        ".github/workflows/gitlab-infra-destroy.yml",
+        ".github/workflows/orchestration-live-tests.yml",
+        ".github/workflows/platform-deploy-mgmt-infra-apply.yml",
+        ".github/workflows/platform-infra-apply.yml",
+        ".github/workflows/platform-infra-destroy.yml",
+        ".github/workflows/seed-hosted-tenant.yml",
+        ".github/workflows/undeploy.yml",
+        ".github/workflows/webhook-ingress-destroy.yml"
+      ],
+      "additional_scope_files": []
+    },
+    {
+      "followon": "FOLLOWON-G",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 1,
+      "record_keys_sha256": "f21b7dcd1a06add906703517112c55ba924cccf8fe4a1deadbd7e199f09489b9",
+      "files": [
+        "modules/research/gbrain/terraform/modules/storage/main.tf"
+      ],
+      "additional_scope_files": [
+        "modules/research/gbrain/terraform/main.tf"
+      ]
+    },
+    {
+      "followon": "FOLLOWON-H",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 1,
+      "record_keys_sha256": "e7d6b371a65cae2766c71a486b59646ce07b2a53d53cabac4881a9159b2a8daf",
+      "files": [
+        "modules/agent-context/terraform/backend.tf"
+      ],
+      "additional_scope_files": [
+        "modules/agent-context/deploy.sh"
+      ]
+    },
+    {
+      "followon": "FOLLOWON-I",
+      "classification": "validated-unowned",
+      "overlapping_work_packages": [],
+      "record_count": 8,
+      "record_keys_sha256": "ca22c721a176c402dcb6214154c24ed9c68daa7c80a5b4cf25a84dfc66c23f0b",
+      "files": [
+        "modules/agent-factory/client-workflows/.github/workflows/call-agent-architect.yml",
+        "modules/agent-factory/client-workflows/.github/workflows/call-agent-developer.yml",
+        "modules/agent-factory/client-workflows/.github/workflows/call-agent-operations.yml",
+        "modules/agent-factory/client-workflows/.github/workflows/call-agent-pm.yml",
+        "modules/agent-factory/client-workflows/.github/workflows/call-agent-product.yml",
+        "modules/agent-factory/client-workflows/.github/workflows/call-agent-pt-superpower.yml",
+        "modules/agent-factory/client-workflows/.github/workflows/call-agent-reviewer.yml",
+        "modules/agent-factory/client-workflows/.github/workflows/call-skill-agent.yml"
+      ],
+      "additional_scope_files": []
+    }
+  ],
+  "review_method": [
+    "Compare every open record source location and required remediation to each S01-S19 work-package contract.",
+    "Assign an existing owner only where the record behavior is within that named contract; do not infer ownership from a broad parent directory.",
+    "Classify a follow-on as unowned only after all S01-S19 contracts were considered; retain every source file and record-key digest for review."
+  ]
+}

@@ -1,5 +1,6 @@
 """Usage service implementing IUsageService interface."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -7,6 +8,8 @@ from typing import Any
 from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pricing_policy import PricingDecision
+from src.orchestration.dispatch import GraphAttribution
 from src.shared.interfaces.usage import IUsageService
 from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
@@ -45,12 +48,18 @@ class UsageService(IUsageService):
         model: str,
         input_tokens: int,
         output_tokens: int,
-        cost_usd: float,
+        cost_usd: Decimal | float,
         latency_ms: int,
         status_code: int,
         request_id: str | None = None,
         bedrock_account_id: str | None = None,
         agent_run_id: str | None = None,
+        cache_read_input_tokens: int | None = None,
+        cache_creation_input_tokens: int | None = None,
+        client_tool: str | None = None,
+        pricing_decision: "PricingDecision | None" = None,
+        provider_request_id: str | None = None,
+        destination_region: str | None = None,
     ) -> None:
         """
         Log a Bedrock API request.
@@ -66,9 +75,28 @@ class UsageService(IUsageService):
             request_id: Optional request ID
             bedrock_account_id: Optional Bedrock account ID used
             agent_run_id: Optional agent run/invocation ID (issue #1616)
+            cache_read_input_tokens: Prompt-cache read tokens, or None when the
+                provider did not report the counter (issue #4180). Pass None
+                rather than 0 for "unreported" — the distinction is what makes
+                the cache hit-rate query meaningful.
+            cache_creation_input_tokens: Prompt-cache write tokens, same
+                None-means-unreported contract.
+            client_tool: Normalised client tool that made the request (issue
+                #4398), from ``src/proxy/client_tool.py``. Pass None for "not
+                captured" — never a placeholder like "unknown". The column is
+                not back-fillable, so None is the honest value for an
+                unrecognised client and must stay distinguishable from a real
+                tool name.
+            pricing_decision: The one internally-computed pricing decision used
+                for this request's settlement. It is persisted, never re-read;
+                None means the pricing revision was not captured.
         """
         log_entry = UsageLog(
-            org_id=context.org_id,
+            timestamp=context._budget_request_timestamp,
+            # Issue #4132: usage_logs is an ATTRIBUTION surface — a hosted run
+            # must land on the tenant that triggered it, not on __platform__.
+            # Never context.org_id (authenticated-only, authorization's field).
+            org_id=context.attributed_org_id,
             department_id=context.department_id,
             team_id=context.team_id,
             user_id=context.user_id,
@@ -76,16 +104,243 @@ class UsageService(IUsageService):
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_usd=Decimal(str(cost_usd)),
+            cost_usd=cost_usd if isinstance(cost_usd, Decimal) else Decimal(str(cost_usd)),
             latency_ms=latency_ms,
             status_code=status_code,
             request_id=request_id,
+            provider_request_id=provider_request_id,
+            destination_region=destination_region,
             bedrock_account_id=bedrock_account_id,
             agent_run_id=agent_run_id,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            client_tool=client_tool,
+            # Issue #4898: the graph node this call is attributable to. Resolved
+            # from the request's own verified context — see `_graph_address_for`.
+            graph_address=self._graph_address_for(context, agent_run_id),
+            **self._persona_evidence_for(context, agent_run_id),
+            **self._pricing_revision_for(pricing_decision),
         )
 
+        if isinstance(pricing_decision, PricingDecision) and request_id:
+            from src.budget.settlement import settle_priced_usage
+
+            fresh = await settle_priced_usage(self.db, context=context, request_id=request_id, decision=pricing_decision)
+            if not fresh:
+                # The tracker can win the receipt before this gateway writes its
+                # diagnostic row. Serialize gateway replays on the shared receipt,
+                # and suppress only a row that actually already exists.
+                from src.shared.models.budget import BudgetSettlementReceipt
+
+                await self.db.execute(
+                    select(BudgetSettlementReceipt)
+                    .where(
+                        BudgetSettlementReceipt.org_id == context.attributed_org_id,
+                        BudgetSettlementReceipt.request_id == request_id,
+                    )
+                    .with_for_update()
+                )
+                existing = await self.db.execute(
+                    select(UsageLog.id)
+                    .where(
+                        UsageLog.org_id == context.attributed_org_id,
+                        UsageLog.user_id == context.user_id,
+                        UsageLog.request_id == request_id,
+                    )
+                    .limit(1)
+                )
+                if existing.scalar_one_or_none() is not None:
+                    await self.db.commit()
+                    return
         self.db.add(log_entry)
         await self.db.commit()
+
+    @staticmethod
+    def _persona_evidence_for(context: TokenContext, agent_run_id: str | None) -> dict[str, str | None]:
+        """Return protected PMM evidence, or an all-NULL atomic projection.
+
+        The cross-checks make it impossible to persist a snapshot beside a row
+        for another tenant or run.  The helper cannot raise: both proxy callers
+        intentionally swallow logging failures, so an enrichment exception
+        would silently drop metered spend.
+        """
+        names = {
+            "model_decision": None,
+            "model_decision_id": None,
+            "approving_human_id": None,
+            "persona_key": None,
+            "compatibility_class": None,
+            "harness_contract_revision": None,
+            "root_invocation_id": None,
+            "chain_id": None,
+            "preference_owner_kind": None,
+            "preference_owner_id": None,
+            "model_policy_snapshot_digest": None,
+            "model_policy_revision": None,
+            "model_catalogue_revision": None,
+            "requested_model_id": None,
+            "resolved_model_id": None,
+            "resolution_source": None,
+            "runtime_posture": None,
+            "posture_revision": None,
+        }
+        attribution = getattr(context, "_persona_usage_attribution", None)
+        try:
+            from src.usage.persona_attribution import PersonaUsageAttribution
+
+            if not isinstance(attribution, PersonaUsageAttribution):
+                return names
+            if attribution.tenant_id != context.attributed_org_id:
+                return names
+            if agent_run_id and attribution.invocation_id != agent_run_id:
+                return names
+            proposal = {
+                "requested_model_id": attribution.requested_model_id,
+                "resolved_model_id": attribution.resolved_model_id,
+                "resolution_source": attribution.resolution_source,
+                "runtime_posture": attribution.runtime_posture,
+                "posture_revision": attribution.posture_revision,
+            }
+            if proposal != {
+                "requested_model_id": None,
+                "resolved_model_id": None,
+                "resolution_source": None,
+                "runtime_posture": None,
+                "posture_revision": None,
+            } and not (
+                (attribution.requested_model_id is None or (isinstance(attribution.requested_model_id, str) and bool(attribution.requested_model_id)))
+                and isinstance(attribution.resolved_model_id, str)
+                and bool(attribution.resolved_model_id)
+                and attribution.resolution_source in {"explicit-direct", "principal-mapping", "system-default"}
+                and attribution.runtime_posture in {"disabled", "report_only", "enforcing"}
+                and type(attribution.posture_revision) is int
+                and attribution.posture_revision >= 1
+            ):
+                proposal = {key: None for key in proposal}
+            return {
+                "model_decision": json.loads(attribution.model_decision_json) if attribution.model_decision_json else None,
+                "model_decision_id": attribution.model_decision_id,
+                "approving_human_id": attribution.approving_human_id,
+                "persona_key": attribution.persona_key,
+                "compatibility_class": attribution.compatibility_class,
+                "harness_contract_revision": attribution.harness_contract_revision,
+                "root_invocation_id": attribution.root_invocation_id,
+                "chain_id": attribution.chain_id,
+                "preference_owner_kind": attribution.principal_kind,
+                "preference_owner_id": attribution.principal_id,
+                "model_policy_snapshot_digest": attribution.snapshot_digest,
+                "model_policy_revision": attribution.policy_revision,
+                "model_catalogue_revision": attribution.catalogue_revision,
+                **proposal,
+            }
+        except (AttributeError, TypeError, ValueError):
+            return names
+
+    @staticmethod
+    def _pricing_revision_for(decision: "PricingDecision | None") -> dict[str, str | int | None]:
+        """Project one internally-computed pricing identity atomically.
+
+        Database and bundled decisions have deliberately different shapes.  A
+        malformed or incomplete object writes all NULLs rather than mixing a
+        generation from one decision with a snapshot from another, or implying
+        that the active pricing revision applied when none was captured.
+        """
+        empty: dict[str, str | int | None] = {
+            "pricing_confidence": None,
+            "pricing_estimate_reasons": None,
+            "pricing_decision": None,
+            "pricing_source_kind": None,
+            "pricing_generation_id": None,
+            "pricing_pointer_revision": None,
+            "pricing_snapshot_version": None,
+            "pricing_policy_version": None,
+        }
+        try:
+            if decision.confidence not in {"verified", "estimated"}:
+                return empty
+            source = decision.source_kind
+            generation = decision.generation_id
+            pointer = decision.pointer_revision
+            snapshot = decision.snapshot_version
+            policy = decision.policy_version
+            if type(policy) is not int or policy < 1 or not isinstance(snapshot, str) or not snapshot:
+                return empty
+            if source == "database":
+                if type(generation) is not int or generation < 1 or type(pointer) is not int or pointer < 1:
+                    return empty
+            elif source == "bundled_snapshot":
+                if generation is not None or pointer is not None:
+                    return empty
+            else:
+                return empty
+            return {
+                "pricing_confidence": decision.confidence,
+                "pricing_estimate_reasons": json.dumps(list(decision.estimate_reasons)),
+                "pricing_decision": decision.to_dict(),
+                "pricing_source_kind": source,
+                "pricing_generation_id": generation,
+                "pricing_pointer_revision": pointer,
+                "pricing_snapshot_version": snapshot,
+                "pricing_policy_version": policy,
+            }
+        except (AttributeError, TypeError, ValueError):
+            return empty
+
+    @staticmethod
+    def _graph_address_for(context: TokenContext, agent_run_id: str | None) -> str | None:
+        """This request's verified graph address, or None for "unattributable".
+
+        Issue #4898. This is the write side of the orchestration cost story: every
+        reader (`orchestration/cost.py`, `deviation.py`, the policy spend
+        observations) groups `usage_logs` by `graph_address`, and with nothing
+        writing it every flow reported `unknown` / `no_usage_rows` — correct, since
+        no attribution had been measured, but not a usable cost answer.
+
+        The value comes only from `context._graph_attribution`, a pydantic private
+        attribute that `AgentModelIdentityMiddleware` sets after protected or
+        shared-run assignment verification against live SQL. Nothing caller-supplied
+        reaches this: not `X-Agent-RunId`, not `X-Agent-OrgId`, not a body field,
+        not a hypothetical `X-Graph-Address`, and not caller-written reporting
+        hints that also contain an address. Private attributes cannot be populated from
+        constructor input, so there is no injection path to validate away.
+
+        Two properties this function must have, both load-bearing:
+
+        1. **It cannot raise.** Both production callers wrap `log_request` in a
+           broad `except Exception` that logs a warning and moves on, so an
+           exception raised here would not surface as an error — it would silently
+           drop the entire usage row, leaving real spend unmetered with an HTTP
+           200 and no alarm. Hence `getattr` with a default, an `isinstance`
+           narrowing that is safe on every possible value, and no parsing,
+           indexing, length check or coercion of any kind. Enrichment failing must
+           degrade to a NULL address, never to a lost row. (No length check is
+           needed either: `slug` is 128 chars and the three refs 64 each, so a
+           composed address cannot exceed 323 against a 512-char column.)
+        2. **Absent means NULL, never a placeholder.** Matching `client_tool` and
+           `bedrock_account_id` on this table: NULL reads as "not attributable",
+           which is the truth for human/CLI/chat traffic, for a coordinator owning
+           no single node, and for every historical row. A fabricated or guessed
+           address would land real money in some node's total.
+
+        `agent_run_id` is cross-checked rather than trusted. When the row's run id
+        is present and disagrees with the invocation the assignment was verified
+        for, the address is withheld: storing both would persist a self-
+        contradictory row that a reader could not reconcile. An absent
+        `agent_run_id` is not a disagreement — attribution stands on the verified
+        assignment, which is the stronger evidence, not on the run id.
+        """
+        attribution = getattr(context, "_graph_attribution", None)
+        # `isinstance`, not `is not None`: it is the one check that both narrows the
+        # value to the verified type AND cannot raise on any other shape. An
+        # attribute read on an unexpected object would raise here, and — because
+        # both callers swallow — would drop the entire usage row rather than
+        # surface. Anything that is not a GraphAttribution built inside
+        # authenticated worker middleware is simply not attribution.
+        if not isinstance(attribution, GraphAttribution):
+            return None
+        if agent_run_id and agent_run_id != attribution.run_id:
+            return None
+        return attribution.address or None
 
     async def query_logs(
         self,

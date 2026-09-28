@@ -1,0 +1,108 @@
+# =============================================================================
+# Bedrock Gateway — INTERNAL PLANE Ingress (Issue #4010)
+# =============================================================================
+# This Ingress creates a SECOND internal ALB dedicated to the internal control
+# plane (`/internal/*`), separate from the CloudFront-facing ALB created by
+# `ingress.yaml`.
+#
+# WHY A SEPARATE ALB RATHER THAN A SEPARATE LISTENER
+# ---------------------------------------------------
+# #4010 originally specified a separate *listener port* on the existing ALB.
+# Two findings from the spike (recorded in
+# docs/design-notes/4010-internal-plane-alb-separation.md) made that
+# unexpressible on this stack:
+#
+#  1. Per-listener rule scoping requires TWO Ingresses in one IngressGroup.
+#     `listen-ports` scopes rules per *Ingress*, not per listener — a single
+#     Ingress declaring [80, 8081] replicates the SAME rules onto both
+#     listeners, which provides no separation at all.
+#  2. On EKS Auto Mode, IngressGroups are only settable via
+#     `IngressClassParams.spec.group.name`, and changing group identity
+#     CREATES A NEW ALB AND DELETES THE OLD ONE (ignoring deletion
+#     protection) — forcing a CloudFront-VPC-origin + API-GW + SSM re-wire of
+#     the live edge path.
+#
+# On Auto Mode one Ingress == one ALB (no group). So a dedicated Ingress gives
+# the internal plane its own ALB, while the edge Ingress keeps its
+# namespace/name — and therefore its `ingress.eks.amazonaws.com/stack` identity,
+# its ALB, and its DNS name. No re-wire, no edge outage window.
+#
+# The separation this buys is STRONGER than a second listener would have been:
+# CloudFront has NO VPC origin pointing at this ALB, so the internal plane is
+# unreachable from the edge by ROUTING — not merely by header hygiene at the
+# CloudFront function (#3996) or by the app-side identity checks (#4000/#4007).
+# Those remain in place; this is the defence-in-depth layer under them.
+#
+# TRAFFIC PATHS AFTER THIS CHANGE
+# --------------------------------
+#   Edge:     CloudFront -> VPC origin -> edge ALB (ingress.yaml)
+#                           `/internal` -> fixed-response 403 (never reaches pod)
+#   Internal: API GW `/internal/{proxy+}` (AWS_IAM/SigV4)
+#                           -> VPC Link v2 -> THIS ALB -> pod
+#   Callback: pod -> ClusterIP Service -> pod
+#                           (never traverses either ALB; unaffected)
+#
+# The ClusterIP status-callback path is deliberately untouched: it goes
+# pod -> Service -> pod and never reaches an ALB, so it cannot be caught by the
+# edge deny rule. This is why a blanket app-middleware `/internal/*` reject was
+# explicitly rejected in the approved design — it WOULD have broken ingestion.
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bedrockgateway-internal
+  namespace: adp-gateway
+  labels:
+    app.kubernetes.io/name: bedrockgateway
+    app.kubernetes.io/part-of: bedrock-gateway
+    app.kubernetes.io/component: internal-plane
+  annotations:
+    # Internal scheme. Reached only from inside the VPC, via the API Gateway
+    # VPC Link v2. Never fronted by CloudFront.
+    #
+    # NOTE: changing `scheme` in place is impossible on ELB and forces the
+    # controller to REPLACE the load balancer. Treat this value as immutable;
+    # if it must ever change, re-run wire-gateway-alb.sh --apply afterwards to
+    # re-point the API Gateway integration at the new DNS.
+    alb.ingress.kubernetes.io/scheme: internal
+
+    # Subnets are auto-discovered from the `kubernetes.io/role/internal-elb=1`
+    # tags applied by platform/infra/modules/networking, exactly as in
+    # ingress.yaml. Keeps the manifest portable across accounts.
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # Port 80 only — matching the edge ALB. Because the internal plane gets its
+    # OWN load balancer, no extra listener port is needed, so the existing
+    # VPC-Link SG rules (port 80 -> ALB SG, api-gateway/main.tf) apply
+    # unchanged. The spike showed a non-80 port would have required opening
+    # BOTH the ALB SG ingress AND the VPC-Link SG egress on that port; keeping
+    # to 80 avoids that whole class of misconfiguration.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/success-codes: "200"
+
+    # Idle timeout must be >= the API Gateway integration timeout (900s) for the
+    # same reason as the edge ALB: internal routes can proxy long-running work,
+    # and the 60s default would surface as spurious 504s.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=900
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          # Only the internal plane is served here. Anything else falls through
+          # to the listener's default action (the controller's 404), so this ALB
+          # deliberately exposes no other surface.
+          - path: /internal
+            pathType: Prefix
+            backend:
+              service:
+                name: bedrockgateway
+                port:
+                  number: 80

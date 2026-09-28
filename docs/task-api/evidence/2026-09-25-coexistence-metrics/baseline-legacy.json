@@ -1,0 +1,127 @@
+{
+  "phase": "baseline",
+  "lambda_sha256": "InU4iteHuaewwte/b1sqR9NXEK8HKdFp3XtpA+OR4z4=",
+  "admission_enabled": false,
+  "observations": [
+    {
+      "at": "2026-09-25T05:11:45.002432+00:00",
+      "delivery_id": "6362e4fb-874c-4bc1-8fc9-3a8a4980a7b8",
+      "request_id": "247cd54a-939b-4111-a9a1-6f5adf06e1ab",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 707.711548981024,
+      "owned_consistent_table_read_ms": 65.60520597849973
+    },
+    {
+      "at": "2026-09-25T05:11:46.076237+00:00",
+      "delivery_id": "432c9186-9b8a-42b3-8249-e0dbb49c6199",
+      "request_id": "e6c1f5aa-ad09-4305-99a8-385b70518022",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 813.779443007661,
+      "owned_consistent_table_read_ms": 4.833832994336262
+    },
+    {
+      "at": "2026-09-25T05:11:47.195302+00:00",
+      "delivery_id": "f5d7ef1d-edb3-4cf0-b3f1-c9326e2da2fa",
+      "request_id": "ce8bfd7a-3b0f-469e-a7cf-d6b36e7b7882",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 893.9964509918354,
+      "owned_consistent_table_read_ms": 4.153521003900096
+    },
+    {
+      "at": "2026-09-25T05:11:48.393905+00:00",
+      "delivery_id": "c53dee7e-b440-409a-b080-376438767b23",
+      "request_id": "e8b73ef9-0be6-4a5f-afb5-655700ba9975",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 659.8220310115721,
+      "owned_consistent_table_read_ms": 3.694459010148421
+    },
+    {
+      "at": "2026-09-25T05:11:49.357845+00:00",
+      "delivery_id": "cf972f18-7293-4aff-8fa2-c56764c4f21d",
+      "request_id": "06940209-71b9-4067-996c-9373e2da9424",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 575.9088330087252,
+      "owned_consistent_table_read_ms": 3.2408940023742616
+    },
+    {
+      "at": "2026-09-25T05:11:50.237505+00:00",
+      "delivery_id": "f165b145-19ba-4595-b72f-4c9a8bba3f05",
+      "request_id": "3d20778f-4793-4454-ade6-43b40ba0e392",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 5296.3334990199655,
+      "owned_consistent_table_read_ms": 3.6613539850804955
+    },
+    {
+      "at": "2026-09-25T05:11:55.838023+00:00",
+      "delivery_id": "76053d6e-2c2d-442c-923d-12063db183b7",
+      "request_id": "8c2a807e-8e5b-4e9c-8b87-cf9103ffceed",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 622.938754997449,
+      "owned_consistent_table_read_ms": 4.327645001467317
+    },
+    {
+      "at": "2026-09-25T05:11:56.765775+00:00",
+      "delivery_id": "9cabc166-f752-4d15-bd99-e83b4ed2afd7",
+      "request_id": "d8f1de20-d51d-44b8-a416-0578e484488b",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 690.1445050025359,
+      "owned_consistent_table_read_ms": 3.7016179994679987
+    },
+    {
+      "at": "2026-09-25T05:11:57.760086+00:00",
+      "delivery_id": "203a9821-35ed-4175-93db-c61e67db2bd9",
+      "request_id": "14df92d8-50b5-4cc4-888b-814f4c3f51a4",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 836.2514699983876,
+      "owned_consistent_table_read_ms": 4.559351975331083
+    },
+    {
+      "at": "2026-09-25T05:11:58.901340+00:00",
+      "delivery_id": "203c1261-74f7-4cb4-b620-55b4fc279be4",
+      "request_id": "e008b631-1f3a-4076-9bfd-04c8017c6eaf",
+      "status": 200,
+      "response": {
+        "status": "no_op",
+        "reason": "event_type_unhandled"
+      },
+      "http_ms": 634.4590060180053,
+      "owned_consistent_table_read_ms": 3.4539829939603806
+    }
+  ]
+}

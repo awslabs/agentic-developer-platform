@@ -170,15 +170,43 @@ resource "aws_s3_bucket" "chat_artifacts" {
   }
 }
 
+# Ownership binding (#5660 / A07): every tenant's uploads share this one bucket,
+# and the session sweeper deletes under a prefix it derives per expiring session.
+# Versioning makes a faulty or hostile sweep recoverable instead of terminal: a
+# DeleteObject leaves the prior version behind (and the sweeper is deliberately
+# not granted the version-delete action — see session_sweeper_s3 below).
+resource "aws_s3_bucket_versioning" "chat_artifacts" {
+  bucket = aws_s3_bucket.chat_artifacts.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 resource "aws_s3_bucket_lifecycle_configuration" "chat_artifacts" {
   bucket = aws_s3_bucket.chat_artifacts.id
+
+  # Versioning must exist first, or the noncurrent-version rule below has
+  # nothing to act on.
+  depends_on = [aws_s3_bucket_versioning.chat_artifacts]
 
   rule {
     id     = "default-30-day-expiry"
     status = "Enabled"
 
+    # Required by the provider once a rule is declared; empty = whole bucket,
+    # which is the existing behaviour.
+    filter {}
+
     expiration {
       days = 30
+    }
+
+    # With versioning on, the expiry above only writes a delete marker and the
+    # prior versions would accumulate forever. A week is long enough to notice
+    # and restore from an erroneous sweep, short enough to bound storage.
+    noncurrent_version_expiration {
+      noncurrent_days = 7
     }
   }
 }
@@ -240,13 +268,14 @@ resource "aws_sqs_queue" "chat_agent_dlq_fifo" {
 # Session Sweeper Lambda
 # =============================================================================
 
-# Stub Lambda package (skeleton — real code from the TS build replaces this)
-data "archive_file" "session_sweeper_stub" {
+# build-agent-factory-lambdas.sh bundles the real handler before every plan.
+# Missing build output is an error; never activate a TTL consumer with a stub.
+data "archive_file" "session_sweeper" {
   type        = "zip"
-  output_path = "${path.module}/lambda-stubs/session-sweeper.zip"
+  output_path = "${path.module}/.build/session-sweeper.zip"
 
   source {
-    content  = "exports.handler = async (event) => { console.log('stub', JSON.stringify(event)); };"
+    content  = file("${path.module}/.build/session-sweeper/index.js")
     filename = "index.js"
   }
 }
@@ -264,8 +293,8 @@ resource "aws_lambda_function" "session_sweeper" {
     mode = "Active"
   }
 
-  filename         = data.archive_file.session_sweeper_stub.output_path
-  source_code_hash = data.archive_file.session_sweeper_stub.output_base64sha256
+  filename         = data.archive_file.session_sweeper.output_path
+  source_code_hash = data.archive_file.session_sweeper.output_base64sha256
 
   environment {
     variables = {
@@ -273,6 +302,7 @@ resource "aws_lambda_function" "session_sweeper" {
       ARTIFACTS_TABLE     = aws_dynamodb_table.chat_artifacts.name
       ARTIFACTS_BUCKET    = aws_s3_bucket.chat_artifacts.id
       AWS_REGION_OVERRIDE = var.aws_region
+      SWEEPER_DRY_RUN     = tostring(var.chat_session_sweeper_dry_run)
     }
   }
 
@@ -302,7 +332,8 @@ resource "aws_lambda_event_source_mapping" "session_sweeper" {
 # =============================================================================
 
 resource "aws_iam_role" "session_sweeper" {
-  name = "adp-${var.environment}-chat-session-sweeper-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "adp-${var.environment}-chat-session-sweeper-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -337,12 +368,22 @@ resource "aws_iam_role_policy" "session_sweeper_dynamodb" {
         Resource = "${aws_dynamodb_table.chat_context.arn}/stream/*"
       },
       {
+        # TransactWriteItems authorizes its ConditionCheck separately. The
+        # sweeper checks only the context header before deleting expired rows.
+        Sid      = "CheckCurrentSessionHeader"
+        Effect   = "Allow"
+        Action   = ["dynamodb:ConditionCheckItem"]
+        Resource = aws_dynamodb_table.chat_context.arn
+      },
+      {
         Sid    = "CleanupTables"
         Effect = "Allow"
         Action = [
+          "dynamodb:GetItem",
           "dynamodb:Query",
           "dynamodb:BatchWriteItem",
-          "dynamodb:DeleteItem"
+          "dynamodb:DeleteItem",
+          "dynamodb:TransactWriteItems"
         ]
         Resource = [
           aws_dynamodb_table.chat_context.arn,
@@ -371,17 +412,25 @@ resource "aws_iam_role_policy" "session_sweeper_s3" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "s3:DeleteObject",
-        "s3:ListBucket"
-      ]
-      Resource = [
-        aws_s3_bucket.chat_artifacts.arn,
-        "${aws_s3_bucket.chat_artifacts.arn}/*"
-      ]
-    }]
+    Statement = [
+      {
+        Sid      = "ListVerifiedSessionPrefixes"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = [aws_s3_bucket.chat_artifacts.arn]
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["o/*/t/*/u/*/s/*/"]
+          }
+        }
+      },
+      {
+        Sid      = "DeleteVerifiedSessionObjects"
+        Effect   = "Allow"
+        Action   = ["s3:DeleteObject"]
+        Resource = ["${aws_s3_bucket.chat_artifacts.arn}/o/*/t/*/u/*/s/*/*"]
+      }
+    ]
   })
 }
 
@@ -445,14 +494,9 @@ resource "aws_iam_role_policy" "gateway_agent_chat_s3" {
       Effect = "Allow"
       Action = [
         "s3:PutObject",
-        "s3:GetObject",
-        "s3:DeleteObject",
-        "s3:ListBucket"
+        "s3:GetObject"
       ]
-      Resource = [
-        aws_s3_bucket.chat_artifacts.arn,
-        "${aws_s3_bucket.chat_artifacts.arn}/*"
-      ]
+      Resource = ["${aws_s3_bucket.chat_artifacts.arn}/o/*/t/*/u/*/s/*/*"]
     }]
   })
 }

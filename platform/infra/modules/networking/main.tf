@@ -132,6 +132,27 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[count.index].id
 }
 
+# ---------------------------------------------------------------------------
+# Default Security Group — deny-all (CKV2_AWS_12)
+# ---------------------------------------------------------------------------
+# Adopts the VPC's default security group and removes all rules. This ensures
+# nothing can accidentally rely on the permissive defaults AWS creates. All
+# workloads use dedicated, scoped security groups (ALB, EKS, RDS, Redis,
+# VPC endpoints).
+
+resource "aws_default_security_group" "main" {
+  vpc_id = aws_vpc.main.id
+
+  # Explicit empty sets keep both adoption and later drift reconciliation deny-all.
+  # Omitting these Optional+Computed fields would leave rules state-derived.
+  ingress = []
+  egress  = []
+
+  tags = merge(var.common_tags, {
+    Name = "${var.name_prefix}-default-sg-restricted"
+  })
+}
+
 # Security Group - ALB
 # Issue #133: SECURITY FIX - Restrict ALB ingress based on alb_internal setting
 # For internal ALB: Only allow traffic from VPC CIDR
@@ -238,13 +259,11 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.eks.id]
   }
 
-  egress {
-    description = "No outbound traffic allowed"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = []
-  }
+  # No egress block, deliberately. aws_security_group revokes AWS's default
+  # allow-all egress when no egress block is declared, so omitting it *is* the
+  # deny. Do not "restore" this as an empty egress block with
+  # `cidr_blocks = []`: a rule with no destinations cannot be created, so AWS
+  # silently creates nothing and every subsequent plan re-proposes it forever.
 
   tags = merge(var.common_tags, {
     Name     = "${var.name_prefix}-sg-rds"
@@ -276,13 +295,11 @@ resource "aws_security_group" "redis" {
     security_groups = [aws_security_group.eks.id]
   }
 
-  egress {
-    description = "No outbound traffic allowed"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = []
-  }
+  # No egress block, deliberately. aws_security_group revokes AWS's default
+  # allow-all egress when no egress block is declared, so omitting it *is* the
+  # deny. Do not "restore" this as an empty egress block with
+  # `cidr_blocks = []`: a rule with no destinations cannot be created, so AWS
+  # silently creates nothing and every subsequent plan re-proposes it forever.
 
   tags = merge(var.common_tags, {
     Name     = "${var.name_prefix}-sg-redis"

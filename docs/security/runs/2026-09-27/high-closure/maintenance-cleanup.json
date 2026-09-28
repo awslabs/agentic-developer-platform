@@ -1,0 +1,40 @@
+{
+  "time": "2026-09-27T22:31:02.692782+00:00",
+  "reservations": [
+    {
+      "run": 36352274534,
+      "conclusion": "cancelled",
+      "status": "completed"
+    },
+    {
+      "run": 36354151613,
+      "conclusion": "cancelled",
+      "status": "completed"
+    }
+  ],
+  "eks_access_scope": {
+    "unchanged": true,
+    "policies": [
+      {
+        "policy": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
+        "scope": {
+          "type": "namespace",
+          "namespaces": [
+            "adp-agents",
+            "adp-gateway"
+          ]
+        }
+      },
+      {
+        "policy": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy",
+        "scope": {
+          "type": "cluster",
+          "namespaces": []
+        }
+      }
+    ]
+  },
+  "jobs_deleted": false,
+  "queue_pause_changed_by_maintenance": false,
+  "admission_note": "Additive verified-worker admission union retained; cfbe candidate was superseded by normal90 worker and never promoted."
+}

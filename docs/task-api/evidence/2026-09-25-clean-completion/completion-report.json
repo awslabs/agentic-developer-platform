@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.0",
+  "epic": 5792,
+  "lane": "live public API and real worker/provider",
+  "evaluator": "t5_runtime direct delivery verification",
+  "environment": {
+    "account": "879318057152",
+    "region": "us-east-1",
+    "stage": "dev",
+    "tenant": "task-api-5792-isolation",
+    "github_integration": false
+  },
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "task_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33",
+  "invocation_id": "c40c5859-ec71-439a-ab6e-28a2ec88e5ae",
+  "accepted_at": "2026-09-25T05:09:30Z",
+  "completed_at": "2026-09-25T05:10:44Z",
+  "operator_state_repairs": 0,
+  "operator_injected_events": 0,
+  "new_tasks_submitted": 1,
+  "qualification_task_limit": 6,
+  "max_usd_per_task": 1,
+  "api_contract": "docs/task-api/contracts/v1",
+  "command": "python3 /home/ubuntu/task-delivery-tmp/live-run/clarify.py --activation-ready --url https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev --output /home/ubuntu/task-delivery-tmp/live-run/clarify2 --key task-api-5792-20260925-clarify2",
+  "exit_code": 0,
+  "result": {
+    "status": "completed",
+    "queue_ack_status": "confirmed",
+    "command_handoff": "confirmed",
+    "artifact_id": "art_b1e91476-5838-47b6-b7e2-7de5380f1336",
+    "artifact_bytes": 2762,
+    "artifact_sha256": "e7e993ac7ce632e264b7335cfad091dd5f4a4acb16acc884b5f5d05e8372e6cc",
+    "artifact_matches_snapshot_report": true,
+    "findings": 3,
+    "uncertainties": 4,
+    "recommendations": 5,
+    "event_sequences": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14
+    ]
+  },
+  "sources": {
+    "worker_source_sha": "029fdfe9dc7e2593db028093a64fc93e05c0c657",
+    "worker_image": "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+    "gateway_source_sha": "a070f971a0d0cd4590759b3f6f55a2adb237c8bc",
+    "gateway_image": "sha256:dc18d65636a9fb7e4724053bc2fc15b4fe83af84849723ec2c077e860f883b66",
+    "lambda_source_sha": "0230983a6107d1129d6faaed08686d51fcaa826a",
+    "lambda_published_version": "114",
+    "client_source_commit": "5a3af235f",
+    "client_sha256": "a06efa27d533f14bcd02c294414618cbf8d2441555e449b8a9972136f3afd32e",
+    "runner_sha256": "dcee90f1cd66840049d8763bf589f9030e02b885da0f8e7eb6803d79fdb4d270"
+  },
+  "functional_checks": [
+    {
+      "check": "actual-input-required",
+      "outcome": "PASS",
+      "at": "2026-09-25T05:10:31.470287+00:00",
+      "input_request_id": "906cd3af-9f18-4200-91ae-b8d53de0c5eb"
+    },
+    {
+      "check": "clarification-response-accepted",
+      "outcome": "PASS",
+      "at": "2026-09-25T05:10:31.877792+00:00",
+      "command_id": "b68d4980-8d36-4afc-b4bb-8c3b43866c97"
+    },
+    {
+      "check": "completed",
+      "outcome": "PASS",
+      "at": "2026-09-25T05:10:44.954873+00:00",
+      "status": "completed"
+    },
+    {
+      "check": "clarification-consumed",
+      "outcome": "PASS",
+      "at": "2026-09-25T05:10:44.955862+00:00",
+      "receipt": {
+        "turn_number": 2,
+        "handoff": "confirmed",
+        "command_sequence": 1,
+        "kind": "input",
+        "status": "consumed",
+        "consumed_at": "2026-09-25T05:10:33Z",
+        "authority_expires_at": "2026-09-25T05:46:00Z",
+        "command_id": "b68d4980-8d36-4afc-b4bb-8c3b43866c97",
+        "turn_id": "da65ed73-ac58-4e60-bfee-da759605a5b3",
+        "schema_version": "1.0",
+        "accepted_at": "2026-09-25T05:10:31Z"
+      }
+    },
+    {
+      "check": "result-artifact-present",
+      "outcome": "PASS",
+      "at": "2026-09-25T05:10:44.956858+00:00",
+      "artifact_ids": [
+        "art_b1e91476-5838-47b6-b7e2-7de5380f1336"
+      ]
+    },
+    {
+      "check": "result-artifact-integrity",
+      "outcome": "PASS",
+      "at": "2026-09-25T05:10:45.307117+00:00",
+      "artifact_id": "art_b1e91476-5838-47b6-b7e2-7de5380f1336",
+      "sha256": "e7e993ac7ce632e264b7335cfad091dd5f4a4acb16acc884b5f5d05e8372e6cc",
+      "bytes": 2762
+    },
+    {
+      "check": "cost-attribution",
+      "outcome": "NOT RUN",
+      "at": "2026-09-25T05:10:45.307387+00:00",
+      "total_usd": null
+    }
+  ],
+  "limitations": [
+    "Public result does not expose total_usd; native usage/budget settlement audit belongs to T3.",
+    "Observed emitter-to-receiver timings are not corrected for independently measured clock skew.",
+    "This clean completion has automatic clarification; held-input coexistence/revocation qualification is a separate fixture.",
+    "This report does not claim all V4/V5 criteria pass."
+  ],
+  "cleanup": {
+    "task_terminal": true,
+    "queue_acknowledged": true,
+    "worker_exited": true,
+    "no_queue_purge_or_shared_resource_deletion": true
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "story": "#5621",
+  "workflow_run": "36214604673",
+  "workflow_url": "https://github.com/aws-e/adp/actions/runs/36214604673",
+  "report_artifact": "cli-uplift-eval-36214604673-1",
+  "report_sha256": "8f250d5a3399af842616c7471bacc18947c4f8af12b6597273ac7023215e9281",
+  "evaluation_id": "adp-e2e-20260926-031300-df33b4",
+  "harness_commit": "62b03d343181978aeb54ef1b29634204d050637d",
+  "expected_revision": "b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0",
+  "environment": {
+    "platform_account": "879318057152",
+    "region": "us-east-1",
+    "gateway_url": "https://d1g6cal2ts4iis.cloudfront.net/api"
+  },
+  "correlation": {
+    "attempt_id": "adp-e2e-20260926-031300-df33b4-a1",
+    "attempts": 1,
+    "deployed_revision": "b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0",
+    "evaluation_id": "adp-e2e-20260926-031300-df33b4",
+    "instance_id": "i-05483b598ae8fd528",
+    "remote_bundle_digest": "27cc814da9acecf1253ce1714ac3ec1d6ecb4361a63be5273845c4e4affbe685"
+  },
+  "case": {
+    "detail": {
+      "admin_tenant": {
+        "org_id": "adp-platform"
+      },
+      "cleanup_verified": true,
+      "cli_version": "adp 1.0.0",
+      "criterion": "CLI-08-AC-04",
+      "denied_operation": "hierarchy.platform.write",
+      "disabled_operation": "logs.request.read",
+      "enabled_operation": "models.catalog.read",
+      "expected_revision": "b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0",
+      "gateway_release": {
+        "release": "b1e266d97a1bf6e4a9c1805a02dd7482b3eafbe0",
+        "source": "GATEWAY_RELEASE",
+        "state": "yes"
+      },
+      "ordinary_tenant": {
+        "org_id": "adp-platform"
+      },
+      "request_ids": [
+        "af5c0e12-40ac-482b-8d26-ee9ffa0ed9ae",
+        "00000000-0000-4000-8000-000000000000"
+      ],
+      "unavailable_explanation": "switched off on this deployment"
+    },
+    "id": "E19",
+    "owner": "#5621",
+    "status": "passed",
+    "suite": "parity",
+    "summary": "Freshly served CLI on EC2: adp capabilities distinguishes an enabled operation from an intentionally disabled one and from one the caller may not perform; adp doctor reports read-only bounded findings with no mutation and no paid inference; a foreign request ID is indistinguishable from an absent one"
+  },
+  "batch_status": "failed",
+  "batch_counts": {
+    "blocked": 0,
+    "failed": 1,
+    "not_run": 0,
+    "passed": 4
+  },
+  "batch_full_acceptance": false,
+  "batch_cleanup": "complete",
+  "instance_state_independently_verified": "terminated",
+  "contract_tests": {
+    "passed": 124,
+    "failed": 0,
+    "test_files": [
+      "tests/cli/test_doctor_capabilities.py",
+      "tests/cli/test_doctor_checks.py",
+      "tests/cli/test_command_manifest.py",
+      "tests/cli_capabilities/test_contract.py",
+      "tests/cli_capabilities/test_request_lookup.py"
+    ],
+    "live_release_relevant_source_identical": true
+  },
+  "qualification": "E19 passed. The overall mixed batch remains failed because D05 failed its stale-error assertion; no batch-wide success is inferred."
+}

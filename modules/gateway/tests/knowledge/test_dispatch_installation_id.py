@@ -84,6 +84,7 @@ def fake_db():
 @pytest.fixture(autouse=True)
 def set_queue_url(monkeypatch):
     """Set INGESTION_QUEUE_URL env var for all tests."""
+    monkeypatch.setenv("AGENT_RUN_CREDENTIAL_KEY", "offline-dispatch-key" * 3)
     monkeypatch.setenv(
         "INGESTION_QUEUE_URL",
         "https://sqs.us-east-1.amazonaws.com/123456789012/test-ingestion",

@@ -148,6 +148,12 @@ Use this when things go wrong. Do not show this to the user — use it to diagno
 - Wrong VITE_API_URL during build. Rebuild with `VITE_API_URL="/api" npm run build` — must match `gateway-deploy.yml` (`/api`, NOT `/api/gateway`); the wrong prefix makes every SPA call hit the S3 HTML fallback with HTTP 200 and crash the dashboard.
 - Stale cache: `aws cloudfront create-invalidation --distribution-id <id> --paths "/*"`
 
+### All GitHub logins denied after a broker deploy
+- Symptom: every "Sign in with GitHub" (including yours) fails, but `/api/health` is healthy and gateway pods are Running — so it is NOT the CloudFront `/api` fail-destroy class.
+- Broker logs show: `ALLOWLIST_MODE=open without ALLOW_OPEN_SIGNUP=true is a misconfiguration; denying sign-in` (`aws logs tail /aws/lambda/bedrockgw-<env>-github-auth-broker --since 15m`).
+- Cause: the #3986 fail-closed broker CODE publishes on merge, but the `ALLOW_OPEN_SIGNUP` env var only lands via `gateway-infra-apply.yml`. On an env still set to `ALLOWLIST_MODE=open`, the gap between the two is a total login outage.
+- Emergency fix + durable remediation: `docs/runbooks/github-auth-allowlist-remediation.md` (adds `ALLOW_OPEN_SIGNUP=true` to the live Lambda to restore login in ~30s, then move the env to `mode=org`).
+
 ### CodeBuild fails
 - Only 4 docker-build projects use CodeBuild (gateway-build, chat-agent, agent-gateway, arc-runner). They are Terraform-managed in `platform/infra/modules/codebuild/`. Everything else (terraform apply, npm build, kubectl apply) runs directly on the ARC runner.
 - Check logs: `aws codebuild batch-get-builds --ids <build-id> --query 'builds[0].logs.deepLink' --output text`
@@ -266,104 +272,18 @@ Always use non-interactive flags to avoid hanging:
 
 ## Issue-authoring convention (MANDATORY for every new issue)
 
-Every issue you file (or edit to complete) **must** include these five top-level sections, in this order, before any secondary content:
+Use the canonical [developer issue template](modules/agent-factory/rules/templates/developer-issue.md)
+and [issue-authoring guide](modules/agent-factory/rules/agents/issue-authoring.md).
+The GitHub `Developer task` template exposes the same body for manual filing.
+The guide owns the requirements; do not create another inline template here.
 
-### 0. `## The problem in plain terms` (REQUIRED opening, before everything else)
-2–4 sentences describing what a user, customer, or operator **experiences**: what they did, what they expected, what actually happened, and what it cost them. Written so someone who has never opened this codebase understands it on first read. Follow with a single `**The fix in one line:**` sentence.
+Keep these sections in order: **The problem in plain terms**, **Description**,
+**Impact analysis**, **Design**, **Deployment**, **Validation**. Use stable
+acceptance IDs with action, expected result, evidence, phase and owner. Distinguish
+implementation readiness from unresolved live access and deployment prerequisites.
+Name the completion boundary explicitly; a merged PR is not live acceptance.
 
-Hard rules for this section:
-- **No file paths, no line numbers, no function names, no ARNs, no table names.** Name the symptom, not the mechanism. All of that belongs in `## Design`.
-- For **features** (no incident to describe): who wants what outcome, why it matters to them, and the approach in one line.
-- If you cannot write this section, you do not understand the issue well enough to file it yet.
-
-Why it exists: the technical sections below are for the agent that implements; this section is for the humans who triage, prioritize, review, and report to customers. Dense openings meant nobody could digest the backlog without re-reading code — an Aug 2026 batch of incident-report issues (#4021–#4032) had to be retrofitted with these sections after the fact. The layering is deliberate: plain terms on top for people, full file-level detail below for agents. One does not replace the other.
-
-### 1. `## Description`
-What we're trying to achieve and why. One paragraph stating the goal in plain language, one paragraph on motivation (the problem this solves or the gap it closes). No implementation detail here — a product manager should be able to understand this section without reading the rest.
-
-### 2. `## Impact analysis`
-Who benefits, who's impacted, what breaks if a bug slips through. Must include:
-- **Who benefits** — which user types / personas / use cases get unblocked
-- **Who's impacted** — billing, security, support, ops surfaces that this touches
-- **What breaks if this ships with a bug** — worst-case scenarios as a table (bug class → blast radius). Forces thinking about failure modes before coding starts.
-- **Cost / quota footprint** — new AWS resources, new DB rows, new compute. Explicit about what's bounded vs. unbounded.
-
-### 3. `## Design`
-The concrete technical shape of the solution. Must include, when relevant:
-- **Database schema** — new tables, new columns, migrations needed (or explicit "no migrations"), FK/index/constraint decisions
-- **API contracts** — endpoint paths, request body JSON, response body JSON, error cases, HTTP codes
-- **File-level changes** — list of files to create + list of files to modify, with full paths
-- **Integration points** — which existing services/tables/endpoints this piece plugs into and reuses (or explicitly forks)
-- **Tenant isolation / authz** — how scoping is enforced (especially for multi-tenant features)
-- **Reuse table** — "X lives in module Y, we call it here" to prevent duplicate implementations
-
-Goal: a developer (human or agent) should be able to implement this issue without guessing where anything goes or duplicating existing code.
-
-### 5. `## Deployment`
-What must happen after the PR merges for the change to be effective. Must include:
-- **Automatic on merge** — which CI workflows fire (`gateway-deploy.yml`, `agent-worker-image.yml`, `webhook-ingress-deploy.yml`, etc.), what each produces, typical timing
-- **Explicit NOT-triggered** — what won't rebuild/redeploy that someone might expect (e.g. "no agent-runtime image rebuild needed; code is gateway-side only"). Prevents agents from trying to touch infra they don't need.
-- **Manual follow-ups** — Terraform apply, migration workflow, secret seeding, IAM approvals, etc., each with the exact command or workflow name
-- **Environment coverage** — "ships to dev on merge; prod promotion is a manual `workflow_dispatch`"
-- **Rollback plan** — how to revert if something goes wrong
-
-### 6. `## Validation`
-How to verify the change is working. Must include:
-- **Unit tests** to add (one bullet per test, stating what it proves)
-- **Integration tests** — what runs in CI vs. what a human runs locally
-- **Smoke test** — the one end-to-end check an operator runs after deploy to confirm it works. Should be a concrete command or URL, not a vague "verify the feature works."
-- **Regression checks** — existing callers/flows that must keep working
-
-### Secondary sections (use as needed)
-After the five mandatory sections, the issue may include: `## Scope`, `## Non-goals`, `## Dependencies`, `## Acceptance`, `## References`, `## Related issues`. These are optional supplements, not replacements for the five mandatory sections.
-
-### Enforcement
-
-- **When filing an issue**: include the plain-terms opening plus all five sections from the first draft. Empty/placeholder sections are a code smell — if you don't know the design yet, file the issue as a *spike* (label: `architect`) and the design section explicitly says "spike — produces design note."
-- **When reviewing an existing issue** (before labeling it to trigger an agent): if the plain-terms opening / Description / Impact analysis / Design / Deployment / Validation are missing, add them before labeling. An agent without a Design section will invent one; without a Deployment section will not know whether Terraform must apply; without a Validation section will skip writing meaningful tests; without Impact analysis it will miss failure modes that should have been surfaced as test cases.
-- **For EPIC-level issues** that aren't directly implementable: the five-section rule still applies but Deployment/Validation can be "see child issues."
-- **For doc-only issues**: Deployment is "merge the PR, no service redeploys"; Validation is "PR review confirms the doc reads correctly."
-- **For test-coverage issues** (adding tests for a feature that already shipped): use the template below instead of the five-section rule — the generic template doesn't fit because Deployment is trivial and Validation IS the work.
-
-### Template for test-coverage issues
-
-Test-coverage issues follow this shape instead of the five-section rule:
-
-```markdown
-## Description
-One paragraph: what feature is this adding tests for, and why it matters (usually: feature shipped without coverage; first regression would have nothing to catch it).
-
-## Why now
-Trigger for filing — "PR #N shipped feature X with only backend tests", "audit showed UI component Y has 0% coverage", "regression bug #Z would have been caught", etc.
-
-## What the feature does (brief recap)
-2-3 sentences recapping the user-facing flow + key endpoints/components so the agent doesn't need to spelunk the parent issue.
-
-## Tests to add
-Grouped by test layer (E2E, unit, integration, component, etc.) with ONE bullet per test. Each bullet states what the test proves — not how to write it. Examples:
-- "Install flow happy path: click button → POST fired → redirect URL has `state=` param"
-- "Disconnect: click Disconnect → DELETE fired → card removed from list on refetch"
-- "Non-admin sees Disconnect button hidden"
-
-## Validation
-- [ ] All specs pass in CI
-- [ ] Coverage for the specific files ≥ N% (e.g. ≥85%)
-- [ ] No flaky tests (retry threshold must not be raised to pass)
-
-## Non-goals
-Tests explicitly NOT in scope — usually visual regression, load testing, real-API integration, etc.
-
-## Files to create
-List of new test files with full paths.
-
-## References
-Parent feature issue, implementation PR, any post-merge fix PRs, existing test harness file to follow as a pattern.
-```
-
-This template drops Impact Analysis (tests don't change production behavior), drops Design (the design is "write tests for the named layers"), drops Deployment ("merge the PR; CI runs the tests"). Adds "What the feature does (brief recap)" so the agent has enough context without reading the parent issue end-to-end.
-
-### Why this matters
-
-Agents that implement issues (hosted `developer` flow) have no context beyond the issue body. Missing design detail → agent invents a design, often wrong (example: PR #449 introduced a table-name collision we spent two PRs recovering from because the issue didn't say "check for name collisions with existing `admin/models.py`"). Missing deployment detail → agent assumes wrong workflow fires, operator finds out days later when nothing works (example: migration 008 never auto-ran because nothing told the agent about `run-gateway-migrations.yml`). Missing validation → agent declares success on a broken feature. Missing impact analysis → agent ships a change that breaks a surface it didn't know existed.
-
-Five explicit sections eliminate all four failure modes at the planning stage, before the agent ever starts coding.
+The guide also covers compact test-coverage issues, discovery, and run-only
+versus build-and-run evaluations. Keep established AIDLC approval gates and
+branch protections. Filing or editing an issue does not authorize deployment or
+dispatch; use core-workflow's current dispatch mechanism when dispatch is requested.

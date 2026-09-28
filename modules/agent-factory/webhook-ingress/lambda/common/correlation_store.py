@@ -66,6 +66,25 @@ def read_pointer(key: str) -> dict | None:
 
     Uses ConsistentRead=True to close the bot-race window where two
     near-simultaneous bot events could both miss the pointer.
+
+    Issue #4129: ``root_human_id`` / ``is_human_rooted`` / ``chain_depth`` are
+    returned as None when the row does not carry them, and callers MUST resolve
+    provenance server-side rather than trusting these values (see
+    ``handler._resolve_pointer_provenance``). Two reasons, both load-bearing:
+
+      - The agent pod holds ``dynamodb:UpdateItem`` on this table, so anything
+        the pod can write is attacker-controlled from the platform's point of
+        view. Provenance is therefore advisory here, never authoritative.
+      - The worker's ``write_pointer`` no longer sends those three fields at
+        all, so legitimate rows (including the #1828 cross-issue-dispatch rows
+        that ``seed_trigger_pointer.py`` CREATES) simply lack them. The previous
+        code hard-subscripted ``item["root_human_id"]``, which raised KeyError
+        into the broad ``except`` below and returned None — silently losing the
+        chain AND disabling the #1716/#2149 self-re-trigger guard, with no alarm.
+
+    ``is_human_rooted`` previously defaulted to True when absent. That default
+    is the escalation itself once the field is optional, so an absent value is
+    now None ("unknown") and never True.
     """
     table = _get_table()
     if table is None:
@@ -98,8 +117,11 @@ def read_pointer(key: str) -> dict | None:
             recent_trigger_count = 0
         return {
             "correlation_id": item["correlation_id"],
-            "root_human_id": item["root_human_id"],
-            "is_human_rooted": item.get("is_human_rooted", True),
+            # Issue #4129: .get(), not a subscript — a row without provenance is
+            # normal now, not a corrupt row. And no True default on
+            # is_human_rooted: absent means unknown, resolved server-side.
+            "root_human_id": item.get("root_human_id"),
+            "is_human_rooted": item.get("is_human_rooted"),
             "triggering_invocation_id": item.get("triggering_invocation_id"),
             "chain_depth": chain_depth,
             # Persona most recently triggered in this chain on this channel.

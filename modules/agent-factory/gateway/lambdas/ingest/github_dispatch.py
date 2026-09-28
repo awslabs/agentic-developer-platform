@@ -37,7 +37,41 @@ if not GH_APP_SECRET_PREFIX:
     )
 
 _secrets_client = None
-_token_cache: dict[str, Any] = {"token": None, "expires_at": 0}
+
+# Installation tokens, keyed by normalized org. Issue #4071: this used to be a
+# single unkeyed {"token", "expires_at"} pair, and the cache was consulted
+# before `org` was even read — so a warm Lambda container handed org A's token
+# to a later org-B request for up to 3000s. Keyed per org, and bounded because
+# it is a warm-container global that would otherwise grow without limit.
+#   org (lowercased) -> (token, expires_at_epoch_seconds)
+_token_cache: dict[str, tuple[str, float]] = {}
+
+# Max distinct orgs held at once. The App is installed on few orgs in practice;
+# this is a leak guard, not a tuning knob.
+_TOKEN_CACHE_MAX_ENTRIES = 32
+
+
+def _token_cache_get(org: str, now: float) -> str | None:
+    """Return a live cached token for `org`, or None. Drops it if expired."""
+    entry = _token_cache.get(org)
+    if entry is None:
+        return None
+    token, expires_at = entry
+    if now >= expires_at:
+        del _token_cache[org]
+        return None
+    return token
+
+
+def _token_cache_put(org: str, token: str, expires_at: float, now: float) -> None:
+    """Cache `token` for `org`, evicting expired entries and bounding size."""
+    for stale_org in [o for o, (_, exp) in _token_cache.items() if now >= exp]:
+        del _token_cache[stale_org]
+    if org not in _token_cache and len(_token_cache) >= _TOKEN_CACHE_MAX_ENTRIES:
+        # Evict the entry closest to expiry so the cap can never be exceeded.
+        soonest = min(_token_cache, key=lambda o: _token_cache[o][1])
+        del _token_cache[soonest]
+    _token_cache[org] = (token, expires_at)
 
 
 def _get_secrets():
@@ -45,6 +79,54 @@ def _get_secrets():
     if _secrets_client is None:
         _secrets_client = boto3.client("secretsmanager", region_name=AWS_REGION)
     return _secrets_client
+
+
+def configured_github_org() -> str:
+    """The single GitHub org this Lambda's App serves, lowercased.
+
+    Issue #4233: the ingest App is single-org by construction — Terraform sets
+    `GH_APP_SECRET_PREFIX = "adp/<github_org>/gh-app-ops"` — so the configured
+    org is derivable from the prefix without a second env var to keep in sync.
+
+    Returns "" when the prefix is unset or malformed; callers treat that as
+    "cannot determine the org" and fail closed.
+    """
+    parts = [p for p in GH_APP_SECRET_PREFIX.split("/") if p]
+    return parts[1].strip().lower() if len(parts) >= 3 else ""
+
+
+def installation_id_for_org(org: str) -> int | None:
+    """Resolve the App installation id GitHub reports for `org`, or None.
+
+    Issue #4233: used by the chat-dispatch tenant gate to assert that the
+    caller's org OWNS the installation covering the target repo owner, rather
+    than trusting that two labels look alike. Deliberately does not mint an
+    access token — the gate runs before we are willing to act as the App.
+    """
+    if not org:
+        return None
+    if not GH_APP_SECRET_PREFIX:
+        logger.error(
+            "Cannot resolve installation for org %s: GH_APP_SECRET_PREFIX is unset", org
+        )
+        return None
+
+    id_secret_id = f"{GH_APP_SECRET_PREFIX}-id"
+    key_secret_id = f"{GH_APP_SECRET_PREFIX}-key"
+    try:
+        secrets = _get_secrets()
+        app_id = secrets.get_secret_value(SecretId=id_secret_id)["SecretString"]
+        private_key = secrets.get_secret_value(SecretId=key_secret_id)["SecretString"]
+        return _get_installation_id(_create_jwt(app_id, private_key), org)
+    except Exception as e:
+        logger.error(
+            "Failed to resolve installation for org %s (secrets: %s, %s): %s",
+            org,
+            id_secret_id,
+            key_secret_id,
+            e,
+        )
+        return None
 
 
 def create_issue_and_dispatch(
@@ -203,8 +285,16 @@ def _gh_headers(token: str) -> dict:
 
 def _get_installation_token(org: str) -> str | None:
     now = time.time()
-    if _token_cache["token"] and now < _token_cache["expires_at"]:
-        return _token_cache["token"]
+    # Read `org` BEFORE consulting the cache — the old code returned the cached
+    # token first, so whichever org warmed the container won for every caller.
+    cache_key = (org or "").strip().lower()
+    if not cache_key:
+        logger.error("Cannot fetch GH App token: no org supplied")
+        return None
+
+    cached = _token_cache_get(cache_key, now)
+    if cached:
+        return cached
 
     if not GH_APP_SECRET_PREFIX:
         logger.error(
@@ -242,8 +332,7 @@ def _get_installation_token(org: str) -> str | None:
         with urllib.request.urlopen(req) as resp:
             data = json.loads(resp.read())
             token = data["token"]
-            _token_cache["token"] = token
-            _token_cache["expires_at"] = now + 3000
+            _token_cache_put(cache_key, token, now + 3000, now)
             return token
 
     except Exception as e:

@@ -9,12 +9,23 @@ import json
 import logging
 import time
 import urllib.request
+import urllib.error
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _SLACK_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 _TOKEN_CACHE_TTL = 300  # 5 minutes
+_SLACK_TIMEOUT_SECONDS = 10
+
+
+class _NoSlackRedirect(urllib.request.HTTPRedirectHandler):
+    """Slack API responses must not forward the bot token to a new endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            fp.close()
+        raise urllib.error.HTTPError(req.full_url, code, "Slack redirect refused", headers, None)
 
 
 class SlackRouter:
@@ -36,11 +47,13 @@ class SlackRouter:
             logger.error("No Slack token — cannot route response (task=%s)", task_id)
             return False
 
-        payload = json.dumps({
-            "channel": channel_id,
-            "thread_ts": thread_ts,
-            "text": content,
-        }).encode("utf-8")
+        payload = json.dumps(
+            {
+                "channel": channel_id,
+                "thread_ts": thread_ts,
+                "text": content,
+            }
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             _SLACK_POST_MESSAGE_URL,
@@ -52,16 +65,18 @@ class SlackRouter:
         )
 
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.build_opener(_NoSlackRedirect()).open(
+                req, timeout=_SLACK_TIMEOUT_SECONDS
+            ) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 if result.get("ok"):
                     logger.info("Slack message sent to %s (task=%s)", channel_id, task_id)
                     return True
                 else:
-                    logger.error("Slack API error: %s (task=%s)", result.get("error"), task_id)
+                    logger.error("Slack API reported a failure (task=%s)", task_id)
                     return False
-        except Exception as e:
-            logger.error("Slack send failed: %s (task=%s)", e, task_id)
+        except Exception:
+            logger.error("Slack send failed (task=%s)", task_id)
             return False
 
     def _get_token(self) -> str | None:
@@ -77,6 +92,6 @@ class SlackRouter:
             self._token_cache = {"token": token, "expires_at": now + _TOKEN_CACHE_TTL}
             logger.info("Refreshed Slack token from Secrets Manager")
             return token
-        except Exception as e:
-            logger.error("Failed to get Slack token: %s", e)
+        except Exception:
+            logger.error("Failed to get Slack token")
             return None

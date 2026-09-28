@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Option A — Transit · Orchestration Graph Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light;
+    --surface:#fcfcfb; --plane:#f4f4f1; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --baseline:#c3c2b7; --ring:rgba(11,11,11,.10);
+    --line:#2a78d6; --line-2:#eb6834; --line-3:#1baf7a;
+    --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --critical:#d03b3b;
+    --good-text:#006300;
+  }
+  *{box-sizing:border-box; margin:0}
+  body{
+    background:var(--plane); color:var(--ink);
+    font-family:"Hanken Grotesk", system-ui, sans-serif;
+    font-size:15px; line-height:1.5;
+  }
+  .mono{font-family:"Spline Sans Mono", ui-monospace, monospace}
+
+  /* ── masthead: transit-signage bar ─────────────────────────── */
+  header{
+    background:var(--ink); color:#fff; padding:20px 32px 18px;
+    display:flex; align-items:baseline; gap:20px; flex-wrap:wrap;
+  }
+  .route-disc{
+    width:40px; height:40px; border-radius:50%; background:var(--line);
+    display:inline-flex; align-items:center; justify-content:center; align-self:center;
+    font-weight:800; font-size:15px; letter-spacing:.02em; color:#fff; flex:none;
+  }
+  header h1{font-size:22px; font-weight:800; letter-spacing:-.01em}
+  header .sub{color:#c3c2b7; font-size:13.5px}
+  header .spacer{flex:1}
+  .board-clock{color:#fab219; font-size:13px; font-weight:600; letter-spacing:.14em; text-transform:uppercase}
+
+  .nav-strip{background:#232320; color:#c3c2b7; padding:7px 32px; font-size:12.5px; display:flex; gap:18px}
+  .nav-strip a{color:#fff; text-decoration:none; font-weight:600}
+  .nav-strip a.here{color:#fab219}
+
+  main{max-width:1240px; margin:0 auto; padding:28px 32px 64px}
+
+  .eyebrow{font-size:11.5px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin-bottom:8px}
+
+  /* ── stat tiles ─────────────────────────────────────────────── */
+  .tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:28px}
+  .tile{background:var(--surface); border:1px solid var(--ring); border-radius:10px; padding:14px 16px 12px}
+  .tile .label{font-size:11.5px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--muted)}
+  .tile .value{font-size:26px; font-weight:800; letter-spacing:-.01em; margin-top:2px}
+  .tile .hint{font-size:12.5px; color:var(--ink-2); margin-top:2px}
+  .tile.alert{border-color:var(--serious); box-shadow:0 0 0 1px var(--serious) inset}
+  .tile.alert .value{color:var(--serious)}
+
+  /* ── the line ───────────────────────────────────────────────── */
+  .map-card{background:var(--surface); border:1px solid var(--ring); border-radius:12px; padding:20px 8px 6px; overflow-x:auto; margin-bottom:10px}
+  .map-scroll{min-width:1180px}
+  svg text{font-family:"Hanken Grotesk", system-ui, sans-serif}
+  .st-name{font-size:12.5px; font-weight:700; fill:var(--ink)}
+  .st-meta{font-size:11px; font-weight:500; fill:var(--muted)}
+  .st-meta.mono{font-family:"Spline Sans Mono", ui-monospace, monospace}
+  .zone-label{font-size:11px; font-weight:700; letter-spacing:.18em; fill:var(--muted)}
+
+  @keyframes pulse{0%{r:9; opacity:.85} 70%{r:17; opacity:0} 100%{r:17; opacity:0}}
+  .now-pulse{animation:pulse 1.8s ease-out infinite; transform-origin:center}
+  @keyframes crawl{to{stroke-dashoffset:-14}}
+  .flow{stroke-dasharray:2 12; animation:crawl 1.2s linear infinite}
+  @media (prefers-reduced-motion: reduce){ .now-pulse,.flow{animation:none} .now-pulse{opacity:0} }
+
+  .legend{display:flex; gap:20px; flex-wrap:wrap; padding:4px 14px 14px; font-size:12.5px; color:var(--ink-2)}
+  .legend span{display:inline-flex; align-items:center; gap:7px}
+  .swatch{width:22px; height:0; border-top:5px solid var(--line); border-radius:3px}
+  .swatch.dash{border-top-style:dashed; border-top-width:3px; border-color:var(--baseline)}
+  .dot{width:11px; height:11px; border-radius:50%; border:2.5px solid var(--ink); background:#fff}
+  .dot.filled{background:var(--good); border-color:var(--good)}
+  .dot.gate{border-color:var(--warn); background:#fff}
+
+  /* ── departures board (live runs) ───────────────────────────── */
+  .cols{display:grid; grid-template-columns:1.5fr 1fr; gap:22px; margin-top:26px; align-items:start}
+  @media (max-width:980px){ .cols{grid-template-columns:1fr} }
+
+  .board{background:var(--surface); border:1px solid var(--ring); border-radius:12px; overflow:hidden}
+  .board h2{font-size:14px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; padding:14px 18px 12px; border-bottom:1px solid var(--grid)}
+  .run{display:flex; gap:14px; align-items:flex-start; padding:13px 18px; border-bottom:1px solid var(--grid)}
+  .run:last-child{border-bottom:none}
+  .run .status{flex:none; width:86px; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; display:inline-flex; align-items:center; gap:5px; margin-top:2px}
+  .s-good{color:var(--good-text)} .s-run{color:var(--line)} .s-warn{color:#8a6200} .s-serious{color:#b0431f} .s-crit{color:var(--critical)} .s-mut{color:var(--muted)}
+  .run .body{flex:1}
+  .run .title{font-weight:600; font-size:14.5px}
+  .run .meta{font-size:12.5px; color:var(--ink-2); margin-top:1px}
+  .run .cost{flex:none; font-size:13px; font-weight:600; text-align:right; min-width:70px}
+  .run .cost small{display:block; font-weight:500; color:var(--muted); font-size:11px}
+  .chip{display:inline-block; font-size:11px; font-weight:600; padding:1px 8px; border-radius:99px; border:1px solid var(--ring); color:var(--ink-2); margin-left:6px; vertical-align:1px}
+
+  .stall{background:#fdf3ef; border-left:3px solid var(--serious)}
+  .stall .actions{margin-top:8px; display:flex; gap:8px}
+  button{font:inherit; font-size:13px; font-weight:700; border-radius:8px; padding:6px 14px; cursor:pointer; border:1px solid var(--ring); background:#fff; color:var(--ink)}
+  button.primary{background:var(--ink); color:#fff; border-color:var(--ink)}
+  button:focus-visible{outline:2px solid var(--line); outline-offset:2px}
+
+  /* gate card */
+  .gate-card{background:var(--surface); border:1px solid var(--warn); border-radius:12px; padding:16px 18px; margin-bottom:18px}
+  .gate-card .who{font-size:12.5px; color:var(--ink-2); margin:6px 0 12px}
+  .gate-card .actions{display:flex; gap:8px; flex-wrap:wrap}
+
+  /* cost bars */
+  .cost-board{background:var(--surface); border:1px solid var(--ring); border-radius:12px; padding:16px 18px}
+  .cost-board h2{font-size:14px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; margin-bottom:12px}
+  .bar-row{display:grid; grid-template-columns:150px 1fr 64px; gap:10px; align-items:center; padding:4px 0}
+  .bar-row .name{font-size:13px; color:var(--ink-2)}
+  .bar-track{height:14px; position:relative}
+  .bar-fill{position:absolute; inset:0 auto 0 0; border-radius:0 4px 4px 0; background:var(--line)}
+  .bar-fill.w1{background:var(--line-2)} .bar-fill.w2{background:var(--line-3)}
+  .bar-row .val{font-size:12.5px; font-weight:600; text-align:right}
+  .bar-row .val.unknown{color:var(--muted); font-weight:500}
+  .cost-note{font-size:12px; color:var(--muted); margin-top:10px; border-top:1px solid var(--grid); padding-top:10px}
+  footer{max-width:1240px; margin:0 auto; padding:0 32px 40px; color:var(--muted); font-size:12.5px}
+
+  /* ── run drawer (click a departure row) ─────────────────────── */
+  .run[data-run]{cursor:pointer}
+  .run[data-run]:hover{background:#f6f6f3}
+  .run.stall[data-run]:hover{background:#fbeee8}
+  .scrim{position:fixed; inset:0; background:rgba(11,11,11,.42); z-index:40; opacity:0; pointer-events:none; transition:opacity .2s}
+  .drawer{position:fixed; top:0; right:0; bottom:0; width:min(500px,94vw); background:var(--surface); border-left:1px solid var(--ring); z-index:41; transform:translateX(103%); transition:transform .22s ease; display:flex; flex-direction:column; box-shadow:-12px 0 40px rgba(0,0,0,.12)}
+  body.drawer-open .scrim{opacity:1; pointer-events:auto}
+  body.drawer-open .drawer{transform:none}
+  @media (prefers-reduced-motion: reduce){ .drawer,.scrim{transition:none} }
+  .drawer .dhead{padding:18px 22px 14px; border-bottom:1px solid var(--grid)}
+  .drawer .dhead .eyebrow{margin-bottom:4px}
+  .drawer .dhead h3{font-size:16px; font-weight:800; line-height:1.35}
+  .drawer .dhead .dmeta{font-size:12.5px; color:var(--ink-2); margin-top:6px}
+  .drawer .dclose{position:absolute; top:12px; right:14px; border:none; background:none; font-size:20px; padding:4px 8px; color:var(--muted)}
+  .drawer .dbody{flex:1; overflow:auto; padding:16px 22px; display:flex; flex-direction:column; gap:14px}
+  .dlog{background:#141413; color:#c3c2b7; border-radius:8px; padding:12px 14px; font-family:"Spline Sans Mono",monospace; font-size:11.5px; line-height:1.7; overflow:auto; max-height:46vh}
+  .dlog .t{color:#898781} .dlog .w{color:var(--serious)} .dlog .g{color:#3fbf3f}
+  .dtrans{font-size:13px}
+  .dtrans div{padding:5px 0; border-bottom:1px solid var(--grid); display:flex; gap:10px}
+  .dtrans .t{color:var(--muted); font-family:"Spline Sans Mono",monospace; font-size:11.5px; flex:none; width:92px; padding-top:1px}
+  .drawer .dfoot{border-top:1px solid var(--grid); padding:14px 22px; display:flex; gap:8px; flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="route-disc">D1</span>
+  <div>
+    <h1>Delivery Line D1 · Orchestration graph</h1>
+    <div class="sub">EPIC #4121 — from intent #4120 · dev / embark1</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="board-clock mono" aria-live="polite">● Live · Wed 02 Sep 2026 · 14:32 UTC</div>
+</header>
+<div class="nav-strip">
+  <span>Mockup options:</span>
+  <a class="here" href="option-a-transit.html">A · Transit</a>
+  <a href="option-b-mission-control.html">B · Mission Control</a>
+  <a href="option-c-ledger.html">C · Ledger</a>
+  <a href="option-d-portfolio.html">D · Portfolio</a>
+  <a href="option-e-inception.html">E · Inception</a>
+  <a href="index.html" style="margin-left:auto">↩ all options</a>
+</div>
+
+<main>
+  <div class="tiles">
+    <div class="tile"><div class="label">Position</div><div class="value" style="font-size:19px; line-height:1.25; padding-top:4px">Wave 2 · Engine core</div><div class="hint">3 of 5 waves · 2 runs live</div></div>
+    <div class="tile"><div class="label">EPIC cost to date</div><div class="value">$94.65</div><div class="hint">est. plan total $310 · <span class="mono">31%</span></div></div>
+    <div class="tile"><div class="label">Gates cleared</div><div class="value">6 <span style="font-size:15px; font-weight:600; color:var(--muted)">/ 9</span></div><div class="hint">all human-attributed</div></div>
+    <div class="tile alert"><div class="label">Attention</div><div class="value">1 stall</div><div class="hint">story 4207 · 52 min silent</div></div>
+  </div>
+
+  <div class="eyebrow">The whole journey — intent to done, one line</div>
+  <div class="map-card">
+    <div class="map-scroll">
+    <svg width="1180" height="330" viewBox="0 0 1180 330" role="img" aria-label="Transit map of the delivery loop: inception complete, wave 2 running with three parallel branches, waves 3 to 5 ahead">
+      <!-- zone bands -->
+      <text class="zone-label" x="24" y="30">INCEPTION · DONE</text>
+      <text class="zone-label" x="470" y="30">CONSTRUCTION · RUNNING</text>
+      <text class="zone-label" x="985" y="30">AHEAD · AGREED PLAN</text>
+      <line x1="452" y1="14" x2="452" y2="316" stroke="var(--grid)" stroke-width="1"/>
+      <line x1="962" y1="14" x2="962" y2="316" stroke="var(--grid)" stroke-width="1"/>
+
+      <!-- main line: solid completed -->
+      <path d="M40 170 H 560" fill="none" stroke="var(--line)" stroke-width="7" stroke-linecap="round"/>
+      <!-- branch split: three parallel tracks for Wave 2 stories -->
+      <path d="M560 170 C 600 170 600 100 640 100 H 760 C 800 100 800 170 840 170" fill="none" stroke="var(--line-3)" stroke-width="6"/>
+      <path d="M560 170 H 840" fill="none" stroke="var(--line-3)" stroke-width="6"/>
+      <path d="M560 170 C 600 170 600 240 640 240 H 760 C 800 240 800 170 840 170" fill="none" stroke="var(--line-3)" stroke-width="6"/>
+      <!-- crawl overlay on active branch -->
+      <path class="flow" d="M560 170 H 840" fill="none" stroke="#fff" stroke-width="2.5"/>
+      <!-- look-ahead dashed -->
+      <path d="M840 170 H 1150" fill="none" stroke="var(--baseline)" stroke-width="5" stroke-dasharray="10 9" stroke-linecap="round"/>
+
+      <!-- ── inception stations ── -->
+      <g>
+        <circle cx="40" cy="170" r="8" fill="var(--good)"/>
+        <text class="st-name" x="40" y="200" text-anchor="middle">Intent</text>
+        <text class="st-meta mono" x="40" y="215" text-anchor="middle">#4120 · 24 Aug</text>
+
+        <circle cx="130" cy="170" r="8" fill="var(--good)"/>
+        <text class="st-name" x="130" y="140" text-anchor="middle">Frame</text>
+        <text class="st-meta mono" x="130" y="125" text-anchor="middle">$4.87</text>
+
+        <!-- gate interchange -->
+        <circle cx="205" cy="170" r="10" fill="#fff" stroke="var(--ink)" stroke-width="3.5"/>
+        <text class="st-name" x="205" y="200" text-anchor="middle">Gate ✓</text>
+        <text class="st-meta" x="205" y="215" text-anchor="middle">Pranav · 20:24</text>
+
+        <circle cx="280" cy="170" r="8" fill="var(--good)"/>
+        <text class="st-name" x="280" y="140" text-anchor="middle">Reverse-eng</text>
+        <text class="st-meta mono" x="280" y="125" text-anchor="middle">$9.12 · 1 stall ⚠</text>
+
+        <circle cx="345" cy="170" r="10" fill="#fff" stroke="var(--ink)" stroke-width="3.5"/>
+        <text class="st-name" x="345" y="200" text-anchor="middle">Gate ✓</text>
+
+        <circle cx="400" cy="170" r="8" fill="var(--good)"/>
+        <text class="st-name" x="400" y="140" text-anchor="middle">Reqs</text>
+        <text class="st-meta mono" x="400" y="125" text-anchor="middle">$6.41</text>
+
+        <!-- plan agreed: terminus-style double ring -->
+        <circle cx="452" cy="170" r="12" fill="#fff" stroke="var(--ink)" stroke-width="3.5"/>
+        <circle cx="452" cy="170" r="5" fill="var(--ink)"/>
+        <text class="st-name" x="452" y="204" text-anchor="middle">Plan agreed</text>
+        <text class="st-meta" x="452" y="219" text-anchor="middle">5 waves · 26 Aug</text>
+      </g>
+
+      <!-- ── construction ── -->
+      <g>
+        <circle cx="510" cy="170" r="8" fill="var(--good)"/>
+        <text class="st-name" x="510" y="140" text-anchor="middle">W1 · UX spike</text>
+        <text class="st-meta mono" x="510" y="125" text-anchor="middle">$18.40 · gate ✓</text>
+
+        <!-- W2 branch stations -->
+        <circle cx="700" cy="100" r="8" fill="var(--good)"/>
+        <text class="st-name" x="700" y="80" text-anchor="middle">4206 · Ledger schema</text>
+        <text class="st-meta mono" x="700" y="65" text-anchor="middle">done · $19.50 · cycle 1/3</text>
+
+        <circle cx="700" cy="170" r="8" fill="#fff" stroke="var(--line)" stroke-width="3.5"/>
+        <circle class="now-pulse" cx="700" cy="170" r="9" fill="none" stroke="var(--line)" stroke-width="2"/>
+        <text class="st-name" x="700" y="199" text-anchor="middle">4208 · Engine tick ▶</text>
+        <text class="st-meta mono" x="700" y="214" text-anchor="middle">running 38m · $6.55</text>
+
+        <circle cx="700" cy="240" r="8" fill="var(--serious)"/>
+        <text class="st-name" x="700" y="269" text-anchor="middle">4207 · Transition table ⚠</text>
+        <text class="st-meta mono" x="700" y="284" text-anchor="middle">stalled 52m · cost —</text>
+
+        <!-- eval station -->
+        <rect x="832" y="162" width="16" height="16" rx="3" fill="#fff" stroke="var(--muted)" stroke-width="3"/>
+        <text class="st-name" x="840" y="140" text-anchor="middle">Eval E2</text>
+        <text class="st-meta" x="840" y="125" text-anchor="middle">waiting on branches</text>
+      </g>
+
+      <!-- ── look-ahead ── -->
+      <g opacity="0.8">
+        <circle cx="905" cy="170" r="9" fill="#fff" stroke="var(--warn)" stroke-width="3.5"/>
+        <text class="st-name" x="905" y="200" text-anchor="middle">Gate W2→W3</text>
+        <text class="st-meta" x="905" y="215" text-anchor="middle">needs you</text>
+
+        <circle cx="990" cy="170" r="7" fill="#fff" stroke="var(--baseline)" stroke-width="3"/>
+        <text class="st-name" x="990" y="140" text-anchor="middle" fill="var(--ink-2)">W3 · Dispatch</text>
+
+        <circle cx="1060" cy="170" r="7" fill="#fff" stroke="var(--baseline)" stroke-width="3"/>
+        <text class="st-name" x="1060" y="200" text-anchor="middle" fill="var(--ink-2)">W4 · Dashboard</text>
+
+        <circle cx="1118" cy="170" r="7" fill="#fff" stroke="var(--baseline)" stroke-width="3"/>
+        <text class="st-name" x="1118" y="140" text-anchor="middle" fill="var(--ink-2)">W5 · Cost</text>
+
+        <circle cx="1150" cy="170" r="10" fill="#fff" stroke="var(--baseline)" stroke-width="3.5"/>
+        <text class="st-name" x="1144" y="200" text-anchor="middle" fill="var(--ink-2)">Done</text>
+      </g>
+    </svg>
+    </div>
+    <div class="legend" aria-hidden="true">
+      <span><span class="dot filled"></span> station complete</span>
+      <span><span class="dot"></span> gate (human interchange)</span>
+      <span><span class="swatch"></span> travelled</span>
+      <span><span class="swatch" style="border-color:var(--line-3)"></span> parallel branches</span>
+      <span><span class="swatch dash"></span> ahead (agreed plan)</span>
+      <span class="mono" style="color:var(--serious)">⚠ stall</span>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <div class="eyebrow">Departures — live runs at this station</div>
+      <div class="board">
+        <h2>Wave 2 · Engine core</h2>
+        <div class="run" data-run="s4206" tabindex="0" role="button" aria-label="Open run detail for story 4206">
+          <span class="status s-good">✓ Arrived</span>
+          <div class="body">
+            <div class="title">Story 4206 — run-ledger schema, migration 026 <span class="chip">developer</span></div>
+            <div class="meta">Merged 13:04 after one defect cycle (eval red → fix → green). Cycle 1 of 3 allowed.</div>
+          </div>
+          <div class="cost mono">$19.50<small>2 runs</small></div>
+        </div>
+        <div class="run" data-run="s4208" tabindex="0" role="button" aria-label="Open run detail for story 4208">
+          <span class="status s-run">▶ Running</span>
+          <div class="body">
+            <div class="title">Story 4208 — scheduled tick engine <span class="chip">developer</span></div>
+            <div class="meta">38 min · turn 214 · last heartbeat 6 s ago · <a href="#">open in Agent Activity ↗</a></div>
+          </div>
+          <div class="cost mono">$6.55<small>so far</small></div>
+        </div>
+        <div class="run stall" data-run="s4207" tabindex="0" role="button" aria-label="Open run detail for story 4207">
+          <span class="status s-serious">⚠ Stalled</span>
+          <div class="body">
+            <div class="title">Story 4207 — transition table + CI guard <span class="chip">developer</span></div>
+            <div class="meta"><strong>No SDK messages for 52 min</strong> (stall SLO: 15 min — alerted 14:03, notified #adp-ops). Cause: API retry loop at turn 341. Cost unknown — ledger row missing, shown as unknown, never $0.</div>
+            <div class="actions">
+              <button class="primary">Resume from checkpoint</button>
+              <button>Abort run</button>
+              <button>View heartbeat log</button>
+            </div>
+          </div>
+          <div class="cost mono" style="color:var(--muted)">⌀ unknown</div>
+        </div>
+        <div class="run">
+          <span class="status s-mut">○ Waiting</span>
+          <div class="body">
+            <div class="title">Evaluation E2 — engine-core acceptance <span class="chip">evaluator</span></div>
+            <div class="meta">Departs when all three branches arrive. 13 adversarial checks queued.</div>
+          </div>
+          <div class="cost mono" style="color:var(--muted)">—<small>not started</small></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="eyebrow">Next interchange</div>
+      <div class="gate-card">
+        <strong>🚦 Gate W2 → W3 opens after Eval E2 is green.</strong>
+        <div class="who">Approval is SSO-attributed and recorded on the graph. Only org members with the <span class="mono">gate:approve</span> role can act — this button is disabled for viewers.</div>
+        <div class="actions">
+          <button class="primary" disabled>Approve — not yet open</button>
+          <button disabled>Send back with notes</button>
+        </div>
+      </div>
+
+      <div class="eyebrow">Fares — cost by stage</div>
+      <div class="cost-board">
+        <h2>What this journey costs</h2>
+        <div class="bar-row"><span class="name">Inception (5 stages)</span><div class="bar-track"><div class="bar-fill" style="width:34%"></div></div><span class="val mono">$31.50</span></div>
+        <div class="bar-row"><span class="name">Wave 1 · UX spike</span><div class="bar-track"><div class="bar-fill w1" style="width:20%"></div></div><span class="val mono">$18.40</span></div>
+        <div class="bar-row"><span class="name">Wave 2 · Engine core</span><div class="bar-track"><div class="bar-fill w2" style="width:48%"></div></div><span class="val mono">$44.75</span></div>
+        <div class="bar-row"><span class="name">Wave 3 · Dispatch</span><div class="bar-track"></div><span class="val unknown">ahead</span></div>
+        <div class="bar-row"><span class="name">Wave 4 · Dashboard</span><div class="bar-track"></div><span class="val unknown">ahead</span></div>
+        <div class="bar-row"><span class="name">Wave 5 · Cost + SLO</span><div class="bar-track"></div><span class="val unknown">ahead</span></div>
+        <div class="cost-note">Agent-run costs only (v1 boundary). Story 4207's run is excluded until its ledger row lands — shown as <strong>unknown</strong>, never $0.00. Figures match Agent Activity per-run.</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>Mockup A of 3 · static, illustrative data based on EPIC #4120's real inception history · AIDLC UX spike input, 2026-08-25</footer>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Run detail">
+  <div class="dhead">
+    <div class="eyebrow" id="d-eyebrow"></div>
+    <h3 id="d-title"></h3>
+    <div class="dmeta mono" id="d-meta"></div>
+    <button class="dclose" id="d-close" aria-label="Close">✕</button>
+  </div>
+  <div class="dbody">
+    <div>
+      <div class="eyebrow">Live log <span id="d-live" style="color:var(--good-text)"></span></div>
+      <div class="dlog" id="d-log" aria-live="polite"></div>
+    </div>
+    <div>
+      <div class="eyebrow">Transition history (engine record)</div>
+      <div class="dtrans" id="d-trans"></div>
+    </div>
+  </div>
+  <div class="dfoot" id="d-actions"></div>
+</aside>
+<script>
+const RUNS={
+ s4206:{eyebrow:'Story #4206 · developer · done',title:'Run-ledger schema, migration 026',
+  meta:'run_88ab02 + run_91cc07 · branch agent/issue-4206 · $19.50 total',
+  log:[["11:02:14","clone + setup complete"],["11:38:20","turn 96: alembic revision 026 written"],["11:40:55","✓ run_88ab02 complete — PR #4310 opened","g"],["12:22:03","⚠ eval E2-pre red: missing FK on graph_address — defect cycle 1/3 opened","w"],["12:58:47","turn 41 (fix run): FK + index added, tests 52/52 green"],["13:04:19","✓ eval green — engine promoted story to done","g"]],
+  trans:[["11:01","dispatched by engine (wave 2 open)"],["12:22","eval red → defect-cycle 1/3 (bounded, halts at 3)"],["13:04","promoted: transition table satisfied — no human vouching involved"]],
+  actions:['View PR #4310 ↗','Open in Agent Activity ↗'],stream:null},
+ s4208:{eyebrow:'Story #4208 · developer · running 38m',title:'Scheduled tick engine',
+  meta:'run_c07d11 · branch agent/issue-4208 · $6.55 so far (live)',
+  log:[["14:28:40","tests 41/41 green (unit)"],["14:30:12","turn 213 completed"],["14:31:58","turn 214: Write engine/tick.py"]],
+  trans:[["13:54","dispatched by engine (parallel branch 2/3)"],["14:20","heartbeat healthy · cost checkpoint $4.10"]],
+  actions:['Pause after current turn (via #3959, when live)|d','Abort run','Open in Agent Activity ↗'],stream:'run'},
+ s4207:{eyebrow:'Story #4207 · developer · stalled 52m',title:'Transition table + CI guard R-O5c',
+  meta:'run_9f21c4 · branch agent/issue-4207 · cost unknown (ledger row missing)',
+  log:[["13:39:41","turn 340 completed"],["13:39:44","turn 341 started (Bash)"],["14:03:02","⚠ stall SLO breached (15m) — alert → #adp-ops + on-call","w"],["14:31:56","💓 no SDK messages for 3,120s (turn 341)","w"]],
+  trans:[["13:12","dispatched by engine (parallel branch 3/3)"],["14:03","state → stalled(cause: api-retry-loop) · visible on graph"]],
+  actions:['Resume from checkpoint (idempotent)|p','Abort run','View in Agent Activity ↗'],stream:'stall'}
+};
+let timer=null, stallSecs=3120, turn=214;
+const $=id=>document.getElementById(id);
+function esc(x){return x.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function line(t,m,c){return `<div><span class="t">${t}</span>  <span class="${c||''}">${esc(m)}</span></div>`}
+function openRun(id){
+  const r=RUNS[id]; if(!r) return;
+  $('d-eyebrow').textContent=r.eyebrow; $('d-title').textContent=r.title; $('d-meta').textContent=r.meta;
+  $('d-log').innerHTML=r.log.map(l=>line(l[0],l[1],l[2])).join('');
+  $('d-trans').innerHTML=r.trans.map(t=>`<div><span class="t">${t[0]}</span><span>${esc(t[1])}</span></div>`).join('');
+  $('d-actions').innerHTML=r.actions.map(a=>{const d=a.endsWith('|d'),p=a.endsWith('|p');a=a.replace(/\|[dp]$/,'');
+    return `<button class="${p?'primary':''}" ${d?'disabled':''}>${a}</button>`}).join('');
+  $('d-live').textContent = r.stream ? '· streaming' : '';
+  document.body.classList.add('drawer-open');
+  clearInterval(timer);
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(r.stream && !reduced){
+    timer=setInterval(()=>{
+      const log=$('d-log');
+      if(r.stream==='stall'){ stallSecs+=30;
+        log.insertAdjacentHTML('beforeend', line('14:32:'+String(26+((stallSecs/30)%30)|0).padStart(2,'0'), `💓 no SDK messages for ${stallSecs.toLocaleString()}s (turn 341)`, 'w'));
+      } else { turn+=1;
+        const acts=['Bash: pytest engine/tests -q','Write engine/tick.py','Bash: alembic upgrade head --sql (dry)','Read gateway/app.py','Bash: ruff check engine/'];
+        log.insertAdjacentHTML('beforeend', line('14:32:'+String((turn*7)%60).padStart(2,'0'), `turn ${turn}: ${acts[turn%acts.length]}`));
+      }
+      log.scrollTop=log.scrollHeight;
+    }, 2200);
+  }
+}
+function closeRun(){ document.body.classList.remove('drawer-open'); clearInterval(timer); }
+document.querySelectorAll('[data-run]').forEach(el=>{
+  el.addEventListener('click',e=>{ if(e.target.tagName!=='BUTTON'&&e.target.tagName!=='A') openRun(el.dataset.run)});
+  el.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();openRun(el.dataset.run)}});
+});
+$('scrim').addEventListener('click',closeRun); $('d-close').addEventListener('click',closeRun);
+addEventListener('keydown',e=>{ if(e.key==='Escape') closeRun(); });
+if(location.hash && RUNS[location.hash.slice(1)]) openRun(location.hash.slice(1));
+</script>
+
+</body>
+</html>

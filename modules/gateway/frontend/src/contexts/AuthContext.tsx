@@ -97,6 +97,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     initializeAuth();
   }, []);
 
+  // A refresh can pick up a workspace selected in another session. Reload so
+  // existing pages and caches cannot keep displaying the previous org's data.
+  const applyRefreshedSession = useCallback((newToken: string) => {
+    const currentUser = getCurrentUserFromToken();
+    if (!currentUser) throw new Error('Could not read refreshed session');
+    if (user && (currentUser.orgId !== user.orgId || currentUser.deptId !== user.deptId || currentUser.teamId !== user.teamId || currentUser.role !== user.role)) {
+      window.location.assign('/');
+      return;
+    }
+    setUser(currentUser);
+    setToken(newToken);
+  }, [user]);
+
   // Token refresh timer
   useEffect(() => {
     if (!token) return;
@@ -114,7 +127,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Token is about to expire, refresh now
       refreshToken()
         .then(({ token: newToken }) => {
-          setToken(newToken);
+          applyRefreshedSession(newToken);
         })
         .catch(() => {
           // Refresh failed, logout
@@ -126,7 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const timer = setTimeout(async () => {
       try {
         const { token: newToken } = await refreshToken();
-        setToken(newToken);
+        applyRefreshedSession(newToken);
       } catch {
         // Refresh failed, logout
         await logout();
@@ -134,7 +147,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, refreshTime);
 
     return () => clearTimeout(timer);
-  }, [token]);
+  }, [token, applyRefreshedSession]);
 
   /**
    * Initiate login by redirecting to Cognito hosted UI

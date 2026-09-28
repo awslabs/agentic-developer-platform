@@ -150,11 +150,11 @@ region: ${DETECTED_REGION}
 environment: dev
 github_org: ${GITHUB_ORG}
 
-# Optional: cross-account deploy (uncomment + fill in to deploy ADP into a
-# linked customer account via the gateway's credential-assume-role endpoint).
-# customer_account:
-#   account_id: ""
-#   aws_label: ""
+# Cross-account customer bootstrap is unavailable. Configure only account_id
+# above and use temporary, customer-controlled credentials for deployment.
+# Dashboard-linked roles are steady-state only and cannot provision ADP. Do not
+# add a customer_account block or attach AdministratorAccess to a linked role.
+# See config/deployment.yml.example for the supported deployment contract.
 EOF
   ok "Created config/deployment.yml (account=${DETECTED_ACCOUNT:-<unset>}, region=$DETECTED_REGION, org=$GITHUB_ORG)"
 fi

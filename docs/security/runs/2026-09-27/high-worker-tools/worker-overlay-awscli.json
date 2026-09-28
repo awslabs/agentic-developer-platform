@@ -1,0 +1,24 @@
+{
+  "scope": "offline parser/service-model only; no cloud or credential calls",
+  "results": [
+    {
+      "version": "aws-cli/2.37.4 Python/3.14.7 Linux/7.0.0-1012-aws source-exe/x86_64.debian.13",
+      "launcher_sha256": "9cb0f9a8b916a9100d16529e2c3a94958248de898f075c0bcfb8093c34a6ec35",
+      "service_model_input_skeletons": [
+        "eks describe-cluster",
+        "eks describe-access-entry",
+        "eks list-associated-access-policies",
+        "eks list-access-entries",
+        "ec2 describe-security-group-rules",
+        "ec2 describe-security-groups",
+        "ec2 describe-vpc-endpoints",
+        "iam simulate-principal-policy",
+        "sts get-caller-identity",
+        "sts assume-role",
+        "s3api head-object",
+        "ssm get-parameter"
+      ],
+      "invalid_command_refused": true
+    }
+  ]
+}

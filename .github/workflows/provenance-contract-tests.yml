@@ -1,0 +1,179 @@
+name: Provenance Contract Tests
+
+# Issue #4029: every worker provenance write 422'd for months because the worker
+# client and the gateway endpoint disagreed about two fields of the request body,
+# and no CI job ran both sides. Each module's tests asserted its own assumption and
+# both were green.
+#
+# The fix pins all three producers to one shared artifact:
+#   contracts/provenance/v1/create-provenance-request.golden.json
+#
+# But a golden fixture prevents nothing if nothing executes it. The gateway half
+# (tests/internal/test_provenance_contract.py) runs in gateway-ci.yml, whose paths
+# filter now includes contracts/**. The two suites below ran in NO workflow at all
+# before this file existed:
+#   - modules/agent-factory/agent-worker-image/tests/  (Python worker producer)
+#   - modules/agent-factory/agent/src/**/*.test.ts     (Node runtime producer)
+#
+# So this workflow gates the producer side. Change a producer's payload and its
+# builder test fails here; change the fixture and all three fail until they agree.
+
+on:
+  pull_request:
+    paths:
+      # The shared contract artifact itself
+      - 'contracts/provenance/**'
+      # Python worker producer
+      - 'modules/agent-factory/agent-worker-image/lib/provenance_client.py'
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_provenance_client.py'
+      # Chain-provenance write narrowing (#4129). The pod must not write
+      # root_human_id / is_human_rooted / chain_depth to its correlation pointer
+      # — the webhook derives all three from the server-written webhook-events
+      # GSI instead. A follow-up PR pins this with a dynamodb:Attributes IAM
+      # Condition, which is all-or-nothing per request: if this write set drifts,
+      # that Condition denies EVERY pointer write, and write_pointer is fail-soft,
+      # so chains would silently degrade to new-chain-per-event with no alarm.
+      # Hence the paths below gate the writer and both of its callers.
+      - 'modules/agent-factory/agent-worker-image/lib/correlation_store.py'
+      - 'modules/agent-factory/agent-worker-image/lib/seed_trigger_pointer.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_correlation_store_no_provenance_4129.py'
+      # Node runtime producer
+      - 'modules/agent-factory/agent/src/lib/provenanceClient.ts'
+      - 'modules/agent-factory/agent/src/lib/provenanceClient.test.ts'
+      - 'modules/agent-factory/agent/src/agent-worker.ts'
+      # Agent trust-boundary contracts (#4074). Broad on purpose: the wrap-site
+      # gate scans every .ts under src/ for Bash+bypassPermissions prompts, so
+      # ANY source change can introduce the regression it exists to catch. A
+      # narrow filter would let a new unwrapped site merge without running it.
+      - 'modules/agent-factory/agent/src/**'
+      # Developer checkpoint plan and readiness instructions used by the worker
+      - 'modules/agent-factory/rules/personas/developer.md'
+      - 'modules/agent-factory/rules/phases/construction/code-generation.md'
+      # This workflow
+      - '.github/workflows/provenance-contract-tests.yml'
+    branches:
+      - main
+
+concurrency:
+  group: provenance-contract-tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  worker-producer:
+    name: Python Worker Producer
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # agent-worker-image has no pyproject.toml — its deps are inline in the
+      # Dockerfile, so they are installed explicitly here (same approach as the
+      # worker job in credential-path-tests.yml).
+      - name: Install dependencies
+        run: pip install pytest pytest-timeout 'boto3>=1.34'
+
+      - name: Assert the worker builds the golden payload
+        working-directory: modules/agent-factory/agent-worker-image
+        run: pytest tests/test_provenance_client.py -v --tb=short --timeout=60
+
+      # Named explicitly rather than as a bare `pytest tests/` for the same
+      # reason as the agent-trust-boundary job below: this suite has a
+      # pre-existing red baseline on main (test_entrypoint.py, test_adp_cred_assume.py,
+      # and test_correlation_store.py's TableName assertion, which reads the
+      # pod's real CORRELATION_POINTERS_TABLE env var cached at import). A bare
+      # run would fail on arrival and train everyone to ignore this job.
+      - name: Assert the pod cannot write chain provenance to its pointer row
+        working-directory: modules/agent-factory/agent-worker-image
+        run: pytest tests/test_correlation_store_no_provenance_4129.py -v --tb=short --timeout=60
+
+  node-producer:
+    name: Node Runtime Producer
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      # --include=dev is explicit because NODE_ENV=production in the runner
+      # environment makes npm omit devDependencies, which silently strips
+      # jest and typescript and makes the steps below fail as "not found".
+      - name: Install dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci --include=dev
+
+      - name: Typecheck
+        working-directory: modules/agent-factory/agent
+        run: npx tsc --noEmit
+
+      - name: Assert the Node runtime builds the golden payload
+        working-directory: modules/agent-factory/agent
+        run: npx jest src/lib/provenanceClient.test.ts
+
+      - name: Assert developer checkpoint cadence, spill composition and review readiness
+        working-directory: modules/agent-factory/agent
+        run: >-
+          npx jest src/developer-checkpoints.test.ts
+          src/agent-worker-presubmit-checks.test.ts
+          src/agent-worker-prompt-order.test.ts
+          src/utils/spill/spill.test.ts
+
+  agent-trust-boundary:
+    name: Agent Trust Boundary Contracts
+    runs-on: arc-runner-org
+    # Issue #4074: two agent trust boundaries were crossed by untrusted content
+    # (model-supplied memory scope; an unwrapped issue body in a Bash +
+    # bypassPermissions prompt). Both fixes are guarded by the suites below.
+    #
+    # These run as named test files rather than a bare `npx jest` because the
+    # suite has a pre-existing red baseline on main (4 suites import `vitest`,
+    # which is not in package.json, plus 2 unrelated assertion failures). A bare
+    # run would fail immediately and train everyone to ignore this job.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      # --include=dev for the same reason as the job above: NODE_ENV=production
+      # in the runner makes npm omit devDependencies, silently stripping ts-jest.
+      - name: Install dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci --include=dev
+
+      - name: Typecheck
+        working-directory: modules/agent-factory/agent
+        run: npx tsc --noEmit
+
+      # The last two suites are #5223's. They belong with the trust-boundary gate
+      # rather than in a new workflow because they assert the same class of
+      # property: what the agent is told about its own authority. The mediated
+      # suite pins that the no-token instructions name calls the helper really
+      # exports (wrong prose wastes a whole run), and the prompt-order suite pins
+      # that the new block stayed in the run-invariant prefix (#4183). Both are in
+      # `src/**`, which already triggers this workflow, but the run list is
+      # explicit here — a bare `npx jest` has a pre-existing red baseline on main.
+      - name: Assert memory tools cannot be scoped by the model, and every Bash+bypass prompt wraps untrusted input
+        working-directory: modules/agent-factory/agent
+        run: |
+          npx jest \
+            src/complex-task-chat/memory/tools.test.ts \
+            src/complex-task-chat/memory/null-memory.test.ts \
+            src/utils/__tests__/trust-boundary.test.ts \
+            src/utils/__tests__/bash-bypass-wrap-sites.test.ts \
+            src/mediated-github-config.test.ts \
+            src/agent-worker-prompt-order.test.ts

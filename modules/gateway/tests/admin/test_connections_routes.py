@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.connections.routes import router
 from src.admin.connections.schemas import (
@@ -40,6 +41,16 @@ def _make_user(*, is_admin: bool = False, org_id: str = "org-001") -> TokenConte
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_unit_test_audit_sink(monkeypatch):
+    # These service/response unit tests use fake database sessions. Keep the
+    # route's audit staging and permission gates; durable SQL is exercised by
+    # test_admin_audit_durability.py and test_admin_audit_postgres.py.
+    from src.admin import audit_operation
+
+    monkeypatch.setattr(audit_operation, "persist", AsyncMock())
+
+
 @pytest.fixture
 def app():
     application = FastAPI()
@@ -49,7 +60,15 @@ def app():
 
 @pytest.fixture
 def mock_db():
-    return MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    result.scalars.return_value.all.return_value = []
+    result.all.return_value = []
+    db = AsyncMock(spec=AsyncSession)
+    db.execute = AsyncMock(return_value=result)
+    db.get = AsyncMock(return_value=None)
+    db.scalar = AsyncMock(return_value=None)
+    return db
 
 
 def _make_client(
@@ -141,7 +160,7 @@ class TestInstallCallbackRoute:
         success_result = {
             "success": True,
             "installation_id": 124731131,
-            "account_login": "sophos-test",
+            "account_login": "acme-test",
             "account_type": "Organization",
             "error_code": None,
             "error_message": None,
@@ -160,12 +179,23 @@ class TestInstallCallbackRoute:
         assert "success=1" in resp.headers["location"]
         assert "installation_id=124731131" in resp.headers["location"]
 
-    def test_missing_state_returns_generic_success_page(self, app, mock_db):
+    def test_missing_state_returns_html_page_not_an_error_redirect(self, app, mock_db, monkeypatch):
         """Issue #2952: Missing state triggers the no-nonce public-App install path.
 
-        Returns a generic HTML success page (200) instead of an error redirect,
-        because public-App installs initiated from GitHub have no state nonce.
+        Returns an HTML page (200) rather than an error redirect, because
+        public-App installs initiated from GitHub have no state nonce and no ADP
+        session to redirect into.
+
+        Issue #4016: this case resolves NO org (nothing is persisted), so the
+        page must NOT say "Installation complete" — it previously did, which is
+        the fail-soft this issue removes. The success wording is asserted
+        separately below.
         """
+        from src.admin.connections import service
+
+        # Missing deployment credentials are part of this fixture, not a live
+        # Secrets Manager lookup on the developer/CI runner's account.
+        monkeypatch.setattr(service, "_get_github_app_credentials", lambda: ("", ""))
         user = _make_user()
         client = _make_client(app, user=user, mock_db=mock_db)
 
@@ -174,7 +204,68 @@ class TestInstallCallbackRoute:
             follow_redirects=False,
         )
         assert resp.status_code == 200
+        assert "Installation complete" not in resp.text
+        assert "Installation needs attention" in resp.text
+        # The operator gets something actionable to quote to their platform team.
+        assert "100" in resp.text
+
+    def test_missing_state_success_page_shown_when_install_actually_landed(self, app, mock_db):
+        """Issue #4016: the honest page still says "complete" on a real success."""
+        user = _make_user()
+        client = _make_client(app, user=user, mock_db=mock_db)
+
+        with patch(
+            "src.admin.connections.routes.install_callback",
+            new=AsyncMock(
+                return_value={
+                    "success": True,
+                    "installation_id": 100,
+                    "account_login": "acme",
+                    "account_type": "Organization",
+                    "error_code": None,
+                    "error_message": None,
+                    "no_nonce": True,
+                }
+            ),
+        ):
+            resp = client.get(
+                "/admin/connections/github/install-callback?installation_id=100",
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 200
         assert "Installation complete" in resp.text
+
+    def test_missing_state_partial_install_does_not_claim_completion(self, app, mock_db):
+        """Issue #4016: a promotion refusal (#2724) is a successful-but-partial
+        install. success stays True by design, so the page must key on `partial`.
+        """
+        user = _make_user()
+        client = _make_client(app, user=user, mock_db=mock_db)
+
+        with patch(
+            "src.admin.connections.routes.install_callback",
+            new=AsyncMock(
+                return_value={
+                    "success": True,
+                    "installation_id": 100,
+                    "account_login": "acme",
+                    "account_type": "Organization",
+                    "error_code": "promotion_denied",
+                    "error_message": "The installation was recorded, but this deployment does not vouch for the organisation.",
+                    "no_nonce": True,
+                    "partial": True,
+                }
+            ),
+        ):
+            resp = client.get(
+                "/admin/connections/github/install-callback?installation_id=100",
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 200
+        assert "Installation complete" not in resp.text
+        assert "does not vouch for the organisation" in resp.text
 
     def test_expired_nonce_redirects_to_error(self, app, mock_db):
         user = _make_user()
@@ -253,20 +344,34 @@ class TestInstallCallbackRoute:
 
 
 class TestGetConnectionsRoute:
-    def test_returns_connections_list(self, app, mock_db):
+    @pytest.fixture(autouse=True)
+    def mock_memberships(self):
+        with patch(
+            "src.shared.identity.workspaces.memberships_for_login",
+            new=AsyncMock(return_value=(None, {})),
+        ) as memberships:
+            yield memberships
+
+    def test_returns_connections_list(self, app, mock_db, mock_memberships):
         user = _make_user()
         client = _make_client(app, user=user, mock_db=mock_db)
+        login = MagicMock(id="canonical-user")
+        local_user = MagicMock(id="org-local-user")
+        mock_memberships.return_value = (
+            login,
+            {"org-002": (login, None), "org-001": (local_user, None)},
+        )
 
         connections_result = ConnectionsListResponse(
             connections=[
                 GitHubConnectionItem(
                     installation_id=124731131,
-                    account_login="sophos-test",
+                    account_login="acme-test",
                     account_type="Organization",
                     repository_selection="selected",
                     repository_count=2,
                     installed_at=datetime.now(UTC),
-                    configure_url="https://github.com/organizations/sophos-test/settings/installations/124731131",
+                    configure_url="https://github.com/organizations/acme-test/settings/installations/124731131",
                 )
             ]
         )
@@ -274,13 +379,22 @@ class TestGetConnectionsRoute:
         with patch(
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(return_value=connections_result),
-        ):
+        ) as list_mock:
             resp = client.get("/admin/connections")
 
         assert resp.status_code == 200
+        mock_memberships.assert_awaited_once_with(mock_db, user.user_id, username=user.cognito_username)
+        list_mock.assert_awaited_once_with(
+            caller_org_id="org-001",
+            caller_user_id=user.user_id,
+            db=mock_db,
+            member_tenant_ids=["org-002", "org-001"],
+            caller_is_admin=False,
+            caller_pg_user_id="org-local-user",
+        )
         body = resp.json()
         assert len(body["connections"]) == 1
-        assert body["connections"][0]["account_login"] == "sophos-test"
+        assert body["connections"][0]["account_login"] == "acme-test"
         assert body["connections"][0]["installation_id"] == 124731131
 
     def test_returns_empty_list_when_no_connections(self, app, mock_db):
@@ -290,11 +404,19 @@ class TestGetConnectionsRoute:
         with patch(
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(return_value=ConnectionsListResponse(connections=[])),
-        ):
+        ) as list_mock:
             resp = client.get("/admin/connections")
 
         assert resp.status_code == 200
         assert resp.json()["connections"] == []
+        list_mock.assert_awaited_once_with(
+            caller_org_id=user.org_id,
+            caller_user_id=user.user_id,
+            db=mock_db,
+            member_tenant_ids=None,
+            caller_is_admin=False,
+            caller_pg_user_id=None,
+        )
 
     def test_returns_500_on_service_error(self, app, mock_db):
         user = _make_user()
@@ -303,10 +425,21 @@ class TestGetConnectionsRoute:
         with patch(
             "src.admin.connections.routes.list_connections",
             new=AsyncMock(side_effect=RuntimeError("DB error")),
-        ):
+        ) as list_mock:
             resp = client.get("/admin/connections")
 
         assert resp.status_code == 500
+        list_mock.assert_awaited_once()
+
+    def test_membership_lookup_failure_does_not_list_connections(self, app, mock_db, mock_memberships):
+        client = _make_client(app, user=_make_user(), mock_db=mock_db)
+        mock_memberships.side_effect = RuntimeError("Membership lookup failed")
+
+        with patch("src.admin.connections.routes.list_connections", new=AsyncMock()) as list_mock:
+            resp = client.get("/admin/connections")
+
+        assert resp.status_code == 500
+        list_mock.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

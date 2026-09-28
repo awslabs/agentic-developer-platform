@@ -9,7 +9,8 @@
 #   Sidecar container: SIDECAR_MODE=true   (loops, refreshing before expiry)
 # =============================================================================
 
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023.7.20250512
+# Official Amazon Linux 2023.12.20260918.0 multi-platform image.
+FROM public.ecr.aws/amazonlinux/amazonlinux@sha256:06da5a3362eda00c5114227ac81abe56dd9b943395553b7c64a310457f4d9e2b
 
 # Install minimal dependencies (baked in, not at runtime).
 # curl is omitted: amazonlinux:2023.x ships curl-minimal, which provides curl
@@ -22,6 +23,10 @@ RUN dnf upgrade -y \
       shadow-utils \
     && dnf clean all \
     && rm -rf /var/cache/dnf
+
+# Preserve vendor backports while repairing the remaining urllib3 303 body leak.
+COPY security/patch-urllib3.py /tmp/patch-urllib3.py
+RUN python3 /tmp/patch-urllib3.py && rm /tmp/patch-urllib3.py
 
 # Create non-root user
 RUN groupadd -r tokengen && useradd -r -g tokengen -s /sbin/nologin tokengen

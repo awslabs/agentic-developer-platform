@@ -1,0 +1,275 @@
+# Legacy broker resources retained for a staged migration. Native workers connect
+# directly to AgentCore; scale this deployment to zero after lease drain.
+
+locals {
+  url_analysis_browser_actions = [
+    "bedrock-agentcore:ConnectBrowserAutomationStream",
+    "bedrock-agentcore:GetBrowserSession",
+    "bedrock-agentcore:ListBrowserSessions",
+    "bedrock-agentcore:StartBrowserSession",
+    "bedrock-agentcore:StopBrowserSession",
+  ]
+}
+
+# Independently deployable boundary for existing workers. The broader worker
+# policy also denies these APIs, but updating that policy can pull the separate
+# worker-authority migration into its dependency graph. Keep this deny owned by
+# the browser rollout so adopting the broker does not require that migration.
+resource "aws_iam_role_policy" "agent_scaledjob_browser_deny" {
+  name = "deny-direct-agentcore-browser"
+  role = var.worker_role_name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "DenyDirectAgentCoreBrowser"
+      Effect   = "Deny"
+      Action   = ["bedrock-agentcore:*"]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_iam_policy" "url_analysis_browser_broker_boundary" {
+  name = "${var.name_prefix}-url-analysis-browser-broker-boundary"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "GuardedBrowserLifecycleOnly"
+      Effect   = "Allow"
+      Action   = local.url_analysis_browser_actions
+      Resource = "*"
+      Condition = {
+        StringEquals = { "aws:RequestedRegion" = var.aws_region }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role" "url_analysis_browser_broker" {
+  name                 = "${var.name_prefix}-url-analysis-browser-broker-role"
+  permissions_boundary = aws_iam_policy.url_analysis_browser_broker_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = var.oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${replace(var.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.namespace}:url-analysis-browser-broker-sa"
+          "${replace(var.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "url_analysis_browser_broker" {
+  name = "guarded-browser-lifecycle"
+  role = aws_iam_role.url_analysis_browser_broker.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "GuardedBrowserLifecycleOnly"
+      Effect   = "Allow"
+      Action   = local.url_analysis_browser_actions
+      Resource = "*"
+      Condition = {
+        StringEquals = { "aws:RequestedRegion" = var.aws_region }
+      }
+    }]
+  })
+}
+
+resource "kubernetes_service_account" "url_analysis_browser_broker" {
+  metadata {
+    name      = "url-analysis-browser-broker-sa"
+    namespace = var.namespace
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.url_analysis_browser_broker.arn
+    }
+    labels = {
+      "app.kubernetes.io/name"       = "url-analysis-browser-broker"
+      "app.kubernetes.io/part-of"    = "adp-agent-factory"
+      "app.kubernetes.io/managed-by" = "terraform"
+    }
+  }
+}
+
+resource "kubernetes_deployment" "url_analysis_browser_broker" {
+  metadata {
+    name      = "url-analysis-browser-broker"
+    namespace = var.namespace
+    labels = {
+      "app.kubernetes.io/name"       = "url-analysis-browser-broker"
+      "app.kubernetes.io/part-of"    = "adp-agent-factory"
+      "app.kubernetes.io/managed-by" = "terraform"
+    }
+  }
+
+  spec {
+    replicas = var.browser_broker_enabled ? 2 : 0
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
+    }
+    template {
+      metadata {
+        # Auto-instrumentation preloads Node code into Playwright's private
+        # driver process and stalls startup. Preserve the driver's stdio protocol.
+        # This fixed Python service opts out; container logs remain available.
+        annotations = merge(
+          # Browser context lives in this replica during agent reasoning. Avoid
+          # voluntary consolidation interrupting an otherwise healthy lease.
+          { "karpenter.sh/do-not-disrupt" = "true" },
+          { for language in ["java", "nodejs", "python", "dotnet"] :
+          "cloudwatch.aws.amazon.com/auto-annotate-${language}" => "false" },
+          { for language in ["java", "nodejs", "python", "dotnet"] :
+          "instrumentation.opentelemetry.io/inject-${language}" => "false" }
+        )
+        labels = {
+          "app.kubernetes.io/name"      = "url-analysis-browser-broker"
+          "app.kubernetes.io/part-of"   = "adp-agent-factory"
+          "app.kubernetes.io/component" = "security-boundary"
+        }
+      }
+      spec {
+        service_account_name             = kubernetes_service_account.url_analysis_browser_broker.metadata[0].name
+        termination_grace_period_seconds = 330
+        security_context {
+          run_as_non_root = true
+          run_as_user     = 1001
+          run_as_group    = 1001
+          fs_group        = 1001
+          seccomp_profile {
+            type = "RuntimeDefault"
+          }
+        }
+        container {
+          name    = "browser-broker"
+          image   = local.broker_image
+          command = ["python3"]
+          args    = ["/app/skills/url-analysis/browser_broker.py"]
+          port {
+            name           = "http"
+            container_port = 8765
+          }
+          env {
+            name  = "URL_ANALYSIS_BROWSER_MODE"
+            value = "broker"
+          }
+          env {
+            name  = "AWS_REGION"
+            value = var.aws_region
+          }
+          env {
+            name  = "AWS_DEFAULT_REGION"
+            value = var.aws_region
+          }
+          dynamic "env" {
+            for_each = var.session_owner_routing ? [1] : []
+            content {
+              name = "URL_ANALYSIS_SESSION_OWNER"
+              value_from {
+                field_ref { field_path = "status.podIP" }
+              }
+            }
+          }
+          resources {
+            requests = { cpu = "250m", memory = "512Mi" }
+            limits   = { cpu = "1", memory = "1Gi" }
+          }
+          security_context {
+            allow_privilege_escalation = false
+            read_only_root_filesystem  = true
+            run_as_non_root            = true
+            capabilities { drop = ["ALL"] }
+          }
+          liveness_probe {
+            http_get {
+              path = "/healthz"
+              port = 8765
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 15
+          }
+          readiness_probe {
+            http_get {
+              path = var.session_owner_routing ? "/readyz" : "/healthz"
+              port = 8765
+            }
+            initial_delay_seconds = 5
+            period_seconds        = 10
+          }
+          volume_mount {
+            name       = "tmp"
+            mount_path = "/tmp"
+          }
+        }
+        volume {
+          name = "tmp"
+          empty_dir {}
+        }
+      }
+    }
+  }
+}
+
+resource "kubernetes_service" "url_analysis_browser_broker" {
+  metadata {
+    name      = "url-analysis-browser-broker"
+    namespace = var.namespace
+  }
+  spec {
+    # A worker's investigation steps must reach the replica owning its short-lived
+    # browser lease. Replica loss fails closed; contexts are never silently replayed.
+    session_affinity = var.session_owner_routing ? "None" : "ClientIP"
+    selector         = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
+    port {
+      name        = "http"
+      port        = 8765
+      target_port = "http"
+    }
+  }
+}
+
+resource "kubernetes_network_policy" "url_analysis_browser_broker" {
+  metadata {
+    name      = "url-analysis-browser-broker"
+    namespace = var.namespace
+  }
+  spec {
+    pod_selector {
+      match_labels = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
+    }
+    policy_types = ["Ingress", "Egress"]
+    ingress {
+      from {
+        pod_selector {
+          match_labels = { "app.kubernetes.io/name" = "agent-scaledjob" }
+        }
+      }
+      ports {
+        port     = 8765
+        protocol = "TCP"
+      }
+    }
+    egress {
+      ports {
+        port     = 53
+        protocol = "UDP"
+      }
+      ports {
+        port     = 53
+        protocol = "TCP"
+      }
+    }
+    egress {
+      ports {
+        protocol = "TCP"
+      }
+    }
+  }
+}

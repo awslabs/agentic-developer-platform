@@ -1,0 +1,212 @@
+{
+  "$comment": [
+    "GOLDEN CONTRACT FIXTURE — HITL ticket v1 (issue #4178).",
+    "",
+    "The ask an agent makes when it needs a human decision, and the answer that",
+    "comes back. `models.py` in this directory is the normative validator;",
+    "`.github/workflows/hitl-ticket-contract-tests.yml` executes this fixture",
+    "against it on every PR that touches either. A golden fixture prevents",
+    "nothing if nothing executes it.",
+    "",
+    "Consumers: NONE YET. This contract deliberately lands before the",
+    "implementations that adopt it, so the two divergent approval paths",
+    "(skill-agent.ts, bounded and fail-closed; ApprovalService.ts, unbounded",
+    "`while (true)`) can be reconciled against a written shape instead of",
+    "against each other. When a consumer arrives, add it to this list and to the",
+    "workflow's paths filter — that is what keeps the fixture load-bearing.",
+    "",
+    "The rejected_variants below are not hypotheticals. Each one is a shape that",
+    "would compile, read plausibly in review, and silently weaken the fail-closed",
+    "guarantee. They are the reason this file exists rather than prose alone."
+  ],
+
+  "accepted_ticket": {
+    "$comment": "A destructive-action ask with named approvers — the tightest configuration the contract supports, and the one a multi-day agent hits when it wants to force-push or destroy infrastructure.",
+    "name": "hitl-ticket",
+    "version": 1,
+    "owner": "harness/hitl",
+    "ticket_id": "hitl-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+    "scope": "destructive-action",
+    "prompt": "Agent run 55155b28 wants to run `terraform destroy` against the dev VPC module (14 resources, including the RDS instance). Approve this one action?",
+    "options": ["allowed-once", "rejected"],
+    "timeout": {
+      "expires_at": "2026-08-27T18:30:00+00:00",
+      "on_expiry": "rejected"
+    },
+    "approvers": {
+      "mode": "named",
+      "identities": ["github:PranavSharma1000", "github:adp-platform-oncall"]
+    },
+    "context": {
+      "tenant_id": "tenant-acme",
+      "org_id": "org-acme",
+      "repo": "aws-e/adp",
+      "issue_number": 4178,
+      "invocation_id": "55155b28-6b0d-4ba3-ba11-860dbeff4228",
+      "correlation_id": "56a1c680-03fb-4025-aee2-a8af5c46b4af"
+    }
+  },
+
+  "accepted_ticket_gate_stage": {
+    "$comment": "The AIDLC gate expressed as a ticket — proves the contract can describe the mechanism ADP already runs, rather than a fiction. `approvers.mode: any-maintainer` with no identities is valid; identities is only required under mode 'named'. `context` is omitted entirely to prove it is optional.",
+    "name": "hitl-ticket",
+    "version": 1,
+    "owner": "harness/hitl",
+    "ticket_id": "hitl-gate-4178-requirements-analysis",
+    "scope": "gate-stage",
+    "prompt": "AIDLC gate `requirements-analysis` for issue #4178 is ready for review. The agent has committed its aidlc/ state and exited. Approve to resume, or reject with feedback.",
+    "options": ["allowed-once", "rejected", "cancelled"],
+    "timeout": {
+      "expires_at": "2026-09-03T00:00:00+00:00",
+      "on_expiry": "cancelled"
+    },
+    "approvers": {
+      "mode": "any-maintainer"
+    }
+  },
+
+  "accepted_responses": [
+    {
+      "$comment": "The approval. `allowed-once` is the ONLY value that means proceed, and it is bound to the ticket by ticket_id.",
+      "name": "hitl-ticket",
+      "version": 1,
+      "owner": "harness/hitl",
+      "ticket_id": "hitl-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+      "result": "allowed-once",
+      "answered_by": "github:PranavSharma1000",
+      "answered_at": "2026-08-27T09:14:22+00:00"
+    },
+    {
+      "$comment": "A human denial. Note `answered_by` is a person and `note` carries rationale — but a consumer must decide from `result` alone.",
+      "name": "hitl-ticket",
+      "version": 1,
+      "owner": "harness/hitl",
+      "ticket_id": "hitl-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+      "result": "rejected",
+      "answered_by": "github:adp-platform-oncall",
+      "answered_at": "2026-08-27T09:20:01+00:00",
+      "note": "Not during the release freeze. Re-ask Monday."
+    },
+    {
+      "$comment": "Transport failure, NOT a denial. Paired with the `rejected` response above, this is the distinction the whole four-value vocabulary exists for: same ticket, same non-permissive outcome, materially different cause. A retry is reasonable here and wrong above. `answered_by` is a system component, not a human.",
+      "name": "hitl-ticket",
+      "version": 1,
+      "owner": "harness/hitl",
+      "ticket_id": "hitl-01JQ8ZKRW4X7N2VYB3M6E5T9DA",
+      "result": "unavailable",
+      "answered_by": "system:notifier",
+      "answered_at": "2026-08-27T09:14:25+00:00",
+      "note": "Could not deliver the ask: GitHub comment POST returned 502 after 3 attempts. No human has seen this ticket."
+    },
+    {
+      "$comment": "The asking side withdrew. Also system-answered.",
+      "name": "hitl-ticket",
+      "version": 1,
+      "owner": "harness/hitl",
+      "ticket_id": "hitl-gate-4178-requirements-analysis",
+      "result": "cancelled",
+      "answered_by": "system:agent-worker",
+      "answered_at": "2026-08-27T09:31:47+00:00",
+      "note": "Superseded: the agent found the answer without human input."
+    }
+  ],
+
+  "rejected_ticket_variants": [
+    {
+      "name": "permissive_on_expiry",
+      "why": "A timeout that APPROVES. This is the single worst shape the contract can permit: an agent asks for permission to do something destructive, nobody answers, and silence becomes consent. Invariant 3 forbids it, so `allowed-once` in on_expiry must fail validation, not merely be discouraged in prose.",
+      "patch": { "timeout": { "expires_at": "2026-08-27T18:30:00+00:00", "on_expiry": "allowed-once" } }
+    },
+    {
+      "name": "approvers_absent",
+      "why": "No authorization predicate at all. This is the shape ADP's two live implementations effectively have — any commenter's '/approve' counts — and it is why an unauthorized party can satisfy an approval today. `approvers` is required so a consumer always has something to check identity against.",
+      "unset": ["approvers"]
+    },
+    {
+      "name": "named_mode_empty_identities",
+      "why": "mode='named' with nobody named. Approvable by no one, but it does not look broken — it would sit until timeout and read as human indifference rather than a malformed ask. Rejecting it makes an unanswerable-but-approvable ticket unconstructable.",
+      "patch": { "approvers": { "mode": "named", "identities": [] } }
+    },
+    {
+      "name": "expiry_result_not_in_options",
+      "why": "on_expiry names a human choice the ticket never offered, so the answer synthesized at timeout is not a valid answer to this ticket. Non-permissive and therefore safe, but incoherent — a consumer validating the synthesized response against options would reject its own timeout. Note the exemption: the SYSTEM results ('cancelled', 'unavailable') are always valid answers and need no entry in options, so this variant uses 'rejected', which IS a human choice.",
+      "patch": {
+        "options": ["allowed-once", "cancelled"],
+        "timeout": { "expires_at": "2026-08-27T18:30:00+00:00", "on_expiry": "rejected" }
+      }
+    },
+    {
+      "name": "options_empty",
+      "why": "A ticket that permits no answers. Unanswerable by construction.",
+      "patch": { "options": [] }
+    },
+    {
+      "name": "unknown_scope",
+      "why": "The scope vocabulary is closed so consumers can route and audit by scope without matching on free text. An unrecognized scope would fall through every routing branch.",
+      "patch": { "scope": "vibes-check" }
+    },
+    {
+      "name": "naive_expires_at",
+      "why": "A timezone-naive deadline means 'whatever the reader's clock says'. A durable ticket outlives the process that wrote it, so the reader is a different machine than the writer — the ambiguity is guaranteed to bite, not merely possible.",
+      "patch": { "timeout": { "expires_at": "2026-08-27T18:30:00", "on_expiry": "rejected" } }
+    },
+    {
+      "name": "ticket_id_empty",
+      "why": "An empty ticket_id defeats the named-intent rule as surely as a missing one: every response would bind to the same empty target.",
+      "patch": { "ticket_id": "" }
+    },
+    {
+      "name": "wrong_version",
+      "why": "A v2 document must not validate as v1. Consumers pin to a version (contracts/README.md versioning rules); silently accepting a different one is how a pinned consumer ends up parsing a shape it does not understand.",
+      "patch": { "version": 2 }
+    },
+    {
+      "name": "unknown_field",
+      "why": "extra='forbid'. An unrecognized key is either a typo in a field that matters or a consumer inventing unversioned semantics; both must surface at the boundary. `context` is the one place extras are allowed, on purpose.",
+      "patch": { "approval_required": false }
+    }
+  ],
+
+  "rejected_response_variants": [
+    {
+      "name": "response_missing_ticket_id",
+      "why": "THE named-vs-positional rule (invariant 2). Without a ticket_id, a response is positional: it answers 'the pending request', and if two are pending, a human approving X can authorize Y. This is the variant that must never regress.",
+      "unset": ["ticket_id"]
+    },
+    {
+      "name": "response_allowed_always",
+      "why": "v1 has no durable-grant escape hatch. A persistent grant is a policy decision with its own audit and revocation story, not an answer to a question. If 'allowed-always' validated, the first adopter would use it and the non-durable guarantee would be gone before anyone noticed.",
+      "patch": { "result": "allowed-always" }
+    },
+    {
+      "name": "response_unknown_result",
+      "why": "The vocabulary is closed so a typo cannot become a silent permit. An open enum plus a consumer written as `if (result !== 'rejected') proceed()` turns 'aproved' into an approval.",
+      "patch": { "result": "approved" }
+    },
+    {
+      "name": "response_result_true",
+      "why": "The boolean shape both live implementations use today ({approved: true}). A two-valued result cannot express 'nobody could be asked', which is precisely the collapse this contract undoes; it must not validate.",
+      "patch": { "result": true }
+    },
+    {
+      "name": "response_missing_answered_by",
+      "why": "Identity is required for EVERY result, not just approvals. Without it, invariant 4 is uncheckable — a consumer cannot ask whether the answering principal was permitted to answer.",
+      "unset": ["answered_by"]
+    },
+    {
+      "name": "response_empty_answered_by",
+      "why": "An empty identity is an unverifiable one; it satisfies 'the field is present' while carrying nothing to check against approvers.",
+      "patch": { "answered_by": "" }
+    },
+    {
+      "name": "response_naive_answered_at",
+      "why": "Same clock ambiguity as expires_at, and the comparison between the two decides whether an answer arrived before the deadline.",
+      "patch": { "answered_at": "2026-08-27T09:14:22" }
+    },
+    {
+      "name": "response_missing_result",
+      "why": "An answer with no result. Absence must be a validation error rather than defaulting — a default here would be either an accidental permit or a silent denial, and neither should be implicit.",
+      "unset": ["result"]
+    }
+  ]
+}

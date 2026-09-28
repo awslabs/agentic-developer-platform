@@ -25,8 +25,8 @@ from lib.bootstrap_logger import BootstrapLogger, CloudWatchBootstrapHandler
 
 class TestCloudWatchBootstrapHandler:
     @patch("lib.bootstrap_logger.boto3.client")
-    def test_init_creates_log_group_and_stream(self, mock_boto_client):
-        """Handler creates log group and stream on initialization."""
+    def test_init_creates_stream_in_provisioned_group(self, mock_boto_client):
+        """Handler never creates a log group; infrastructure provisions it."""
         mock_logs = MagicMock()
         mock_boto_client.return_value = mock_logs
 
@@ -37,9 +37,7 @@ class TestCloudWatchBootstrapHandler:
         )
 
         mock_boto_client.assert_called_once_with("logs", region_name="us-east-1")
-        mock_logs.create_log_group.assert_called_once_with(
-            logGroupName="/adp/dev/agent-factory/bootstrap"
-        )
+        mock_logs.create_log_group.assert_not_called()
         mock_logs.create_log_stream.assert_called_once_with(
             logGroupName="/adp/dev/agent-factory/bootstrap",
             logStreamName="corr-abc-123",
@@ -48,25 +46,16 @@ class TestCloudWatchBootstrapHandler:
         assert handler._failed is False
 
     @patch("lib.bootstrap_logger.boto3.client")
-    def test_init_handles_existing_group(self, mock_boto_client):
-        """Handler tolerates ResourceAlreadyExistsException for group."""
+    def test_missing_group_logs_to_stdout_without_creating_infrastructure(self, mock_boto_client):
         from botocore.exceptions import ClientError
 
-        mock_logs = MagicMock()
-        mock_boto_client.return_value = mock_logs
-        mock_logs.create_log_group.side_effect = ClientError(
-            {"Error": {"Code": "ResourceAlreadyExistsException", "Message": "exists"}},
-            "CreateLogGroup",
+        mock_logs = mock_boto_client.return_value
+        mock_logs.create_log_stream.side_effect = ClientError(
+            {"Error": {"Code": "ResourceNotFoundException"}}, "CreateLogStream"
         )
-
-        handler = CloudWatchBootstrapHandler(
-            log_group="/adp/dev/agent-factory/bootstrap",
-            log_stream="test-stream",
-            region="us-east-1",
-        )
-
-        assert handler._initialized is True
-        assert handler._failed is False
+        handler = CloudWatchBootstrapHandler("/adp/dev/agent-factory/bootstrap", "run")
+        assert handler._failed is True
+        mock_logs.create_log_group.assert_not_called()
 
     @patch("lib.bootstrap_logger.boto3.client")
     def test_init_handles_existing_stream(self, mock_boto_client):
@@ -87,6 +76,30 @@ class TestCloudWatchBootstrapHandler:
         )
 
         assert handler._initialized is True
+
+    @patch("lib.bootstrap_logger.boto3.client")
+    def test_init_never_sets_retention(self, mock_boto_client):
+        """Handler must NOT call put_retention_policy (issue #4051).
+
+        The group is Terraform-managed with retention_in_days = 14
+        (webhook-ingress/infra/cloudwatch.tf). This call previously fired
+        unconditionally with retentionInDays=7 on every agent run, stomping
+        Terraform's 14 straight back to 7 after each apply. Terraform owns
+        retention; if this assertion ever fails the drift is back.
+        """
+        mock_logs = MagicMock()
+        mock_boto_client.return_value = mock_logs
+
+        handler = CloudWatchBootstrapHandler(
+            log_group="/adp/dev/agent-factory/bootstrap",
+            log_stream="test-stream",
+            region="us-east-1",
+        )
+
+        mock_logs.put_retention_policy.assert_not_called()
+        # Group/stream setup still happens — only retention is hands-off.
+        assert handler._initialized is True
+        assert handler._failed is False
 
     @patch("lib.bootstrap_logger.boto3.client")
     def test_init_fails_soft_on_boto_error(self, mock_boto_client):
@@ -398,8 +411,8 @@ class TestBootstrapLogger:
             region="us-west-2",
         )
 
-        mock_logs.create_log_group.assert_called_once_with(
-            logGroupName="/adp/prod/agent-factory/bootstrap"
+        mock_logs.create_log_stream.assert_called_once_with(
+            logGroupName="/adp/prod/agent-factory/bootstrap", logStreamName="corr-prod"
         )
 
     @patch("lib.bootstrap_logger.boto3.client")

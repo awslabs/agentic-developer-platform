@@ -1,0 +1,11 @@
+{
+  "image": "public.ecr.aws/aws-observability/adot-autoinstrumentation-java:v2.31.0",
+  "docker_root_descriptor": "sha256:b6751e405b885217cd8a84537ed991064a3e13b01b6a14de19319b13fce0e926",
+  "config_digest": "sha256:0edd5dcae25492726d9161b9d7d9033e1b9a05edddc90677b15cd3bcd725a6bd",
+  "time": "2026-09-27T13:08:28.535407+00:00",
+  "packages": 52,
+  "native_counts": {},
+  "sbom_sha256": "7e33b80d58d015b57cbd3de9defb83eb250e9ccb1dfabf799a85fa9ede250d99",
+  "grype_sha256": "173f28ea98ff79ee3776f49bbf5486ed2fea9a924ba21f0490baf11f4aeb663a",
+  "archive_sha256": "039cdb0c9f965b3e3fd3ee50871228ec66127255f1cf80b40ba2120255db1acf"
+}

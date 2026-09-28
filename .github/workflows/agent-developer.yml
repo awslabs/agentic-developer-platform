@@ -35,13 +35,17 @@ concurrency:
 jobs:
   work:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-developer'
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-org
     permissions:
       contents: write
       issues: write
       pull-requests: write
 
     env:
+      # Gateway-first opt-in rollout; actual policy remains report_only.
+      ADP_ARC_MODEL_POLICY_ENABLED: ${{ vars.ADP_ARC_MODEL_POLICY_ENABLED || 'false' }}
+      ADP_AGENT_CONTROL_ENDPOINT: ${{ vars.ADP_ARC_MODEL_CONTROL_ENDPOINT }}
+      AGENT_TYPE: developer
       ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
       REPO_OWNER: ${{ inputs.repo_owner || github.repository_owner }}
       REPO_NAME: ${{ inputs.repo_name || github.event.repository.name }}
@@ -54,6 +58,23 @@ jobs:
             curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
             unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
           fi
+
+      - name: Verify dedicated developer identity
+        env:
+          EXPECTED_AGENT_ROLE_ARN: ${{ vars.ADP_AGENT_WORKFLOW_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_AGENT_ROLE_ARN" =~ ^arn:aws:iam::([0-9]{12}):role/([A-Za-z0-9+=,.@_-]+-agent-workflow)$ ]] || {
+            echo "::error::Configure the verified dedicated agent-workflow role ARN"
+            exit 1
+          }
+          expected_account="${BASH_REMATCH[1]}"
+          expected_role="${BASH_REMATCH[2]}"
+          actual_arn=$(aws sts get-caller-identity --query Arn --output text)
+          case "$actual_arn" in
+            "arn:aws:sts::${expected_account}:assumed-role/${expected_role}/"*) ;;
+            *) echo "::error::Developer workflow is not using its dedicated identity"; exit 1 ;;
+          esac
 
       - name: Get App Credentials from AWS Secrets Manager
         id: aws-secrets
@@ -99,6 +120,7 @@ jobs:
         with:
           repository: ${{ vars.AGENT_SOURCE_REPO || 'aws-e/adp' }}
           token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
           path: adp-agent
 
       - name: Checkout target repository
@@ -106,6 +128,7 @@ jobs:
         with:
           repository: ${{ env.TARGET_REPO }}
           token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
           path: workspace
 
       - name: Configure Git for GitHub App
@@ -131,24 +154,6 @@ jobs:
             curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
             unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
           fi
-
-      - name: Setup Beads
-        # Skip when a downstream repo has opted out of beads via repo variable
-        # (e.g. lightweight installs that don't provision the beads DynamoDB
-        # + S3 state store). Agent code already guards itself via
-        # BEADS_ENABLED=false at runtime; without this `if:`, the setup-beads
-        # action would still try to install the `bd` CLI and sync from AWS,
-        # failing the job before the agent even starts.
-        if: vars.BEADS_ENABLED != 'false'
-        id: beads
-        uses: ./adp-agent/modules/agent-factory/actions/setup-beads
-        with:
-          dynamodb-table: ${{ vars.BEADS_DYNAMODB_TABLE || 'adp-beads-manifest' }}
-          s3-bucket: ${{ vars.BEADS_S3_BUCKET || 'adp-beads-state-193832579677' }}
-          s3-region: ${{ vars.AWS_REGION || 'us-east-1' }}
-          database-name: ${{ vars.BEADS_DATABASE || 'adp' }}
-          issue-number: ${{ env.ISSUE_NUMBER }}
-          sync-on-start: 'true'
 
       - name: Update board status to In Progress
         uses: ./adp-agent/modules/agent-factory/actions/update-board-status
@@ -188,6 +193,21 @@ jobs:
         working-directory: ./adp-agent/modules/agent-factory/agent
         run: npm run build
 
+      - name: Verify gateway model authority before the harness
+        if: vars.ADP_ARC_MODEL_POLICY_ENABLED == 'true'
+        working-directory: ./adp-agent/modules/agent-factory/agent
+        run: npx ts-node src/arc-model-preflight.ts
+
+      - name: Prepare private GitHub runtime directory
+        env:
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          auth_dir=$(mktemp -d "$RUNNER_TEMP_DIR/adp-github.XXXXXXXX")
+          chmod 700 "$auth_dir"
+          echo "ADP_GITHUB_AUTH_DIR=$auth_dir" >> "$GITHUB_ENV"
+          echo "ADP_TOKEN_FILE=$auth_dir/token" >> "$GITHUB_ENV"
+
       - name: Run @agent-developer
         id: agent
         working-directory: ./adp-agent/modules/agent-factory/agent
@@ -195,6 +215,11 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_APP_ID: ${{ steps.aws-secrets.outputs.app_id }}
+          GH_APP_PRIVATE_KEY: ${{ steps.aws-secrets.outputs.app_key }}
+          GH_APP_INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
+          ADP_REQUIRE_RENEWABLE_GITHUB: 'true'
+          ADP_AGENT_SOURCE_DIR: ${{ github.workspace }}/adp-agent
           ISSUE_NUMBER: ${{ env.ISSUE_NUMBER }}
           REPO_OWNER: ${{ env.REPO_OWNER }}
           REPO_NAME: ${{ env.REPO_NAME }}
@@ -202,20 +227,30 @@ jobs:
           AGENT_TYPE: developer
           CLAUDE_CODE_USE_BEDROCK: "1"
           ANTHROPIC_MODEL: "global.anthropic.claude-opus-4-6-v1"
-          # Beads configuration (shared state)
-          BEADS_ENABLED: ${{ vars.BEADS_ENABLED || 'true' }}
-          BEADS_S3_BUCKET: ${{ vars.BEADS_S3_BUCKET || 'adp-agent-state' }}
-          BEADS_S3_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
-          BEADS_S3_PATH: beads/${{ env.REPO_NAME }}
+          # GitHub issue workflows use repository-scoped GitHub tracking.
+          BEADS_ENABLED: 'false'
         run: npx ts-node src/agent-worker.ts
+
+      # The worker's timer has stopped; never reuse its bootstrap token here.
+      - name: Generate fresh finalization token
+        id: final-token
+        if: always() && steps.app-token.outcome == 'success'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ steps.aws-secrets.outputs.app_id }}
+          private-key: ${{ steps.aws-secrets.outputs.app_key }}
+          owner: ${{ env.REPO_OWNER }}
+          repositories: ${{ env.REPO_NAME }}
 
       - name: Commit and push changes
         id: commit
-        if: success()
+        if: success() && steps.final-token.outcome == 'success'
         working-directory: ./workspace
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.final-token.outputs.token }}
           GH_REPO: ${{ env.TARGET_REPO }}
+          ADP_GITHUB_FINALIZATION: 'true'
+          AUTH_HELPER: ${{ github.workspace }}/adp-agent/modules/agent-factory/agent/scripts/github-auth/git-credential
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git add -A
@@ -228,7 +263,9 @@ jobs:
             # Create PR branch and push
             BRANCH_NAME="agent/issue-$ISSUE_NUMBER"
             git checkout -b "$BRANCH_NAME" 2>/dev/null || git checkout "$BRANCH_NAME"
-            git push -u origin "$BRANCH_NAME" --force
+            git -c credential.helper= -c "credential.https://github.com.helper=!'$AUTH_HELPER'" \
+              -c credential.useHttpPath=true -c http.extraheader= -c http.https://github.com/.extraheader= \
+              push -u origin "$BRANCH_NAME" --force
 
             # Create PR if it doesn't exist on this branch
             echo "Changes committed and pushed (fallback)"
@@ -239,9 +276,9 @@ jobs:
           fi
 
       - name: Notify completion
-        if: always() && steps.agent.outcome == 'success'
+        if: always() && steps.agent.outcome == 'success' && steps.commit.outcome == 'success' && steps.final-token.outcome == 'success'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.final-token.outputs.token }}
           GH_REPO: ${{ env.TARGET_REPO }}
         run: |
           gh issue comment $ISSUE_NUMBER -R "$GH_REPO" --body "## @agent-developer Complete
@@ -254,12 +291,19 @@ jobs:
       # and GitHub auto-closes the issue (via "Closes #NNN" in PR body)
 
       - name: Handle failure
-        if: failure()
+        if: failure() && steps.final-token.outcome == 'success'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.final-token.outputs.token }}
           GH_REPO: ${{ env.TARGET_REPO }}
         run: |
           gh issue comment $ISSUE_NUMBER -R "$GH_REPO" --body "## @agent-developer Failed
 
           Check [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
           gh issue edit $ISSUE_NUMBER -R "$GH_REPO" --add-label "agent-failed"
+
+      - name: Remove runtime GitHub credentials
+        if: always()
+        run: |
+          if [ -n "${ADP_GITHUB_AUTH_DIR:-}" ]; then
+            rm -rf -- "$ADP_GITHUB_AUTH_DIR"
+          fi

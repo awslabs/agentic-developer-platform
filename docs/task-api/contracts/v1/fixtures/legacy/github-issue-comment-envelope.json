@@ -1,0 +1,52 @@
+{
+  "$fixture": {
+    "description": "An existing GitHub issue-comment envelope, field-for-field as WebhookEnvelope.to_dict() emits it today. It must keep validating with no change once the task path ships on the same queue: this fixture is the regression baseline for that claim, so a later evaluator does not have to take backwards compatibility on trust.",
+    "schema": "envelope.schema.json#/$defs/legacy_github_envelope",
+    "expect": "valid",
+    "source": "modules/agent-factory/webhook-ingress/lambda/common/envelope.py",
+    "owner": "T3",
+    "criteria": [
+      "T0-AC03",
+      "V0-02",
+      "V0-03",
+      "V5-01",
+      "V5-02"
+    ]
+  },
+  "version": "1.0",
+  "channel": "github",
+  "tenant_id": "acme",
+  "persona": "agent-developer",
+  "actor": {
+    "user_id": "u-4821",
+    "org_id": "acme",
+    "github_id": 1043227,
+    "github_login": "jrivera",
+    "is_bot": false
+  },
+  "source_ref": {
+    "installation_id": 55512345,
+    "repo": "acme/checkout-api",
+    "issue": 812,
+    "pr": null,
+    "sha": null
+  },
+  "intent": {
+    "trigger": "issue_comment",
+    "label": null,
+    "persona": "agent-developer"
+  },
+  "correlation": {
+    "correlation_id": "corr-7f3a9c21",
+    "root_human_id": "u-4821",
+    "is_human_rooted": true
+  },
+  "payload": {
+    "action": "created",
+    "comment_id": 2298471553
+  },
+  "arrived_at": "2026-09-24T13:58:41.204118+00:00",
+  "model_requested": null,
+  "model_resolved": null,
+  "aws_label": null
+}

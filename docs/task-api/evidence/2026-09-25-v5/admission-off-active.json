@@ -1,0 +1,39 @@
+{
+  "at": "2026-09-25T04:48:52.079081+00:00",
+  "submit_status": 503,
+  "submit_response": {
+    "schema_version": "1.0",
+    "code": "prerequisite_unavailable",
+    "message": "Task submission is not enabled in this environment.",
+    "request_id": "2f0e89e2-c5d8-45b0-9614-c238c2f14634",
+    "http_status": 503,
+    "retry_after_ms": 5000
+  },
+  "submission_key": "task-api-5792-20260925-admission-disabled",
+  "existing_task_id": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0",
+  "existing_read_status": 200,
+  "existing_snapshot": {
+    "schema_version": "1.0",
+    "task_id": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0",
+    "invocation_id": "e5fc89e8-8c25-4123-b481-ec467e3f5bca",
+    "persona": "agent-task-investigator",
+    "status": "running",
+    "version": 10,
+    "created_at": "2026-09-25T04:46:01Z",
+    "updated_at": "2026-09-25T04:47:25Z",
+    "deadline_at": "2026-09-25T05:16:01Z",
+    "latest_event_cursor": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0:7",
+    "oldest_event_cursor": "tsk_50068fc8-369e-43ce-8025-2b331cf2bcd0:1",
+    "generation": 1,
+    "runtime_attempt_id": "6b6bcbb8-b1fc-4496-92ef-f964eba21234",
+    "execution_health": "unknown",
+    "recovery_required": false,
+    "result": null,
+    "error": null,
+    "input_request": null,
+    "command_receipts": [],
+    "queue_ack_status": "pending",
+    "request_id": "e61c63c0-0175-4b71-ae50-49e01f06be32",
+    "external_reference": "task-api-5792-20260925-clarify1"
+  }
+}

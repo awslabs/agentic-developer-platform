@@ -50,7 +50,9 @@ describe('buildGitHubLoginUrl', () => {
 
     const url = await buildGitHubLoginUrl();
 
-    expect(url).toBe('https://broker.example.com/start');
+    // Issue #4133: /start now carries the app_state nonce binding this login
+    // attempt to this browser session.
+    expect(url).toMatch(/^https:\/\/broker\.example\.com\/start\?app_state=/);
   });
 
   it('strips a trailing slash from the configured broker URL', async () => {
@@ -58,7 +60,29 @@ describe('buildGitHubLoginUrl', () => {
 
     const url = await buildGitHubLoginUrl();
 
-    expect(url).toBe('https://broker.example.com/start');
+    expect(url).toMatch(/^https:\/\/broker\.example\.com\/start\?app_state=/);
+  });
+
+  // Issue #4133: the nonce must be stored before we navigate away, or the
+  // callback has nothing to verify against and every login fails closed.
+  it('stores the app_state nonce in sessionStorage before redirecting', async () => {
+    vi.stubEnv('VITE_GITHUB_AUTH_BROKER_URL', 'https://broker.example.com');
+
+    const url = await buildGitHubLoginUrl();
+
+    const sent = new URL(url).searchParams.get('app_state');
+    expect(sent).toBeTruthy();
+    expect(sessionStorage.getItem('github_broker_state')).toBe(sent);
+  });
+
+  it('generates a nonce free of the broker state separator', async () => {
+    vi.stubEnv('VITE_GITHUB_AUTH_BROKER_URL', 'https://broker.example.com');
+
+    const url = await buildGitHubLoginUrl();
+
+    // A "." would make the broker's dot-delimited signed state ambiguous, and
+    // the broker rejects such nonces outright — which would break login.
+    expect(new URL(url).searchParams.get('app_state')).not.toContain('.');
   });
 
   it('throws when the broker URL is not configured', async () => {

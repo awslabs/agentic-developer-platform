@@ -20,6 +20,11 @@ resource "aws_dynamodb_table" "beads_manifest" {
     type = "S"
   }
 
+  # The manifest is durable issue state, not an expiring token/cache table.
+  point_in_time_recovery {
+    enabled = true
+  }
+
   server_side_encryption {
     enabled     = true
     kms_key_arn = var.kms_key_arn

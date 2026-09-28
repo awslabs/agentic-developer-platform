@@ -1,0 +1,97 @@
+{
+  "scope": "candidate-only; no rollout or live clearance",
+  "database_built": "2026-09-26T06:29:14Z",
+  "chart_sha256": "a7da56bf41a33dad9d2fc82a6fdecee552fff947d80bf1e1dbcf4db0f9e26dee",
+  "chart_render": {
+    "chart": "2.21.0",
+    "deployments": [
+      "keda-admission-webhooks",
+      "keda-operator",
+      "keda-operator-metrics-apiserver"
+    ],
+    "crds": [
+      "CloudEventSource",
+      "ClusterCloudEventSource",
+      "ClusterTriggerAuthentication",
+      "ScaledJob",
+      "ScaledObject",
+      "TriggerAuthentication"
+    ],
+    "live_scaledjob_schemas_validated": 4,
+    "irsa_and_resources_preserved": true
+  },
+  "images": [
+    {
+      "name": "keda",
+      "baseline_key": "7f3ec5ce804406c4",
+      "baseline_raw_counts": {
+        "Critical": 16,
+        "High": 58,
+        "Medium": 52,
+        "Low": 7,
+        "Unknown": 3
+      },
+      "candidate": {
+        "image": "ghcr.io/kedacore/keda:2.21.0",
+        "docker_root_descriptor": "sha256:81fe6547ce8d1cc29273f887b76507e9b853e5bc1f875ec23fe60061a38ed809",
+        "config_digest": "sha256:bf4f1bf7e1b1b11d6082c90f104c73d6d89cddf201723f41af8351a1c8bc3333",
+        "time": "2026-09-27T08:29:21.378157+00:00",
+        "packages": 308,
+        "native_counts": {
+          "Unknown": 1
+        },
+        "sbom_sha256": "aa521c47d15b68231ac5768b53b9dc51421830725c0ea8fcdaef781afa2b3a9c",
+        "grype_sha256": "5d9d4b29b8b34eb5f789bb5b8115066d86ef24b8e2a4863d7d5eb2206917ded0",
+        "archive_sha256": "28b4e62439b979d2905e7e0c0f559122ba50cb7c2b446dcc4c37386c60a53a8a"
+      }
+    },
+    {
+      "name": "keda-metrics-apiserver",
+      "baseline_key": "d3b75189435a8a4c",
+      "baseline_raw_counts": {
+        "Critical": 16,
+        "High": 58,
+        "Medium": 52,
+        "Low": 9,
+        "Unknown": 3
+      },
+      "candidate": {
+        "image": "ghcr.io/kedacore/keda-metrics-apiserver:2.21.0",
+        "docker_root_descriptor": "sha256:255375037fe592732eeb554743aae360c2da88cf0b9b1258d0a987ef885f0881",
+        "config_digest": "sha256:3e9e8f2d3a5aa8a5bd5e989912fe7e22beede7f8e868db1857bd641fb616b8a4",
+        "time": "2026-09-27T08:29:19.897407+00:00",
+        "packages": 319,
+        "native_counts": {
+          "Unknown": 1
+        },
+        "sbom_sha256": "f6d8bf31922cad6719e28b227b26ed66e8735989a10aeb630b107c28d3b0766a",
+        "grype_sha256": "e0ae30a65d9fb8c26a4667d85679714c609efa0d893d3555cfa02e52c8d9e89f",
+        "archive_sha256": "1e4b45340f11da2848fb1aaa03e4862f565d241b9ab81c47eb07473bd4d0c8f7"
+      }
+    },
+    {
+      "name": "keda-admission-webhooks",
+      "baseline_key": "c1066458b385dd7b",
+      "baseline_raw_counts": {
+        "Critical": 10,
+        "High": 39,
+        "Medium": 44,
+        "Low": 3,
+        "Unknown": 1
+      },
+      "candidate": {
+        "image": "ghcr.io/kedacore/keda-admission-webhooks:2.21.0",
+        "docker_root_descriptor": "sha256:e1969628cca6123e32eea13c47c75817091af2657fa68d9d0d58a8620d1b75b1",
+        "config_digest": "sha256:0f69bf12ac05119a196a4438e5dea3d491a53975374ae329774f012bf6d79b70",
+        "time": "2026-09-27T08:29:24.955115+00:00",
+        "packages": 97,
+        "native_counts": {
+          "Unknown": 1
+        },
+        "sbom_sha256": "29082f6422855126082e4522175cf0681258f3e5679ac64969bf7bbe7a636b21",
+        "grype_sha256": "5483ec1d01d3507979ff69194dd278894208c491ba7edcddd46089560b00fbf6",
+        "archive_sha256": "d55439b50ca1aedabeff05dba5eb4ef68f8e127133f6c3014a8913096ddb7627"
+      }
+    }
+  ]
+}

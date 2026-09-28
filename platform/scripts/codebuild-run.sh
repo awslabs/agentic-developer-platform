@@ -39,14 +39,21 @@ STATE_BUCKET="${STATE_BUCKET:?STATE_BUCKET must be set}"
 # Build a unique source key
 SOURCE_SHA="${SOURCE_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")}"
 UNIQUE_ID="$(date +%s)-$$"
-SOURCE_KEY="codebuild/src/${SOURCE_SHA}-${UNIQUE_ID}.zip"
+[[ "$PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+SOURCE_KEY="codebuild/src/${PROJECT_NAME}/${SOURCE_SHA}-${UNIQUE_ID}.zip"
 
 POLL_INTERVAL="${POLL_INTERVAL:-15}"
 
 # --- Upload source to per-build S3 key ---------------------------------------
 ZIP_PATH="/tmp/adp-source-${UNIQUE_ID}.zip"
 echo "Packaging source → s3://${STATE_BUCKET}/${SOURCE_KEY}"
-bash "$SCRIPT_DIR/zip-source.sh" "$ROOT_DIR" "$ZIP_PATH" > /dev/null
+if [ "${ADP_RELEASE_BUILD:-false}" = true ]; then
+  # Release inputs come only from the selected commit, never local secrets,
+  # build output, Terraform overrides, or private deployment evidence.
+  git -C "$ROOT_DIR" archive --format=zip --output="$ZIP_PATH" "$SOURCE_SHA"
+else
+  bash "$SCRIPT_DIR/zip-source.sh" "$ROOT_DIR" "$ZIP_PATH" > /dev/null
+fi
 aws s3 cp "$ZIP_PATH" "s3://${STATE_BUCKET}/${SOURCE_KEY}" --region "$REGION" > /dev/null
 rm -f "$ZIP_PATH"
 

@@ -1,0 +1,486 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "commands.schema.json",
+  "title": "Task API command and receipt contract v1",
+  "description": "Follow-up input and cancellation commands and their receipts. The receipt deliberately separates two independent facts: whether the command was logically consumed into the conversation (status), and how far any resulting model handoff got (handoff). Collapsing them is what would allow an ambiguous provider call to be reported as success. Design revision b5761a4a2502aceaa9133afef552b567a19cb46e, design section 8.",
+  "$defs": {
+    "command_kind": {
+      "enum": [
+        "input",
+        "cancel"
+      ],
+      "description": "A command UUID is unique across both kinds within its task. Reuse with another kind or a different payload conflicts."
+    },
+    "command_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "command_id",
+        "kind",
+        "status",
+        "handoff",
+        "accepted_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "common.schema.json#/$defs/schema_version"
+        },
+        "command_id": {
+          "$ref": "common.schema.json#/$defs/command_id"
+        },
+        "kind": {
+          "$ref": "commands.schema.json#/$defs/command_kind"
+        },
+        "status": {
+          "$ref": "common.schema.json#/$defs/command_status"
+        },
+        "handoff": {
+          "$ref": "common.schema.json#/$defs/handoff_status"
+        },
+        "command_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Monotonic per-task command sequence, independent of random UUID ordering. FIFO consumption order."
+        },
+        "turn_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/turn_id"
+            }
+          ],
+          "description": "The single turn this command was assigned to once consumed."
+        },
+        "turn_number": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "accepted_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "consumed_at": {
+          "$ref": "common.schema.json#/$defs/nullable_timestamp"
+        },
+        "authority_expires_at": {
+          "$ref": "common.schema.json#/$defs/nullable_timestamp",
+          "description": "A queued input command expires with its authorizing token; it cannot be applied under a later login automatically. An already-accepted cancellation keeps stopping work even after its token expires."
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/safe_message"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "description": "Consumption boundary LC-11: a consumed command names exactly the one turn it was included in.",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "consumed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "turn_id",
+              "turn_number",
+              "consumed_at"
+            ],
+            "properties": {
+              "turn_id": {
+                "$ref": "common.schema.json#/$defs/turn_id"
+              },
+              "turn_number": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "consumed_at": {
+                "$ref": "common.schema.json#/$defs/timestamp"
+              }
+            }
+          }
+        },
+        {
+          "description": "An accepted-but-unconsumed command has no turn assignment and no confirmed handoff.",
+          "if": {
+            "properties": {
+              "status": {
+                "const": "accepted"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "turn_id": {
+                "type": "null"
+              },
+              "handoff": {
+                "enum": [
+                  "not_started",
+                  "prepared"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "description": "A cancel command never reports a model handoff of its own.",
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "cancel"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "handoff": {
+                "const": "not_started"
+              },
+              "turn_id": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "message_accepted_response": {
+      "type": "object",
+      "description": "HTTP 202 for POST /v1/tasks/{task_id}/messages.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "receipt",
+        "request_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "common.schema.json#/$defs/schema_version"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "receipt": {
+          "$ref": "commands.schema.json#/$defs/command_receipt"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/request_id"
+        }
+      }
+    },
+    "cancel_accepted_response": {
+      "type": "object",
+      "description": "HTTP 202 while cancellation is pending. cancel_requested is never reported as a confirmed exit.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "status",
+        "receipt",
+        "request_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "common.schema.json#/$defs/schema_version"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "status": {
+          "const": "cancel_requested"
+        },
+        "receipt": {
+          "$ref": "commands.schema.json#/$defs/command_receipt"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/request_id"
+        },
+        "confirmed_exit": {
+          "const": false,
+          "description": "Fixed false on a 202. Confirmed exit only appears with a terminal cancelled outcome."
+        }
+      }
+    },
+    "cancel_terminal_response": {
+      "type": "object",
+      "description": "HTTP 200 when the task already has a terminal outcome. If completion committed before the cancel request, this returns that existing completion (LC-03).",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "status",
+        "receipt",
+        "request_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "common.schema.json#/$defs/schema_version"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "status": {
+          "$ref": "common.schema.json#/$defs/terminal_task_status"
+        },
+        "receipt": {
+          "$ref": "commands.schema.json#/$defs/command_receipt"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/request_id"
+        },
+        "result": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "results.schema.json#/$defs/task_result"
+            }
+          ]
+        }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "description": "An immutable canonical conversation turn. Each command ID appears exactly once across all turns of a task.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "turn_number",
+        "turn_id",
+        "command_ids",
+        "committed_at"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "common.schema.json#/$defs/schema_version"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "turn_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "turn_id": {
+          "$ref": "common.schema.json#/$defs/turn_id"
+        },
+        "command_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "common.schema.json#/$defs/command_id"
+          },
+          "description": "Eligible FIFO input commands consumed into this turn, each exactly once."
+        },
+        "transcript_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "committed_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "immutable": {
+          "const": true
+        },
+        "model_operation_id": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "common.schema.json#/$defs/uuid4"
+            }
+          ],
+          "description": "The single model operation belonging to this turn, or null before one is claimed. Design section 12 fixes one model operation per turn: repeating the same request reads the existing receipt rather than performing a second operation, which is what stops a retry becoming a second charge and a second piece of output for one logical turn."
+        }
+      }
+    },
+    "model_receipt": {
+      "type": "object",
+      "description": "One model operation per turn. A repeated request reads this receipt instead of sending again; a crash between claim and physical send stays unknown.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "turn_id",
+        "operation_status",
+        "handoff",
+        "request_digest",
+        "claimed_at",
+        "automatic_replay_permitted"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "common.schema.json#/$defs/schema_version"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "turn_id": {
+          "$ref": "common.schema.json#/$defs/turn_id"
+        },
+        "operation_status": {
+          "enum": [
+            "pending",
+            "confirmed",
+            "unknown",
+            "rejected"
+          ],
+          "description": "Receipt states from the /internal/v1/agent/task/model contract."
+        },
+        "handoff": {
+          "$ref": "common.schema.json#/$defs/handoff_status"
+        },
+        "request_digest": {
+          "$ref": "common.schema.json#/$defs/sha256_digest"
+        },
+        "model_id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Canonical catalogued model. The worker cannot choose a fallback or bypass the gateway."
+        },
+        "claimed_at": {
+          "$ref": "common.schema.json#/$defs/timestamp"
+        },
+        "completed_at": {
+          "$ref": "common.schema.json#/$defs/nullable_timestamp"
+        },
+        "usage": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "commands.schema.json#/$defs/model_usage"
+            }
+          ],
+          "description": "Null means unknown usage. Unknown is never recorded as zero."
+        },
+        "reservation_status": {
+          "enum": [
+            "reserved",
+            "settled",
+            "released",
+            "unknown"
+          ],
+          "description": "The cost reservation is preserved until settled."
+        },
+        "automatic_replay_permitted": {
+          "const": false,
+          "description": "Fixed false. Automatic HTTP/SDK replay is disabled after a potentially sent request."
+        }
+      },
+      "allOf": [{ "$ref": "commands.schema.json#/$defs/model_receipt_constraints" }]
+    },
+    "model_receipt_constraints": {
+      "allOf": [
+        {
+          "description": "LC-12: an unknown operation has no usage figure and no confirmed handoff, and must not be automatically resent.",
+          "if": {
+            "properties": {
+              "operation_status": {
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "operation_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "usage": {
+                "type": "null"
+              },
+              "handoff": {
+                "const": "unknown"
+              },
+              "reservation_status": {
+                "enum": [
+                  "reserved",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "description": "A confirmed operation has a durable result with known usage.",
+          "if": {
+            "properties": {
+              "operation_status": {
+                "const": "confirmed"
+              }
+            },
+            "required": [
+              "operation_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "usage",
+              "completed_at"
+            ],
+            "properties": {
+              "handoff": {
+                "const": "confirmed"
+              },
+              "usage": {
+                "$ref": "commands.schema.json#/$defs/model_usage"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "model_usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "estimated_usd": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "DescribeOnlyGatewayCluster",
+    "Effect": "Allow",
+    "Action": "eks:DescribeCluster",
+    "Resource": "arn:aws:eks:us-east-1:879318057152:cluster/adp-dev-eks-cluster"
+  }]
+}

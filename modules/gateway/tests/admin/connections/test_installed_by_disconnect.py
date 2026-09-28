@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+import src.admin.connections.service as svc
 from src.admin.connections.github_client import GitHubAppClient
 from src.admin.connections.service import (
     _PROVIDER_GITHUB_INSTALL,
@@ -117,7 +118,7 @@ async def second_org(db_session: AsyncSession) -> Organization:
 def _mock_github_client(
     *,
     installation_id: int = 124731131,
-    account_login: str = "sophos-test",
+    account_login: str = "acme-test",
     account_type: str = "Organization",
     account_github_id: int = 98765,
 ) -> MagicMock:
@@ -134,6 +135,7 @@ def _mock_github_client(
             "created_at": "2026-05-01T10:00:00Z",
         }
     )
+    client.has_org_admin_membership = AsyncMock(return_value=True)
     client.delete_installation = AsyncMock(return_value=None)
     client.list_installation_repositories = AsyncMock(return_value=2)
     client.list_installation_repository_names = AsyncMock(return_value=["acme/repo-one", "acme/repo-two"])
@@ -159,11 +161,25 @@ async def _seed_user_and_nonce(
     db.add(user)
     await db.commit()
 
+    from src.shared.models.vault import UserIdentity
+
+    db.add(
+        UserIdentity(
+            user_id=user_id,
+            org_id=org_id,
+            team_id="team-test-001",
+            provider="github",
+            provider_user_id="98766" if user_id == "user-b" else "98765",
+            verification_method="oauth",
+            verified_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
     nonce = MagicLinkNonce(
         jti=jti,
         provider=_PROVIDER_GITHUB_INSTALL,
         provider_user_id=cognito_sub,
-        channel_context=None,
+        channel_context=svc._setup_context(kind="install", org_id=org_id),
         target_user_id=user_id,
         expires_at=datetime.now(UTC) + timedelta(minutes=15),
         consumed_at=None,
@@ -181,14 +197,23 @@ async def _seed_mapping(
     scope_id: str = "98765",
     installation_id: int = 124731131,
 ) -> ChannelTenantMap:
-    """Seed a ChannelTenantMap row directly."""
+    """Seed a ChannelTenantMap row directly.
+
+    #5664 (A10): sets the ``installation_id`` COLUMN, not just the id inside
+    ``install_metadata``. That column is the canonical installation -> tenant key
+    (#4070, migration 026) and is what ``resolve_installation_owner`` reads. This
+    helper predated the column, so every row it built was invisible to the
+    canonical resolver — which is exactly the shape migration 026's backfill
+    exists to eliminate, so it no longer represents any reachable live row.
+    """
     mapping = ChannelTenantMap(
         provider="github",
         provider_scope_id=scope_id,
+        installation_id=str(installation_id),
         org_id=org_id,
         install_metadata={
             "installation_id": installation_id,
-            "account_login": "sophos-test",
+            "account_login": "acme-test",
             "account_type": "Organization",
             "repository_selection": "selected",
             "repository_count": 2,
@@ -276,28 +301,8 @@ class TestInstalledByStorage:
             github_client=gh,
         )
 
-        # Seed user B with a new nonce
-        user_b = User(
-            id="user-b",
-            org_id="org-test-001",
-            team_id="team-test-001",
-            email="user-b@test.local",
-            cognito_sub="sub-b",
-        )
-        db_session.add(user_b)
-        await db_session.commit()
-
-        nonce_b = MagicLinkNonce(
-            jti="second-jti",
-            provider=_PROVIDER_GITHUB_INSTALL,
-            provider_user_id="sub-b",
-            channel_context=None,
-            target_user_id="user-b",
-            expires_at=datetime.now(UTC) + timedelta(minutes=15),
-            consumed_at=None,
-        )
-        db_session.add(nonce_b)
-        await db_session.commit()
+        # Independently verified user B uses their own immutable GitHub ID.
+        await _seed_user_and_nonce(db_session, jti="second-jti", user_id="user-b", cognito_sub="sub-b")
 
         # Re-install by user B
         await install_callback(

@@ -18,7 +18,7 @@ function makeConfig(overrides: Partial<CheckRunStreamerConfig> = {}): CheckRunSt
   return {
     checkRunId: 42,
     repo: 'acme/adp',
-    token: 'ghs_test',
+    tokenProvider: () => 'ghs_test',
     persona: 'developer',
     issueNumber: 411,
     model: 'global.anthropic.claude-sonnet-4-6',
@@ -54,23 +54,23 @@ describe('CheckRunStreamer.buildMarkdown', () => {
     expect(md).toContain('**Elapsed:**');
   });
 
-  it('captures first text as plan', () => {
+  it('shows the first explanation once without inferring a plan from arbitrary text', () => {
     const s = new CheckRunStreamer(makeConfig());
     s.onTurn(turn(1, [], 'I will read the issue and write code.'));
     const md = s.buildMarkdown('running');
-    expect(md).toContain('### Plan');
+    expect(md).not.toContain('### Plan');
     expect(md).toContain('I will read the issue and write code.');
+    expect(md.split('I will read the issue and write code.')).toHaveLength(2);
   });
 
-  it('does not overwrite plan with subsequent text turns', () => {
+  it('retains revised approaches in explanation order', () => {
     const s = new CheckRunStreamer(makeConfig());
     s.onTurn(turn(1, [], 'Plan: do X'));
     s.onTurn(turn(2, [], 'Plan: do Y'));
     const md = s.buildMarkdown('running');
-    // Plan section must contain the FIRST text, not the second
-    const planSection = md.match(/### Plan[\s\S]*?(?=### Reasoning|### Activity|$)/)?.[0] ?? '';
-    expect(planSection).toContain('Plan: do X');
-    expect(planSection).not.toContain('Plan: do Y');
+    expect(md).toContain('Plan: do X');
+    expect(md).toContain('Plan: do Y');
+    expect(md.indexOf('Plan: do X')).toBeLessThan(md.indexOf('Plan: do Y'));
   });
 
   it('renders Activity section with tool turns', () => {
@@ -119,7 +119,7 @@ describe('CheckRunStreamer.buildMarkdown', () => {
     expect(md).toContain('Read');
   });
 
-  it('renders thought in italics above tool block when turn has both', () => {
+  it('renders an explanation above tool details without repeating it in the tool block', () => {
     const s = new CheckRunStreamer(makeConfig());
     // Inject a turn where content has both a tool call and a text block
     s.onTurn({
@@ -131,29 +131,31 @@ describe('CheckRunStreamer.buildMarkdown', () => {
       costUsd: 0.05,
     });
     const md = s.buildMarkdown('running');
-    // Thought rendered in italics
-    expect(md).toContain('_Let me verify the route works before writing tests._');
+    expect(md).toContain('### Implementation updates');
+    expect(md).toContain('Let me verify the route works before writing tests.');
+    const activity = md.slice(md.indexOf('### Activity'));
+    expect(activity).not.toContain('Let me verify');
     // Tool code block still present
     expect(md).toContain('```bash');
     expect(md).toContain('pytest tests/test_vault.py');
     // Thought appears BEFORE the code block in the output
-    const thoughtIdx = md.indexOf('_Let me verify');
+    const thoughtIdx = md.indexOf('### Implementation updates');
     const codeIdx = md.indexOf('```bash');
     expect(thoughtIdx).toBeLessThan(codeIdx);
   });
 
-  it('accumulates thoughts into a Reasoning section, one bullet per turn', () => {
+  it('preserves explanatory paragraphs in order before technical activity', () => {
     const s = new CheckRunStreamer(makeConfig());
     s.onTurn(turn(1, [], 'First thought about the plan.'));
     s.onTurn(turn(2, [{ name: 'Bash', input: { command: 'ls' } }], 'Second thought before the tool.'));
     s.onTurn(turn(3, [], 'Third thought, text-only turn.'));
     const md = s.buildMarkdown('running');
-    expect(md).toContain('### Reasoning');
-    expect(md).toContain('- First thought about the plan.');
-    expect(md).toContain('- Second thought before the tool.');
-    expect(md).toContain('- Third thought, text-only turn.');
+    expect(md).toContain('### Implementation updates');
+    expect(md).toContain('#### Update 1\n\nFirst thought about the plan.');
+    expect(md).toContain('#### Update 2\n\nSecond thought before the tool.');
+    expect(md).toContain('#### Update 3\n\nThird thought, text-only turn.');
     // Reasoning section must appear before Activity section
-    const reasoningIdx = md.indexOf('### Reasoning');
+    const reasoningIdx = md.indexOf('### Implementation updates');
     const activityIdx = md.indexOf('### Activity');
     expect(reasoningIdx).toBeLessThan(activityIdx);
   });
@@ -579,5 +581,116 @@ describe('computeCodexCostUsd (issue #2970)', () => {
     // Verify the constants match what we expect
     expect(CODEX_INPUT_PER_1K).toBe(0.0055);
     expect(CODEX_OUTPUT_PER_1K).toBe(0.033);
+  });
+});
+
+describe('independent explanation archive', () => {
+  const fs = require('fs');
+  const archivePath = '/tmp/adp-run-transcript.md';
+  const githubPath = '/tmp/adp-check-run-final.md';
+  let writes: Map<string, string>;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    writes = new Map();
+    jest.spyOn(fs, 'writeFileSync').mockImplementation((file: unknown, content: unknown) => {
+      writes.set(String(file), String(content));
+    });
+    jest.spyOn(fs, 'renameSync').mockImplementation((from: unknown, to: unknown) => {
+      writes.set(String(to), writes.get(String(from))!);
+      writes.delete(String(from));
+    });
+    jest.spyOn(fs, 'unlinkSync').mockImplementation((file: unknown) => { writes.delete(String(file)); });
+    global.fetch = jest.fn().mockResolvedValue({ ok: true } as Response) as unknown as typeof fetch;
+  });
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('retains every explanation block and late caveat beyond both old clipping limits', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    const explanations: string[] = [];
+    for (let i = 1; i <= 30; i++) {
+      const text = `Explanation ${i}: ` + 'The gateway forwards each event. '.repeat(110);
+      explanations.push(text.trim());
+      s.onTurn({ turn: i, content: [{ type: 'text', text }, { type: 'text', text: `Caveat ${i}: acceptance has not run.` }] });
+    }
+    s.onTurn({ turn: 31, content: [{ type: 'thinking', text: 'PRIVATE_THINKING' }, { type: 'text', text: 'Review remains pending.' }] });
+    s.onResult({});
+    const archive = writes.get(archivePath)!;
+    const github = writes.get(githubPath)!;
+    expect(Buffer.byteLength(archive)).toBeGreaterThan(60 * 1024);
+    expect(Buffer.byteLength(github)).toBeLessThanOrEqual(60 * 1024);
+    for (let i = 0; i < explanations.length; i++) {
+      expect(archive).toContain(explanations[i]);
+      expect(archive).toContain(`Caveat ${i + 1}: acceptance has not run.`);
+    }
+    expect(archive.indexOf('### Update 1\n')).toBeLessThan(archive.indexOf('### Update 30\n'));
+    expect(archive).toContain('Review remains pending.');
+    expect(archive).not.toContain('PRIVATE_THINKING');
+    expect(archive).not.toContain('<details');
+    expect(github).toContain('Review remains pending.');
+    expect(github).toContain('GitHub display truncated');
+    s.destroy();
+  });
+
+  it('keeps a multi-paragraph explanation intact on GitHub when it fits', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    const explanation = 'Why this mechanism works. '.repeat(40) + '\n\nLimit: the browser path is not verified.';
+    s.onTurn(turn(1, [], explanation));
+    expect(s.buildMarkdown('running')).toContain(explanation);
+    s.destroy();
+  });
+
+  it('bounds even one oversized Unicode explanation on GitHub while archiving it intact', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    const explanation = '🌍界'.repeat(30_000) + '\nFinal caveat.';
+    s.onTurn(turn(1, [], explanation));
+    s.destroy();
+    expect(Buffer.byteLength(writes.get(githubPath)!)).toBeLessThanOrEqual(60 * 1024);
+    expect(writes.get(githubPath)).not.toContain('\ufffd');
+    expect(writes.get(archivePath)).toContain(explanation);
+  });
+
+  it('archives on result even after GitHub updates have exhausted their circuit-breaker', () => {
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onToolProgress('Bash');
+    jest.advanceTimersByTime(3 * 60 * 60 * 1000);
+    expect(global.fetch).toHaveBeenCalledTimes(150);
+    s.onTurn(turn(1, [], 'The final explanation still needs to be retained.'));
+    s.onResult({});
+    expect(writes.get(archivePath)).toContain('The final explanation still needs to be retained.');
+    expect(global.fetch).toHaveBeenCalledTimes(150);
+    s.destroy();
+  });
+
+  it('writes the archive even when the independent GitHub handoff write fails', () => {
+    (fs.writeFileSync as jest.Mock).mockImplementation((file: string, content: string) => {
+      if (file === `${githubPath}.tmp`) throw new Error('display write failed');
+      writes.set(file, content);
+    });
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onTurn(turn(1, [{ name: 'Bash', input: { command: 'echo ```code```' } }], 'Explain the change.'));
+    expect(() => s.destroy()).not.toThrow();
+    expect(writes.get(archivePath)).toContain('Explain the change.');
+    expect(writes.get(archivePath)).toContain('````\nBash: echo ```code```\n````');
+  });
+
+  it('does not expose a partially written archive as a complete transcript', () => {
+    (fs.writeFileSync as jest.Mock).mockImplementation((file: string, content: string) => {
+      if (file === `${archivePath}.tmp`) {
+        writes.set(file, content.slice(0, 50));
+        throw new Error('disk full');
+      }
+      writes.set(file, content);
+    });
+    const s = new CheckRunStreamer(makeConfig({ log: () => {} }));
+    s.onTurn(turn(1, [], 'An explanation whose ending must survive.'));
+    expect(() => s.destroy()).not.toThrow();
+    expect(writes.has(archivePath)).toBe(false);
+    expect(writes.has(`${archivePath}.tmp`)).toBe(false);
+    expect(writes.get(githubPath)).toContain('An explanation whose ending must survive.');
   });
 });

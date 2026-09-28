@@ -36,9 +36,24 @@ spec:
             app: ingestion-refresh
         spec:
           serviceAccountName: ${SERVICE_ACCOUNT}
+          # Pod-level security context (#6038 — S15 non-root hardening).
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
           containers:
           - name: refresh
             image: ${INGESTION_IMAGE}
+            securityContext:
+              runAsNonRoot: true
+              readOnlyRootFilesystem: true
+              allowPrivilegeEscalation: false
+              privileged: false
+              capabilities:
+                drop: ["ALL"]
             command: ["/bin/bash", "-c"]
             args:
               - |
@@ -116,6 +131,10 @@ spec:
             - name: config
               mountPath: /config
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/appuser
             resources:
               requests:
                 cpu: "500m"
@@ -131,3 +150,9 @@ spec:
           - name: config
             configMap:
               name: ingestion-content-config
+          - name: tmp
+            emptyDir:
+              sizeLimit: 10Gi
+          - name: home
+            emptyDir:
+              sizeLimit: 512Mi

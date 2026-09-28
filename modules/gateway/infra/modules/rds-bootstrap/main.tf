@@ -21,7 +21,8 @@
 # The Job needs secretsmanager:GetSecretValue to read the master password.
 
 resource "aws_iam_role" "rds_bootstrap" {
-  name = "${var.name_prefix}-rds-bootstrap"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-rds-bootstrap"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

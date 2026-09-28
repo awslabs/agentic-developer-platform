@@ -1,0 +1,5 @@
+{
+  "passed": true,
+  "returncode": 1,
+  "diagnostic": "../../../workspaces/projects/security27-high-ingestion/smoke/ts/fixture.ts(2,7): error TS2322: Type 'string' is not assignable to type 'number'.\n"
+}

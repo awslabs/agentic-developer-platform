@@ -1,0 +1,173 @@
+name: Nightly CLI Regression
+
+# One run owns all three suites. Child workflows have no independent schedules.
+# The shared child lock also serializes standalone diagnostic runs with nightlies.
+# Engine qualification producer contract: docs/design-notes/cli-live-evaluation.md.
+# Existing partial reports do not satisfy that contract; triggers remain unchanged.
+on:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      ec2_scope:
+        description: 'nightly = install/login plus CLI story read regressions; login = install/login only; full = all acceptance cases'
+        type: choice
+        options: [nightly, login, full]
+        default: nightly
+      fixtures_json:
+        description: 'Optional non-secret existing fixture JSON for the EC2 child; validated by CLI Uplift'
+        required: false
+        type: string
+        default: ''
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/nightly-cli-regression.yml'
+      - '.github/workflows/eval-cli-*.yml'
+      - '.github/workflows/eval-budget-ratelimit.yml'
+      - 'tests/e2e/cli_regression/**'
+      - 'tests/unit/test_cli_regression.py'
+      - 'tests/e2e/cli_uplift/**'
+      - 'platform/evals/cli-onboarding/**'
+      - 'platform/evals/budget-ratelimit/**'
+      - 'platform/evals/lib/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Must differ from cli-live-eval-dev: holding the child's lock in the parent
+  # would deadlock reusable workflow calls. PR checks use a separate group.
+  group: nightly-cli-regression-${{ github.event_name == 'pull_request' && github.event.number || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  guards:
+    name: Regression orchestration guards
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pytest-timeout pytest-socket pyyaml ruff==0.9.6
+      - run: |
+          ruff check tests/e2e/cli_regression tests/unit/test_cli_regression.py
+          ruff format --check tests/e2e/cli_regression tests/unit/test_cli_regression.py
+          python -m pytest tests/unit/test_cli_regression.py -q --timeout=60 --disable-socket
+
+  prepare:
+    name: Resolve the deployed dev revision
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: guards
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    outputs:
+      revision: ${{ steps.snapshot.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install boto3
+      - name: Require an explicit OIDC role (fail closed)
+        # The bounded runtime ceiling denies the sts:AssumeRole that role-chaining
+        # needs. Require the reviewed OIDC identity; refuse to proceed without it
+        # so a misconfigured environment fails loudly rather than falling back to
+        # ambient runner authority.
+        env:
+          ROLE_ARN: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::Neither AWS_CLI_UPLIFT_EVAL_ROLE_ARN nor AWS_E2E_ROLE_ARN is configured in the protected environment. Configure one of these secrets with the OIDC role ARN for the eval orchestrator."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC, scoped role)
+        # Short-lived assumed-role session via GitHub OIDC only. No role
+        # chaining, no ambient runner authority, no static keys, no hardcoded
+        # fallback ARN. The fail-closed guard above ensures the secret is set.
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_CLI_UPLIFT_EVAL_ROLE_ARN || secrets.AWS_E2E_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+          force-skip-oidc: false
+          role-chaining: false
+          # OIDC identifies the run directly; no shared-runner role assumption.
+          role-skip-session-tagging: true
+          role-duration-seconds: 900
+          role-session-name: cli-nightly-snapshot-${{ github.run_id }}
+
+      - name: Snapshot deployment identity (read only)
+        id: snapshot
+        run: python -m tests.e2e.cli_regression.prepare
+
+  onboarding:
+    name: CLI onboarding and agent conversations
+    needs: prepare
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/eval-cli-onboarding.yml
+    with:
+      environment: dev
+
+  budgets:
+    name: Budget and rate-limit enforcement
+    needs: [prepare, onboarding]
+    # A failed onboarding assertion must not hide budget regressions. The called
+    # workflow must verify cleanup before this next suite obtains the live lock.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.onboarding.outputs.cleanup_ok == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/eval-budget-ratelimit.yml
+    with:
+      environment: dev
+
+  ec2:
+    name: CLI regression on disposable EC2
+    needs: [prepare, budgets]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.budgets.outputs.cleanup_ok == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/eval-cli-uplift.yml
+    secrets: inherit
+    with:
+      environment: dev
+      expected_revision: ${{ needs.prepare.outputs.revision }}
+      resolve_revision: true
+      suites: ${{ inputs.ec2_scope || 'nightly' }}
+      fixtures_json: ${{ inputs.fixtures_json || vars.CLI_UPLIFT_NIGHTLY_FIXTURES_JSON || '{}' }}
+
+  summary:
+    name: Nightly regression result
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: [guards, prepare, onboarding, budgets, ec2]
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A dispatch from another branch cannot execute that branch's code
+          # even in the always-running summary job.
+          ref: main
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Publish the combined verdict
+        env:
+          CLI_REGRESSION_JOBS: ${{ toJSON(needs) }}
+          CLI_REGRESSION_REVISION: ${{ needs.prepare.outputs.revision }}
+          CLI_REGRESSION_EC2_REVISION: ${{ needs.ec2.outputs.revision }}
+          CLI_REGRESSION_EC2_SCOPE: ${{ inputs.ec2_scope || 'nightly' }}
+        run: python -m tests.e2e.cli_regression.report

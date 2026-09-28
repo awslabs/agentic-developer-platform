@@ -39,6 +39,8 @@ async def test_create_all_skipped_when_db_auto_create_false():
                 from src.app import lifespan
 
                 app = MagicMock()
+                app.state.ratelimit_service.initialize = AsyncMock()
+                app.state.ratelimit_service.close = AsyncMock()
                 async with lifespan(app):
                     pass
 
@@ -71,6 +73,8 @@ async def test_create_all_runs_when_db_auto_create_true():
                 from src.app import lifespan
 
                 app = MagicMock()
+                app.state.ratelimit_service.initialize = AsyncMock()
+                app.state.ratelimit_service.close = AsyncMock()
                 async with lifespan(app):
                     pass
 

@@ -1,0 +1,16 @@
+{
+  "$fixture": {
+    "description": "Minimal valid submit body: persona plus nonempty instructions. Optional fields absent.",
+    "schema": "public-api.schema.json#/$defs/submit_request",
+    "expect": "valid",
+    "owner": "T2",
+    "criteria": [
+      "T0-AC02",
+      "T2-AC01",
+      "V0-02"
+    ]
+  },
+  "schema_version": "1.0",
+  "persona": "agent-task-investigator",
+  "instructions": "Investigate why checkout requests began returning 503 at 14:10 UTC. Use only the supplied logs and configuration."
+}

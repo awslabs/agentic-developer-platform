@@ -45,3 +45,9 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "disable_execute_api_endpoint" {
+  type        = bool
+  description = "Disable the AWS-assigned wss://<id>.execute-api.<region>.amazonaws.com endpoint so the API answers only on its custom domain. Set true wherever a custom domain is published: a WEBSOCKET API supports no resource policy and WAFv2 does not support WebSocket APIs, so the execute-api hostname has NO network-layer control of any kind and the $connect authorizer is its only gate. Default false, which is the AWS default and keeps a deployment without a custom domain reachable."
+  default     = false
+}

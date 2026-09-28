@@ -8,7 +8,7 @@
 #   1. Download qcow2 from S3
 #   2. Define libvirt domain
 #   3. Start VM, wait for CAPE agent handshake
-#   4. Shutdown + create clean snapshot
+#   4. Create a running snapshot, then power off
 #   5. Update conf/kvm.conf
 #   6. Restart CAPE services
 #
@@ -18,14 +18,21 @@
 set -euo pipefail
 
 BUILD_DATE="${1:?Usage: $0 <YYYY-MM-DD>}"
+[[ "$BUILD_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "Invalid build date" >&2; exit 1; }
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 export ASSETS_BUCKET="${ASSETS_BUCKET:-adp-dev-cape-assets}"
 
 VM_NAME="win11-cape-${BUILD_DATE}"
-IMAGE_DIR="/opt/cape-data/images"
-KVM_CONF="/opt/CAPEv2/conf/kvm.conf"
-DOMAIN_XML_DIR="/opt/cape-data/domain-xml"
+IMAGE_DIR="${IMAGE_DIR:-/opt/cape-data/images}"
+KVM_CONF="${KVM_CONF:-/home/cape/CAPEv2/conf/kvm.conf}"
+DOMAIN_XML_DIR="${DOMAIN_XML_DIR:-/opt/cape-data/domain-xml}"
 CAPE_AGENT_PORT=8000
+
+[[ -f "$KVM_CONF" ]] || { echo "Missing CAPE configuration: $KVM_CONF" >&2; exit 1; }
+if virsh dominfo "$VM_NAME" >/dev/null 2>&1; then
+  echo "Refusing to overwrite existing VM $VM_NAME" >&2
+  exit 1
+fi
 
 echo "========================================"
 echo "CAPE VM Registration: ${VM_NAME}"
@@ -103,12 +110,12 @@ virsh start "${VM_NAME}"
 # Wait for CAPE agent to come up (polls port 8000)
 VM_IP=""
 WAITED=0
-MAX_WAIT=180
+MAX_WAIT=300
 
 while [[ $WAITED -lt $MAX_WAIT ]]; do
   VM_IP=$(virsh domifaddr "${VM_NAME}" 2>/dev/null | grep -oP '(\d+\.){3}\d+' | head -1 || true)
   if [[ -n "$VM_IP" ]]; then
-    if curl -sf --connect-timeout 2 "http://${VM_IP}:${CAPE_AGENT_PORT}/status" &>/dev/null; then
+    if curl -sf --connect-timeout 2 --max-time 5 "http://${VM_IP}:${CAPE_AGENT_PORT}/status" &>/dev/null; then
       echo "CAPE agent responding at ${VM_IP}:${CAPE_AGENT_PORT}"
       break
     fi
@@ -119,67 +126,54 @@ while [[ $WAITED -lt $MAX_WAIT ]]; do
 done
 
 if [[ $WAITED -ge $MAX_WAIT ]]; then
-  echo "WARNING: Agent did not respond within ${MAX_WAIT}s. Proceeding anyway."
+  echo "ERROR: Agent did not respond within ${MAX_WAIT}s." >&2
+  virsh destroy "$VM_NAME" || true
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Shutdown + snapshot
+# 4. Snapshot the responsive running guest. CAPE restores this memory state.
 # ---------------------------------------------------------------------------
-echo "=== Step 4/6: Shutdown and create snapshot ==="
-virsh shutdown "${VM_NAME}"
-
-# Wait for shutdown
-for i in $(seq 1 30); do
-  STATE=$(virsh domstate "${VM_NAME}" 2>/dev/null || echo "unknown")
-  [[ "$STATE" == "shut off" ]] && break
-  sleep 5
-done
-
-# Force off if still running
-STATE=$(virsh domstate "${VM_NAME}" 2>/dev/null || echo "unknown")
-if [[ "$STATE" != "shut off" ]]; then
-  virsh destroy "${VM_NAME}" 2>/dev/null || true
-fi
+echo "=== Step 4/6: Create running clean snapshot ==="
+virsh snapshot-create-as --domain "$VM_NAME" --name clean \
+  --description "Agent-ready state for CAPE analysis - ${BUILD_DATE}"
+virsh snapshot-dumpxml "$VM_NAME" clean | grep '<state>running</state>' > /dev/null
 
 # ---------------------------------------------------------------------------
-# 5. Create clean snapshot
+# 5. Power off the new guest before CAPE takes ownership.
 # ---------------------------------------------------------------------------
-echo "=== Step 5/6: Create clean snapshot ==="
-virsh snapshot-create-as --domain "${VM_NAME}" --name "clean" \
-  --description "Clean state for CAPE analysis - ${BUILD_DATE}"
-echo "Snapshot 'clean' created."
+echo "=== Step 5/6: Power off snapshotted guest ==="
+virsh destroy "$VM_NAME"
+[[ "$(virsh domstate "$VM_NAME")" == "shut off" ]]
 
 # ---------------------------------------------------------------------------
 # 6. Update kvm.conf and restart services
 # ---------------------------------------------------------------------------
 echo "=== Step 6/6: Update kvm.conf ==="
 
-# Add machine to machines list if not already there
-if ! grep -q "${VM_NAME}" "$KVM_CONF" 2>/dev/null; then
-  # Append to machines= line
-  sed -i "s/^machines = .*/&, ${VM_NAME}/" "$KVM_CONF"
-
-  # Append machine config block
-  cat >> "$KVM_CONF" << CONF
-
-[${VM_NAME}]
-label = Windows 11 CAPE (${BUILD_DATE})
-platform = windows
-ip = ${VM_IP:-192.168.100.0}
-snapshot = clean
-interface = virbr-sandbox
-resultserver_ip = 192.168.100.1
-resultserver_port = 2042
-tags = win11,x64,windows
-CONF
-
-  echo "Added ${VM_NAME} to kvm.conf"
-else
-  echo "${VM_NAME} already in kvm.conf — skipping"
-fi
+# Use the libvirt domain name as the machinery label. Preserve existing machines.
+python3 - "$KVM_CONF" "$VM_NAME" "$VM_IP" <<'PYCONF'
+import configparser
+import sys
+from pathlib import Path
+path, name, ip = sys.argv[1:]
+config = configparser.ConfigParser(interpolation=None)
+config.read(path)
+machines = [value.strip() for value in config["kvm"]["machines"].split(",") if value.strip()]
+if name not in machines:
+    machines.append(name)
+config["kvm"]["machines"] = ", ".join(machines)
+config[name] = dict(label=name, platform="windows", arch="x64", ip=ip,
+                    snapshot="clean", interface="virbr-sandbox",
+                    resultserver_ip="192.168.100.1", resultserver_port="2042",
+                    tags="win11,x64,windows")
+with Path(path).open("w") as stream:
+    config.write(stream)
+PYCONF
 
 # Restart CAPE services
-systemctl restart cape cape-web cape-processor 2>/dev/null || true
+systemctl restart cape cape-web cape-processor
+systemctl is-active --quiet cape cape-web cape-processor
 
 echo ""
 echo "========================================"

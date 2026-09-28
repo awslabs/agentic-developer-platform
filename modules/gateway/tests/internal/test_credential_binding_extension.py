@@ -123,8 +123,22 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
-    """Build a minimal FastAPI test app with the credential routes router."""
+def _fake_token_context(*, credential_scopes: list[str] | None = None) -> MagicMock:
+    """Issue #6050: build a minimal mock TokenContext for registry scope gating."""
+    ctx = MagicMock()
+    ctx.credential_scopes = credential_scopes if credential_scopes is not None else []
+    ctx.scope = "internal"
+    ctx.user_id = "worker-test"
+    ctx.org_id = "org-ext"
+    ctx.requires_run_identity = False
+    return ctx
+
+
+def _make_app(db_session: AsyncSession, mock_sm=None, *, token_context=None) -> TestClient:
+    """Build a minimal FastAPI test app with the credential routes router.
+
+    Issue #6050: token_context sets registry-granted scopes via middleware.
+    """
     app = FastAPI()
     app.include_router(credential_router)
 
@@ -134,6 +148,11 @@ def _make_app(db_session: AsyncSession, mock_sm=None) -> TestClient:
     app.dependency_overrides[get_db] = _get_db
     if mock_sm is not None:
         app.dependency_overrides[cr_get_secrets_manager] = lambda: mock_sm
+
+    from tests.internal.broker_fixture import install_broker_fixture
+
+    install_broker_fixture(app, user=_USER_ALICE_ID, run=_INVOCATION_ID, tenant="org-binding-ext", token_context=token_context)
+
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -144,6 +163,7 @@ def _settings_mock(*, enforce: bool = False):
     s.aws_region = "us-east-1"
     s.enforce_credential_binding = enforce
     s.webhook_events_table = "adp-test-webhook-events"
+    s.vault_enforce_credential_host_binding = False
     s.vault_proxy_host_allowlist = "api.github.com,httpbin.org"
     s.vault_materialization_bucket = "test-bucket"
     s.vault_raw_read_enabled = True
@@ -187,7 +207,6 @@ class TestProxyRequestBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -217,7 +236,6 @@ class TestProxyRequestBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -255,7 +273,6 @@ class TestProxyRequestBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -302,7 +319,6 @@ class TestProxyRequestBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("httpx.AsyncClient.request") as mock_http,
@@ -329,7 +345,8 @@ class TestProxyRequestBinding:
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
 
-        assert resp.status_code == 200
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] in {"credential_binding_failed", "credential_authorization_drift"}
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +363,6 @@ class TestMaterializeBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -378,7 +394,6 @@ class TestMaterializeBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -417,7 +432,6 @@ class TestMaterializeBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -432,7 +446,7 @@ class TestMaterializeBinding:
             mock_boto3.return_value = mock_s3
             mock_s3.generate_presigned_url.return_value = "https://s3.example.com/presigned"
 
-            client = _make_app(db, mock_sm)
+            client = _make_app(db, mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
@@ -445,7 +459,6 @@ class TestMaterializeBinding:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:materialize",
                 },
             )
 
@@ -463,7 +476,6 @@ class TestMaterializeBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("boto3.client") as mock_boto3,
@@ -472,7 +484,7 @@ class TestMaterializeBinding:
             mock_boto3.return_value = mock_s3
             mock_s3.generate_presigned_url.return_value = "https://s3.example.com/presigned"
 
-            client = _make_app(db, mock_sm)
+            client = _make_app(db, mock_sm, token_context=_fake_token_context(credential_scopes=["credential:materialize"]))
             resp = client.post(
                 "/internal/v1/credential-materialize",
                 json={
@@ -485,11 +497,11 @@ class TestMaterializeBinding:
                 },
                 headers={
                     "X-Internal-Api-Key": _VALID_KEY,
-                    "X-Agent-Scopes": "credential:materialize",
                 },
             )
 
-        assert resp.status_code == 201
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] in {"credential_binding_failed", "credential_authorization_drift"}
 
 
 # ---------------------------------------------------------------------------
@@ -506,7 +518,6 @@ class TestListCredentialsBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -527,7 +538,6 @@ class TestListCredentialsBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -553,7 +563,6 @@ class TestListCredentialsBinding:
         settings = _settings_mock(enforce=True)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -583,7 +592,6 @@ class TestListCredentialsBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
         ):
@@ -593,9 +601,8 @@ class TestListCredentialsBinding:
                 headers={"X-Internal-Api-Key": _VALID_KEY},
             )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 2
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] in {"credential_binding_failed", "credential_authorization_drift"}
 
     @pytest.mark.asyncio
     async def test_enforce_resolves_to_authorized_user_not_body(self, db):
@@ -603,7 +610,6 @@ class TestListCredentialsBinding:
         settings = _settings_mock(enforce=False)
 
         with (
-            patch("src.internal.routes.get_settings", return_value=settings),
             patch("src.internal.auth_deps.get_settings", return_value=settings),
             patch("src.internal.credential_routes.get_settings", return_value=settings),
             patch("src.internal.credential_binding._get_dynamodb_table") as mock_get_table,
@@ -621,10 +627,8 @@ class TestListCredentialsBinding:
             )
 
         # Shadow mode: no block. Uses registry (alice), so returns alice's creds.
-        assert resp.status_code == 200
-        data = resp.json()
-        # Alice has 2 credentials, bob has 0.
-        assert len(data) == 2
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] in {"credential_binding_failed", "credential_authorization_drift"}
 
 
 # ---------------------------------------------------------------------------
@@ -646,4 +650,10 @@ class TestConfigDefault:
             aws_region="us-east-1",
             database_url="sqlite:///test.db",
         )
-        assert s.enforce_credential_binding is True
+        assert "enforce_credential_binding" not in type(s).model_fields
+
+
+@pytest.fixture(autouse=True)
+def offline_proxy_dns(monkeypatch):
+    # Literal public test address; proxy HTTP responses are separately mocked.
+    monkeypatch.setattr("src.internal.credential_routes.socket.getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 443))])

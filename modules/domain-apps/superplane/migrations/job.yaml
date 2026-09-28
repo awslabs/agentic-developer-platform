@@ -1,0 +1,166 @@
+---
+# =============================================================================
+# The Superplane schema migration Job — Issue #5042 (U3), EPIC #4910.
+# =============================================================================
+# WHO OWNS WHAT, AND WHY THIS FILE IS HERE RATHER THAN IN #5045.
+#
+# #5042 (U3) owns the migration LANE and this Job: the runner, its identity, its boundary,
+# and the workflow that applies it. #5045 (U13) owns the CHAIN — repairing
+# `src/superplane-api/alembic/` upstream, where at the pinned revision revision id `006` is
+# declared by four files and `007` by three.
+#
+# An earlier version of this lane got that split backwards: it demanded a
+# `modules/domain-apps/superplane/migrations/versions/` chain inside ADP and said U13 would
+# supply the Job. That inverts both ownerships and, worse, a chain copied into ADP is a
+# SECOND chain — it would diverge from upstream's the first time either side changed, and
+# `alembic upgrade head` would then be resolving a head that upstream does not have.
+#
+# So there is no chain in this directory and there must not be one.
+# `infra/scripts/check_migration_contract.py` fails if revision files appear here. The chain
+# is read from `src/superplane-api/alembic/` INSIDE the runner image, at the revision the
+# release lock pins.
+#
+# WHY THIS JOB CANNOT RUN TODAY
+#
+# The chain ships in the `superplane-api` image, so that image IS the migration runner. The
+# release lock records it under `pending_images` with NO digest, blocked by `source_access`.
+# There is therefore no artifact to run, and the lane refuses at preflight naming that input.
+# That refusal is derived from the lock, so when U2 resolves access and promotes the image,
+# this Job becomes runnable with no edit here.
+#
+# THE BOUNDARY THIS MANIFEST DECLARES
+#
+# The previous lane tried to establish database isolation by grepping the migration SQL for
+# `ALTER TABLE <gateway table>`. That does not work, and the failure is not theoretical —
+# against the shipped pattern:
+#
+#     op.drop_table("users")                                  -> NOT caught (Alembic API,
+#                                                                no "DROP TABLE" text)
+#     op.execute('ALTER TABLE public."request_logs" DROP ...') -> NOT caught (schema-qualified)
+#
+# A text scan cannot enumerate the ways to name a table. The boundary below is enforced by
+# the DATABASE instead:
+#
+#   1. `search_path` is the domain schema ONLY — `public` is absent. Unqualified DDL
+#      therefore cannot reach a table in another module's schema, because it cannot resolve
+#      one.
+#   2. Alembic's version table lives in the domain schema. Two chains sharing one version
+#      table each treat the other's revisions as unknown and re-apply their own.
+#   3. The connection is the DOMAIN's credential, read through the domain ServiceAccount's
+#      own scoped IRSA role — which can read this module's secret and no other.
+#
+# WHAT THAT BOUNDARY DOES NOT ESTABLISH, STATED PLAINLY
+#
+# A `search_path` constrains NAME RESOLUTION, not PRIVILEGE. A schema-qualified statement
+# still reaches another schema if the connecting role has rights there. The privilege that
+# would make this airtight — a role with USAGE on the domain schema and nothing else — is
+# granted on the database, and **Decision 2 (shared instance vs. separate instance) is
+# unresolved**, so this module does not know what database it connects to and cannot grant it.
+#
+# So this lane makes NO isolation, backup, retention or restore claim about the target. It
+# requires the operator to present verified evidence of both the target and a restorable
+# backup before it will mutate anything, and it refuses rather than warning when that
+# evidence is absent.
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Suffixed by the workflow with the revision being applied, so two runs cannot collide on
+  # one immutable Job object and so the object name records what it did.
+  name: superplane-migrate-REPLACE_WITH_MIGRATION_RUN_ID
+  namespace: REPLACE_WITH_NAMESPACE
+  labels:
+    app.kubernetes.io/name: superplane-migrate
+    app.kubernetes.io/part-of: adp-superplane
+    adp.aws-e.io/domain-app: superplane
+spec:
+  # No retries. A half-applied migration that is retried automatically applies the second
+  # half to a schema the first half already changed; the failure must stop and be read by a
+  # person. Alembic is not transactional across revisions on every backend.
+  backoffLimit: 0
+  # Deleted an hour after finishing, so its logs survive long enough to be collected but the
+  # namespace does not accumulate completed Jobs.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: superplane-migrate
+        app.kubernetes.io/part-of: adp-superplane
+    spec:
+      restartPolicy: Never
+      # The domain's own identity. Its IRSA role (aws_iam_role.control_plane) is scoped to
+      # this module's two secrets and this module's SSM prefix — so this pod cannot read the
+      # gateway's database credential even if something asked it to.
+      serviceAccountName: superplane-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # The pinned `superplane-api` image: the Alembic chain lives at
+          # src/superplane-api/alembic/ inside it. Substituted from the release lock, which
+          # currently records this image as pending with no digest — so rendering refuses
+          # until U2 resolves source access. A literal here would be a second pin able to
+          # disagree with the lock.
+          image: REPLACE_WITH_MIGRATION_IMAGE
+          imagePullPolicy: IfNotPresent
+          # `upgrade head`, and nothing else. Not a shell: an entrypoint of `sh -c` with an
+          # interpolated revision would make the revision executable text.
+          command: ["alembic"]
+          args: ["-c", "/app/src/superplane-api/alembic.ini", "upgrade", "head"]
+          env:
+            # The connection, by reference. Never a literal: upstream's own
+            # db-migrate-job.yaml carries an inline password in DATABASE_URL, which is an
+            # applied artifact and therefore has to be rotated everywhere once noticed.
+            #
+            # `optional: false` is load-bearing. With `true` and an absent secret the pod
+            # starts with an empty connection string, and Alembic against an empty URL does
+            # not fail loudly in every configuration — a migration that connected to
+            # nothing must not be able to report success.
+            - name: SUPERPLANE_DB_CONNECTION_URI
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-db
+                  key: connection-uri
+                  optional: false
+            # THE BOUNDARY. `search_path` is the domain schema alone — `public` is
+            # deliberately absent, so an unqualified `op.drop_table("users")` cannot resolve
+            # a gateway table. This is the mechanism that replaces the SQL text scan.
+            - name: SUPERPLANE_DB_SCHEMA
+              value: REPLACE_WITH_DATABASE_SCHEMA
+            - name: PGOPTIONS
+              value: "-c search_path=REPLACE_WITH_DATABASE_SCHEMA"
+            # Alembic's bookkeeping, inside the domain schema. The default
+            # `alembic_version` in `public` would be shared with the gateway's chain.
+            - name: ALEMBIC_VERSION_TABLE
+              value: superplane_alembic_version
+            - name: ALEMBIC_VERSION_TABLE_SCHEMA
+              value: REPLACE_WITH_DATABASE_SCHEMA
+            - name: AWS_REGION
+              value: REPLACE_WITH_AWS_REGION
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # readOnlyRootFilesystem is set, and Alembic writes nothing durable — but Python
+            # needs a writable temp dir.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

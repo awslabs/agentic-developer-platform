@@ -1,0 +1,227 @@
+name: Eval — CLI Onboarding (clean room)
+
+# Clean-room E2E evaluation of the CLI onboarding journey — Issue #4157
+# (Story 5 of EPIC #4143). Automates the manual live validation of 2026-08-26:
+# the approval gate (#4144), CLI seeding + discovery (#4145), the setup-page
+# download route (#4146) and the Codex zero-touch proxy (#4154).
+#
+# WHERE THE CLEAN ROOM LIVES (#4171)
+# The laptop journey MUST NOT run in the agent-worker image, or in any
+# environment with CLI config pre-wired: that image bakes in ~/.codex/config.toml
+# pointing at the sigv4-proxy on 127.0.0.1:9090, Claude Code settings and
+# ANTHROPIC_* env, any of which silently substitutes the platform's internal auth
+# for the very auth path under test. A contaminated run reports FALSE GREEN,
+# which is worse than having no eval.
+#
+# This job therefore SPLITS in two, and neither half is a job-level image
+# override — the ARC scale set has no Docker daemon and no containerMode, so a
+# job that asks for one dies before its first step:
+#
+#   HARNESS — this job, on the ARC runner. Holds IRSA and kubeconfig; does the
+#     Cognito seeding, the approval row, the flag lever and every assertion.
+#   LAPTOP  — a stock `node:20-bookworm` pod that run-eval.sh creates with
+#     `kubectl run` and reaches only with `kubectl exec`. It gets no
+#     service-account token, no service-link env and none of this job's
+#     environment, so there is no platform credential in reach to borrow. The
+#     contamination gate runs INSIDE that pod as the first command exec'd there,
+#     before anything is installed. Phase D deletes it, `if: always()`.
+#
+# Scheduled by nightly-cli-regression.yml; no independent cron.
+# See platform/evals/cli-onboarding/README.md for the full split.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: false
+        type: string
+        default: dev
+      phases:
+        description: 'Comma-separated phases to run (A=gate off, B=gate on matrix, C=laptop journey)'
+        required: false
+        type: string
+        default: 'A,B,C'
+      inject_failure:
+        description: 'Deliberately break the eval to prove it fails loudly (wrong-org)'
+        required: false
+        type: choice
+        options: ['none', 'wrong-org']
+        default: 'none'
+  workflow_call:
+    outputs:
+      cleanup_ok:
+        description: 'True only after the cleanup sweep succeeds'
+        value: ${{ jobs.eval.outputs.cleanup_ok }}
+    inputs:
+      environment:
+        required: false
+        type: string
+        default: dev
+  pull_request:
+    # Lint-only on PRs that touch the eval itself; the live job never runs from a PR.
+    paths:
+      - 'platform/evals/cli-onboarding/**'
+      # The shared harness (#4163) is sourced by this eval, so a lib-only change
+      # can break it. Lint-gate it here too, and keep this eval's dry-run suite as
+      # the regression guard for every change to the shared code.
+      - 'platform/evals/lib/**'
+      - '.github/workflows/eval-cli-onboarding.yml'
+    branches:
+      - main
+
+# Never two live runs at once: both would fight over the same
+# BG_ENFORCE_ORG_ASSIGNMENT value and each would restore the other's mutation.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.environment || 'dev') }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint eval scripts
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+
+      - name: bash -n + shellcheck
+        # -x follows the `.` into platform/evals/lib/*.sh, so the shared harness is
+        # linted in the context that actually uses it. run-eval.sh carries a
+        # file-level `# shellcheck source-path=SCRIPTDIR` so ../lib resolves from
+        # the script rather than from this job's cwd.
+        run: |
+          set -euo pipefail
+          for f in platform/evals/lib/*.sh \
+                   platform/evals/cli-onboarding/run-eval.sh \
+                   platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh; do
+            bash -n "$f"
+            shellcheck -x "$f"
+          done
+
+      - name: Dry-run harness tests
+        # Stubs aws/kubectl/psql/curl/npm and asserts phase ordering,
+        # cleanup-on-failure, the clean-room detector, that laptop commands only
+        # ever run via kubectl exec, and that the pod is always deleted.
+        run: ./platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
+
+  eval:
+    permissions:
+      contents: read
+      id-token: write
+    name: Clean-room eval (${{ inputs.environment || 'dev' }})
+    # Skipped on pull_request: the live matrix mutates dev (flag flip, throwaway
+    # Cognito user, throwaway users row) and must never run from an untrusted PR.
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
+    needs: [lint]
+    outputs:
+      cleanup_ok: ${{ steps.cleanup.outcome == 'success' }}
+    runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    timeout-minutes: 45
+
+    # No job-level image: this job is the HARNESS, on the runner. The clean room
+    # is the pod run-eval.sh spawns (see the header). The runner's existing RBAC
+    # in adp-gateway-evals grants only the pod lifecycle verbs used here.
+    env:
+      ADP_DB_USER: ${{ vars.ADP_DB_USER }}
+      AWS_REGION: us-east-1
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      EVAL_WORKDIR: /tmp/cli-onboarding-eval
+      EVAL_POD_NAMESPACE: adp-gateway-evals
+
+    steps:
+      - name: Refuse an untrusted ref
+        id: trusted
+        env:
+          EVAL_REF: ${{ github.ref }}
+        run: |
+          case "$EVAL_REF" in
+            refs/heads/main|refs/tags/*) ;;
+            *) echo "::error::Live evaluation requires main or a release tag"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Verify reviewed runner tools
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl jq python3 psql; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+          python3 -c 'import yaml'
+
+      - name: Configure kubeconfig (harness — flag lever)
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          kubectl get deploy bedrockgateway -n adp-gateway -o name
+
+      - name: Run the eval matrix
+        id: matrix
+        env:
+          EVAL_PHASES: ${{ inputs.phases || 'A,B,C' }}
+          EVAL_INJECT: ${{ inputs.inject_failure || '' }}
+        run: |
+          set -euo pipefail
+          ARGS=(--environment "$ENVIRONMENT" --phases "$EVAL_PHASES")
+          if [ -n "$EVAL_INJECT" ] && [ "$EVAL_INJECT" != none ]; then
+            ARGS+=(--inject-failure "$EVAL_INJECT")
+          fi
+          ./platform/evals/cli-onboarding/run-eval.sh "${ARGS[@]}"
+
+      # run-eval.sh restores the flag and deletes its throwaway resources from an
+      # EXIT trap, so this is belt-and-braces for the case where the job is
+      # cancelled or the runner is killed mid-step and the trap never fires.
+      - name: Cleanup sweep (always)
+        id: cleanup
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
+        run: ./platform/evals/cli-onboarding/run-eval.sh --environment "$ENVIRONMENT" --cleanup-only
+
+      - name: Verify dev was left clean
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          echo "### Post-run state" >> "$GITHUB_STEP_SUMMARY"
+          FLAG=$(kubectl get deploy bedrockgateway -n adp-gateway \
+            -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="BG_ENFORCE_ORG_ASSIGNMENT")].value}' 2>/dev/null || echo "unset")
+          echo "- \`BG_ENFORCE_ORG_ASSIGNMENT\` on the deployment: \`${FLAG:-unset}\`" >> "$GITHUB_STEP_SUMMARY"
+          LEFTOVER=$(aws cognito-idp list-users \
+            --user-pool-id "$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id" --query Parameter.Value --output text)" \
+            --filter "email ^= \"eval-cli-onboarding\"" \
+            --query 'length(Users)' --output text 2>/dev/null || echo "?")
+          echo "- Leftover \`eval-cli-onboarding*\` Cognito users: \`${LEFTOVER}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$LEFTOVER" != "0" ] && [ "$LEFTOVER" != "?" ]; then
+            echo "::warning::${LEFTOVER} eval-cli-onboarding* Cognito user(s) left behind — sweep them."
+          fi
+          # eval-pod leftover check: a clean-room pod outlives the job that made
+          # it, so a leak here is a leaked node until Karpenter reclaims it.
+          PODS=$(kubectl get pods -n "$EVAL_POD_NAMESPACE" -l app=eval-cli-onboarding \
+            --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          echo "- Leftover clean-room pods (\`app=eval-cli-onboarding\`): \`${PODS}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${PODS:-0}" != "0" ]; then
+            echo "::warning::${PODS} clean-room pod(s) left behind — sweep: kubectl delete pod -n $EVAL_POD_NAMESPACE -l app=eval-cli-onboarding"
+          fi

@@ -1,0 +1,720 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "internal-adapters.schema.json",
+  "title": "Task API internal adapter contract v1",
+  "description": "Strict request and response bodies for every fixed adapter in implementation-design.md section 12, plus the retained acquire/heartbeat/ack delivery adapters. Transport authentication remains in IAM, run-credential and live TokenReview headers; bodies cannot select tenant or authority.",
+  "$defs": {
+    "opaque_proof": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "opaque_credential": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "opaque_token": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "nullable_string": { "type": ["string", "null"] },
+    "run_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "invocation_id", "generation"],
+      "properties": {
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
+        "generation": { "$ref": "common.schema.json#/$defs/generation" }
+      }
+    },
+    "attempt_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run", "runtime_attempt_id"],
+      "properties": {
+        "run": { "$ref": "internal-adapters.schema.json#/$defs/run_binding" },
+        "runtime_attempt_id": {
+          "$ref": "common.schema.json#/$defs/uuid4",
+          "description": "Active callbacks are always fenced to one concrete in-process attempt; null is only valid in public history before an attempt exists."
+        }
+      }
+    },
+    "operation_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "operation_status", "request_id"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "operation_status": { "enum": ["pending", "confirmed", "unknown", "rejected"] },
+        "request_id": { "$ref": "common.schema.json#/$defs/request_id" },
+        "reason": { "$ref": "internal-adapters.schema.json#/$defs/nullable_string" }
+      }
+    },
+    "producer_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_proof"],
+      "properties": { "producer_proof": { "$ref": "internal-adapters.schema.json#/$defs/opaque_proof" } }
+    },
+    "admit_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "submit", "idempotency_key", "caller_token", "producer_proof"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "submit": { "$ref": "public-api.schema.json#/$defs/submit_request" },
+        "idempotency_key": { "$ref": "common.schema.json#/$defs/idempotency_key" },
+        "caller_token": { "$ref": "internal-adapters.schema.json#/$defs/opaque_credential" },
+        "producer_proof": { "$ref": "internal-adapters.schema.json#/$defs/opaque_proof" }
+      }
+    },
+    "admit_response": { "$ref": "public-api.schema.json#/$defs/submit_response" },
+    "dispatch_claim_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "dispatch_id", "producer_proof"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "dispatch_id": { "$ref": "common.schema.json#/$defs/dispatch_id" },
+        "producer_proof": { "$ref": "internal-adapters.schema.json#/$defs/opaque_proof" }
+      }
+    },
+    "dispatch_claim_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "envelope", "lease_token", "lease_expires_at"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "envelope": { "$ref": "envelope.schema.json#/$defs/task_dispatch_envelope" },
+        "lease_token": { "$ref": "internal-adapters.schema.json#/$defs/opaque_token" },
+        "lease_expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "dispatch_settle_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "dispatch_id", "lease_token", "publication_outcome", "sqs_message_id", "producer_proof"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "dispatch_id": { "$ref": "common.schema.json#/$defs/dispatch_id" },
+        "lease_token": { "$ref": "internal-adapters.schema.json#/$defs/opaque_token" },
+        "publication_outcome": { "enum": ["confirmed", "unknown", "failed"] },
+        "sqs_message_id": { "$ref": "internal-adapters.schema.json#/$defs/nullable_string" },
+        "producer_proof": { "$ref": "internal-adapters.schema.json#/$defs/opaque_proof" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "publication_outcome": { "const": "confirmed" } }, "required": ["publication_outcome"] },
+          "then": { "properties": { "sqs_message_id": { "type": "string", "minLength": 1 } } }
+        }
+      ]
+    },
+    "dispatch_settle_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "dispatch_id", "queue_ack_status", "task_status"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "dispatch_id": { "$ref": "common.schema.json#/$defs/dispatch_id" },
+        "queue_ack_status": { "$ref": "common.schema.json#/$defs/queue_ack_status" },
+        "task_status": { "$ref": "common.schema.json#/$defs/task_status" }
+      }
+    },
+    "recovery_claim_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "shard", "cursor", "limit", "producer_proof"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "shard": { "type": "string", "pattern": "^v1#(0[0-9]|1[0-5])$" },
+        "cursor": { "$ref": "internal-adapters.schema.json#/$defs/nullable_string" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "producer_proof": { "$ref": "internal-adapters.schema.json#/$defs/opaque_proof" }
+      }
+    },
+    "recovery_work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["work_id", "task_id", "kind", "due_at", "lease_token", "lease_expires_at"],
+      "properties": {
+        "work_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "kind": { "enum": ["dispatch", "execution", "queue_ack", "cleanup"] },
+        "due_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "lease_token": { "$ref": "internal-adapters.schema.json#/$defs/opaque_token" },
+        "lease_expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "recovery_claim_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "work", "next_cursor"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "work": { "type": "array", "maxItems": 100, "items": { "$ref": "internal-adapters.schema.json#/$defs/recovery_work" } },
+        "next_cursor": { "$ref": "internal-adapters.schema.json#/$defs/nullable_string" }
+      }
+    },
+    "recovery_settle_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "work_id", "lease_token", "evidence", "producer_proof"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "work_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "lease_token": { "$ref": "internal-adapters.schema.json#/$defs/opaque_token" },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "observed", "observed_at"],
+          "properties": {
+            "kind": { "enum": ["publication", "workload_termination", "queue_ack", "retention"] },
+            "observed": { "type": "boolean" },
+            "observed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          }
+        },
+        "producer_proof": { "$ref": "internal-adapters.schema.json#/$defs/opaque_proof" }
+      }
+    },
+    "recovery_settle_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "work_id", "operation_status", "task_status"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "work_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "operation_status": { "enum": ["confirmed", "rejected"] },
+        "task_status": { "$ref": "common.schema.json#/$defs/task_status" }
+      }
+    },
+    "bootstrap_request": { "$ref": "bootstrap.schema.json#/$defs/bootstrap_request" },
+    "bootstrap_response": { "$ref": "bootstrap.schema.json#/$defs/bootstrap_response" },
+    "attempt_request": { "$ref": "bootstrap.schema.json#/$defs/attempt_request" },
+    "attempt_response": { "$ref": "internal-adapters.schema.json#/$defs/operation_receipt" },
+    "report_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "attempt", "report_id", "event_type", "producer_timestamp", "data"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "attempt": { "$ref": "internal-adapters.schema.json#/$defs/attempt_binding" },
+        "report_id": { "$ref": "common.schema.json#/$defs/report_id" },
+        "event_type": { "$ref": "events.schema.json#/$defs/event_type" },
+        "producer_timestamp": { "$ref": "common.schema.json#/$defs/nullable_timestamp" },
+        "data": { "$ref": "events.schema.json#/$defs/event_data" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "event_type": { "enum": ["task.accepted", "task.queued", "run.started"] } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["status", "version"] } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "progress.updated" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["message", "stage"] } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "artifact.created" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["artifact_id", "content_sha256"] } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "input.required" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["input_request_id", "prompt"] } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "enum": ["input.accepted", "input.rejected", "command.updated"] } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["command_id", "command_status", "handoff"] } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "input.consumed" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["command_id", "command_status", "handoff", "turn_id", "turn_number"] } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "cancel.requested" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["command_id", "status", "version"] } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "run.completed" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["outcome"], "properties": { "outcome": { "const": "completed" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "run.failed" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["outcome", "error_code"], "properties": { "outcome": { "const": "failed" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "task.completed" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["status", "version", "outcome"], "properties": { "status": { "const": "completed" }, "outcome": { "const": "completed" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "task.failed" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["status", "version", "outcome", "error_code"], "properties": { "status": { "const": "failed" }, "outcome": { "const": "failed" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "task.cancelled" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["status", "version", "outcome"], "properties": { "status": { "const": "cancelled" }, "outcome": { "const": "cancelled" } } } } }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "history.gap" } }, "required": ["event_type"] },
+          "then": { "properties": { "data": { "required": ["omitted_from_cursor", "omitted_to_cursor", "omitted_report_ids", "reason"] } } }
+        }
+      ]
+    },
+    "report_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "report_id", "sequence", "event_id"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "report_id": { "$ref": "common.schema.json#/$defs/report_id" },
+        "sequence": { "$ref": "common.schema.json#/$defs/sequence" },
+        "event_id": { "$ref": "common.schema.json#/$defs/event_cursor" }
+      }
+    },
+    "turn_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "attempt", "request_id", "expected_transcript_version"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "attempt": { "$ref": "internal-adapters.schema.json#/$defs/attempt_binding" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "expected_transcript_version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "turn_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "operation_status", "turn", "pending_input_count", "messages"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "operation_status": { "enum": ["committed", "existing", "waiting"] },
+        "turn": { "oneOf": [{ "type": "null" }, { "$ref": "commands.schema.json#/$defs/turn" }] },
+        "pending_input_count": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "messages": { "type": "array", "maxItems": 10, "items": { "$ref": "process-protocol.schema.json#/$defs/turn_frame/properties/messages/items" }, "description": "Texts of exactly the returned turn’s committed commands in canonical FIFO order; empty for the initial turn or waiting response." }
+      }
+    },
+    "model_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "attempt", "turn_id", "request_digest", "messages", "max_tokens"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "attempt": { "$ref": "internal-adapters.schema.json#/$defs/attempt_binding" },
+        "turn_id": { "$ref": "common.schema.json#/$defs/turn_id" },
+        "request_digest": { "$ref": "common.schema.json#/$defs/sha256_digest" },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "content"],
+            "properties": {
+              "role": { "enum": ["user", "assistant"] },
+              "content": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "system": { "type": "string", "maxLength": 16000 }
+      }
+    },
+    "model_response": {
+      "type": "object",
+      "description": "Flat model receipt plus stored provider result. The response reuses all receipt identity and replay constraints. Repeating a confirmed operation returns the same durably stored content and stop reason without resending.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "turn_id",
+        "operation_status",
+        "handoff",
+        "request_digest",
+        "claimed_at",
+        "automatic_replay_permitted"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/schema_version"
+        },
+        "task_id": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/task_id"
+        },
+        "turn_id": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/turn_id"
+        },
+        "operation_status": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/operation_status"
+        },
+        "handoff": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/handoff"
+        },
+        "request_digest": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/request_digest"
+        },
+        "model_id": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/model_id"
+        },
+        "claimed_at": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/claimed_at"
+        },
+        "completed_at": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/completed_at"
+        },
+        "usage": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/usage"
+        },
+        "reservation_status": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/reservation_status"
+        },
+        "automatic_replay_permitted": {
+          "$ref": "commands.schema.json#/$defs/model_receipt/properties/automatic_replay_permitted"
+        },
+        "content": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "description": "Stored Anthropic Messages content blocks; usable only when confirmed."
+        },
+        "stop_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "commands.schema.json#/$defs/model_receipt_constraints"
+        },
+        {
+          "if": {
+            "properties": {
+              "operation_status": {
+                "const": "confirmed"
+              }
+            },
+            "required": [
+              "operation_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "content",
+              "stop_reason"
+            ],
+            "properties": {
+              "content": {
+                "type": "array"
+              },
+              "stop_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "content": {
+                "type": "null"
+              },
+              "stop_reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "control_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "attempt", "last_receipt_cursor"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "attempt": { "$ref": "internal-adapters.schema.json#/$defs/attempt_binding" },
+        "last_receipt_cursor": { "$ref": "common.schema.json#/$defs/nullable_event_cursor" }
+      }
+    },
+    "control_response": { "$ref": "bootstrap.schema.json#/$defs/control_response" },
+    "artifact_request": {
+      "description": "Existing upload body or closed read operation. Read requires live run authority and an immutable input artifact bound to that task and approved scope. Caller cannot supply storage location or owner.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "run",
+            "content_type",
+            "content_sha256",
+            "content_base64"
+          ],
+          "properties": {
+            "schema_version": {
+              "$ref": "common.schema.json#/$defs/schema_version"
+            },
+            "run": {
+              "$ref": "internal-adapters.schema.json#/$defs/run_binding"
+            },
+            "content_type": {
+              "$ref": "common.schema.json#/$defs/content_type"
+            },
+            "content_sha256": {
+              "$ref": "common.schema.json#/$defs/sha256_digest"
+            },
+            "content_base64": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1398104
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "operation",
+            "run",
+            "artifact_id"
+          ],
+          "properties": {
+            "schema_version": {
+              "$ref": "common.schema.json#/$defs/schema_version"
+            },
+            "operation": {
+              "const": "read"
+            },
+            "run": {
+              "$ref": "internal-adapters.schema.json#/$defs/run_binding"
+            },
+            "artifact_id": {
+              "$ref": "common.schema.json#/$defs/artifact_id"
+            }
+          }
+        }
+      ]
+    },
+    "artifact_output_response": {
+      "type": "object",
+      "description": "Already-bound internal result artifact. Active task content has no TTL: expires_at is null until terminal retention is established. This does not relax the public unclaimed-upload expiry.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "artifact_id",
+        "version",
+        "content_sha256",
+        "content_type",
+        "created_at",
+        "expires_at",
+        "request_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/schema_version"
+        },
+        "artifact_id": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/artifact_id"
+        },
+        "version": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/version"
+        },
+        "content_sha256": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/content_sha256"
+        },
+        "content_type": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/content_type"
+        },
+        "created_at": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/created_at"
+        },
+        "expires_at": {
+          "type": "null",
+          "description": "The output is already referenced by an active task; its terminal retention deadline is not known yet."
+        },
+        "request_id": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/request_id"
+        },
+        "download_url": {
+          "$ref": "public-api.schema.json#/$defs/artifact_upload_response/properties/download_url"
+        }
+      }
+    },
+    "artifact_response": {
+      "description": "Upload reference or bounded input bytes. Read responses echo the authorized run/artifact binding. Implementations must decode base64, verify decoded byte length and SHA-256, and enforce the task aggregate input limit; never return URLs or credentials.",
+      "oneOf": [
+        {
+          "$ref": "internal-adapters.schema.json#/$defs/artifact_output_response"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "operation",
+            "run",
+            "artifact_id",
+            "content_type",
+            "content_sha256",
+            "byte_length",
+            "content_base64"
+          ],
+          "properties": {
+            "schema_version": {
+              "$ref": "common.schema.json#/$defs/schema_version"
+            },
+            "operation": {
+              "const": "read"
+            },
+            "run": {
+              "$ref": "internal-adapters.schema.json#/$defs/run_binding"
+            },
+            "artifact_id": {
+              "$ref": "common.schema.json#/$defs/artifact_id"
+            },
+            "content_type": {
+              "$ref": "common.schema.json#/$defs/content_type"
+            },
+            "content_sha256": {
+              "$ref": "common.schema.json#/$defs/sha256_digest"
+            },
+            "byte_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 262144
+            },
+            "content_base64": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 349528,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          }
+        }
+      ]
+    },
+    "finalize_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "attempt", "final_report_id", "child_exit", "outcome", "result", "error", "committed_result_refs"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "attempt": { "$ref": "internal-adapters.schema.json#/$defs/attempt_binding" },
+        "final_report_id": { "$ref": "common.schema.json#/$defs/report_id" },
+        "child_exit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["confirmed", "exit_code", "signal", "stopped_at"],
+          "properties": {
+            "confirmed": { "const": true },
+            "exit_code": { "type": ["integer", "null"] },
+            "signal": { "$ref": "internal-adapters.schema.json#/$defs/nullable_string" },
+            "stopped_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          }
+        },
+        "outcome": { "$ref": "common.schema.json#/$defs/terminal_task_status" },
+        "result": { "oneOf": [{ "type": "null" }, { "$ref": "results.schema.json#/$defs/task_result" }] },
+        "error": { "oneOf": [{ "type": "null" }, { "$ref": "results.schema.json#/$defs/task_error" }] },
+        "committed_result_refs": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/artifact_id" } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "completed" } }, "required": ["outcome"] },
+          "then": { "properties": { "result": { "$ref": "results.schema.json#/$defs/task_result" }, "error": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "failed" } }, "required": ["outcome"] },
+          "then": { "properties": { "result": { "type": "null" }, "error": { "allOf": [{ "$ref": "results.schema.json#/$defs/task_error" }, { "properties": { "outcome": { "const": "failed" } } }] } } }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "cancelled" } }, "required": ["outcome"] },
+          "then": { "properties": { "result": { "type": "null" }, "error": { "allOf": [{ "$ref": "results.schema.json#/$defs/task_error" }, { "properties": { "outcome": { "const": "cancelled" } } }] } } }
+        }
+      ]
+    },
+    "finalize_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "task_id", "status", "version", "terminal_event_id"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "status": { "$ref": "common.schema.json#/$defs/terminal_task_status" },
+        "version": { "$ref": "common.schema.json#/$defs/task_version" },
+        "terminal_event_id": { "$ref": "common.schema.json#/$defs/event_cursor" }
+      }
+    },
+    "settlement_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "workload", "assignment", "stop_evidence", "queue_ack_status"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "workload": { "$ref": "bootstrap.schema.json#/$defs/workload_identity" },
+        "assignment": { "$ref": "envelope.schema.json#/$defs/assignment_ref" },
+        "stop_evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["child_exit_confirmed", "workload_terminated", "observed_at"],
+          "properties": {
+            "child_exit_confirmed": { "type": "boolean" },
+            "workload_terminated": { "type": "boolean" },
+            "observed_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          }
+        },
+        "queue_ack_status": { "$ref": "common.schema.json#/$defs/queue_ack_status" }
+      }
+    },
+    "settlement_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "operation_status", "stop_only", "queue_ack_status"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "operation_status": { "enum": ["confirmed", "unknown", "rejected"] },
+        "stop_only": { "const": true },
+        "queue_ack_status": { "$ref": "common.schema.json#/$defs/queue_ack_status" }
+      }
+    },
+    "empty_delivery_request": { "type": "object", "additionalProperties": false, "properties": {} },
+    "acquire_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["body"],
+      "properties": { "body": { "type": ["string", "null"] } }
+    },
+    "delivery_ack_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted"],
+      "properties": { "accepted": { "const": true } }
+    },
+    "contract_pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route", "request", "response"],
+      "properties": {
+        "route": { "type": "string", "minLength": 1 },
+        "request": { "type": "object" },
+        "response": { "type": "object" }
+      }
+    },
+    "adapter_catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["admit", "dispatch_claim", "dispatch_settle", "recovery_claim", "recovery_settle", "bootstrap", "attempt", "report", "turn", "model", "control", "artifact", "finalize", "settlement", "acquire", "heartbeat", "ack"],
+      "properties": {
+        "admit": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/tasks/admit" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/admit_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/admit_response" } } }] },
+        "dispatch_claim": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/tasks/dispatch/claim" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/dispatch_claim_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/dispatch_claim_response" } } }] },
+        "dispatch_settle": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/tasks/dispatch/settle" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/dispatch_settle_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/dispatch_settle_response" } } }] },
+        "recovery_claim": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/tasks/recovery/claim" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/recovery_claim_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/recovery_claim_response" } } }] },
+        "recovery_settle": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/tasks/recovery/settle" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/recovery_settle_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/recovery_settle_response" } } }] },
+        "bootstrap": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/bootstrap" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/bootstrap_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/bootstrap_response" } } }] },
+        "attempt": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/attempt" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/attempt_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/attempt_response" } } }] },
+        "report": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/report" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/report_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/report_response" } } }] },
+        "turn": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/turn" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/turn_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/turn_response" } } }] },
+        "model": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/model" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/model_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/model_response" } } }] },
+        "control": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/control" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/control_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/control_response" } } }] },
+        "artifact": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/artifact" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/artifact_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/artifact_response" } } }] },
+        "finalize": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/finalize" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/finalize_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/finalize_response" } } }] },
+        "settlement": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/settlement" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/settlement_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/settlement_response" } } }] },
+        "acquire": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/acquire" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/empty_delivery_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/acquire_response" } } }] },
+        "heartbeat": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/heartbeat" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/empty_delivery_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/delivery_ack_response" } } }] },
+        "ack": { "allOf": [{ "$ref": "internal-adapters.schema.json#/$defs/contract_pair" }, { "properties": { "route": { "const": "/internal/v1/agent/task/ack" }, "request": { "$ref": "internal-adapters.schema.json#/$defs/empty_delivery_request" }, "response": { "$ref": "internal-adapters.schema.json#/$defs/delivery_ack_response" } } }] }
+      }
+    }
+  }
+}

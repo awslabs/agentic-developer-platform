@@ -19,6 +19,19 @@ from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Department, Organization, Team, User
 from src.shared.schemas.auth import TokenContext
 
+# Ordinary handler fixtures model the server-side Cognito read explicitly.
+# The unsigned bearer below exercises request plumbing, never identity authority.
+_provider_claims = {}
+
+
+@pytest.fixture(autouse=True)
+def subject_bound_cognito_record(monkeypatch):
+    from src.admin.onboarding import handler
+
+    _provider_claims.clear()
+    monkeypatch.setattr(handler, "_fetch_github_identity_from_cognito", lambda sub: handler._extract_from_claims(_provider_claims))
+
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
@@ -33,6 +46,8 @@ async def db_engine():
 
 def _fake_bearer(claims: dict) -> str:
     """Build an unsigned Bearer token whose base64 payload decodes to claims."""
+    _provider_claims.clear()
+    _provider_claims.update(claims)
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode("utf-8")).decode("ascii").rstrip("=")
     return f"Bearer header.{payload}.signature"
 
@@ -63,7 +78,20 @@ def _mock_github_client(membership_map: dict[str, bool] | None = None, role: str
     mock_client.get_installation_token = AsyncMock(return_value="fake-token")
     mock_client.aclose = AsyncMock()
     mock_client._http_client = MagicMock()
-    mock_client._http_client.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: {"role": role}))
+
+    async def membership_response(path, **kwargs):
+        _, _, org_login, _, username = path.split("/")
+        member = await mock_client.check_org_membership(installation_id=1, org_login=org_login, username=username)
+        return MagicMock(
+            status_code=200 if member else 404,
+            json=lambda: {
+                "role": role,
+                "state": "active",
+                "user": {"id": (_provider_claims.get("cognito:username") or _provider_claims.get("username") or "github_12345").split("_", 1)[1]},
+            },
+        )
+
+    mock_client._http_client.get = AsyncMock(side_effect=membership_response)
     return mock_client
 
 
@@ -580,7 +608,10 @@ async def test_sync_memberships_on_login_direct(db_engine):
             result = await session.execute(stmt)
             user = result.scalar_one()
 
-            await sync_memberships_on_login(session, user, "syncuser")
+            # resolved_for_sub is required (#5666 A11): the caller must name the
+            # Cognito sub it resolved "syncuser" FROM, so a login can never be
+            # paired with a different platform user's row. Here they match.
+            await sync_memberships_on_login(session, user, "syncuser", github_id="12345", resolved_for_sub="cognito-sub-sync")
 
     # Verify memberships created for both orgs
     async with factory() as session:

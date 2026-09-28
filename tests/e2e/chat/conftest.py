@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import time
 from typing import Generator
+from pathlib import Path
 
 import pytest
 
@@ -38,9 +39,38 @@ def pytest_collection_modifyitems(config, items):
     skip_marker = pytest.mark.skip(
         reason="E2E chat tests require E2E_CHAT_ENABLED=1 and AWS credentials"
     )
-    for item in items:
-        if not enabled:
+    own = [item for item in items if Path(item.path).resolve().is_relative_to(Path(__file__).resolve().parent)]
+    if not enabled:
+        for item in own:
             item.add_marker(skip_marker)
+        return
+    mode = os.environ.get("E2E_CHAT_EXPECTED_FLAG", "")
+    if mode not in ("on", "off"):
+        raise pytest.UsageError("Set E2E_CHAT_EXPECTED_FLAG=on|off to match the live deployment")
+    deselected = [item for item in own if not item.get_closest_marker("chat_independent") and (item.get_closest_marker("chat_disabled") is not None) == (mode == "on")]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if item not in deselected]
+
+
+class SessionTokens(dict):
+    def __repr__(self):
+        return "<in-memory Cognito tokens>"
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "chat_independent: authentication acceptance valid in either Chat mode")
+    config.addinivalue_line("markers", "chat_disabled: verifies the deployed disabled-chat behavior")
+    config.addinivalue_line("markers", "slow: longer-running live chat interaction")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def verify_deployed_chat_mode():
+    from .features import read_chat_enabled
+
+    actual = read_chat_enabled()
+    expected = os.environ["E2E_CHAT_EXPECTED_FLAG"] == "on"
+    assert actual is expected, "Live Chat flag differs from the selected acceptance mode"
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +86,7 @@ def test_creds() -> TestCredentials:
 @pytest.fixture(scope="session")
 def cognito_tokens(test_creds: TestCredentials) -> dict[str, str]:
     """Programmatically-obtained Cognito tokens (id, access, refresh)."""
-    return get_cognito_tokens(test_creds)
+    return SessionTokens(get_cognito_tokens(test_creds))
 
 
 # ---------------------------------------------------------------------------
@@ -92,14 +122,6 @@ def page(browser_instance):
 @pytest.fixture
 def authenticated_page(page, test_creds):
     """Page logged in via the real Cognito hosted-UI OAuth flow, navigated to /chat.
-
-    The hosted-UI flow is the only reliable path for this SPA — sessionStorage
-    token injection alone doesn't work because the AuthContext's user state
-    is built in the OAuth callback handler, not reconstructed from
-    sessionStorage on arbitrary mount.
-
-    Slower than injection (~6s vs ~1s) but it actually produces a working
-    authed session.
     """
     from .helpers import login_via_cognito_hosted_ui
 

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Option E — Inception · Orchestration Graph Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light;
+    --surface:#fcfcfb; --plane:#f4f4f1; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --baseline:#c3c2b7; --ring:rgba(11,11,11,.10);
+    --blue:#2a78d6; --blue-soft:#e8f1fc;
+    --good:#0ca30c; --good-text:#006300; --warn:#fab219; --warn-text:#8a6200;
+    --serious:#ec835a; --serious-text:#b0431f;
+  }
+  *{box-sizing:border-box; margin:0}
+  body{background:var(--plane); color:var(--ink); font-family:"Hanken Grotesk", system-ui, sans-serif; font-size:15px; line-height:1.55}
+  .mono{font-family:"Spline Sans Mono", ui-monospace, monospace}
+
+  .nav-strip{background:#232320; color:#c3c2b7; padding:7px 32px; font-size:12.5px; display:flex; gap:18px}
+  .nav-strip a{color:#fff; text-decoration:none; font-weight:600}
+  .nav-strip a.here{color:#fab219}
+
+  main{max-width:980px; margin:0 auto; padding:30px 32px 64px}
+  .eyebrow{font-size:11.5px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin-bottom:8px}
+  .screen-label{display:flex; align-items:center; gap:12px; margin:42px 0 12px}
+  .screen-label:first-of-type{margin-top:0}
+  .screen-label .n{width:26px; height:26px; border-radius:50%; background:var(--ink); color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:800; flex:none}
+  .screen-label h2{font-size:16px; font-weight:800}
+  .screen-label .s{font-size:13px; color:var(--muted)}
+  a.ext{color:var(--blue); text-decoration:none; font-weight:600}
+  a.ext:hover{text-decoration:underline}
+
+  /* ═══ screen 1: capture ═══ */
+  .capture{background:var(--surface); border:1px solid var(--ring); border-radius:14px; padding:34px 38px}
+  .capture h1{font-size:24px; font-weight:800; letter-spacing:-.01em}
+  .capture .sub{color:var(--ink-2); margin:6px 0 20px; max-width:560px}
+  .intent-box{border:1.5px solid var(--grid); border-radius:12px; background:#fff; padding:18px 20px; font-size:16px; line-height:1.6; color:var(--ink); min-height:120px}
+  .intent-box .ph{color:var(--muted)}
+  .prompts{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px}
+  .prompt{font-size:12.5px; font-weight:600; color:var(--ink-2); border:1px dashed var(--baseline); border-radius:99px; padding:4px 12px; cursor:pointer}
+  .prompt:hover{border-color:var(--ink); color:var(--ink)}
+  .capture-foot{display:flex; align-items:center; gap:16px; margin-top:20px; flex-wrap:wrap}
+  button{font:inherit; font-weight:700; border-radius:9px; cursor:pointer; border:1px solid var(--ring); background:#fff; color:var(--ink)}
+  button.primary{background:var(--ink); color:#fff; border-color:var(--ink); font-size:14.5px; padding:10px 22px}
+  button:focus-visible{outline:2px solid var(--blue); outline-offset:2px}
+  .capture-foot .note{font-size:12.5px; color:var(--muted); max-width:420px}
+
+
+  /* ═══ screen 1: chat capture ═══ */
+  .chatwrap{display:grid; grid-template-columns:1.25fr 1fr; gap:0; background:var(--surface); border:1px solid var(--ring); border-radius:14px; overflow:hidden}
+  @media (max-width:900px){ .chatwrap{grid-template-columns:1fr} }
+  .chat{padding:26px 28px; display:flex; flex-direction:column; gap:14px; border-right:1px solid var(--grid)}
+  .chat h1{font-size:20px; font-weight:800}
+  .chat .sub{font-size:13.5px; color:var(--ink-2); margin-bottom:6px}
+  .msg{max-width:88%; border-radius:14px; padding:11px 15px; font-size:14.5px; line-height:1.55}
+  .msg.user{align-self:flex-end; background:var(--ink); color:#fff; border-bottom-right-radius:4px}
+  .msg.agent{align-self:flex-start; background:var(--plane); border:1px solid var(--grid); border-bottom-left-radius:4px}
+  .msg .who{display:block; font-size:10.5px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; opacity:.55; margin-bottom:3px}
+  .msg .drafted{display:inline-block; margin-top:8px; font-size:11.5px; font-weight:700; color:var(--good-text); background:#eef8ee; border-radius:99px; padding:2px 10px}
+  .chatinput{display:flex; gap:10px; margin-top:6px}
+  .chatinput .box{flex:1; border:1.5px solid var(--grid); border-radius:10px; background:#fff; padding:11px 14px; font-size:14.5px; color:var(--muted)}
+  .chatinput button.primary{padding:0 18px; font-size:14px}
+
+  .draft{padding:24px 26px; background:#fbfbf9}
+  .draft .eyebrow{display:flex; align-items:center; gap:8px}
+  .draft .livepill{font-size:10.5px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:var(--blue); background:var(--blue-soft); border-radius:99px; padding:2px 9px}
+  .draft h2{font-size:16.5px; font-weight:800; margin:10px 0 14px; line-height:1.35}
+  .dsec{margin-bottom:13px}
+  .dsec .k{font-size:11px; font-weight:800; letter-spacing:.13em; text-transform:uppercase; color:var(--muted); margin-bottom:3px}
+  .dsec p, .dsec li{font-size:13.5px; color:var(--ink-2)}
+  .dsec ul{margin:0; padding-left:18px}
+  .dsec .new{background:#fff8e1; border-radius:4px; padding:0 3px}
+  .draft .empty{color:var(--baseline); font-style:italic}
+  .draft-foot{border-top:1px solid var(--grid); padding-top:14px; margin-top:6px; display:flex; flex-direction:column; gap:8px}
+  .draft-foot .note{font-size:12px; color:var(--muted)}
+
+  /* ═══ screen 2: review ═══ */
+  .review{background:var(--surface); border:1px solid var(--ring); border-radius:14px; overflow:hidden}
+  .review-hd{padding:18px 24px 0}
+  .review-hd h1{font-size:18px; font-weight:800}
+  .review-hd .s{font-size:13px; color:var(--ink-2); margin-top:2px}
+
+  /* stage rail */
+  .rail{display:flex; gap:0; padding:18px 24px 20px; border-bottom:1px solid var(--grid); overflow-x:auto}
+  .rstage{flex:1; min-width:120px; position:relative; text-align:center}
+  .rstage .bar{position:absolute; top:10px; left:50%; right:-50%; height:4px; background:var(--good)}
+  .rstage:last-child .bar{display:none}
+  .rstage.now .bar, .rstage.ahead .bar{background:transparent; border-top:3px dashed var(--baseline); height:0; top:11px}
+  .rstage .dot{position:relative; z-index:1; width:20px; height:20px; margin:0 auto; border-radius:50%; background:var(--good); color:#fff; font-size:10.5px; font-weight:800; display:flex; align-items:center; justify-content:center; border:3px solid var(--good)}
+  .rstage.now .dot{background:#fff; border-color:var(--warn); color:var(--warn-text)}
+  .rstage.ahead .dot{background:#fff; border-color:var(--baseline); color:var(--muted)}
+  .rstage .nm{font-size:12px; font-weight:700; margin-top:7px}
+  .rstage .mt{font-size:11px; color:var(--muted)}
+  .rstage .mt a{color:var(--blue); text-decoration:none}
+
+  .review-body{padding:22px 24px 26px; display:grid; grid-template-columns:1.55fr 1fr; gap:26px}
+  @media (max-width:900px){ .review-body{grid-template-columns:1fr} }
+
+  .said{font-size:15.5px; max-width:58ch}
+  .said strong{font-weight:700}
+  .said .lede{font-size:16.5px; margin-bottom:10px}
+  .findings{margin:14px 0 0; padding:0; list-style:none}
+  .findings li{padding:7px 0 7px 26px; position:relative; color:var(--ink-2); font-size:14px}
+  .findings li::before{content:"→"; position:absolute; left:4px; color:var(--muted)}
+  .readmore{margin-top:14px; font-size:13px}
+
+  /* decision cards */
+  .decisions .eyebrow{margin-bottom:10px}
+  .dcard{border:1px solid var(--warn); background:#fffdf6; border-radius:12px; padding:16px 18px; margin-bottom:14px}
+  .dcard h3{font-size:14.5px; font-weight:800; margin-bottom:4px}
+  .dcard .q{font-size:13.5px; color:var(--ink-2); margin-bottom:12px}
+  .opt{display:flex; gap:10px; align-items:flex-start; border:1.5px solid var(--grid); border-radius:9px; padding:9px 12px; margin-bottom:8px; cursor:pointer; background:#fff}
+  .opt:hover{border-color:var(--ink)}
+  .opt.picked{border-color:var(--blue); background:var(--blue-soft)}
+  .opt .radio{width:15px; height:15px; border-radius:50%; border:2px solid var(--baseline); flex:none; margin-top:2px}
+  .opt.picked .radio{border-color:var(--blue); background:var(--blue); box-shadow:inset 0 0 0 3px #fff}
+  .opt .ol{font-size:13.5px; font-weight:700}
+  .opt .od{font-size:12.5px; color:var(--ink-2)}
+  .rec{display:inline-block; font-size:10.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:var(--good-text); margin-left:6px}
+  .dcard .other{font-size:12.5px; color:var(--muted); padding-left:2px}
+  .dcard .other a{color:var(--blue); text-decoration:none; font-weight:600}
+
+  .verdict{border-top:1px solid var(--grid); padding:18px 24px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; background:#fbfbf9}
+  .verdict button.primary{padding:10px 20px}
+  .verdict button.ghost{padding:10px 16px; font-size:13.5px}
+  .verdict .what{font-size:12.5px; color:var(--muted); flex-basis:100%;}
+  .verdict .cost{margin-left:auto; font-size:12.5px; color:var(--muted)}
+
+  /* history */
+  .history{margin-top:14px}
+  .hitem{display:flex; gap:12px; padding:9px 0; border-bottom:1px solid var(--grid); font-size:13.5px; align-items:baseline}
+  .hitem:last-child{border-bottom:none}
+  .hitem .t{font-family:"Spline Sans Mono",monospace; font-size:11.5px; color:var(--muted); flex:none; width:104px}
+  .hitem .who{font-weight:700}
+  .hitem .what{color:var(--ink-2)}
+  footer{max-width:980px; margin:0 auto; padding:0 32px 40px; color:var(--muted); font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="nav-strip">
+  <span>Mockup options:</span>
+  <a href="option-a-transit.html">A · Transit</a>
+  <a href="option-b-mission-control.html">B · Mission Control</a>
+  <a href="option-c-ledger.html">C · Ledger</a>
+  <a href="option-d-portfolio.html">D · Portfolio</a>
+  <a class="here" href="option-e-inception.html">E · Inception</a>
+  <a href="index.html" style="margin-left:auto">↩ all options</a>
+</div>
+
+<main>
+    <div class="screen-label"><span class="n">1</span><h2>Capturing an intent — as a conversation</h2><span class="s">— talk it through; the intent assembles itself alongside</span></div>
+
+  <div class="chatwrap">
+    <div class="chat">
+      <h1>What do you want to build or change?</h1>
+      <p class="sub">Start rough — a couple of questions will sharpen it. Nothing is filed until you say the draft on the right looks right.</p>
+
+      <div class="msg user"><span class="who">You</span>When agents build something big for us it spans dozens of issues and I lose the plot — I can't tell what's running, what's stuck, or what it's costing. Restarting a stalled loop is archaeology.</div>
+
+      <div class="msg agent"><span class="who">Agent</span>That's two pains — <strong>seeing</strong> the whole delivery in one place, and <strong>recovering</strong> it when it stalls. Should this view be read-only, or do you want to act from it — approve things, restart things?<span class="drafted">✓ drafted: the problem</span></div>
+
+      <div class="msg user"><span class="who">You</span>Definitely act from it. A dashboard I can't do anything with is a failure. Approvals and restarts should happen right there.</div>
+
+      <div class="msg agent"><span class="who">Agent</span>Noted as a hard requirement, not a nice-to-have. On stalls — today nothing watches the loop. If something goes silent, how quickly should a human hear about it, and who?<span class="drafted">✓ drafted: interactive control, success criteria</span></div>
+
+      <div class="msg user"><span class="who">You</span>Minutes not hours. Alert the on-call channel. And I want cost visible the whole way — per stage and the total, live.</div>
+
+      <div class="msg agent"><span class="who">Agent</span>Added both. One boundary question: agent-run costs only for v1, or should CI and infra burn count too? I'd suggest agent-run only to start — the rest has no per-loop attribution today.<span class="drafted">✓ drafted: stall SLO, cost — 1 question open</span></div>
+
+      <div class="chatinput">
+        <span class="box">Agent-run only is fine for v1…</span>
+        <button class="primary">Send</button>
+      </div>
+    </div>
+
+    <aside class="draft" aria-label="Intent draft, assembled from the conversation">
+      <div class="eyebrow">Intent draft <span class="livepill">updates as you talk</span></div>
+      <h2>Make the delivery loop visible, steerable, and costed — from idea to done</h2>
+      <div class="dsec"><div class="k">The problem</div><p>Large agent-built deliveries span dozens of issues; there is no single view of what's running, stuck, or spent — and recovering a stalled loop takes manual archaeology.</p></div>
+      <div class="dsec"><div class="k">What success looks like</div><ul>
+        <li>One view from intent to done, current position always visible</li>
+        <li><span class="new">Actionable, not read-only: approvals and restarts happen in the view</span></li>
+        <li><span class="new">Stalls alert the on-call channel within minutes</span></li>
+        <li><span class="new">Cost visible live — per stage and in total</span></li>
+      </ul></div>
+      <div class="dsec"><div class="k">Boundaries</div><p><span class="new">v1 counts agent-run costs only</span> — CI/infra burn excluded (no per-loop attribution exists yet)</p></div>
+      <div class="dsec"><div class="k">Still open</div><p class="empty">none — ready when you are</p></div>
+      <div class="draft-foot">
+        <button class="primary">Looks right — start the flow</button>
+        <span class="note">The conversation is kept and handed to the flow's first stage as context, so nothing you said here gets re-asked.</span>
+      </div>
+    </aside>
+  </div>
+
+
+  <div class="screen-label"><span class="n">2</span><h2>The review — where the back-and-forth happens</h2><span class="s">— each stage ends here: what the agent found, what it needs from you</span></div>
+
+  <div class="review">
+    <div class="review-hd">
+      <h1>Delivery plan is ready for your review</h1>
+      <div class="s">Flow: <strong>Visible, steerable delivery loop</strong> · stage 4 of 5 · agent finished 10:54, waiting on you since</div>
+    </div>
+
+    <div class="rail" aria-label="Flow stages">
+      <div class="rstage"><div class="bar"></div><div class="dot">✓</div><div class="nm">Problem frame</div><div class="mt"><a href="#">read ↗</a> · you approved</div></div>
+      <div class="rstage"><div class="bar"></div><div class="dot">✓</div><div class="nm">Code survey</div><div class="mt"><a href="#">read ↗</a> · you approved</div></div>
+      <div class="rstage"><div class="bar"></div><div class="dot">✓</div><div class="nm">Requirements</div><div class="mt"><a href="#">read ↗</a> · you approved</div></div>
+      <div class="rstage now"><div class="bar"></div><div class="dot">4</div><div class="nm">Delivery plan</div><div class="mt">your review</div></div>
+      <div class="rstage ahead"><div class="dot">5</div><div class="nm">Proposal</div><div class="mt">creates the work</div></div>
+    </div>
+
+    <div class="review-body">
+      <div class="said">
+        <p class="lede"><strong>The plan: ten stories in six waves, two of them yours to gate.</strong></p>
+        <p>Wave 1 is your design review. Waves 2–3 build the engine and its store. Wave 4 adds dispatch and stall handling. Wave 5 is the dashboard. Wave 6 is one optional story I'd cut first under pressure.</p>
+        <ul class="findings">
+          <li>Your design spike runs <strong>alongside</strong> wave 2 — the backend doesn't wait on it, but no dashboard story starts until you've picked a direction.</li>
+          <li>I corrected two of my own earlier citations that would have pointed developers at the wrong files — details in the plan.</li>
+          <li>Migrations here don't run on merge; the plan sequences deploy-then-migrate explicitly.</li>
+        </ul>
+        <p class="readmore"><a class="ext" href="#">Read the full delivery plan ↗</a> <span style="color:var(--muted)">· 15 min read · everything above is the summary of it</span></p>
+
+        <div class="history">
+          <div class="eyebrow" style="margin-top:22px">The conversation so far</div>
+          <div class="hitem"><span class="t">today 10:54</span><span class="who">agent</span><span class="what">finished the plan, asked the 2 questions on the right</span></div>
+          <div class="hitem"><span class="t">yesterday 09:31</span><span class="who">you</span><span class="what">approved requirements with 4 decisions (v1 scope, PAT ruling…) · <a class="ext" href="#">view</a></span></div>
+          <div class="hitem"><span class="t">Sun 22:42</span><span class="who">you</span><span class="what">approved the code survey; accepted Q5 as the core question</span></div>
+          <div class="hitem"><span class="t">Sun 20:24</span><span class="who">you</span><span class="what">approved the problem frame with 3 rulings</span></div>
+        </div>
+      </div>
+
+      <div class="decisions">
+        <div class="eyebrow">2 decisions only you can make</div>
+
+        <div class="dcard">
+          <h3>Where does the deploy account number live?</h3>
+          <p class="q">Your rule says "never in issue text"; our issue-writing lint says "always in every issue." Both exist for good reasons.</p>
+          <div class="opt picked" role="radio" aria-checked="true" tabindex="0">
+            <span class="radio"></span>
+            <span><span class="ol">Name it once, by reference<span class="rec">agent recommends</span></span><br>
+            <span class="od">Issues say <span class="mono">deploy-target: dev-embark1</span>; the real account ID lives in exactly one committed file.</span></span>
+          </div>
+          <div class="opt" role="radio" aria-checked="false" tabindex="0">
+            <span class="radio"></span>
+            <span><span class="ol">Keep literals in every issue</span><br><span class="od">Follows the existing lint; breaks your stated rule in twelve places.</span></span>
+          </div>
+          <div class="other">or <a href="#">write your own ruling…</a></div>
+        </div>
+
+        <div class="dcard">
+          <h3>How may the engine start agent work?</h3>
+          <p class="q">Agent dispatch requires a human origin, and that trace expires after 7 quiet days — a long pause on your review would strand the engine.</p>
+          <div class="opt picked" role="radio" aria-checked="true" tabindex="0">
+            <span class="radio"></span>
+            <span><span class="ol">Your gate approval is the human origin<span class="rec">agent recommends</span></span><br>
+            <span class="od">An approval is a real human act by a real identity — dispatches trace to it. Security-sensitive; gets its own review.</span></span>
+          </div>
+          <div class="opt" role="radio" aria-checked="false" tabindex="0">
+            <span class="radio"></span>
+            <span><span class="ol">Keep refreshing the 7-day timer</span><br><span class="od">Works until a review honestly takes two weeks; then the loop strands.</span></span>
+          </div>
+          <div class="other">or <a href="#">write your own ruling…</a></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="verdict">
+      <button class="primary">Approve with these 2 decisions</button>
+      <button class="ghost">Send back with notes…</button>
+      <span class="cost">this stage: 48 min · $7.90 · flow so far: $28.30</span>
+      <span class="what">Approving creates the work items (2 EPICs, 12 stories) as a proposal — nothing is dispatched until you approve the final proposal at stage 5. Your decisions are recorded with your name and become binding for every later stage.</span>
+    </div>
+  </div>
+</main>
+
+<footer>Mockup E of 5 · static, illustrative — the same flow this mockup set was designed in, rendered as a product instead of GitHub comments · 2026-08-26</footer>
+
+<script>
+document.querySelectorAll('.dcard').forEach(card=>{
+  card.querySelectorAll('.opt').forEach(o=>{
+    const pick=()=>{card.querySelectorAll('.opt').forEach(x=>{x.classList.remove('picked');x.setAttribute('aria-checked','false')});o.classList.add('picked');o.setAttribute('aria-checked','true')};
+    o.addEventListener('click',pick);
+    o.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();pick()}});
+  });
+});
+</script>
+</body>
+</html>

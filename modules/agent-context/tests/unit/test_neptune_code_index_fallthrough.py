@@ -88,7 +88,7 @@ class TestNeptuneCodeIndexFallthrough:
         with (
             patch("door.neptune_client.neptune_enabled", return_value=True),
             patch("door.neptune_client.neptune_available", return_value=True),
-            patch("door.neptune_client.resolve_repo_name", return_value="microservices-demo"),
+            patch("door.neptune_client.resolve_repo_name", return_value="GoogleCloudPlatform/microservices-demo"),
             patch("door.neptune_client.query_understand", return_value=[]),
             patch(
                 "door.neptune_client.resolve_symbol",
@@ -124,7 +124,7 @@ class TestNeptuneCodeIndexFallthrough:
                 ),
             ):
                 results = await understand(
-                    "microservices-demo::Quote",
+                    "GoogleCloudPlatform/microservices-demo::Quote",
                     s3_client=mock_s3_client,
                     bucket="test-bucket",
                     prefix="code-indexes",
@@ -147,7 +147,7 @@ class TestNeptuneCodeIndexFallthrough:
         with (
             patch("door.neptune_client.neptune_enabled", return_value=True),
             patch("door.neptune_client.neptune_available", return_value=True),
-            patch("door.neptune_client.resolve_repo_name", return_value="microservices-demo"),
+            patch("door.neptune_client.resolve_repo_name", return_value="GoogleCloudPlatform/microservices-demo"),
             patch(
                 "door.neptune_client.query_understand",
                 return_value=[
@@ -165,7 +165,7 @@ class TestNeptuneCodeIndexFallthrough:
             ),
         ):
             results = await understand(
-                "microservices-demo::frontendServer",
+                "GoogleCloudPlatform/microservices-demo::frontendServer",
                 s3_client=mock_s3_client,
                 bucket="test-bucket",
                 prefix="code-indexes",
@@ -183,12 +183,12 @@ class TestNeptuneCodeIndexFallthrough:
         with (
             patch("door.neptune_client.neptune_enabled", return_value=True),
             patch("door.neptune_client.neptune_available", return_value=True),
-            patch("door.neptune_client.resolve_repo_name", return_value="microservices-demo"),
+            patch("door.neptune_client.resolve_repo_name", return_value="GoogleCloudPlatform/microservices-demo"),
             patch("door.neptune_client.query_understand", return_value=[]),
             patch("door.neptune_client.resolve_symbol", return_value=[]),
         ):
             results = await understand(
-                "microservices-demo::Quote",
+                "GoogleCloudPlatform/microservices-demo::Quote",
                 s3_client=mock_s3_client,
                 bucket="test-bucket",
                 prefix="code-indexes",
@@ -206,7 +206,7 @@ class TestNeptuneCodeIndexFallthrough:
         """When code index also has no exact match, keep Neptune's ranked best."""
         # Mock S3 to return an index WITHOUT an exact "Foo" symbol
         sparse_index = {
-            "repo_id": "microservices-demo",
+            "repo_id": "GoogleCloudPlatform/microservices-demo",
             "definitions": [
                 {
                     "symbol": "FooBar",
@@ -228,7 +228,7 @@ class TestNeptuneCodeIndexFallthrough:
         with (
             patch("door.neptune_client.neptune_enabled", return_value=True),
             patch("door.neptune_client.neptune_available", return_value=True),
-            patch("door.neptune_client.resolve_repo_name", return_value="microservices-demo"),
+            patch("door.neptune_client.resolve_repo_name", return_value="GoogleCloudPlatform/microservices-demo"),
             patch("door.neptune_client.query_understand", return_value=[]),
             patch(
                 "door.neptune_client.resolve_symbol",
@@ -263,7 +263,7 @@ class TestNeptuneCodeIndexFallthrough:
                 ),
             ):
                 results = await understand(
-                    "microservices-demo::Foo",
+                    "GoogleCloudPlatform/microservices-demo::Foo",
                     s3_client=s3_client,
                     bucket="test-bucket",
                     prefix="code-indexes",
@@ -303,7 +303,7 @@ class TestCheckCodeIndexForExactMatch:
     async def test_finds_exact_match(self, mock_s3_client):
         """Returns code-index hits when exact symbol name found."""
         results = await _check_code_index_for_exact_match(
-            "microservices-demo",
+            "GoogleCloudPlatform/microservices-demo",
             "::Quote",
             "Quote",
             "overview",
@@ -321,7 +321,7 @@ class TestCheckCodeIndexForExactMatch:
     async def test_returns_none_when_no_exact(self, mock_s3_client):
         """Returns None when code index has no exact match for the symbol."""
         results = await _check_code_index_for_exact_match(
-            "microservices-demo",
+            "GoogleCloudPlatform/microservices-demo",
             "::NonExistent",
             "NonExistent",
             "overview",
@@ -341,7 +341,7 @@ class TestCheckCodeIndexForExactMatch:
         s3_client.get_object.side_effect = s3_client.exceptions.NoSuchKey("not found")
 
         results = await _check_code_index_for_exact_match(
-            "microservices-demo",
+            "GoogleCloudPlatform/microservices-demo",
             "::Quote",
             "Quote",
             "overview",
@@ -356,7 +356,7 @@ class TestCheckCodeIndexForExactMatch:
     async def test_prefers_non_generated_among_exact_matches(self, mock_s3_client):
         """When multiple exact matches exist, non-generated file ranks first."""
         results = await _check_code_index_for_exact_match(
-            "microservices-demo",
+            "GoogleCloudPlatform/microservices-demo",
             "::PlaceOrder",
             "PlaceOrder",
             "overview",

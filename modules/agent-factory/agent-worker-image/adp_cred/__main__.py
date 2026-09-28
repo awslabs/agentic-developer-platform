@@ -148,6 +148,10 @@ def main() -> None:
         cmd_raw(rest)
     elif command == "assume":
         cmd_assume(rest)
+    elif command == "worker-session" and not rest:
+        from adp_cred.task_credentials import cmd_task_credentials
+
+        cmd_task_credentials()
     else:
         print(f"error: unknown command: {command}", file=sys.stderr)
         _usage()

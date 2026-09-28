@@ -158,7 +158,7 @@ class TestEnsureRepoExists:
         import db
 
         cursor = mock_conn.cursor.return_value
-        cursor.fetchone.return_value = ("uuid-abc-123",)
+        cursor.fetchone.return_value = ("uuid-abc-123", None, None)
 
         result = db.ensure_repo_exists(mock_conn, "aws-e/adp", "https://github.com/aws-e/adp")
         assert result == "uuid-abc-123"
@@ -168,7 +168,7 @@ class TestEnsureRepoExists:
         import db
 
         cursor = mock_conn.cursor.return_value
-        cursor.fetchone.return_value = ("uuid-new",)
+        cursor.fetchone.return_value = ("uuid-new", None, None)
 
         db.ensure_repo_exists(mock_conn, "myorg/myrepo", "https://github.com/myorg/myrepo")
         insert_call = cursor.execute.call_args_list[0]
@@ -177,16 +177,37 @@ class TestEnsureRepoExists:
         assert params[0] == "myorg/myrepo"
         assert params[1] == "https://github.com/myorg/myrepo"
         assert params[2] == "myorg"
-        # Default: allowed_principals=["*"] (public), tenant_id=None
-        assert params[3] == '["*"]'
+        # Issue #5658: an omitted ACL now denies rather than publishing. This
+        # assertion previously required '["*"]' — i.e. it pinned the defect,
+        # since neither ingest-repo.py call site passed the argument.
+        assert params[3] == "[]"
         assert params[4] is None
+
+    def test_omitted_principals_never_default_to_public(self, mock_conn):
+        """The regression guard for #5658, stated as an invariant.
+
+        Kept separate from the assertion above so that "make the default public
+        again" cannot be done by quietly editing one expected literal — this test
+        names the thing that must not happen.
+        """
+        import db
+
+        cursor = mock_conn.cursor.return_value
+        cursor.fetchone.return_value = ("uuid-new", None, None)
+
+        db.ensure_repo_exists(mock_conn, "acme/unknown", "https://github.com/acme/unknown")
+        params = cursor.execute.call_args_list[0][0][1]
+        assert "*" not in params[3], (
+            "ensure_repo_exists defaulted to the public sentinel — a private repo "
+            "ingested without an explicit ACL becomes readable by every tenant"
+        )
 
     def test_inserts_with_custom_principals(self, mock_conn):
         """Issue #2082: allowed_principals passed through to INSERT."""
         import db
 
         cursor = mock_conn.cursor.return_value
-        cursor.fetchone.return_value = ("uuid-new",)
+        cursor.fetchone.return_value = ("uuid-new", "acme", None)
 
         db.ensure_repo_exists(
             mock_conn,

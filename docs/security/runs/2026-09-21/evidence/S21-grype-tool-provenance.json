@@ -1,0 +1,65 @@
+{
+  "reviewed_at": "2026-09-25",
+  "previous_version": "0.80.2",
+  "previous_schema": 5,
+  "previous_feed_newest_built": "2026-03-09T00:31:20Z",
+  "selected_version": "0.119.0",
+  "release_published_at": "2026-09-17T16:45:23Z",
+  "release_linux_amd64_sha256": "3fa2dc4b924621ab65404cf08d0b8438d896d80ab949c9d5a4ca283c36004c9b",
+  "binary_reported_schema": 6,
+  "current_feed": {
+    "status": "active",
+    "schemaVersion": "v6.1.9",
+    "built": "2026-09-25T06:31:49Z",
+    "checksum": "sha256:04c01bc3418d0d53f64d041c2f28070a5ce1f814ee891b3f5d90102f09232dfe"
+  },
+  "inert_cyclonedx_fixture": {
+    "package": "cryptography 42.0.7",
+    "results": [
+      {
+        "rule": "GHSA-79v4-65xg-pq4g-cryptography",
+        "severity": [
+          "low",
+          "native"
+        ]
+      },
+      {
+        "rule": "GHSA-jwv3-5hgf-82ww-cryptography",
+        "severity": [
+          "high",
+          "native"
+        ]
+      },
+      {
+        "rule": "GHSA-r6ph-v2qm-q3c2-cryptography",
+        "severity": [
+          "high",
+          "native"
+        ]
+      },
+      {
+        "rule": "GHSA-m959-cc7f-wv43-cryptography",
+        "severity": [
+          "low",
+          "native"
+        ]
+      },
+      {
+        "rule": "GHSA-537c-gmf6-5ccf-cryptography",
+        "severity": [
+          "high",
+          "native"
+        ]
+      },
+      {
+        "rule": "GHSA-h4gh-qq45-vh27-cryptography",
+        "severity": [
+          "medium",
+          "native"
+        ]
+      }
+    ],
+    "current_repository_config_and_filter": true,
+    "note": "Compatibility fixture only; not final repository scan"
+  }
+}

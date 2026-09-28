@@ -23,18 +23,22 @@ resource "aws_lambda_function" "ingest" {
 
   environment {
     variables = {
-      INPUT_QUEUE_URL     = var.input_queue_url
-      RESPONSE_QUEUE_URL  = var.response_queue_url
-      SESSIONS_TABLE_NAME = var.sessions_table_name
-      AWS_REGION_NAME     = var.aws_region
-      CLASSIFIER_MODEL    = var.classifier_model
+      ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.model_policy_enabled)
+      PERSONA_MODEL_MAPPING_ENABLED = tostring(var.persona_model_mapping_enabled)
+      ADP_AGENT_CONTROL_ENDPOINT    = var.model_control_endpoint
+      WEBHOOK_EVENTS_TABLE          = var.webhook_events_table_name
+      INPUT_QUEUE_URL               = var.input_queue_url
+      RESPONSE_QUEUE_URL            = var.response_queue_url
+      SESSIONS_TABLE_NAME           = var.sessions_table_name
+      AWS_REGION_NAME               = var.aws_region
+      CLASSIFIER_MODEL              = var.classifier_model
       # GH App secret prefix for the github_actions dispatch path (ARC runner
       # path). The ingest Lambda uses the "ops" persona specifically — it has
       # write perms for issues/labels on the target repo. Secrets are stored at
       #   adp/<github_org>/gh-app-ops-{id,key}
       # by the ARC setup process (see SETUP-GUIDE.md).
       # The code appends `-id` and `-key` at runtime.
-      GH_APP_SECRET_PREFIX = "adp/${var.github_org}/gh-app-ops"
+      GH_APP_SECRET_PREFIX = var.github_org != "" ? "adp/${var.github_org}/gh-app-ops" : ""
       ARTIFACTS_BUCKET     = var.artifacts_bucket_name
       ARTIFACTS_TABLE      = var.artifacts_table_name
       # Stage C (#186): WebSocket post-back endpoint for upload-token /
@@ -42,6 +46,12 @@ resource "aws_lambda_function" "ingest" {
       # Lambda returns; the ingest Lambda must push responses back via
       # apigatewaymanagementapi.post_to_connection, which needs this URL.
       WS_API_ENDPOINT = var.ws_api_endpoint
+      # Issue #4233: identity-index table backing the chat-dispatch tenant
+      # gate's ownership layer (org_id → App installation, compared against the
+      # installation covering the target repo owner). Empty until the gateway
+      # module has been applied; the handler treats empty as "ownership layer
+      # inactive" and the code-only org allowlist remains in force.
+      IDENTITY_INDEX_TABLE = var.identity_index_table_name
     }
   }
 
@@ -49,7 +59,8 @@ resource "aws_lambda_function" "ingest" {
 }
 
 resource "aws_iam_role" "ingest" {
-  name = "${var.name_prefix}-gateway-ingest"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-gateway-ingest"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -125,6 +136,62 @@ resource "aws_iam_role_policy" "ingest_dynamodb" {
   })
 }
 
+# DynamoDB data-plane access also needs Decrypt on the table's customer-managed
+# key (#5013). The identity-index policy below grants a different module's key.
+# No key administration or direct KMS use is needed by the ingest Lambda.
+resource "aws_iam_role_policy" "ingest_dynamodb_kms" {
+  name = "dynamodb-kms"
+  role = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["kms:Decrypt", "kms:DescribeKey"]
+      Resource = var.dynamodb_kms_key_arn
+      Condition = {
+        StringEquals = {
+          "kms:ViaService"    = "dynamodb.${var.aws_region}.amazonaws.com"
+          "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
+  })
+}
+
+# Issue #4233: read access to the identity-index for the chat-dispatch tenant
+# gate's ownership layer. GetItem reads the org_installation reverse row; Query
+# covers installation_resolver's forward-scan fallback when that row is missing.
+# Read-only on purpose — the ingest Lambda is not an identity-index writer, so
+# it deliberately does not get the PutItem that would let the resolver's
+# self-heal write-through succeed (it is best-effort and logs on failure).
+#
+# The KMS grant is not optional: the identity-index is encrypted with the
+# gateway's customer-managed key, and without kms:Decrypt every GetItem returns
+# AccessDeniedException — the gate would then fail closed on every dispatch,
+# which reads as "the feature is broken", not "the key is missing".
+resource "aws_iam_role_policy" "ingest_identity_index" {
+  count = var.identity_index_table_arn != "" ? 1 : 0
+  name  = "identity-index-read"
+  role  = aws_iam_role.ingest.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = var.identity_index_table_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt", "kms:DescribeKey"]
+        Resource = var.identity_index_kms_key_arn
+      },
+    ]
+  })
+}
+
 # S3 presigned URL support for upload-token / upload-complete actions.
 # generate_presigned_url("put_object") signs with the Lambda's credentials,
 # so the role needs s3:PutObject. s3:GetObject is included for future
@@ -167,8 +234,9 @@ resource "aws_iam_role_policy" "ingest_apigw_manage_connections" {
 # as new personas are added manually (see SETUP-GUIDE.md) without Terraform
 # changes. The org must match what was used to write the secrets.
 resource "aws_iam_role_policy" "ingest_gh_app_secrets" {
-  name = "gh-app-secrets-read"
-  role = aws_iam_role.ingest.id
+  count = var.github_org != "" ? 1 : 0
+  name  = "gh-app-secrets-read"
+  role  = aws_iam_role.ingest.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -180,7 +248,14 @@ resource "aws_iam_role_policy" "ingest_gh_app_secrets" {
   })
 }
 
+# Preserve ownership of existing policies when the optional-org guard is added.
+moved {
+  from = aws_iam_role_policy.ingest_gh_app_secrets
+  to   = aws_iam_role_policy.ingest_gh_app_secrets[0]
+}
+
 resource "aws_cloudwatch_log_group" "ingest" {
+  #checkov:skip=CKV_AWS_338: Gateway ingest Lambda logs use an explicitly bounded 30-day operational retention.
   name              = "/aws/lambda/${var.name_prefix}-gateway-ingest"
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn
@@ -247,7 +322,8 @@ resource "aws_lambda_event_source_mapping" "response_sqs" {
 }
 
 resource "aws_iam_role" "response" {
-  name = "${var.name_prefix}-gateway-response"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-gateway-response"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -307,6 +383,13 @@ resource "aws_iam_role_policy" "response_dynamodb" {
   })
 }
 
+# Response routing uses the same encrypted sessions table as ingest.
+resource "aws_iam_role_policy" "response_dynamodb_kms" {
+  name   = "dynamodb-kms"
+  role   = aws_iam_role.response.id
+  policy = aws_iam_role_policy.ingest_dynamodb_kms.policy
+}
+
 resource "aws_iam_role_policy" "response_apigw" {
   # Only create when a WS API has been wired through — otherwise the resource ARN
   # is empty and AWS rejects the policy as malformed.
@@ -339,8 +422,57 @@ resource "aws_iam_role_policy" "response_secrets" {
 }
 
 resource "aws_cloudwatch_log_group" "response" {
+  #checkov:skip=CKV_AWS_338: Gateway response Lambda logs use an explicitly bounded 30-day operational retention.
   name              = "/aws/lambda/${var.name_prefix}-gateway-response"
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn
   tags              = var.tags
+}
+
+# No queue, authority-table or signing-key access is added. Only the registered
+# ingress can use its body-bound STS proof at this exact admission endpoint.
+resource "aws_iam_role_policy" "ingest_model_root" {
+  count = var.model_policy_enabled ? 1 : 0
+  name  = "model-root-admission"
+  role  = aws_iam_role.ingest.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = ["execute-api:Invoke"], Resource = [var.model_root_admission_arn] }]
+  })
+  lifecycle {
+    precondition {
+      condition     = var.model_root_admission_arn != "" && var.model_control_endpoint != ""
+      error_message = "Register the ingress role and exact gateway endpoint before enabling chat policy."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "ingest_persona_model_selection" {
+  count = var.persona_model_mapping_enabled ? 1 : 0
+  name  = "persona-model-selection"
+  role  = aws_iam_role.ingest.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = ["execute-api:Invoke"], Resource = [replace(var.model_root_admission_arn, "/roots/admit", "/persona-model/resolve")] }]
+  })
+  lifecycle {
+    precondition {
+      condition     = var.model_root_admission_arn != "" && var.model_control_endpoint != ""
+      error_message = "Configure the exact gateway endpoint before enabling saved persona models."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "ingest_run_registration" {
+  count = var.webhook_events_table_arn != "" ? 1 : 0
+  name  = "chat-run-registration"
+  role  = aws_iam_role.ingest.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      { Effect = "Allow", Action = ["dynamodb:PutItem"], Resource = [var.webhook_events_table_arn] }
+      ], var.webhook_events_kms_key_arn == "" ? [] : [
+      { Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey"], Resource = [var.webhook_events_kms_key_arn], Condition = { StringEquals = { "kms:ViaService" = "dynamodb.${var.aws_region}.amazonaws.com" } } }
+    ])
+  })
 }

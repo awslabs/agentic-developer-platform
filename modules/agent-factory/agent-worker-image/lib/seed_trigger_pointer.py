@@ -49,16 +49,14 @@ def main(argv: list[str]) -> int:
         return 0
 
     # Read THIS run's chain context from the env the entrypoint exported.
+    # Issue #4129: ADP_ROOT_HUMAN_ID / ADP_IS_HUMAN_ROOTED / ADP_CHAIN_DEPTH are
+    # no longer read here — the webhook resolves all three from its own
+    # webhook-events rows using correlation_id, so the pod neither sends nor
+    # needs them.
     correlation_id = os.environ.get("ADP_CORRELATION_ID", "")
-    root_human_id = os.environ.get("ADP_ROOT_HUMAN_ID", "")
-    is_human_rooted = os.environ.get("ADP_IS_HUMAN_ROOTED", "false") == "true"
     own_message_id = os.environ.get("ADP_MESSAGE_ID", "")
-    try:
-        own_depth = int(os.environ.get("ADP_CHAIN_DEPTH", "0") or "0")
-    except (ValueError, TypeError):
-        own_depth = 0
 
-    if not correlation_id or not root_human_id:
+    if not correlation_id:
         # No chain context (e.g. run started without correlation) — nothing to
         # seed; the webhook will start a fresh chain as before.
         logger.info("seed_trigger_pointer: no correlation context in env — skipping")
@@ -68,27 +66,28 @@ def main(argv: list[str]) -> int:
         from lib.correlation_store import channel_key, write_pointer
 
         key = channel_key("github", repo, "issue", issue_number)
-        # The spawned run inherits THIS chain; its parent is this run's invocation;
-        # its depth is this run's depth + 1.
+        # The spawned run inherits THIS chain; its parent is this run's invocation.
         # Issue #2149: pass last_triggered_persona so the cross-persona loop guard
         # is pre-seeded on the target channel (the webhook reads it to block
         # immediate self-re-triggers).
+        #
+        # Issue #4129: the human root and the depth are NOT sent — the webhook
+        # resolves both from the webhook-events GSI using this correlation_id, so
+        # the seeded row carries lineage without carrying authority. That is what
+        # keeps this #1828 cross-issue path working while making a forged row
+        # inert: the row this pod writes can no longer name a root human at all.
         write_pointer(
             channel_key=key,
             correlation_id=correlation_id,
-            root_human_id=root_human_id,
-            is_human_rooted=is_human_rooted,
             triggering_invocation_id=own_message_id or None,
-            chain_depth=own_depth + 1,
             last_triggered_persona=persona,
         )
         logger.info(
-            "seed_trigger_pointer: seeded pointer channel=%s corr=%s parent=%s depth=%d "
+            "seed_trigger_pointer: seeded pointer channel=%s corr=%s parent=%s "
             "(triggering persona=%s)",
             key,
             correlation_id,
             own_message_id,
-            own_depth + 1,
             persona,
         )
     except Exception as exc:  # noqa: BLE001 — fail-soft by design

@@ -34,6 +34,12 @@ phases:
       # leaving stale source that Docker then bakes. Fix: #1627.
       - |
         MODULE_ROOT="${BUILD_DIR%%/images/*}"
+        rm -rf "${BUILD_DIR}/security-stdlib"
+        cp -r modules/gateway/security/stdlib "${BUILD_DIR}/security-stdlib"
+        if [ -d "${MODULE_ROOT}/images/shared" ] && [ -d "${BUILD_DIR}" ]; then
+          rm -rf "${BUILD_DIR}/security-build"
+          cp -r "${MODULE_ROOT}/images/shared" "${BUILD_DIR}/security-build"
+        fi
         if [ -d "${MODULE_ROOT}/alembic" ] && [ -d "${BUILD_DIR}" ]; then
           rm -rf "${BUILD_DIR}/alembic"
           cp -r "${MODULE_ROOT}/alembic" "${BUILD_DIR}/alembic"

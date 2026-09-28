@@ -1,0 +1,37 @@
+# Render the three deployment-specific values before installing. The credential
+# secret is independently provisioned in this namespace, not mounted in jobs.
+githubConfigUrl: https://github.com/REPLACE_ORG
+githubConfigSecret: trusted-runner-github-app
+runnerGroup: adp-deployment
+runnerScaleSetName: arc-runner-deployment
+minRunners: 0
+maxRunners: 2
+template:
+  spec:
+    serviceAccountName: trusted-deployment-runner
+    automountServiceAccountToken: false
+    nodeSelector:
+      adp.aws/trust: deployment
+    tolerations:
+      - key: adp.aws/trust
+        operator: Equal
+        value: deployment
+        effect: NoSchedule
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1001
+      runAsGroup: 1001
+      fsGroup: 1001
+      seccompProfile:
+        type: RuntimeDefault
+    containers:
+      - name: runner
+        image: REPLACE_WITH_REVIEWED_RUNNER_IMAGE_DIGEST
+        command: [/home/runner/run.sh]
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+        resources:
+          requests: {cpu: '2', memory: 4Gi}
+          limits: {cpu: '4', memory: 8Gi}

@@ -9,3 +9,9 @@ jwt/
 cryptography/
 cffi/
 pycparser/
+bin/
+
+# Vendored by the same script from webhook-ingress/lambda/common (issue #4233).
+# Single source of truth stays there; this copy exists only so the file lands
+# inside the directory Terraform zips.
+installation_resolver.py

@@ -17,7 +17,7 @@ on:
       cloudfront_url:
         description: 'CloudFront URL to test against (default: dev)'
         required: false
-        default: 'https://d1g6cal2ts4iis.cloudfront.net'
+        default: ''
 
 permissions:
   id-token: write
@@ -27,11 +27,15 @@ env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
   E2E_CHAT_ENABLED: '1'
-  E2E_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url || 'https://d1g6cal2ts4iis.cloudfront.net' }}
+  # Resolved from SSM at runtime by the "Resolve dashboard URL" step below, so it
+  # cannot drift from the deployed distribution. The workflow_dispatch input still
+  # overrides it for one-off runs against another environment.
+  E2E_CLOUDFRONT_URL: ''
 
 jobs:
   e2e-chat:
     name: Playwright Chat E2E
+    environment: adp-browser-checks-${{ github.event.inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     timeout-minutes: 30
 
@@ -39,11 +43,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
+      # This workflow previously hardcoded a distribution domain, and it had drifted
+      # from the deployed one — so it was either failing or exercising a different
+      # account. It must go through CloudFront rather than the internal ALB, because
+      # Playwright drives a browser against the SPA and S3 is only reachable via the
+      # distribution (OAC). That is also why runbook 6.1 cannot drop the NAT EIPs
+      # from the CloudFront allowlist: this workflow needs them.
+      - name: Establish trusted browser checks identity
+        uses: ./.github/actions/trusted-checks
         with:
-          role-to-assume: ${{ secrets.AWS_E2E_ROLE_ARN || secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: us-east-1
+
+      - name: Resolve dashboard URL
+        env:
+          INPUT_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url }}
+        run: bash .github/scripts/resolve-dashboard-url.sh
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7
@@ -53,11 +68,22 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pytest pytest-html playwright boto3
+          pip install pytest pytest-html pytest-timeout playwright boto3 requests
           playwright install chromium --with-deps
 
-      - name: Run E2E chat suite
+      - name: Resolve live Chat acceptance mode
         run: |
+          set -euo pipefail
+          MODE=$(python -m tests.e2e.chat.features)
+          [[ "$MODE" == on || "$MODE" == off ]]
+          echo "E2E_CHAT_EXPECTED_FLAG=$MODE" >> "$GITHUB_ENV"
+          echo "Chat acceptance mode: $MODE. Interaction coverage requires a flag-on deployment." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run E2E chat suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
           python -m pytest tests/e2e/chat/ \
             -v \
             --tb=short \

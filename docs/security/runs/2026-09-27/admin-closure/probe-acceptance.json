@@ -1,0 +1,35 @@
+{
+  "time": "2026-09-27T18:08:38.486187+00:00",
+  "checks": [
+    {
+      "path": "/health",
+      "invalid_token": false,
+      "status": 200
+    },
+    {
+      "path": "/ready",
+      "invalid_token": false,
+      "status": 200
+    },
+    {
+      "path": "/auth/me",
+      "invalid_token": false,
+      "status": 401
+    },
+    {
+      "path": "/auth/me",
+      "invalid_token": true,
+      "status": 401
+    },
+    {
+      "path": "/workspaces",
+      "invalid_token": false,
+      "status": 401
+    },
+    {
+      "path": "/workspaces",
+      "invalid_token": true,
+      "status": 401
+    }
+  ]
+}

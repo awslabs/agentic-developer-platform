@@ -1,0 +1,21 @@
+{
+  "$fixture": {
+    "description": "A heartbeat frame claiming to count as progress. A keepalive proves the connection is open, not that work is advancing; treating it as progress would mask a stalled task for as long as the socket survived.",
+    "schema": "events.schema.json#/$defs/sse_heartbeat_frame",
+    "expect": "invalid",
+    "reason": "counts_as_progress is fixed false; a keepalive is not evidence of work",
+    "violates": [
+      "events.schema.json#/$defs/sse_heartbeat_frame",
+      "identity-and-lifecycle.json#/lifecycle/invariants/LC-04"
+    ],
+    "owner": "T6",
+    "criteria": [
+      "T0-AC03",
+      "V0-04",
+      "V3-06"
+    ]
+  },
+  "frame": "heartbeat",
+  "timestamp": "2026-09-24T14:45:35Z",
+  "counts_as_progress": true
+}

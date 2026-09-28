@@ -89,23 +89,23 @@ kubectl exec -n adp-gateway deploy/bedrockgateway -- \
 
 ## Section 3 — When auto-migration triggers automatically
 
-`gateway-deploy.yml` calls `run-gateway-migrations.yml` automatically, but only
-under a specific condition:
+`gateway-deploy.yml` calls `run-gateway-migrations.yml` **after** the backend deploy
+job. Its `run-migrations` condition currently runs when the changes job selected
+a backend deployment **or** the workflow was manually dispatched, provided the
+backend job succeeded or was skipped. A migration-only push selects a backend
+rebuild and deployment because migration files are baked into the release image.
+A frontend-only push does not select a backend migration run.
 
-**Auto-trigger fires when**: a `push` to `main` changes at least one file matching
-`modules/gateway/alembic/versions/*.py`.
+The called workflow runs `scripts/pricing-rollout.py migrate`, which invokes
+`alembic upgrade head` and performs release/pricing verification. Manual dispatch
+does not exempt a deployment from migrations. Check the actual jobs and
+`alembic current` after a release; a successful backend rollout alone does not
+prove its migration job succeeded.
 
-**Auto-trigger does NOT fire when**:
-
-| Scenario | Why migrations don't auto-run |
-|---|---|
-| `workflow_dispatch` of `gateway-deploy.yml` | The `changes` job explicitly sets `migrations=false` for manual deploys. |
-| A PR adds a migration file without touching `modules/gateway/src/**` | The `gateway-deploy.yml` `push` trigger only fires when `src/**`, `Dockerfile`, `k8s/**`, `frontend/**`, or `alembic/versions/**` changes. A migration-only PR that doesn't touch `src/` still triggers the push filter (because `alembic/versions/**` is in the path list), **but** if `gateway-deploy.yml` itself was dispatched manually for that merge it would set `migrations=false`. |
-| A migration PR is merged via squash and the squash commit doesn't touch `alembic/versions/` | Unlikely, but the filter is path-based, not PR-label-based. |
-
-**Bottom line**: after any `workflow_dispatch` deploy, and after any merge where
-you're unsure whether the push filter fired, manually verify with `alembic current`
-(Section 1) and trigger `run-gateway-migrations.yml` if needed (Section 2).
+This ordering matters for validation-only revisions such as 048: the new gateway
+image may already be serving traffic when a migration refuses to advance. A
+checkpoint failure is an upgrade failure, not an application rollback or runtime
+access barrier. Perform the pre-deploy audit in Section 6 first.
 
 ---
 
@@ -271,7 +271,86 @@ kubectl exec -n adp-gateway deploy/bedrockgateway -- \
 
 ---
 
-## Section 6 — Cross-references
+## Section 6 — Team integrity checkpoint (048, issue #4924)
+
+Revision `048_team_integrity_gate`, after `047_claude_pricing_v2`, refuses to
+advance when a membership references a missing user/team, its org disagrees with
+its user's or team's org, or a nonempty `users.team_id` names a missing/foreign
+team. It checks ownership only: a valid legacy pointer without a membership row
+is allowed, and `team_id = ''` remains the intentional no-team sentinel. It does
+not impose a new primary-team policy.
+
+Applied revision 040 remains unchanged. On an older upgrade path, 040 can still
+copy a cross-org legacy pointer; 048 rejects that resulting state. It also rejects
+invalid nonempty pointers that 040 skipped, so those cannot be mistaken for a
+clean upgrade. This change provides **detection and upgrade refusal**, not
+automatic repair, a database constraint, or a runtime authorization barrier.
+Queries neither update/delete rows nor create missing memberships.
+
+The [September 13 read-only audit](https://github.com/aws-e/adp/issues/4924#issuecomment-5652135838)
+found zero ownership/pointer mismatches in adp-dev-embark1 at revision 047 across
+three transactions. Its successful source reads contained 25 users, 32 teams,
+27 orgs and 25 memberships. No data repair was justified there; this is a
+point-in-time observation for that environment only.
+
+### Before deploying this revision
+
+Run the candidate checkout's script from an authorized environment that can
+reach the intended database. It uses the gateway's existing `BG_DATABASE_URL` or
+`BG_RDS_*` configuration and IAM/TLS support; do not print credentials. Confirm
+the AWS account with the active profile before accessing an AWS environment.
+Use the candidate checkout before rollout: the gateway image does not package
+the `scripts/` directory. This is operator checkout tooling.
+
+```bash
+aws sts get-caller-identity
+cd modules/gateway
+PYTHONPATH=. python scripts/audit_team_integrity.py
+```
+
+All counts and optional details use a PostgreSQL `REPEATABLE READ`, `READ ONLY`
+transaction, and the script verifies read-only mode. Counts are the default;
+`--include-ids --detail-limit 100` adds bounded internal identifiers per finding
+class for placement review. It never includes emails or credentials. Store that
+output as restricted operator evidence rather than posting user identifiers in
+a public issue.
+
+| Exit / status | Meaning |
+|---|---|
+| 0 / `CLEAN` | Every checked ownership predicate passed in this snapshot; inspect source counts. An empty database is valid but does not prove live-user coverage. |
+| 3 / `SOURCE_POINTERS_CLEAN` | An explicit `--source-pointers-only` diagnostic passed. `memberships_checked` is false. Full validation remains incomplete; this never returns exit 0. |
+| 1 / `INCONSISTENT` | At least one membership or pointer requires placement review. Stop rollout and investigate. |
+| 2 / `ERROR` | Configuration, connection, schema or query failed. No consistency conclusion is available. Error output is redacted to the exception class. |
+
+The default audit returns `ERROR` if any required table is absent, including
+`team_memberships`: missing schema is never inferred to mean a pre-040 database.
+For a verified pre-040 database, `--source-pointers-only` can diagnose its legacy
+pointers, but always leaves full validation incomplete (exit 3 if pointers are
+clean). On an uninitialized database without source tables, verify that it is
+the intended fresh database before following the normal initial-deployment
+procedure. A clean fresh migration chain is accepted by 048.
+
+### If the audit or upgrade refuses
+
+Preserve before-images of affected rows and collect their canonical/org-local
+identity linkage, all valid memberships, valid primary, selected workspace and
+identity-pointer projections. An operator must choose the intended placement;
+do not infer a replacement from the oldest team, move membership org IDs, remove
+history, or clear a pointer merely to make the checkpoint pass. Any approved
+repair needs its own reviewed transactional procedure and separate review of
+Cognito/DynamoDB consequences. Neither this script nor 048 has an apply mode.
+
+Do not edit 040, stamp past 048, or treat a failed query as zero mismatches.
+Before retrying, rerun the audit and verify the actual database revision. The
+048 checkpoint itself performs no data writes, so dirty rows are preserved for
+review. PostgreSQL can roll back the current migration transaction, but this
+does not undo earlier committed transactions or explicit autocommit operations
+elsewhere in a long upgrade chain, and does not roll back the deployed image.
+Downgrading 048 only removes its version marker; it changes no rows or schema.
+
+---
+
+## Section 7 — Cross-references
 
 | Resource | Link |
 |---|---|

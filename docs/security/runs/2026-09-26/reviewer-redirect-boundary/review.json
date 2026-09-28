@@ -1,0 +1,97 @@
+{
+  "issue": 6119,
+  "review_scope": "codex-reviewer GitHub client redirect destination validation before transit",
+  "original_selector_manifest": {
+    "count": 13139,
+    "source_revision": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+    "operator_run": "s21-final-20260925-b1d0894c17",
+    "sha256": "5ab9a96159d74181e1f424777bfe820334e4350f692a4c969884b7827b5d86dc",
+    "modified": false
+  },
+  "original_occurrences": [
+    {
+      "artifact": "/workspaces/projects/s21-operator-scans/b1d0894c17/results/semgrep/semgrep-results.sarif",
+      "run_index": 0,
+      "result_index": 3081,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "files": [
+        "modules/agent-factory/codex-reviewer/src/github.ts"
+      ],
+      "suppressed": false,
+      "image": null,
+      "reported_issue_severity": null,
+      "sarif_level": null,
+      "rule_security_severity": "CRITICAL",
+      "selector": "semgrep|semgrep-results.sarif|run=0|ri=3081",
+      "disposition": "pending_scoped_source_review",
+      "residual_owner_issues": [
+        5599
+      ],
+      "review_scope": "semgrep:modules/agent-factory/codex-reviewer/src/github.ts",
+      "original_disposition_candidates": []
+    }
+  ],
+  "reviewed_occurrences": 1,
+  "disposition": "source-fixed-runtime-open",
+  "residual_owner": 6119,
+  "source_fix_commit": "27c4693ad5c6378a29fc3bb9ea6c58661ddcdb89",
+  "control": "Every fetch is manual-redirect, each next destination must have exact https://api.github.com origin with no URL credentials before transit; at most three redirects. Read-only same-origin renames supported. Mutations follow only method-preserving307/308;301/302/303 refuse before replay. Final-origin defense retained.",
+  "rule_sha256": "b490c0863d8ac0ba03710952abfb75d65f6e38cca48913b380e90464f76d0fbc",
+  "scans": {
+    "before": {
+      "source_commit": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+      "source_file": "modules/agent-factory/codex-reviewer/src/github.ts",
+      "source_sha256": "88e8602c462b69fab70cea137170cb3ddd889cd40ebb83f774afc3a935b57378",
+      "semgrep_version": "1.80.0",
+      "findings_count": 1,
+      "error_count": 0,
+      "result_artifact_sha256": "9a4dde80c326092e03db7afe3a17d2ef8dfd6bf2df2039c3efbd29a0247adb06",
+      "local_result_artifact": "/tmp/security6119-reviewer-scan-before.json",
+      "finding_lines": [
+        143
+      ]
+    },
+    "after": {
+      "source_commit": "27c4693ad5c6378a29fc3bb9ea6c58661ddcdb89",
+      "source_file": "modules/agent-factory/codex-reviewer/src/github.ts",
+      "source_sha256": "ab28b10ad9c2b864a6e8ff453fcfbc724d6e432c584cf7c79803a627b5d7e47e",
+      "semgrep_version": "1.80.0",
+      "findings_count": 1,
+      "error_count": 0,
+      "result_artifact_sha256": "28f172f5d4404f624ecb02d207954f1a512984d6ef1e6c18ba40a3d595153ba0",
+      "local_result_artifact": "/tmp/security6119-reviewer-scan-after.json",
+      "finding_lines": [
+        158
+      ]
+    }
+  },
+  "validation": {
+    "node_version": "v24.21.0",
+    "candidate_component_tests": 113,
+    "new_regression_tests": 22,
+    "baseline_new_tests_failed": 13,
+    "baseline_new_tests_passed": 9,
+    "native_fetch_statuses": [
+      301,
+      302,
+      303,
+      307,
+      308
+    ],
+    "baseline_forbidden_target_requests": 5,
+    "candidate_forbidden_target_requests": 0,
+    "synthetic_only": true,
+    "cli_store_isolation": "run-isolated-cli-test.py for all host CLI tests",
+    "scope": "Native fetch uses two temporary loopback servers and synthetic token. Additional tests cover same-origin rename, origins/credentials/ports, loops, mutation method/body and outages. No real GitHub/provider call."
+  },
+  "producer_consumer_review": {
+    "constructors": [
+      "src/reviewer.ts:runIssueReview",
+      "src/reviewer.ts:runPullRequestReview",
+      "src/engine-review.ts"
+    ],
+    "single_request_boundary": "All GitHubClient methods use private request; headers/token provider and reviewed SHA payloads remain unchanged.",
+    "runtime_holds": "No image publication, deployment, workload writes, gateway/tick changes or A11 access."
+  },
+  "scope_complete": false
+}

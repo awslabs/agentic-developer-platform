@@ -1,0 +1,130 @@
+{
+  "baseline_sha256": "323a3a6cd18678503f1f798f193e412dbf8d6305dcd0c24512afb0c7971d9d34",
+  "baseline_raw_occurrences": 4082,
+  "reviewed_unaffected_occurrences": 10,
+  "remaining_raw_occurrences": 4072,
+  "decisions": [
+    {
+      "occurrence_id": "73f03cdaa660a95e:18",
+      "target_key": "73f03cdaa660a95e",
+      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-context-mcp@sha256:220e7824b372fba6f35cf9c5e2c98ca6ac890e9dd8ceb1be49805caafaf1d33a",
+      "config_digest": "sha256:1e38960b870bd22edc3f98c8f7bb65ae4c91382035569456c8d2c80f0c3a5521",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "aa437ee4ad3d76ba:18",
+      "target_key": "aa437ee4ad3d76ba",
+      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:0b1be4edd944711f3ce8ff3565c3bcb39a2d0d7a7649154a14dd405217697d69",
+      "config_digest": "sha256:9235f799a43b9537e2c81e964e877b956b2f36cdd83ffbd574b18c10c879daf7",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "cd7423287ad90567:18",
+      "target_key": "cd7423287ad90567",
+      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:c27a0e6d590dc0f38fe6215a4826c76cb7c6b438d27cb5307b624df42036d52d",
+      "config_digest": "sha256:f5d6780de1bdfd5af7f48e8983930ef5819f5582c2613e7a14313ead7e899667",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "038ec204d94a5ce1:19",
+      "target_key": "038ec204d94a5ce1",
+      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-api@sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+      "config_digest": "sha256:a0cdc1cf198b247ff26323949fbc3214a6901c76421d6b93429c19c88cfaa5f7",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "c0f605eccb1218bd:131",
+      "target_key": "c0f605eccb1218bd",
+      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b042dba6023de433c4bd46702db792f4bb51fe5e7652288c1af407c72e9c9aa7",
+      "config_digest": "sha256:9311e167afd67bdaf137f4f1aa20776886afab917aae8fca003bc5865c4ad358",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "014097110e731b80:31",
+      "target_key": "014097110e731b80",
+      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-litellm-proxy@sha256:83e1ae341126eb83354080b58a70b87323e6bc012dad701d8b1910a3e50d05b9",
+      "config_digest": "sha256:14da4517dacd4711343376ccc0825d11a2bbee339ac31aa9cbd752f937b98691",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "e057b7364a8a1c6b:71",
+      "target_key": "e057b7364a8a1c6b",
+      "platform_reference": "ghcr.io/asyncfuncai/deepwiki-open@sha256:1f24e9aba56305f3104bf9e7f19d12ed93817db77a025d7f38d7829a9ecfaf4c",
+      "config_digest": "sha256:b4721ac7746d29f14d06b6ea477cc661af2d6fbe2840ecaadfece28458afd442",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "7ee81298ae935c4e:236",
+      "target_key": "7ee81298ae935c4e",
+      "platform_reference": "docker.io/berkeleyskypilot/skypilot@sha256:ab4e67e79048c32e70c2803f548ccbefad2e980a4a7f9dd8d96001f81b04b318",
+      "config_digest": "sha256:528a1f792c49a53499b8d5a090d245c95d485967a25b2752f6728d5528ae62a1",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "684753823ff5c2e2:51",
+      "target_key": "684753823ff5c2e2",
+      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:15bfd65ad2313a0674e1fceea2d80971697003b36edfddd1f9f955693c6fa788",
+      "config_digest": "sha256:ee15b79112928aa833c41eabcc8b6703348b4f44bb712ba19a3494631def46ac",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    },
+    {
+      "occurrence_id": "e6779baaf5970629:244",
+      "target_key": "e6779baaf5970629",
+      "platform_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:6e3800817dfe1ef8c4e6c97fee9f3b704a7888d8ad4fc2c4f282ac0e019795a2",
+      "config_digest": "sha256:95b3484960d78c3de3ee996c6804cf8ff0390a8838a2524086394108d1baf69f",
+      "canonical_id": "CVE-2026-85091",
+      "package": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "disposition": "vendor-unaffected",
+      "evidence_pr": 6532,
+      "evidence_binary_sha256": "85590dd58edf5445e18bc7193e5ebc01ac5841f1ae187e97705a662e90c6421e"
+    }
+  ],
+  "live_deployments_verified": 0,
+  "note": "Immutable baseline preserved. These ten exact Debian findings are unaffected. Unique advisory totals remain unchanged because this CVE remains on other images."
+}

@@ -1,0 +1,14 @@
+{
+  "deepwiki": {
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:6bfe0973dc86a131476abf001623ff35cfd0db7b146aba2062e055285a31da99",
+    "user": "appuser"
+  },
+  "worker": {
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:e92d227572ef97a0cff479f836fddffac52a4ad1af19412ee3e8f72993a3957f",
+    "user": "agent"
+  },
+  "skypilot": {
+    "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:ec5e1eff88cc452fdad0cd9b680699775e6ca2cbe9b53daa0b174e97d26a06b7",
+    "user": "1000:1000"
+  }
+}

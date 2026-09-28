@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 194, in _run_module_as_main
+  File "<frozen runpy>", line 151, in _get_module_details
+  File "<frozen runpy>", line 114, in _get_module_details
+  File "/fixture/python/pytest/__init__.py", line 8, in <module>
+    from _pytest._code import ExceptionInfo
+  File "/fixture/python/_pytest/_code/__init__.py", line 5, in <module>
+    from .code import Code
+  File "/fixture/python/_pytest/_code/code.py", line 43, in <module>
+    from _pytest._io import TerminalWriter
+  File "/fixture/python/_pytest/_io/__init__.py", line 3, in <module>
+    from .terminalwriter import get_terminal_width
+  File "/fixture/python/_pytest/_io/terminalwriter.py", line 19, in <module>
+    from ..compat import assert_never
+  File "/fixture/python/_pytest/compat.py", line 19, in <module>
+    import py
+ModuleNotFoundError: No module named 'py'
+command terminated with exit code 1

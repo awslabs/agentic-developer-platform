@@ -10,6 +10,7 @@ See: docs/design-notes/1346-zoekt-direct-replacement.md for full design.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, Protocol
 
@@ -68,7 +69,9 @@ class ZoektSearchBackend:
     http://zoekt.agent-context.svc.cluster.local:6070).
     """
 
-    def __init__(self, base_url: str, *, timeout: float = DEFAULT_TIMEOUT) -> None:
+    def __init__(
+        self, base_url: str, *, timeout: float = DEFAULT_TIMEOUT, api_key: str | None = None
+    ) -> None:
         """Initialize with the zoekt-webserver base URL.
 
         Parameters
@@ -80,6 +83,7 @@ class ZoektSearchBackend:
         """
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._api_key = os.environ.get("ZOEKT_API_KEY", "") if api_key is None else api_key
 
     async def search(
         self,
@@ -94,6 +98,9 @@ class ZoektSearchBackend:
         Returns empty list on timeout/error (fail-safe: search unavailability
         should not crash the Door — it degrades to no exact-search results).
         """
+        if len(self._api_key) < 32 or self._api_key.upper().startswith("PLACEHOLDER"):
+            log.error("Zoekt authentication is not configured")
+            return []
         # Build the Zoekt query string with optional repo filter
         zoekt_query = query
         if repo_ids:
@@ -111,6 +118,7 @@ class ZoektSearchBackend:
                     resp = await client.post(
                         f"{self._base_url}/api/search",
                         json=payload,
+                        headers={"Authorization": f"Bearer {self._api_key}"},
                     )
                     resp.raise_for_status()
                     data = resp.json()
@@ -132,7 +140,7 @@ class ZoektSearchBackend:
         """Check if zoekt-webserver is reachable and responding."""
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{self._base_url}/")
+                resp = await client.get(f"{self._base_url}/healthz")
                 return resp.status_code == 200
         except Exception:
             return False

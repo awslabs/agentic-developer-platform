@@ -1,0 +1,56 @@
+[
+  {
+    "bundle": "ALAS2-2026-3227",
+    "package": "python",
+    "fixed_al2_version": "2.7.18-1.amzn2.0.18",
+    "source_url": "https://alas.aws.amazon.com/AL2/ALAS2-2026-3227.html",
+    "source_sha256": "0ab5516a910a1b87a4f324ab72251a04294506a798cb802e153e73c6bc18f119",
+    "members": [
+      {
+        "id": "CVE-2025-13462",
+        "severity": "Low",
+        "vendor_severity": "Low",
+        "cvss_v3_score": 2.5
+      },
+      {
+        "id": "CVE-2026-3479",
+        "severity": "Low",
+        "vendor_severity": "Low",
+        "cvss_v3_score": 2.5
+      },
+      {
+        "id": "CVE-2026-4519",
+        "severity": "High",
+        "vendor_severity": "Important",
+        "cvss_v3_score": 7.1
+      }
+    ]
+  },
+  {
+    "bundle": "ALAS2-2026-3800",
+    "package": "expat",
+    "fixed_al2_version": "2.1.0-15.amzn2.0.8",
+    "source_url": "https://alas.aws.amazon.com/AL2/ALAS2-2026-3800.html",
+    "source_sha256": "1b609c86c3af634786d7d4ab82d79e6e7c28694261e88ae20690ac2ffd5fb05c",
+    "members": [
+      {
+        "id": "CVE-2026-56403",
+        "severity": "High",
+        "vendor_severity": "Important",
+        "cvss_v3_score": 7.7
+      },
+      {
+        "id": "CVE-2026-56406",
+        "severity": "High",
+        "vendor_severity": "Important",
+        "cvss_v3_score": 7.7
+      },
+      {
+        "id": "CVE-2026-56407",
+        "severity": "High",
+        "vendor_severity": "Important",
+        "cvss_v3_score": 7.0
+      }
+    ]
+  }
+]

@@ -1,0 +1,81 @@
+{
+  "$trace": {
+    "trace_id": "cancellation",
+    "description": "Cancellation, including the branch that matters most: the one where the child's exit cannot be confirmed. Both endings are legitimate contract outcomes, and an implementation that only produces the clean one has not implemented cancellation -- it has implemented the happy path and will misreport the other.",
+    "criteria": [
+      "T0-AC02",
+      "T0-AC03",
+      "T7-AC03",
+      "T7-AC04",
+      "V0-04",
+      "V3-08"
+    ],
+    "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "actor": "client",
+      "action": "POST /v1/tasks/{task_id}/cancel",
+      "owner": "T7",
+      "fixture": "fixtures/valid/cancel-request.json",
+      "expected_status": 202,
+      "receipt_fixture": "fixtures/valid/command-receipt-cancel.json",
+      "task_status_after": "cancel_requested",
+      "notes": "202 records intent and closes admission. confirmed_exit is fixed false on this response: the platform has accepted the request, not observed a stop."
+    },
+    {
+      "step": 2,
+      "actor": "client",
+      "action": "POST /v1/tasks/{task_id}/cancel (retry, same command_id)",
+      "owner": "T7",
+      "expected_status": 202,
+      "task_status_after": "cancel_requested",
+      "notes": "Same intent, same command ID, no second cancellation and no new grace window. This is what makes repeated cancellation safe for a client that lost the first response."
+    },
+    {
+      "step": 3,
+      "actor": "host",
+      "action": "poll control, observe durable cancel",
+      "owner": "T7",
+      "fixture": "fixtures/valid/control-response.json",
+      "notes": "Cancellation reaches the host through durable state, not an in-memory signal, so it survives a host restart mid-cancellation. The control response conveys status and no authority."
+    },
+    {
+      "step": 4,
+      "actor": "host",
+      "action": "send cancel frame with a bounded grace period",
+      "owner": "T7",
+      "fixture": "fixtures/valid/process-cancel-frame.json",
+      "notes": "intentional is fixed true, tying the stop to the recorded command rather than to a crash."
+    },
+    {
+      "branch": "A",
+      "step": 5,
+      "actor": "host",
+      "action": "observe child exit within the grace period",
+      "owner": "T7",
+      "fixture": "fixtures/valid/result-cancelled-confirmed.json",
+      "task_status_after": "cancelled",
+      "notes": "Only an observed exit permits recovery_required false."
+    },
+    {
+      "branch": "B",
+      "step": 5,
+      "actor": "host",
+      "action": "grace period expires with no confirmed exit",
+      "owner": "T7",
+      "fixture": "fixtures/valid/result-cancelled-stop-unconfirmed.json",
+      "task_status_after": "cancelled",
+      "notes": "The distinct code and recovery_required true keep the uncertainty visible. Claiming a clean cancellation here would leave a possibly-live process working on a task the platform has closed, with nothing in the record asking anyone to check."
+    },
+    {
+      "step": 6,
+      "actor": "client",
+      "action": "GET /v1/tasks/{task_id}",
+      "owner": "T2",
+      "expected_invariant": "LC-01",
+      "notes": "A cancelled task never reports a completed result, in either branch. fixtures/invalid/task-snapshot-cancelled-claiming-completion.json is the rejection that pins this."
+    }
+  ]
+}

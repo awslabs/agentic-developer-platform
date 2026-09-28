@@ -15,15 +15,19 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agentauth.broker_identity import user_credential_audit, verify_selected_user_credential, worker_tenant
+from src.auth.exceptions import STSClientError
+from src.auth.sts_client import STSClient
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding import resolve_credential_binding
-from src.internal.sts_assume_service import STSAssumeError, assume_role
+from src.internal.sts_assume_service import AssumeRoleResult, STSAssumeError, assume_role
 from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
@@ -59,6 +63,7 @@ class AssumeRoleRequestBody(BaseModel):
     service: str = "aws"
     label: str | None = None
     purpose: str | None = None
+    permission_tier: Literal["deploy-bootstrap"] | None = None
     invocation_id: str | None = None
 
 
@@ -155,6 +160,7 @@ async def _write_audit(
 )
 async def credential_assume_role(
     body: AssumeRoleRequestBody,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     sm: SecretsManagerHelper = Depends(get_secrets_manager),
     _: None = Depends(verify_internal_or_irsa),
@@ -166,6 +172,7 @@ async def credential_assume_role(
     # Resolve the effective user from the webhook-events registry.
     binding = await asyncio.to_thread(
         resolve_credential_binding,
+        verified_binding=getattr(request.state, "agent_credential_binding", None),
         invocation_id=body.invocation_id,
         body_user_id=body.user_id,
         settings=settings,
@@ -173,6 +180,8 @@ async def credential_assume_role(
     effective_user_id = binding.resolved_user_id
 
     user = await _get_user(effective_user_id, db)
+    if worker_tenant(request) is not None and user.org_id != worker_tenant(request):
+        raise HTTPException(404, "not found")
     # Issue #700: use canonical user's id and org_id for credential resolution.
     cred = await _resolve_credential(
         db=db,
@@ -182,6 +191,7 @@ async def credential_assume_role(
         user_id=user.id,
         team_id=user.team_id,
     )
+    await verify_selected_user_credential(request, cred)
 
     # Validate credential type.
     if cred.credential_type != "aws_role":
@@ -193,10 +203,22 @@ async def credential_assume_role(
             },
         )
 
+    stored_tier = (cred.scopes or {}).get("permission_tier")
+    if body.permission_tier != stored_tier and (body.permission_tier == "deploy-bootstrap" or stored_tier == "deploy-bootstrap"):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "permission_tier_mismatch",
+                "message": "The selected AWS credential is not authorized for the requested operation tier.",
+            },
+        )
+
     # Fetch and parse the aws_role JSON from Secrets Manager.
     secret_value = await asyncio.to_thread(sm.get_secret, cred.secret_arn)
     try:
         role_config = json.loads(secret_value)
+        if not isinstance(role_config, dict):
+            raise TypeError("aws_role secret must be an object")
     except (json.JSONDecodeError, TypeError) as exc:
         logger.error("Failed to parse aws_role secret for credential %s", cred.id)
         raise HTTPException(
@@ -222,21 +244,53 @@ async def credential_assume_role(
     default_region = role_config.get("default_region", settings.aws_region)
     label_for_profile = body.label or cred.label or "default"
 
+    await verify_selected_user_credential(request, cred, revalidate=True)
+
     # Perform the STS AssumeRole call (blocking — run in thread).
     # Issue #3175 §Q6: session tags use authorized_user_id (from registry), not body.
     try:
-        result = await asyncio.to_thread(
-            assume_role,
-            role_arn=role_arn,
-            external_id=external_id,
-            session_duration_seconds=session_duration,
-            default_region=default_region,
-            user_id=effective_user_id,
-            agent_id=body.agent_id,
-            task_id=body.task_id,
-            label=label_for_profile,
-            aws_region=settings.aws_region,
-        )
+        # Quick-Create workspace records have server-owned account metadata.
+        # Imported roles explicitly allow optional ExternalId (#4742); preserve
+        # that path, as well as generic aws_role records without account metadata.
+        scopes = cred.scopes or {}
+        if "account_id" in scopes and scopes.get("source") != "imported_role":
+            try:
+                if scopes["account_id"] != role_config.get("account_id"):
+                    raise STSClientError("Stored account metadata disagrees", details={"error_type": "invalid_account_role"})
+                credentials = await STSClient().assume_workspace_role(
+                    role_config,
+                    f"adp-{body.agent_id}-{body.task_id[:8]}"[:64],
+                    session_duration,
+                    user_id=effective_user_id,
+                    agent_id=body.agent_id,
+                    task_id=body.task_id,
+                )
+                expiration = credentials["Expiration"]
+                result = AssumeRoleResult(
+                    access_key_id=credentials["AccessKeyId"],
+                    secret_access_key=credentials["SecretAccessKey"],
+                    session_token=credentials["SessionToken"],
+                    expiration=expiration.isoformat() if hasattr(expiration, "isoformat") else str(expiration),
+                    region=default_region,
+                    profile_name=f"adp-aws-{label_for_profile}",
+                )
+            except STSClientError as exc:
+                # AWS/SDK messages can echo stored metadata. Only a bounded code
+                # goes to the existing failure audit and user-facing response.
+                raise STSAssumeError("Workspace role broker refused the request", code="workspace_assume_failed") from exc
+        else:
+            result = await asyncio.to_thread(
+                assume_role,
+                role_arn=role_arn,
+                external_id=external_id,
+                session_duration_seconds=session_duration,
+                default_region=default_region,
+                user_id=effective_user_id,
+                agent_id=body.agent_id,
+                task_id=body.task_id,
+                label=label_for_profile,
+                aws_region=settings.aws_region,
+            )
     except STSAssumeError as exc:
         # Write audit for failed attempt — do NOT include role_arn in user-facing error.
         await _write_audit(
@@ -253,6 +307,7 @@ async def credential_assume_role(
                 "service": body.service,
                 "label": body.label,
                 "credential_id": cred.id,
+                **user_credential_audit(request),
                 "purpose": body.purpose,
                 "invocation_id": body.invocation_id,
                 "binding_from_registry": binding.from_registry,
@@ -270,6 +325,8 @@ async def credential_assume_role(
                 "provenance_id": provenance_id,
             },
         ) from exc
+
+    await verify_selected_user_credential(request, cred, revalidate=True)
 
     # Update last_used_at.
     stmt = update(UserCredential).where(UserCredential.id == cred.id).values(last_used_at=datetime.now(UTC))
@@ -290,6 +347,7 @@ async def credential_assume_role(
             "service": body.service,
             "label": body.label,
             "credential_id": cred.id,
+            **user_credential_audit(request),
             "purpose": body.purpose,
             "invocation_id": body.invocation_id,
             "binding_from_registry": binding.from_registry,
@@ -308,6 +366,7 @@ async def credential_assume_role(
         body.label,
     )
 
+    await verify_selected_user_credential(request, cred, revalidate=True)
     return AssumeRoleResponse(
         profile_name=result.profile_name,
         access_key_id=result.access_key_id,

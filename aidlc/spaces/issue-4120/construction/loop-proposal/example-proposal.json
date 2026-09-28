@@ -1,0 +1,64 @@
+{
+  "flow_slug": "aidlc-delivery-loop",
+  "title": "AIDLC delivery loop: engine-enforced trust",
+  "org_id": "org-example",
+  "spec_revision": "issue-4120-r1",
+  "intent_ref": "4120",
+  "nodes": [
+    {
+      "address": "aidlc-delivery-loop/epic-4191/wave-1/store",
+      "kind": "story",
+      "title": "Orchestration graph store: five tables, append-only decisions",
+      "issue_ref": "4196"
+    },
+    {
+      "address": "aidlc-delivery-loop/epic-4191/wave-1/vocabulary",
+      "kind": "story",
+      "title": "Node-state vocabulary and legal transitions, declared once",
+      "issue_ref": "4195"
+    },
+    {
+      "address": "aidlc-delivery-loop/epic-4191/wave-1/eval",
+      "kind": "eval",
+      "title": "Wave 1 evaluation: store and vocabulary green"
+    },
+    {
+      "address": "aidlc-delivery-loop/epic-4191/wave-2/proposal",
+      "kind": "story",
+      "title": "Loop proposal as schema-as-code: advisory CLI, authoritative compile",
+      "issue_ref": "4199"
+    },
+    {
+      "address": "aidlc-delivery-loop/epic-4191/wave-2/eval",
+      "kind": "eval",
+      "title": "Wave 2 evaluation: proposal validates and compiles atomically"
+    },
+    {
+      "address": "aidlc-delivery-loop/epic-4191/wave-2/gate",
+      "kind": "gate",
+      "title": "Human gate: accept the compiled plan"
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "aidlc-delivery-loop/epic-4191/wave-1/store",
+      "to_address": "aidlc-delivery-loop/epic-4191/wave-1/eval"
+    },
+    {
+      "from_address": "aidlc-delivery-loop/epic-4191/wave-1/vocabulary",
+      "to_address": "aidlc-delivery-loop/epic-4191/wave-1/eval"
+    },
+    {
+      "from_address": "aidlc-delivery-loop/epic-4191/wave-1/eval",
+      "to_address": "aidlc-delivery-loop/epic-4191/wave-2/proposal"
+    },
+    {
+      "from_address": "aidlc-delivery-loop/epic-4191/wave-2/proposal",
+      "to_address": "aidlc-delivery-loop/epic-4191/wave-2/eval"
+    },
+    {
+      "from_address": "aidlc-delivery-loop/epic-4191/wave-2/eval",
+      "to_address": "aidlc-delivery-loop/epic-4191/wave-2/gate"
+    }
+  ]
+}

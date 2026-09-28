@@ -1,0 +1,162 @@
+{
+  "issue": 6125,
+  "source_commit": "2519c9079e7fa56718771092731f86ece2281a4f",
+  "scope": "Replace both bundled runner npm installations with npm 11.20.0 while retaining Node executables",
+  "upstream_packages": [
+    {
+      "version": "11.20.0",
+      "url": "https://registry.npmjs.org/npm/-/npm-11.20.0.tgz",
+      "integrity": "sha512-dF3EDFwbYN+N5RUip+ZYDe0NeURK5BgqKOcvT1iNtUYhTMTl0FwWhBuXrS7KtXyduqyTMS5aaQaregnHDAxNgw==",
+      "sha256": "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483",
+      "bytes": 3004748,
+      "engines": {
+        "node": "^20.17.0 || >=22.9.0"
+      },
+      "tar_requirement": "^7.5.22"
+    }
+  ],
+  "security_regression": {
+    "advisory": "GHSA-23hp-3jrh-7fpw",
+    "cve": "CVE-2026-59873",
+    "vendor_fix_commit": "2812e9338665659b183aa7226518c307044957d3",
+    "baseline": "Node20npm10.8.2/tar6.2.1 andNode24npm11.17.0/tar7.5.16 both fail test by accepting bounded high-expansion archive",
+    "candidate": "Both installations use npm 11.20.0 with tar 7.5.22; Docker build gates reject the bounded archive using the default ratio limit and accept the valid control.",
+    "bound": "8MiB synthetic payload; disposable64MiBtmpfs; networknone; no hostconfigmounts",
+    "build_gate": "platform/arc-runner/security/check-npm-tar.cjs executes under both bundled Node binaries during Docker build"
+  },
+  "runtime_acceptance": {
+    "unchanged_node20": "20.20.2",
+    "unchanged_node24": "24.19.0",
+    "tests": "Offline pack/install/exec/ci and module loading pass under both actual bundledNode runtimes in exact newimage, as runner user",
+    "stores": "Distinct temporary user/global npmconfig,HOME,cache; executable task-onlytmpfs for synthetic npmexec command",
+    "setup_failures": "Initial test configuration usedsame/dev/null for bothconfigs and then defaultnoexectmpfs; corrected isolatedfixtures, no implementationfailure hidden"
+  },
+  "arc": {
+    "config_id": "sha256:79d36e6b4070d030e42c4e7965013e9519feecac87a549274ce5c87f6f95b443",
+    "config_verified": "SHA256 of exported runtime config bytes matches scanner imageID",
+    "baseline_config_id": "sha256:cd20b2667876403293f3cbda4798a707fe74ee18a9fa430db0bfb45982955b04",
+    "baseline_full_matches": 539,
+    "candidate_full_matches": 492,
+    "baseline_bundled_npm_matches": 47,
+    "candidate_bundled_npm_matches": 0,
+    "removed_severity": {
+      "Critical": 2,
+      "High": 26,
+      "Medium": 14,
+      "Low": 5
+    },
+    "full_matches": 492,
+    "remaining_severity": {
+      "Medium": 355,
+      "High": 57,
+      "Negligible": 10,
+      "Low": 69,
+      "Unknown": 1
+    },
+    "build": "Full Dockerfile build and bundled tool checks passed as runner"
+  },
+  "limitations": [
+    "No image publication or workload rollout",
+    "Each full image retains 492 raw findings; zero Critical is not a family clearance",
+    "Original 2330 frozen family occurrences and 45-package denominator unchanged",
+    "Fresh exact-image comparison; original scanner suppression and SBOM identity limitations retained"
+  ],
+  "compatibility": {
+    "npm": "11.20.0",
+    "supported_node_engines": "^20.17.0 || >=22.9.0",
+    "installed_node20": "20.20.2",
+    "installed_node24": "24.19.0",
+    "major_transition": "Node 20 moves from npm 10 to npm 11; offline package packing, install, exec and clean install pass under both exact bundled runtimes",
+    "reason": "The maintained npm 10 package still bundled thirteen vulnerable dependency observations; npm 11 supports both installed runtimes and clears this package cohort."
+  },
+  "automation": {
+    "config_id": "sha256:5ded8467ee7ec0bd9a7a0dea9e87d1ff259b5e9aa52f9b23566c369a262fbea4",
+    "full_matches": 492,
+    "remaining_severity": {
+      "Medium": 355,
+      "High": 57,
+      "Negligible": 10,
+      "Low": 69,
+      "Unknown": 1
+    },
+    "config_verified": "SHA256 of exported runtime config bytes matches scanner imageID",
+    "build": "Full Dockerfile build and bundled tool checks passed as runner"
+  },
+  "evidence": [
+    {
+      "file": "arc-grype.json",
+      "sha256": "695cd6799cde7384712f05f27cfe8f277a1a0aee13ef6470195beeffcdce5c09",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/arc-grype.json"
+    },
+    {
+      "file": "arc-config.json",
+      "sha256": "ad7e6a27fd6093e522c1aeac59fbd58ce5a77e4af5fc88d72a0461ee8f3c7365",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/arc-config.json"
+    },
+    {
+      "file": "automation-grype.json",
+      "sha256": "a8438f379bb502ac2fd0c5c9a5942a7a3375f6c54e3bd754e343155099c31972",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/automation-grype.json"
+    },
+    {
+      "file": "automation-config.json",
+      "sha256": "eedf0bf4aeb7ddaed843d4d1d8040b3e6efd952f5ec001003201c6f3adc41822",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/automation-config.json"
+    },
+    {
+      "file": "docker-arc.log",
+      "sha256": "b7f693e60b8193ad454f8faad86b2a92ec614da568042cae8be1430977251e0f",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/docker-arc.log"
+    },
+    {
+      "file": "docker-automation.log",
+      "sha256": "9329df5b431b4e74916f33b128f499e7443ba8f542c5237a1bcf778e7c9b87bd",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/docker-automation.log"
+    },
+    {
+      "file": "upstream-packages.json",
+      "sha256": "9a52540146be1232ecd88467ef3b18e7c6fced2f4573a0ae82469c55608cd82a",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/upstream-packages.json"
+    },
+    {
+      "file": "node20-image-lifecycle.log",
+      "sha256": "53950439c06c5b94dcd7132ce0c899327c270c1dbd13ee586b5f5c3d19bc5e4f",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/node20-image-lifecycle.log"
+    },
+    {
+      "file": "node24-image-lifecycle.log",
+      "sha256": "53950439c06c5b94dcd7132ce0c899327c270c1dbd13ee586b5f5c3d19bc5e4f",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/node24-image-lifecycle.log"
+    },
+    {
+      "file": "node20-npm11-lifecycle.log",
+      "sha256": "53950439c06c5b94dcd7132ce0c899327c270c1dbd13ee586b5f5c3d19bc5e4f",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/node20-npm11-lifecycle.log"
+    },
+    {
+      "file": "tar-regression.cjs",
+      "sha256": "31e48b5ed13d12c2a87e8db59e7032f7282040a724fef38b6933f7a6e98f35cf",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/tar-regression.cjs"
+    },
+    {
+      "file": "npm-lifecycle.cjs",
+      "sha256": "5e65bc14975eed49ff51173961050b6bc87a8803448b8ed644cb60f5603d497b",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm11/npm-lifecycle.cjs"
+    },
+    {
+      "file": "node20-baseline.log",
+      "sha256": "8d08e86be438c97109440e182110e4761716baf8aeefe511b37a17fac73c0212",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm/node20-baseline.log"
+    },
+    {
+      "file": "node24-baseline.log",
+      "sha256": "8d08e86be438c97109440e182110e4761716baf8aeefe511b37a17fac73c0212",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm/node24-baseline.log"
+    },
+    {
+      "file": "tar-fix.json",
+      "sha256": "e0db8ee7be9876dcee0e9bf70db79ca2a602ae33b578042312eb7ba1de7dbe50",
+      "s3": "s3://adp-dev-security-scans-879318057152/repository-scans/security25-20260925/6125-runner-npm/tar-fix.json"
+    }
+  ]
+}

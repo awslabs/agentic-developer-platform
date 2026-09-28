@@ -4,7 +4,10 @@ Rate limiting configuration.
 This module provides configuration settings for the rate limiting system.
 """
 
-from pydantic import Field
+import os
+from typing import Literal
+
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -26,8 +29,10 @@ class RateLimitConfig(BaseSettings):
     refill_buffer_seconds: int = Field(default=10, ge=1, description="Seconds of tokens to allow as burst")
 
     # Backend configuration
-    backend_type: str = Field(default="memory", description="Backend type: 'memory' or 'redis'")
-    redis_url: str | None = Field(default=None, description="Redis URL for distributed rate limiting")
+    backend_type: str = Field(default="redis", description="Backend type: memory requires explicit local/test mode")
+    security_profile: Literal["production", "development"] = "production"
+    allow_memory_backend: bool = Field(default=False, description="Local development only; permits process-local counters")
+    redis_url: str | None = Field(default=None, validation_alias=AliasChoices("RATELIMIT_REDIS_URL", "BG_REDIS_URL", "redis_url"))
     redis_key_prefix: str = Field(default="bedrockgw:ratelimit", description="Redis key prefix")
     redis_key_ttl: int = Field(default=3600, ge=60, description="Redis key TTL in seconds")
 
@@ -53,7 +58,11 @@ def get_ratelimit_config() -> RateLimitConfig:
     """Get the global rate limit configuration."""
     global _config
     if _config is None:
-        _config = RateLimitConfig()
+        _config = (
+            RateLimitConfig(backend_type="memory", allow_memory_backend=True, security_profile="development")
+            if os.environ.get("TESTING") == "1"
+            else RateLimitConfig()
+        )
     return _config
 
 

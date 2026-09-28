@@ -1,0 +1,40 @@
+{
+  "scope": "exact candidate only; no live closure",
+  "docker_root_descriptor": "sha256:6e089ef94fa52185731c5a8ee106f0e5feacc509c4f141cfaf172249984389c3",
+  "config_digest": "sha256:90a73a5d4e40486dfa489aba1350f4ab0f432fe52d6ab05dbb274ec44a907cf3",
+  "native_match_index": 47,
+  "id": "CVE-2026-60002",
+  "severity": "Critical",
+  "package": "openssh-client",
+  "version": "1:10.0p1-7+deb13u4+adp.security.1",
+  "status": "fixed-in-candidate",
+  "binary_observation": {
+    "ssh_sha256": "040d6afdb0e3194a3afca73981e4be57c8acb5898ed4108ea2b051232d0001c1",
+    "source_lock": {
+      "source_package": "openssh",
+      "version": "1:10.0p1-7+deb13u4",
+      "downstream_version": "1:10.0p1-7+deb13u4+adp.security.1",
+      "upstream_commit": "e8bdfb151a356d0171fea4194dd205fbb252be23",
+      "upstream_patch_sha256": "b88393504c4fb6cee75e0553aa5fc29b4b44a7f37b4c9e986ff90eeebce34be7",
+      "backport_patch_sha256": "d35735e1bcf1dbb99e624ee94747edf7fb20eca4c12a3aea1317522e0fb5dffe",
+      "source_sha256": {
+        "openssh_10.0p1-7+deb13u4.dsc": "73fed3fd77d60925ed342bcb0afd3c037e4ea0d39333107bf617aa90f859910f",
+        "openssh_10.0p1.orig.tar.gz": "021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c",
+        "openssh_10.0p1-7+deb13u4.debian.tar.xz": "102e1065030c6002acabd7f896eeba1462bf54b4d7393bac34b0308312868ec6"
+      },
+      "backport_adjustments": [
+        "Exclude upstream RCS revision-banner hunks",
+        "Retain Debian GSSAPI local declarations while applying identical lifetime changes"
+      ],
+      "scope": "CVE-2026-60002 only; no client functionality removal, library patch or server deployment"
+    }
+  },
+  "prior_runtime_evidence": "../context/deepwiki-final-openssh-runtime.json",
+  "source_recipe": "modules/agent-context/images/deepwiki/security/openssh/",
+  "raw_scan_sha256": "7fd8d666c9141975eef33e120b8768fecdd0452b3dbd6b5498130c85e73aaff6",
+  "reviewed_remaining_with_curl": {
+    "Critical": 0,
+    "High": 93
+  },
+  "other_openssh_advisories": "remain open"
+}

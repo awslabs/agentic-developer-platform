@@ -1,0 +1,17 @@
+# Review the account, stage, image digests, worker roles and Task trust before use.
+enabled                   = false
+browser_http_enabled      = false
+browser_admission_enabled = false
+code_interpreter_enabled  = false
+websearch_enabled         = false
+aws_account_id            = "123456789012"
+aws_region                = "us-east-1"
+name                      = "REPLACE-existing-cyber-tools-name"
+image_uri                 = ""
+rest_api_id               = ""
+tools_parent_resource_id  = ""
+api_execution_arn         = ""
+stage_name                = ""
+worker_role_arns          = []
+authority_endpoint        = ""
+authority_invoke_arns     = []

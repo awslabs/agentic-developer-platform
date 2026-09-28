@@ -16,6 +16,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -40,6 +41,7 @@ from src.auth.magic_link import (
 from src.auth.middleware import get_current_user_context
 from src.auth.vault_routes import get_secrets_manager, router
 from src.shared.database import get_db
+from src.shared.identity.verification import DELIVERY_PROVIDER_DM
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
@@ -357,9 +359,17 @@ class TestConsumeNonce:
 
 
 class TestIssueIdentityMagicLink:
+    """#5664 (A10) changed this endpoint's contract.
+
+    It used to return a usable magic-link URL to the caller, which is what made
+    the subsequent "confirmation" circular — the requester could complete both
+    halves of a handshake about an account they merely named. It now records the
+    claim as unproven and returns no credential. See
+    tests/auth/test_identity_link_proof_of_ownership.py for the full set.
+    """
+
     @patch("src.auth.vault_routes._get_magic_link_secret", return_value=_SECRET)
-    @patch("src.auth.vault_routes._build_magic_link_url", side_effect=lambda t: f"https://gw.example.com/auth/link/magic?token={t}")
-    def test_returns_magic_link_url(self, _mock_url, _mock_secret, db: AsyncSession):
+    def test_records_an_unproven_claim_without_returning_a_credential(self, _mock_secret, db: AsyncSession):
         client = _make_app(ALICE, db)
         resp = client.post(
             "/auth/identities/slack/link",
@@ -367,17 +377,25 @@ class TestIssueIdentityMagicLink:
         )
         assert resp.status_code == 201
         body = resp.json()
-        assert "magic_link_url" in body
-        assert "token=" in body["magic_link_url"]
+        assert body["status"] == "claim_recorded_unverified"
+        assert body["verification_method"] == "self_asserted"
+        assert body["verified_at"] is None
+        # The credential itself must not come back.
+        assert "magic_link_url" not in body
+        assert "token=" not in resp.text
 
     @patch("src.auth.vault_routes._get_magic_link_secret", return_value="")
-    def test_returns_503_when_secret_not_configured(self, _mock_secret, db: AsyncSession):
+    def test_recording_a_claim_does_not_depend_on_the_signing_key(self, _mock_secret, db: AsyncSession):
+        """This used to 503 without the magic-link signing key, because the route's
+        job was to mint a signed token. Recording an unproven claim signs nothing,
+        so it no longer needs the key — and must not fail when it is absent."""
         client = _make_app(ALICE, db)
         resp = client.post(
             "/auth/identities/slack/link",
             json={"provider_user_id": "U000"},
         )
-        assert resp.status_code == 503
+        assert resp.status_code == 201
+        assert resp.json()["verification_method"] == "self_asserted"
 
 
 # ---------------------------------------------------------------------------
@@ -477,12 +495,25 @@ class TestMagicLinkLandingGet:
 class TestMagicLinkLandingPost:
     @patch("src.auth.vault_routes._get_magic_link_secret", return_value=_SECRET)
     def test_full_flow_link_succeeds(self, _mock_secret, db: AsyncSession):
-        """Issue token → POST confirm → user_identities row created."""
+        """Issue token → POST confirm → user_identities row created.
+
+        #5664 (A10): this test asserts the PROVEN outcome
+        (``magic_link_confirmed`` + ``verified_at``), so its nonce now has to carry
+        the two facts that make a confirmation proof — private delivery to the
+        claimed account, and a nonce bound to the platform user consuming it.
+
+        It previously passed with ``target_user_id=None`` and no delivery method at
+        all, i.e. it asserted "verified" for a link that was posted where others
+        could read it and that any signed-in user could have redeemed. That is the
+        finding this issue is about, so the fixture is corrected rather than the
+        assertion relaxed. The unbound/shared-channel case is now asserted to be
+        UNPROVEN in test_identity_link_proof_of_ownership.py.
+        """
         result = issue_token(
             provider="slack",
             provider_user_id="U-full-flow",
             channel_context="T01/C02",
-            target_user_id=None,  # internal-issued (any user may claim)
+            target_user_id=ALICE.user_id,
             secret_key=_SECRET,
         )
         import asyncio
@@ -493,9 +524,10 @@ class TestMagicLinkLandingPost:
                 provider="slack",
                 provider_user_id="U-full-flow",
                 channel_context="T01/C02",
-                target_user_id=None,
+                target_user_id=ALICE.user_id,
                 expires_at=result["expires_at"],
                 db=db,
+                delivery_method=DELIVERY_PROVIDER_DM,
             )
         )
 
@@ -506,7 +538,11 @@ class TestMagicLinkLandingPost:
         assert body["status"] == "linked"
         assert body["provider"] == "slack"
         assert body["provider_user_id"] == "U-full-flow"
-        assert body["verification_method"] == "magic_link"
+        # #5664 (A10): the confirmed path records "magic_link_confirmed", not the
+        # bare "magic_link". The old label could not distinguish a link delivered
+        # out-of-band to the claimed account (proof) from one handed back to the
+        # claimant (no proof), so consumers had to guess.
+        assert body["verification_method"] == "magic_link_confirmed"
         assert body["verified_at"] is not None
 
         # Verify the DB row was written
@@ -520,7 +556,7 @@ class TestMagicLinkLandingPost:
 
         identity = asyncio.get_event_loop().run_until_complete(_check())
         assert identity is not None
-        assert identity.verification_method == "magic_link"
+        assert identity.verification_method == "magic_link_confirmed"
 
     @patch("src.auth.vault_routes._get_magic_link_secret", return_value=_SECRET)
     def test_replay_returns_400(self, _mock_secret, db: AsyncSession):
@@ -605,21 +641,23 @@ class TestMagicLinkLandingPost:
         assert resp.json()["detail"]["error"] == "token_expired"
 
     @patch("src.auth.vault_routes._get_magic_link_secret", return_value=_SECRET)
-    def test_magic_link_url_shape(self, _mock_secret, db: AsyncSession):
-        """URL must contain the gateway origin and the signed token param."""
-        with patch("src.auth.vault_routes._build_magic_link_url") as mock_url:
-            mock_url.side_effect = lambda t: f"https://gw.example.com/auth/link/magic?token={t}"
-            client = _make_app(ALICE, db)
-            resp = client.post(
-                "/auth/identities/github/link",
-                json={"provider_user_id": "12345"},
-            )
+    def test_the_claim_surface_emits_no_token_at_all(self, _mock_secret, db: AsyncSession):
+        """Was `test_magic_link_url_shape`, asserting the returned URL carried a
+        3-part JWT. #5664 (A10): the user-facing claim route no longer produces a
+        token in any shape, so the assertion that matters is that nothing
+        JWT-shaped reaches the caller. URL construction now happens only on the
+        internal issuance path, which delivers it in-channel to the claimed
+        account (see tests/auth/test_internal_routes.py)."""
+        client = _make_app(ALICE, db)
+        resp = client.post(
+            "/auth/identities/github/link",
+            json={"provider_user_id": "12345"},
+        )
         assert resp.status_code == 201
-        url = resp.json()["magic_link_url"]
-        assert url.startswith("https://gw.example.com/auth/link/magic?token=")
-        # The token param should be a non-trivial JWT (3 dot-separated parts)
-        token_param = url.split("?token=")[-1]
-        assert token_param.count(".") == 2, "JWT must have 3 parts"
+        body = resp.json()
+        assert "magic_link_url" not in body
+        assert "/auth/link/magic" not in resp.text
+        assert not re.search(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", resp.text), "a JWT-shaped value leaked to the claimant"
 
     @patch("src.auth.vault_routes._get_magic_link_secret", return_value=_SECRET)
     def test_audit_log_written_on_success(self, _mock_secret, db: AsyncSession):

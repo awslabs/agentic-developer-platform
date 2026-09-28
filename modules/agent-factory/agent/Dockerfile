@@ -7,7 +7,7 @@
 #
 # Build with:
 #   docker build -f modules/agent-factory/agent/Dockerfile \
-#                -t <registry>/adp-agent-gateway:<tag> \
+#                -t <registry>/adp-chat-agent:<tag> \
 #                modules/agent-factory
 #
 FROM public.ecr.aws/docker/library/node:22-alpine AS builder
@@ -42,11 +42,32 @@ FROM public.ecr.aws/docker/library/node:22-alpine AS production
 RUN addgroup -g 10001 agent && \
     adduser -u 10001 -G agent -s /bin/sh -D agent
 
+# Upgrade all system packages to pick up security patches in the base layer.
+RUN apk upgrade --no-cache
+
 # Install dumb-init for signal handling, and bash for the Claude Agent SDK's
 # Bash tool. The SDK invokes /bin/bash directly — alpine ships only BusyBox
 # ash, which the tool rejects with "shell environment isn't configured here"
 # (the error message mentions SHELL but the real requirement is a bash binary).
 RUN apk add --no-cache dumb-init bash
+
+# Keep the bundled package manager usable while replacing its vulnerable
+# transitive dependencies. npm11 supports this Node22 runtime (>=22.9).
+# Release artifact hash is independently retained in the runner security receipt.
+RUN wget -q https://registry.npmjs.org/npm/-/npm-11.20.0.tgz -O /tmp/npm.tgz \
+    && echo "d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483  /tmp/npm.tgz" | sha256sum -c - \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && mkdir -p /usr/local/lib/node_modules/npm \
+    && tar -xzf /tmp/npm.tgz --strip-components=1 -C /usr/local/lib/node_modules/npm \
+    && rm /tmp/npm.tgz \
+    && npm --version
+
+# The Node binary does not link system zlib; only Alpine's package manager
+# needs it. Runtime package installation is unavailable to the non-root agent.
+# Retain npm, bash and dumb-init, and remove the unused apk/zlib chain.
+RUN apk del --no-cache apk-tools libapk zlib \
+    && test ! -e /sbin/apk && test ! -e /lib/libz.so.1 \
+    && node -e "require('node:zlib').gzipSync('fixture')"
 
 # Create directories with proper ownership
 RUN mkdir -p /app /data /tmp/workspace && \
@@ -66,6 +87,9 @@ COPY --from=builder --chown=agent:agent /app/package*.json ./
 # Copy personas from the sibling rules/ directory (inside build context).
 # Baked into the image so persona loading has zero runtime dependencies.
 COPY --chown=agent:agent rules/personas/ ./personas/
+# Canonical issue contract is readable even in customer repos without ADP docs.
+COPY --chown=agent:agent rules/agents/issue-authoring.md ./rules/agents/issue-authoring.md
+COPY --chown=agent:agent rules/templates/developer-issue.md ./rules/templates/developer-issue.md
 
 # Copy startup script
 COPY --chown=agent:agent agent/startup.sh ./startup.sh

@@ -144,16 +144,62 @@ mcp_server = FastMCP(
     # The sub-app is mounted at /mcp on the parent FastAPI app, so the internal
     # route is "/" (resolves to POST /mcp externally).
     streamable_http_path="/",
-    # DNS-rebinding protection is disabled because this service is ClusterIP-only
-    # (no browser-origin access). The MCP SDK's default Host-header allowlist
-    # (localhost-only) rejects Kubernetes service DNS names like
-    # "context-mcp.agent-context.svc.cluster.local:5100" with 421 Misdirected
-    # Request, breaking in-cluster MCP clients (agent workers). An allowlist
-    # approach would silently break again whenever a new hostname is introduced;
-    # disabling the check entirely is correct for a pod-to-pod-only service.
-    # See: Issue #3254.
+    # DNS-rebinding protection, re-enabled with an explicit allowlist (#4073
+    # finding #8; supersedes the blanket disable from #3254).
+    #
+    # #3254 turned this off because the SDK's default allowlist is localhost-only
+    # and rejected Kubernetes service DNS names with 421 Misdirected Request,
+    # breaking in-cluster MCP clients. That diagnosis was right; the remedy was
+    # broader than the problem. With the check off, the Door accepted any Host
+    # header, which is what makes a DNS-rebinding attack work: a browser on an
+    # operator's machine resolves an attacker-controlled name to the Door's
+    # cluster IP and reads responses cross-origin.
+    #
+    # The reason given for not using an allowlist — "it would silently break
+    # again whenever a new hostname is introduced" — is real but backwards: a
+    # 421 on an unlisted host is a loud, greppable failure, whereas the disable
+    # is a silent loss of a control. Every hostname the Door is reachable on is
+    # enumerated below; the failure mode of adding a new one is a startup-time
+    # 421, not a data leak.
+    #
+    # This is not the primary control for #4073 — door/auth.py's shared secret
+    # is. Host-header filtering only constrains which names may address the
+    # service; it says nothing about who is calling.
+    # Note this only guards the mounted /mcp sub-app — the SDK installs it inside
+    # streamable_http_app(). The legacy REST verbs on the parent app (/call,
+    # /tools) are not covered by it, and neither are the kubelet's /health
+    # probes, so re-enabling this cannot CrashLoop the Deployment.
     transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=False,
+        enable_dns_rebinding_protection=True,
+        # Each entry is matched exactly, or as a base host when it ends in ":*"
+        # (see TransportSecurityMiddleware._validate_host). The ":*" form covers
+        # the port, but NOT the bare hostname, so both spellings are listed.
+        allowed_hosts=[
+            # Every name kube-dns resolves for this ClusterIP Service. Callers
+            # use the FQDN form (knowledge-layer-config.ts,
+            # experience-save-hook.ts, recall-at-task-start.ts,
+            # agent-context-verb-ops.yml); the shorter forms are what a
+            # same-namespace pod's resolv.conf search path produces.
+            "context-mcp",
+            "context-mcp:*",
+            "context-mcp.agent-context",
+            "context-mcp.agent-context:*",
+            "context-mcp.agent-context.svc",
+            "context-mcp.agent-context.svc:*",
+            "context-mcp.agent-context.svc.cluster.local",
+            "context-mcp.agent-context.svc.cluster.local:*",
+            # In-pod callers (`kubectl exec ... urlopen('http://localhost:5100')`).
+            "localhost",
+            "localhost:*",
+            "127.0.0.1",
+            "127.0.0.1:*",
+        ],
+        # Empty on purpose: an ABSENT Origin passes (every in-cluster caller here
+        # is a non-browser HTTP client that sends none), and any present Origin is
+        # rejected 403. Do NOT "open this up" with ["*"] — that string is matched
+        # literally, not as a wildcard, so it would read as permissive while
+        # behaving identically to this. There are no browser callers to allow.
+        allowed_origins=[],
     ),
 )
 

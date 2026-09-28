@@ -1,0 +1,82 @@
+{
+  "_comment": [
+    "Facts re-collected from the final High-maintenance image. All SkyPilot Python source files match the previous published image; package startup facts remain applicable.",
+    "Exact source-file hash inventory and collector are retained with high-skypilot evidence."
+  ],
+  "image_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-skypilot@sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "skypilot_version": "0.12.3",
+  "image_index_digest": "sha256:2c9964592ad9f10e6090113982d2051311ecff2e0331b87f6d354ca116730cb4",
+  "amd64_manifest_digest": "sha256:4c881a130e5e1abd5f70b7e518616bd62648d85c2f2cd919d8395bb9f48cf233",
+  "config_blob_digest": "sha256:0f7ef7d2bae81dddef93f3007ecbbe7648009671ae7d285cdcea66900ea6d603",
+  "config": {
+    "Entrypoint": null,
+    "Cmd": [
+      "python3"
+    ],
+    "User": "1000:1000",
+    "WorkingDir": null,
+    "Env": [
+      "PATH=/opt/google-cloud-sdk/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "LANG=C.UTF-8",
+      "GPG_KEY=A035C8C19219BA821ECEA86B64E628F8D684696D",
+      "PYTHON_VERSION=3.10.21",
+      "PYTHON_SHA256=a0da1e72132e950154eca0f6f47d5db828454700de20e5113667940d81e0db04",
+      "DEBIAN_FRONTEND=noninteractive"
+    ]
+  },
+  "etc_passwd_uids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    13,
+    33,
+    34,
+    38,
+    39,
+    42,
+    996,
+    998,
+    1000,
+    65534
+  ],
+  "has_uid_1000": true,
+  "home_entries": [
+    "sky"
+  ],
+  "package_facts": {
+    "_comment": [
+      "SkyPilot0.12.3 startup contract retained; isolated API startup/restart/status tests pass on Python3.10.21."
+    ],
+    "api_server_cmd": "-m sky.server.server",
+    "api_server_cmd_source": "sky/server/common.py: API_SERVER_CMD",
+    "default_host": "127.0.0.1",
+    "default_host_source": "sky/server/server.py: parser.add_argument('--host', default='127.0.0.1')",
+    "default_port": 46580,
+    "default_metrics_port": 9090,
+    "health_endpoint": "/api/health",
+    "db_connection_uri_env": "SKYPILOT_DB_CONNECTION_URI",
+    "db_connection_uri_env_source": "sky/skylet/constants.py: SKYPILOT_ENV_VAR_PREFIX + 'DB_CONNECTION_URI'",
+    "global_config_env": "SKYPILOT_GLOBAL_CONFIG",
+    "global_config_default_path": "~/.sky/config.yaml",
+    "home_relative_write_paths": [
+      "~/.sky/api_server/server.log",
+      "~/.sky/locks/.skypilot_config.lock",
+      "~/.sky/generated"
+    ],
+    "module_name_guards": [
+      "__main__",
+      "sky.server.server"
+    ],
+    "has_server_dunder_main_module": false,
+    "deploy_flag_enables_consolidation_mode": true,
+    "deploy_flag_source": "sky/jobs/utils.py: setup_consolidation_mode_on_startup(deploy)"
+  }
+}

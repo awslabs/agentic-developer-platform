@@ -1,27 +1,147 @@
 name: Gateway CI
 
 on:
+  # Reviewed source can be validated without removing [skip ci] from commits.
+  # This runs the existing tests and no-push smoke build, never a deployment.
+  workflow_dispatch:
   pull_request:
     paths:
+      - 'platform/scripts/adversarial-test-assert.py'
+      - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
+      # Gateway stages the canonical harness decoder into its image.
+      - 'modules/harness/jobs/harness_jobs/identity.py'
+      - 'modules/gateway/scripts/stage-contracts.sh'
+      - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
+      # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
+      # from a generated staged copy of the webhook-ingress source. Registering a
+      # persona at the source must re-run the Lint job's sync_personas.py --check,
+      # or the gateway goes stale unobserved and the new persona is
+      # unconfigurable. Same lockstep pattern as #4029/#4539.
+      - 'modules/gateway/scripts/sync_personas.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/codex-reviewer/package.json'
+      - 'modules/gateway/scripts/build-budget-lambda-archives.py'
+      - '.github/workflows/pricing-finalize.yml'
+      - '.github/workflows/run-gateway-migrations.yml'
       - 'modules/gateway/tests/**'
+      # Issue #4145: tests/cli/ exercises the shell helpers in cli/, but a CLI-only
+      # edit used to trigger no workflow at all — so bg-cognito-auth.sh changes
+      # shipped untested. Keep cli/ in lockstep with the suite that covers it.
+      - 'modules/gateway/cli/**'
+      # Issue #4848: same gap as #4145, on the auth Lambdas. Editing anything under
+      # lambda/ used to trigger no workflow at all — which is how the pre-signup
+      # trigger came to exist as two near-identical copies, one packaged and
+      # untested, the other tested and unpackaged, drifting apart unobserved (#4849
+      # landed shadow-mode code in only one of them). tests/lambda/ covers this tree
+      # now, so keep the two in lockstep: a handler edit must re-run the suite that
+      # asserts its behavior. These files are the GitHub sign-in path — an
+      # unobserved change here is a login outage, not a failed test.
+      - 'modules/gateway/lambda/**'
+      # Issue #4969: the shared pricing policy and its immutable rate snapshots.
+      # tests/pricing_policy/ pins the hand-calculated cost oracles and the rate
+      # inventory itself, so an edit here must re-run them. Same gap as #4145/#4848:
+      # without this path a pricing-only PR triggers no workflow and reports green,
+      # and a wrong rate is a billing defect that reaches customers' invoices.
+      - 'modules/gateway/pricing_policy/**'
+      - 'modules/gateway/alembic/versions/**'
+      - 'modules/gateway/infra/modules/budget-lambda/**'
       - 'modules/gateway/pyproject.toml'
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/frontend/src/**'
       - 'modules/gateway/frontend/package*.json'
       - 'modules/gateway/frontend/tests/**'
+      # Superplane's onboarding UI lives in its own domain app but has no
+      # toolchain of its own — this lane is the only CI that builds, tests and
+      # typechecks it. superplane-domain-ci.yml also matches that path, but it
+      # runs Python and Go only, so a UI-only PR without this entry gets a green
+      # report from a lane that executed no frontend check at all. That
+      # false-green is worse than no coverage, because the check name reads as
+      # passing. Same lockstep class as #4145/#4848. The build configs below are
+      # what let this runner reach outside its package root; editing one without
+      # re-running the suite that pins them silently un-collects those tests.
+      - 'modules/domain-apps/superplane/ui/**'
+      - 'modules/gateway/frontend/vite.config.ts'
+      - 'modules/gateway/frontend/vitest.config.ts'
+      - 'modules/gateway/frontend/tsconfig*.json'
       - 'libs/python/adp-common/**'
+      # Shared cross-module contract fixtures (#4029). tests/internal/
+      # test_provenance_contract.py validates these against the gateway's
+      # request schema, so a fixture edit must re-run gateway tests.
+      - 'contracts/**'
+      # Trigger-policy lockstep (#4029). tests/internal/
+      # test_provenance_policy_lockstep.py imports the webhook-ingress resolver and
+      # asserts its trigger_policy vocabulary + DEFAULT match the gateway's authority
+      # gate. A mismatched default is what silently dropped every cross-tenant
+      # provenance row, so a resolver-side edit must re-run the gateway suite.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/identity_resolver.py'
+      # Keyring lockstep (#4539). tests/internal/
+      # test_engine_command_keyring_lockstep.py imports the webhook-ingress SIGNER and
+      # asserts its parse_keyring agrees with the gateway verifier's on every keyring
+      # state the rotation runbook produces, and that the runbook still names the
+      # reasons the code emits. A signer-side or runbook-side edit that breaks that
+      # agreement is a silent command outage — rotation looks complete, then every
+      # command quarantines on the tick — so both must re-run the gateway suite.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/command_signing.py'
+      - 'modules/agent-factory/webhook-ingress/infra/engine-command-signing.tf'
+      - 'docs/runbooks/engine-command-signing-key-rotation.md'
       - 'platform/scripts/smoke_assertions.py'
       - 'platform/scripts/tests/test_smoke_assertions.py'
+      # Loop-proposal validator + its fixtures (#4199). The advisory CLI imports
+      # the shared model from src/orchestration/proposal.py, so the Lint job's
+      # validation step is the only CI signal either one gets — without these
+      # paths, editing the script or a fixture triggers no workflow at all and a
+      # broken validator ships unnoticed (the same gap #4145 fixed for cli/).
+      - '.github/scripts/validate_loop_proposal.py'
+      - 'aidlc/spaces/issue-4120/construction/loop-proposal/**'
       - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/superplane-ui-browser-ci.yml'
+      - '.github/workflows/gateway-deploy.yml'
       - '.github/workflows/gateway-smoke.yml'
+      - 'codebuild/bs-gateway-build.yml'
+      - 'codebuild/bs-gateway-smoke.yml'
+      - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      - 'platform/scripts/publish-local-image.sh'
     branches:
       - main
   push:
     paths:
+      - 'platform/scripts/adversarial-test-assert.py'
+      - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
+      # Gateway stages the canonical harness decoder into its image.
+      - 'modules/harness/jobs/harness_jobs/identity.py'
+      - 'modules/gateway/scripts/stage-contracts.sh'
+      - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
+      # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
+      # from a generated staged copy of the webhook-ingress source. Registering a
+      # persona at the source must re-run the Lint job's sync_personas.py --check,
+      # or the gateway goes stale unobserved and the new persona is
+      # unconfigurable. Same lockstep pattern as #4029/#4539.
+      - 'modules/gateway/scripts/sync_personas.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/codex-reviewer/package.json'
+      - 'modules/gateway/scripts/build-budget-lambda-archives.py'
+      - '.github/workflows/pricing-finalize.yml'
+      - '.github/workflows/run-gateway-migrations.yml'
+      - 'modules/gateway/pricing_policy/**'
+      - 'modules/gateway/alembic/versions/**'
+      - 'modules/gateway/infra/modules/budget-lambda/**'
       - 'modules/gateway/pyproject.toml'
       - 'modules/gateway/Dockerfile'
+      - '.github/workflows/gateway-ci.yml'
+      - '.github/workflows/superplane-ui-browser-ci.yml'
+      - '.github/workflows/gateway-deploy.yml'
+      - 'codebuild/bs-gateway-build.yml'
+      - 'codebuild/bs-gateway-smoke.yml'
+      - 'platform/scripts/zip-source.sh'
+      - 'platform/scripts/publish-shared-image.sh'
+      - 'platform/scripts/publish-local-image.sh'
     branches:
       - main
 
@@ -30,6 +150,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  superplane-browser:
+    name: Superplane browser
+    uses: ./.github/workflows/superplane-ui-browser-ci.yml
+    permissions:
+      contents: read
+
   lint:
     name: Lint
     runs-on: arc-runner-org
@@ -51,13 +177,111 @@ jobs:
       - name: Run Ruff
         working-directory: modules/gateway
         run: |
-          ruff check src/ tests/
-          ruff format --check src/ tests/
+          ruff check src/ tests/ pricing_policy/
+          ruff format --check src/ tests/ pricing_policy/
 
-  test:
-    name: Test
+      # Issue #5420 (PMM-03): the gateway serves the persona catalogue from a
+      # generated staged copy (src/admin/persona_models/_personas.py) of the
+      # authoritative webhook-ingress source (lambda/common/personas.py). The
+      # gateway cannot import across module boundaries at runtime, so the copy
+      # is the serving path. Without this gate, registering a persona at the
+      # source leaves the gateway silently stale and the new persona
+      # unconfigurable — AC-01's exact failure. --check regenerates in memory
+      # and exits 1 on any drift; the fix is to run the script without --check.
+      - name: Check staged persona catalogue is current
+        working-directory: modules/gateway
+        run: |
+          python3 scripts/sync_personas.py --check
+
+      # Issue #4199: the advisory half of the loop-proposal contract. Runs from
+      # the repo root (the script adds modules/gateway to sys.path itself) over
+      # both shipped fixtures. The valid one must exit 0 and the deliberately
+      # cyclic one must exit non-zero — asserting the failure case is the point,
+      # since a validator that never rejects anything passes CI while catching
+      # nothing. The authoritative check is in compile_proposal, inside the
+      # approval transaction; this step only proves the shared rules still load
+      # and still fire.
+      - name: Validate loop-proposal fixtures
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/validate_loop_proposal.py \
+            aidlc/spaces/issue-4120/construction/loop-proposal/example-proposal.json
+
+          if python3 .github/scripts/validate_loop_proposal.py \
+               aidlc/spaces/issue-4120/construction/loop-proposal/cyclic-proposal.json; then
+            echo "::error::validator accepted a deliberately-cyclic proposal; cycle detection is broken"
+            exit 1
+          fi
+          echo "Loop-proposal validator rejected the cyclic fixture as expected."
+
+          # Issue #4528: the authored shape, i.e. exactly what the AIDLC skill's
+          # Step 7e emits — `org_id` blank because the worker resolves the tenant at
+          # registration. Both directions are asserted, because the pair is the
+          # contract: `--authored` must accept it, and the bare invocation must
+          # still reject it. If the flag ever silently became the default, an
+          # unresolved tenant would sail through the fixture check and the mismatch
+          # would surface as a 422 at registration instead.
+          python3 .github/scripts/validate_loop_proposal.py --authored \
+            aidlc/spaces/issue-4120/construction/loop-proposal/authored-proposal.json
+
+          if python3 .github/scripts/validate_loop_proposal.py \
+               aidlc/spaces/issue-4120/construction/loop-proposal/authored-proposal.json 2>/dev/null; then
+            echo "::error::validator accepted a blank org_id without --authored; the tenant check is not firing"
+            exit 1
+          fi
+          echo "Loop-proposal validator required --authored for the unresolved-tenant fixture as expected."
+
+  # Sharded across runners AND parallelised within each runner. This suite is
+  # ~13.9k tests; run serially in one job it took ~45min, which is most of the
+  # wall clock of every gateway PR. Measured on one machine over a 4.2k-test
+  # slice: serial 477s -> -n 4 205s -> -n 8 138s. Scaling is sublinear, so
+  # -n alone plateaus around 8min for the full suite — sharding across runners
+  # is what gets it to minutes. One shard measured 89s at -n 4, 77s at -n 8.
+  #
+  # That 12s gap is why -n stays at 4 and the runner's cpu limit is NOT raised.
+  # Once the suite is sharded each shard is small enough that per-worker startup
+  # dominates, so extra workers buy almost nothing while multiplying the
+  # oversubscription risk: arc-runner/main.tf documents a 2026-08-30 incident
+  # where packed runners hit 104% node CPU and a job died with "runner lost
+  # communication ... starves it for CPU/Memory". 8 shards x -n 4 stays inside
+  # the existing 4-CPU limit and needs no infrastructure change at all.
+  #
+  # Runner capacity is not the constraint and never was: the scale set allows 20
+  # runners, queue time was measured at 0min on every run, and we were using
+  # one. Sharding spends pool capacity deliberately -- see maxRunners in
+  # arc-runner/main.tf, raised to 40 alongside this because at typical
+  # concurrency (3-5 overlapping Gateway CI runs, peak 11 measured over 58 runs)
+  # a 20-runner pool was already oversubscribed at 4 shards, which is why shards
+  # that take 4m19s alone were showing up as 7m24s.
+  #
+  # Coverage is main-only: --cov measured +58% wall clock (138s -> 218s on the
+  # same slice). Nothing gates on the number, so PRs don't pay for it.
+  #
+  # Known imbalance: pytest-split partitions by test COUNT, not duration, so the
+  # shard holding the slow tests/cli files runs ~5min while others finish in
+  # 40-150s. Wall clock is therefore the slowest shard, not the average. Storing
+  # a durations file (`pytest --store-durations`, committed, which switches
+  # pytest-split to duration-based balancing) would even these out to ~2.5min;
+  # deliberately left as a follow-up so this change stays reviewable.
+  test-shard:
+    name: Test shard ${{ matrix.shard }}
     runs-on: arc-runner-org
+    # `needs: lint` is KEPT, after measuring the alternative. Dropping it saves
+    # one ~1min dispatch hop, but it raises peak concurrency per run from 4
+    # runners to 11 (lint + frontend + smoke + 8 shards all starting at once),
+    # and Gateway CI runs overlap routinely — 3 were concurrent on 2026-09-20
+    # 07:24, i.e. up to 12 shards bursting to 4 CPUs each. arc-runner/main.tf
+    # documents a 2026-08-30 node-saturation incident from exactly this, and the
+    # trial run flaked a timing-sensitive test
+    # (tests/budget/test_pricing_read_timeout.py) while one shard ran 3x slow.
+    # The lint gate staggers startup, which is worth more than the 1min.
     needs: lint
+    strategy:
+      # Every shard reports independently — one shard failing must not cancel
+      # the others, or a single failure hides the state of 10k other tests.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v7
 
@@ -74,22 +298,82 @@ jobs:
 
       - name: Run Tests
         working-directory: modules/gateway
+        env:
+          # pytest-split partitions the collected list deterministically, so the
+          # shards are disjoint and together cover every selected test exactly
+          # once (verified at 8 shards: 7x2183 + 2180 = 17461, plus the 86
+          # deselected = the full 17547 collected).
+          #
+          # 4 -> 8 because 4 saturated. Measured on one run: 1181s of total test
+          # work, 1.17x imbalance, ~46s fixed overhead per shard. That models
+          # 6.5m at 4 shards and 3.6m at 8. Returns fall off fast beyond this --
+          # 8->16 buys only another 1.4m against a hard ~46s/shard floor
+          # (checkout + Setup Python + pip install, paid per shard regardless) --
+          # so do not keep raising this expecting the same return.
+          SHARD_ARGS: --splits 8 --group ${{ matrix.shard }}
+          # -n 4 is pinned to the runner's 4-CPU limit (arc-runner/main.tf). Do
+          # NOT use `-n auto`: nproc inside the pod reports the NODE's 32 cores,
+          # not the cgroup limit, so auto would spawn 32 workers on 4 CPUs and
+          # run SLOWER than this. If that limit changes, change this with it.
+          #
+          # `--dist loadfile` is REQUIRED, not a tuning choice. It keeps every
+          # test in a file on one worker. Parts of tests/cli depend on state that
+          # earlier tests in the directory establish -- notably
+          # tests/cli/test_provider_transport.py, which drives a real http.server
+          # through the real transport on purpose (#5039) and fails with
+          # `gateway_unavailable` when its ordering is disturbed. Measured on
+          # tests/cli at -n 4: default dist = 9 failures, loadfile = 6 (the same
+          # 6 that fail serially, i.e. no parallelism-induced failures).
+          # Removing loadfile silently reintroduces ~9 phantom failures.
+          XDIST_ARGS: -n 4 --dist loadfile
+          COV_ARGS: ${{ github.ref == 'refs/heads/main' && '--cov=src --cov-report=xml' || '' }}
         run: |
-          pytest tests/ -v --tb=short \
+          # -q, not -v: at 13.9k tests, per-test output was ~14k log lines per
+          # run and made failures harder to find, not easier. --tb=short still
+          # prints a traceback for anything that fails.
+          pytest tests/ -q --tb=short \
             -m "not live_only" \
             --timeout=60 \
-            --cov=src --cov-report=xml
+            $SHARD_ARGS $XDIST_ARGS $COV_ARGS
 
       - name: Upload Coverage
         # Coverage upload is informational — it must never fail the Test gate.
         # GitHub artifact-storage quota exhaustion (recalculated every 6-12h)
         # was failing this step and dragging the whole Test job to red even
         # when all tests passed, blocking merges across every PR.
+        # Per-shard artifact: each shard measures only the code its own slice
+        # touched, so these are partial by construction and must be combined
+        # (coverage combine) before the total means anything.
+        if: github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-report
+          name: coverage-report-shard-${{ matrix.shard }}
           path: modules/gateway/coverage.xml
+
+  # Aggregate gate. Exists so there is a single stable check named "Test"
+  # covering all shards — matrix jobs report under per-shard names, and any
+  # branch protection or required-check config referencing "Test" would
+  # otherwise silently stop gating the moment the job was sharded.
+  #
+  # Nothing depends on this job: `build` waits on test-shard directly, so this
+  # sits BESIDE the critical path rather than in it. Keep it that way — adding it
+  # to any `needs:` list reintroduces ~2min of dispatch latency to run 3s of
+  # shell. It still gates merges, because the check itself goes red.
+  test:
+    name: Test
+    runs-on: arc-runner-org
+    needs: test-shard
+    if: always()
+    steps:
+      - name: Verify every shard passed
+        run: |
+          result='${{ needs.test-shard.result }}'
+          echo "aggregate result of all test shards: $result"
+          if [ "$result" != "success" ]; then
+            echo "::error::One or more gateway test shards did not pass ($result)."
+            exit 1
+          fi
 
   frontend-test:
     name: Frontend Unit Tests
@@ -111,33 +395,72 @@ jobs:
 
       - name: Run Vitest
         working-directory: modules/gateway/frontend
-        run: npx vitest run --reporter=verbose
+        # ARC requests two CPUs for this pod. Bound jsdom workers to that share
+        # instead of allowing host CPU discovery to oversubscribe the container.
+        run: npx vitest run --reporter=verbose --maxWorkers=2
+
+      # The domain app's sources are typechecked only here. Vitest strips types
+      # without checking them, so a type error in modules/domain-apps/ would
+      # otherwise reach main with a green suite.
+      - name: Typecheck
+        working-directory: modules/gateway/frontend
+        run: npx tsc --noEmit
 
   build:
     name: Build Container
     runs-on: arc-runner-org
-    needs: [test, frontend-test]
+    # Depends on test-shard directly, NOT on the `test` aggregator. The
+    # aggregator exists only to keep a stable check name for branch protection;
+    # putting it on this path made `build` wait for an extra job dispatch to run
+    # 3 seconds of shell. Measured on run 35470134652: shards finished 21:25:35,
+    # the aggregator did not start until 21:27:32 — 1m57s of dead wall clock for
+    # nothing. `build` now starts as soon as the shards are green, and the
+    # aggregator runs beside it purely as the reported gate.
+    needs: [test-shard, frontend-test]
     steps:
       - uses: actions/checkout@v7
 
-      # ARC runner pods have no Docker daemon (docker-ce-cli only, no DinD
-      # sidecar) — `docker build` has failed on every run since the
-      # ubuntu-latest → arc-runner-org migration (#367). Kaniko also can't
-      # run here (needs root FS ownership; runner is non-root). Platform
-      # convention: docker builds run in CodeBuild (privileged). This job
-      # triggers the gateway-build project with a build-only buildspec
-      # override — same trigger/poll pattern as security-scan.yml Grype.
-      - name: Refresh CodeBuild source zip
+      # ARC dispatches to the existing gateway project. IAM requires the
+      # nonpublishing PR role override, even if repository code changes this job.
+      - name: Verify gateway build project exists
         run: |
+          set -euo pipefail
+          PROJECT_ARN=$(aws codebuild batch-get-projects \
+            --names adp-dev-gateway-build --query 'projects[0].arn' --output text)
+          if [ -z "$PROJECT_ARN" ] || [ "$PROJECT_ARN" = None ]; then
+            echo "::error::Existing gateway CodeBuild project adp-dev-gateway-build is unavailable."
+            exit 1
+          fi
+
+      - name: Refresh CodeBuild source zip
+        id: smoke-source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
-          ./platform/scripts/zip-source.sh . /tmp/adp-source.zip
-          aws s3 cp /tmp/adp-source.zip "s3://${STATE_BUCKET}/codebuild/adp-source.zip"
+          # Separate revisions, concurrent jobs and rerun attempts must never
+          # replace source while another CodeBuild is waiting to download it.
+          SOURCE_KEY="codebuild/src/adp-dev-gateway-build-pr/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
+          ARCHIVE="${RUNNER_TEMP}/gateway-smoke-source.zip"
+          ./platform/scripts/zip-source.sh . "$ARCHIVE"
+          aws s3 cp "$ARCHIVE" "s3://${STATE_BUCKET}/${SOURCE_KEY}"
+          echo "location=${STATE_BUCKET}/${SOURCE_KEY}" >> "$GITHUB_OUTPUT"
+          echo "role=arn:aws:iam::${ACCOUNT_ID}:role/adp-dev-codebuild-gateway-pr" >> "$GITHUB_OUTPUT"
 
       - name: Smoke-build image (CodeBuild, no push)
+        env:
+          SMOKE_SOURCE_LOCATION: ${{ steps.smoke-source.outputs.location }}
+          SMOKE_SERVICE_ROLE: ${{ steps.smoke-source.outputs.role }}
         run: |
+          set -euo pipefail
+          test -n "$SMOKE_SOURCE_LOCATION"
+          test -n "$SMOKE_SERVICE_ROLE"
           BUILD_ID=$(aws codebuild start-build \
             --project-name adp-dev-gateway-build \
+            --service-role-override "$SMOKE_SERVICE_ROLE" \
+            --source-location-override "$SMOKE_SOURCE_LOCATION" \
             --buildspec-override codebuild/bs-gateway-smoke.yml \
             --query 'build.id' --output text)
           echo "Started CodeBuild: ${BUILD_ID}"

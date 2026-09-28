@@ -1,0 +1,17 @@
+{
+  "image": "security27/legacy-gateway:fixed",
+  "docker_root_descriptor": "sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+  "config_digest": "sha256:9b9fe536618a883b83ccc5ef3d6dd7b9541e7a8216458d9fb5eaaa3846607b77",
+  "time": "2026-09-27T13:57:50.016925+00:00",
+  "packages": 155,
+  "native_counts": {
+    "Negligible": 94,
+    "Critical": 24,
+    "High": 90,
+    "Medium": 72,
+    "Low": 10
+  },
+  "sbom_sha256": "abab76714a50db9ca1fcb8909f2aa28a8073f7eaeabaf16ed9f031cf41066b5b",
+  "grype_sha256": "6ca40b82b9b3dc55e7333dfd10c9b4ca199bfa6941663159562e19d826da8c63",
+  "archive_sha256": "930edd3c5dbc7699befe9956a823aadb3f219148f876f3d9a49b90e48595eedb"
+}

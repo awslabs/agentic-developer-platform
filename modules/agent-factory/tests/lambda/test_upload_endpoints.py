@@ -85,6 +85,21 @@ def _import_handler():
     return handler
 
 
+def _create_session(handler, claims: dict | None = None) -> str:
+    """Start a conversation and return the id the SERVER issued.
+
+    #5615: `upload-token` no longer creates the session it is named with, so
+    these tests obtain one the way the browser does. The id is random per run,
+    which is why it is a variable here rather than the old literal "sess-1".
+    """
+    result = handler.lambda_handler(
+        _make_ws_event({"action": "create-session", "request_id": "req-cs"}, claims),
+        None,
+    )
+    assert result["statusCode"] == 200, result["body"]
+    return json.loads(result["body"])["session_id"]
+
+
 def _make_ws_event(body: dict, claims: dict | None = None) -> dict:
     """Make a WebSocket event with connection claims."""
     if claims is None:
@@ -115,10 +130,11 @@ class TestUploadToken:
         handler._persist_connection_claims("conn-123", {
             "claims": {"sub": "user-1", "custom:org_id": "org-1", "custom:team_id": "team-A"},
         })
+        session_id = _create_session(handler)
 
         event = _make_ws_event({
             "action": "upload-token",
-            "session_id": "sess-1",
+            "session_id": session_id,
             "filename": "report.pdf",
             "content_type": "application/pdf",
             "size_bytes": 1024,
@@ -133,17 +149,16 @@ class TestUploadToken:
         assert body["upload_url"] == "https://s3.example.com/presigned"
         assert "s3_key" in body
         # Key should follow hierarchical format
-        assert body["s3_key"].startswith("o/org-1/t/team-A/u/user-1/s/sess-1/")
+        assert body["s3_key"].startswith(f"o/org-1/t/team-A/u/user-1/s/{session_id}/")
         assert body["s3_key"].endswith("/in/report.pdf")
         assert body["expires_in"] == 3600
 
     def test_rejects_missing_identity(self, mocked_aws):
         handler = _import_handler()
 
-        # Persist connection claims WITHOUT sub
-        handler._persist_connection_claims("conn-123", {
-            "claims": {},
-        })
+        # Missing identity is rejected before it can be persisted.
+        with pytest.raises(handler.ConnectionClaimsError):
+            handler._persist_connection_claims("conn-123", {"claims": {}})
 
         event = _make_ws_event(
             {"action": "upload-token", "session_id": "sess-1", "filename": "f.txt"},
@@ -188,18 +203,39 @@ class TestUploadToken:
 
 
 class TestUploadComplete:
+    @staticmethod
+    def _session_with_a_token(handler) -> str:
+        """Start a conversation and take an upload token on it.
+
+        #5615: the session must already exist and be owned by the caller before
+        a token is issued, so this is create-session followed by upload-token —
+        the same order the browser uses.
+        """
+        session_id = _create_session(handler)
+        with patch.object(handler.s3_client, "generate_presigned_url",
+                          return_value="https://s3.example.com/presigned"):
+            result = handler.lambda_handler(_make_ws_event({
+                "action": "upload-token",
+                "session_id": session_id,
+                "task_id": "task-1",
+                "filename": "doc.pdf",
+            }), None)
+        assert result["statusCode"] == 200
+        return session_id
+
     def test_writes_catalog_row(self, mocked_aws):
         handler = _import_handler()
 
         handler._persist_connection_claims("conn-123", {
             "claims": {"sub": "user-1", "custom:org_id": "org-1", "custom:team_id": "team-A"},
         })
+        session_id = self._session_with_a_token(handler)
 
         event = _make_ws_event({
             "action": "upload-complete",
-            "session_id": "sess-1",
+            "session_id": session_id,
             "task_id": "task-1",
-            "s3_key": "o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf",
+            "s3_key": f"o/org-1/t/team-A/u/user-1/s/{session_id}/task-1/in/doc.pdf",
             "filename": "doc.pdf",
             "content_type": "application/pdf",
             "size_bytes": 2048,
@@ -218,13 +254,14 @@ class TestUploadComplete:
         handler._persist_connection_claims("conn-123", {
             "claims": {"sub": "user-1", "custom:org_id": "org-1", "custom:team_id": "team-A"},
         })
+        session_id = self._session_with_a_token(handler)
 
         # First upload
         event1 = _make_ws_event({
             "action": "upload-complete",
-            "session_id": "sess-1",
+            "session_id": session_id,
             "task_id": "task-1",
-            "s3_key": "o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf",
+            "s3_key": f"o/org-1/t/team-A/u/user-1/s/{session_id}/task-1/in/doc.pdf",
             "filename": "doc.pdf",
             "content_type": "application/pdf",
             "size_bytes": 2048,
@@ -236,12 +273,12 @@ class TestUploadComplete:
         first_id = body1["artifact_id"]
         assert body1["deduplicated"] is False
 
-        # Second upload with same checksum
+        # Retry the exact same server-derived upload with the same checksum.
         event2 = _make_ws_event({
             "action": "upload-complete",
-            "session_id": "sess-1",
-            "task_id": "task-2",
-            "s3_key": "o/org-1/t/team-A/u/user-1/s/sess-1/task-2/in/doc.pdf",
+            "session_id": session_id,
+            "task_id": "task-1",
+            "s3_key": f"o/org-1/t/team-A/u/user-1/s/{session_id}/task-1/in/doc.pdf",
             "filename": "doc.pdf",
             "content_type": "application/pdf",
             "size_bytes": 2048,

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1",
+  "run_date": "2026-08-30",
+  "stage": "ops.5004",
+  "stage_type": "ops",
+  "generated_at": "2026-08-30T11:05:00Z",
+  "fields": {
+    "story_status": {
+      "5004": {
+        "status": "stuck",
+        "reason": "failed_run_limit",
+        "failed_runs": 3,
+        "last_transition_at": "2026-08-30T11:05:00Z"
+      }
+    }
+  }
+}

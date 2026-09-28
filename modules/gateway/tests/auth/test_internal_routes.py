@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -117,6 +118,80 @@ def _make_app(db_session: AsyncSession) -> TestClient:
 # ---------------------------------------------------------------------------
 
 
+class TestInternalIssuanceProviderAllowlist:
+    """#5664 (A10): the internal minter enforces the same closed allowlist.
+
+    `magic_link_nonces` is shared with the platform-admin GitHub App setup flow,
+    which is authenticated by nothing but a nonce in the `github_app_register`
+    namespace. This endpoint took `provider` straight from the request body. Being
+    on the authenticated internal plane only means the caller is an ADP Lambda —
+    it does not make minting into the admin namespace safe.
+    """
+
+    @pytest.mark.parametrize("provider", ["github_app_register", "github_install"])
+    @patch("src.internal.routes._get_magic_link_secret", return_value=_SECRET)
+    @patch("src.internal.routes.get_settings")
+    def test_internal_setup_namespaces_are_refused(self, mock_settings, _secret, provider, db: AsyncSession):
+        from unittest.mock import MagicMock
+
+        settings = MagicMock()
+        settings.internal_api_key = _VALID_KEY
+        mock_settings.return_value = settings
+
+        client = _make_app(db)
+        resp = client.post(
+            "/internal/v1/issue-magic-link",
+            json={"provider": provider, "provider_user_id": "U-attacker"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"]["error"] == "unsupported_provider"
+
+    @patch("src.internal.routes._get_magic_link_secret", return_value=_SECRET)
+    @patch("src.internal.routes.get_settings")
+    def test_refusal_writes_no_nonce(self, mock_settings, _secret, db: AsyncSession):
+        """Rejection must land before persistence — the stored nonce IS the
+        credential the admin callback consumes."""
+        from unittest.mock import MagicMock
+
+        from src.shared.models.vault import MagicLinkNonce
+
+        settings = MagicMock()
+        settings.internal_api_key = _VALID_KEY
+        mock_settings.return_value = settings
+
+        client = _make_app(db)
+        client.post(
+            "/internal/v1/issue-magic-link",
+            json={"provider": "github_app_register", "provider_user_id": "U-attacker"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+
+        async def _nonces():
+            return (await db.execute(select(MagicLinkNonce))).scalars().all()
+
+        assert asyncio.get_event_loop().run_until_complete(_nonces()) == []
+
+    @patch("src.internal.routes._get_magic_link_secret", return_value=_SECRET)
+    @patch("src.internal.routes.get_settings")
+    def test_unknown_provider_is_refused(self, mock_settings, _secret, db: AsyncSession):
+        from unittest.mock import MagicMock
+
+        settings = MagicMock()
+        settings.internal_api_key = _VALID_KEY
+        mock_settings.return_value = settings
+
+        client = _make_app(db)
+        resp = client.post(
+            "/internal/v1/issue-magic-link",
+            json={"provider": "../github", "provider_user_id": "U1"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+
+        assert resp.status_code == 400
+
+
 class TestIssueMagicLink:
     @patch("src.internal.routes._get_magic_link_secret", return_value=_SECRET)
     @patch("src.internal.routes._build_magic_link_url", side_effect=lambda t: f"https://gw.example.com/auth/link/magic?token={t}")
@@ -207,7 +282,16 @@ class TestResolveUser:
         settings.gateway_base_url = "https://gw.example.com"
         mock_settings.return_value = settings
 
-        # Seed a linked identity for alice
+        # Seed a linked identity for alice.
+        #
+        # #5664 (A10): this seed said `verification_method="magic_link"`. The intent
+        # of the test is "a genuinely linked identity resolves", and the bare
+        # `magic_link` string no longer expresses that — it is the ambiguous legacy
+        # value that could mean either a privately delivered confirmation or a
+        # self-assertion, so resolution now declines to trust it. The test keeps its
+        # original intent by seeding a method that IS proof; that an unproven row is
+        # ignored here is asserted separately in
+        # tests/internal/test_resolve_user_trust.py.
         async def _seed():
             identity = UserIdentity(
                 org_id="org-acme",
@@ -215,7 +299,7 @@ class TestResolveUser:
                 team_id="team-eng",
                 provider="slack",
                 provider_user_id="U-known",
-                verification_method="magic_link",
+                verification_method="oauth",
             )
             db.add(identity)
             await db.commit()
@@ -319,6 +403,7 @@ class TestResolveInstallation:
         async def _seed():
             org = await db.get(Organization, "org-acme")
             org.github_installation_ids = ["144082554"]
+            db.add(ChannelTenantMap(provider="github", provider_scope_id="acme-account", installation_id="144082554", org_id="org-acme"))
             await db.commit()
 
         asyncio.get_event_loop().run_until_complete(_seed())
@@ -331,6 +416,47 @@ class TestResolveInstallation:
         )
         assert resp.status_code == 200
         assert resp.json()["tenant_id"] == "org-acme"
+        assert resp.json()["revocation_checked"] is True
+        # Issue #2724 (slice B): the response now also carries provenance, which
+        # is what the webhook's auto-register gate keys its trust decision on.
+        # Seeded orgs are operator-created (migration 025 backfills "operator").
+        assert resp.json()["created_via"] == "operator"
+
+    @patch("src.internal.routes.get_settings")
+    def test_exposes_install_autocreate_provenance(self, mock_settings, db: AsyncSession):
+        """A self-created org shell still resolves 200 — but says so.
+
+        Issue #2724: deliberately NOT a 404. The drift safety-net and
+        ``adp-trigger`` both need the installation → tenant mapping regardless of
+        how the org came to exist; only the auto-register *trust* decision cares
+        about provenance. Returning 404 here would break routing for orgs that are
+        legitimately open-onboarded.
+        """
+        from unittest.mock import MagicMock
+
+        settings = MagicMock()
+        settings.internal_api_key = _VALID_KEY
+        mock_settings.return_value = settings
+
+        async def _seed():
+            org = await db.get(Organization, "org-acme")
+            org.github_installation_ids = ["144082555"]
+            org.created_via = "install_autocreate"
+            db.add(ChannelTenantMap(provider="github", provider_scope_id="acme-account", installation_id="144082555", org_id="org-acme"))
+            await db.commit()
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+
+        client = _make_app(db)
+        resp = client.post(
+            "/internal/v1/resolve-installation",
+            json={"installation_id": "144082555"},
+            headers={"X-Internal-Api-Key": _VALID_KEY},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["tenant_id"] == "org-acme"
+        assert resp.json()["created_via"] == "install_autocreate"
+        assert resp.json()["revocation_checked"] is True
 
     @patch("src.internal.routes.get_settings")
     def test_unknown_installation_returns_404(self, mock_settings, db: AsyncSession):

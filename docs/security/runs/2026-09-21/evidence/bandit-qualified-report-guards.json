@@ -1,0 +1,80 @@
+{
+  "issue": 6108,
+  "source_revision": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+  "candidate_source_commit": "76a15ffda14f10357f2c941d40477b07321a75cb",
+  "file": "scripts/task-api/verify-qualified-report.py",
+  "candidate_file_sha256": "61aeded014467627c67ebbc80162ff7f603729bf1944dc61471dd1825bf21693",
+  "method": "Four explicit _require guards preserve original AST predicates; static AssertionError messages survive optimization.",
+  "fixed_delta": 4,
+  "pending_before": 916,
+  "pending_after": 912,
+  "fixed_records": [
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1443",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 14,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 20,
+        "predicate_ast_sha256": "1eb317733381d51847c57d8563f67e4bf3c6886464529e0bb2c3a55918c96bad"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1444",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 17,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 25,
+        "predicate_ast_sha256": "b36434938b1b9148652c1da393b3eb121ca3d647c7b598292288c8619558541a"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1445",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 22,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 32,
+        "predicate_ast_sha256": "fb3d32c34ab12da732c3a49c03f02e4838c4a6f953992890b93c664ca0172010"
+      }
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1447",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 32,
+      "rule": "B101",
+      "native_severity": "LOW",
+      "guard_evidence": {
+        "candidate_guard_line": 45,
+        "predicate_ast_sha256": "1bead891e6519d66b56c8367f500bb69a7b5c16563cf80f956e200b620ccb6ae"
+      }
+    }
+  ],
+  "behavior_evidence": {
+    "baseline": "All eight tampered variants falsely report PASS under both -O and -OO.",
+    "baseline_failed_regressions": 16,
+    "baseline_passed_regressions": 11,
+    "candidate_passed_regressions": 27,
+    "test_file": "scripts/task-api/tests/test_verify_qualified_report.py",
+    "modes": [
+      "normal",
+      "-O",
+      "-OO"
+    ],
+    "isolation": "run-isolated-cli-test.py; synthetic temporary receipt/JUnit files only; no live qualification, provider calls or workload writes"
+  },
+  "fresh_scan": {
+    "tool": "bandit",
+    "version": "1.7.9",
+    "selected_rule": "B101",
+    "results": 0,
+    "errors": 0,
+    "raw_json_sha256": "95e7aa8a7feb4f668da47524eb0761bc34838ef9eeb193eea0cb066ba1cb2568",
+    "local_raw_artifact": "/tmp/security6108-qualified-bandit.json"
+  },
+  "scope_complete": false
+}

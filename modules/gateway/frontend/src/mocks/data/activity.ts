@@ -5,7 +5,46 @@
  * Issue #1461: Phase 6 — lineage fields (trigger_kind, parent, chain).
  */
 
-import type { InvocationItem, InvocationStatus, InvocationChannel, TriggerKind } from '@/types/activity';
+import type {
+  InvocationItem,
+  InvocationStatus,
+  InvocationChannel,
+  LivenessVerdict,
+  TriggerKind,
+} from '@/types/activity';
+
+/**
+ * Issue #4176: mirror the backend's derived verdict in the mock.
+ *
+ * Deliberately a local re-derivation rather than a random pick: the mock board
+ * must never show a self-contradictory row like "Complete / Unverifiable", which
+ * would train reviewers to distrust a field that is in fact always consistent
+ * with the status beside it.
+ *
+ * Kept in step with `src/activity/liveness.py` — terminal statuses are `exited`,
+ * active ones are `live` inside the 24h window and `unverifiable` outside it.
+ */
+const OBSERVED_TERMINAL: InvocationStatus[] = [
+  'complete',
+  'failed',
+  'rejected',
+  'rate_limited',
+  'no_op',
+  'blocked',
+  'skipped',
+  'budget_stopped',
+  // Issue #3964: a confirmed abort finalization ends the run, so the mock derives
+  // `exited` for it like any other terminal status.
+  'aborted',
+];
+
+const STALENESS_HOURS = 24;
+
+function deriveLiveness(status: InvocationStatus, invokedAt: Date, now: Date): LivenessVerdict {
+  if (OBSERVED_TERMINAL.includes(status)) return 'exited';
+  const ageHours = (now.getTime() - invokedAt.getTime()) / (60 * 60 * 1000);
+  return ageHours <= STALENESS_HOURS ? 'live' : 'unverifiable';
+}
 
 const statuses: InvocationStatus[] = [
   'webhook_received',
@@ -17,7 +56,40 @@ const statuses: InvocationStatus[] = [
   'rejected',
   'rate_limited',
   'no_op',
+  // Issue #4020: the two new non-run statuses. Included here so the mock board
+  // exercises the reason rendering — they were the whole point of the change.
+  'blocked',
+  'skipped',
+  // Issue #4187: a run a spend cap stopped, so the board exercises the amber
+  // badge and the stop-reason row.
+  'budget_stopped',
+  // Issue #3964: a deliberately stopped run, so the board exercises the aborted
+  // badge and the aborted filter option against real-shaped rows. It carries
+  // neither a skip_reason nor a stop_reason (see the two maps below) — no guard
+  // declined it and no cap stopped it; a person did.
+  'aborted',
 ];
+
+/**
+ * Issue #4020: a plausible reason per non-run status.
+ *
+ * Only these three statuses ever carry one; anything else must be null, or the
+ * board would show "why nothing ran" beside a run that did.
+ */
+const skipReasons: Partial<Record<InvocationStatus, string>> = {
+  no_op: 'no_mention',
+  blocked: 'self_re_trigger',
+  skipped: 'idempotency_merged_pr',
+};
+
+/**
+ * Issue #4187: the reason a budget_stopped run carries. Only that status ever
+ * has one — anything else must be null, or the board would claim a cap stopped a
+ * run that finished normally.
+ */
+const stopReasons: Partial<Record<InvocationStatus, string>> = {
+  budget_stopped: 'run_cap_exceeded',
+};
 
 const channels: InvocationChannel[] = ['github', 'github', 'github', 'slack', 'api'];
 
@@ -47,7 +119,20 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
     const repo = repos[Math.floor(Math.random() * repos.length)];
     const issueNumber = channel === 'github' && repo ? Math.floor(Math.random() * 1500) + 1 : null;
     const invokedAt = new Date(Date.now() - Math.random() * 14 * 24 * 60 * 60 * 1000);
-    const isTerminal = ['complete', 'failed', 'rejected', 'rate_limited', 'no_op'].includes(status);
+    const isTerminal = [
+      'complete',
+      'failed',
+      'rejected',
+      'rate_limited',
+      'no_op',
+      'blocked',
+      'skipped',
+      'budget_stopped',
+      // Issue #3964: without this, every mock aborted row would carry a null
+      // `completed_at` — the exact defect AC-A3 names, reproduced in the fixtures
+      // used to review the fix.
+      'aborted',
+    ].includes(status);
     const correlationId = correlationIds[Math.floor(Math.random() * correlationIds.length)];
 
     // Derive trigger_kind: first few items in a chain are human, rest are agent-triggered
@@ -71,6 +156,11 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       persona: personas[Math.floor(Math.random() * personas.length)],
       channel,
       status,
+      // Issue #4176: derived exactly as the backend derives it. The mock spreads
+      // `invoked_at` over 14 days, so non-terminal rows past the 24h window
+      // produce `unverifiable` naturally — the board therefore exercises the one
+      // verdict that had no representation before this change.
+      liveness: deriveLiveness(status, invokedAt, new Date()),
       topic: topics[Math.floor(Math.random() * topics.length)],
       summary: status === 'complete' ? `Completed work on issue #${issueNumber || i + 1}` : null,
       source_url:
@@ -98,6 +188,9 @@ export function generateMockInvocations(count: number = 30): InvocationItem[] {
       call_count: isTerminal ? Math.floor(Math.random() * 40) + 1 : null,
       // Error detail for failed runs (drives the detail view)
       error_message: status === 'failed' ? 'Model access error: throttled by Bedrock' : null,
+      // Issue #4020: why this trigger produced no run (non-run statuses only)
+      skip_reason: skipReasons[status] ?? null,
+      stop_reason: stopReasons[status] ?? null,
       // Issue #1653: run log link (Tier 2 — null until worker persists check_run_url)
       run_log_url: null,
       // Issue #3069: S3 transcript key (present for completed runs after #3061)

@@ -24,29 +24,60 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      legacy_security_update:
+        description: 'Promote the reviewed legacy gateway security image after a test Job'
+        type: boolean
+        default: false
+      legacy_dry_run:
+        description: 'Validate the legacy gateway update server-side without applying'
+        type: boolean
+        default: true
       skip_deploy:
         description: 'Only build the image; skip the ScaledJob update.'
         type: boolean
         default: false
 
+concurrency:
+  group: chat-agent-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
+  ADP_CHAT_EXISTING_NAMESPACE_ONLY: 'true'
+  ADP_CHAT_MODEL_ACCESS_MODE: verify
+  ADP_CHAT_MODEL_POLICY_ENABLED: ${{ vars.ADP_CHAT_MODEL_POLICY_ENABLED || 'false' }}
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway-agents
   EKS_CLUSTER: adp-dev-eks-cluster
-  ECR_REPO: adp-agent-gateway
+  ECR_REPO: adp-chat-agent
   CODEBUILD_PROJECT: adp-dev-chat-agent
 
 jobs:
   build-and-deploy:
     name: Build TS Image and Update Chat ScaledJob
+    if: github.ref == 'refs/heads/main' && inputs.legacy_security_update != true
     runs-on: arc-runner-org
-    # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
+    environment: adp-chat-deploy-dev
+    # AWS authority comes from the protected deployment environment.
     permissions:
+      id-token: write
       contents: read
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -58,71 +89,22 @@ jobs:
       # CLIs just need to be present to use them.
       - name: Install zip + AWS CLI + kubectl + terraform
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v kubectl >/dev/null 2>&1; then
-            KV=$(curl -sL https://dl.k8s.io/release/stable.txt)
-            curl -sL "https://dl.k8s.io/release/${KV}/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-            rm /tmp/kubectl
-          fi
-          if ! command -v terraform >/dev/null 2>&1; then
-            # Install HashiCorp apt source; pinning a Terraform version major
-            # avoids drift relative to the rest of the project (1.14.x per
-            # session-context). apt-get -y --allow-downgrades lets us pin later.
-            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends terraform
-          fi
-          aws --version
-          kubectl version --client
-          terraform version | head -1
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       # ── 1. Ensure CodeBuild project exists and is pointed at the right buildspec
-      - name: Ensure CodeBuild project
+      - name: Verify Terraform-managed CodeBuild project
         run: |
-          # Role name matches platform/scripts/deploy-all.sh (CB_ROLE_NAME).
-          CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
-          SERVICE_ROLE_ARN=$(aws iam get-role \
-            --role-name "$CB_ROLE_NAME" \
-            --query 'Role.Arn' --output text 2>/dev/null || echo "")
-          if [ -z "$SERVICE_ROLE_ARN" ]; then
-            echo "${CB_ROLE_NAME} missing — run platform/scripts/deploy-all.sh once to create it." >&2
+          set -euo pipefail
+          EXISTS=$(aws codebuild batch-get-projects \
+            --names "${CODEBUILD_PROJECT}" \
+            --region "${AWS_REGION}" \
+            --query 'projects | length(@)' --output text)
+          if [ "$EXISTS" -ne 1 ]; then
+            echo "::error::${CODEBUILD_PROJECT} is missing — apply platform/infra before running this build lane."
             exit 1
           fi
-
-          SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
-          EXISTS=$(aws codebuild batch-get-projects \
-            --names "${{ env.CODEBUILD_PROJECT }}" \
-            --region "${AWS_REGION}" \
-            --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
-
-          CMD="create-project"
-          [ "$EXISTS" -gt 0 ] && CMD="update-project"
-
-          aws codebuild $CMD --region "${AWS_REGION}" \
-            --name "${{ env.CODEBUILD_PROJECT }}" \
-            --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"codebuild/bs-chat-agent.yml\"}" \
-            --artifacts '{"type":"NO_ARTIFACTS"}' \
-            --environment '{
-              "type":"LINUX_CONTAINER",
-              "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
-              "computeType":"BUILD_GENERAL1_MEDIUM",
-              "privilegedMode":true
-            }' \
-            --service-role "$SERVICE_ROLE_ARN" > /dev/null
-
       # ── 2. Build the image via CodeBuild (per-build isolated source) ────
       - name: Build image via CodeBuild
         id: build
@@ -169,12 +151,46 @@ jobs:
           echo "Chat ScaledJob now uses image: ${AGENT_IMAGE}"
 
       - name: Summary
+        env:
+          ADP_INPUT_611C454309: ${{ inputs.skip_deploy }}
         run: |
           echo "## Chat Agent Deploy" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Image**: ${{ steps.build_info.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build_info.outputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ inputs.skip_deploy }}" = "true" ]; then
+          if [ "${ADP_INPUT_611C454309}" = "true" ]; then
             echo "- **Deploy**: skipped (workflow_dispatch input)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- **ScaledJob**: chat-agent-worker in ns ${{ env.NAMESPACE }} on ${{ env.EKS_CLUSTER }}" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  legacy-security-update:
+    name: Update existing legacy gateway security image
+    if: github.ref == 'refs/heads/main' && inputs.legacy_security_update == true
+    runs-on: arc-runner-org
+    environment: adp-chat-deploy-dev
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: us-east-1
+      - name: Validate and promote reviewed legacy gateway image
+        env:
+          DRY_RUN: ${{ inputs.legacy_dry_run }}
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = 879318057152
+          aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION"
+          args=()
+          if [ "$DRY_RUN" = true ]; then args+=(--dry-run); fi
+          python3 modules/agent-factory/scripts/update-legacy-gateway-image.py "${args[@]}"

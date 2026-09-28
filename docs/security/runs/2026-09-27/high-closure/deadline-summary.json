@@ -1,0 +1,39 @@
+{
+  "time": "2026-09-27T22:44:55.177259+00:00",
+  "inventory": "/workspaces/projects/security27-high-closure/live-refresh-20260927T224416Z",
+  "observed": {
+    "Critical": 0,
+    "High": 99,
+    "occurrences": 662
+  },
+  "conservative": {
+    "Critical": 0,
+    "High": 104,
+    "occurrences": 791
+  },
+  "desired_resolution_errors": [],
+  "desired_resolutions": "/workspaces/projects/security27-high-closure/deadline2244-reconciled/desired-resolutions.json",
+  "carried_occurrences": 0,
+  "carried_workloads": [],
+  "inventory_coverage": {
+    "inventory": "/workspaces/projects/security27-high-closure/live-refresh-20260927T224416Z",
+    "inventory_resource_receipt_sha256": "24c8becd46a8ea082c02a44002e2a1f916c8a3512d0e2ea295dba7636f11d6fa",
+    "generated_at": "2026-09-27T22:44:19.517651+00:00",
+    "pods": 111,
+    "container_spec_rows": 168,
+    "active_pod_container_rows": 168,
+    "unique_observed_digests": 31,
+    "active_pod_digests": 31,
+    "historical_only_digests": 0,
+    "desired_template_rows": 40,
+    "gap_counts": {
+      "owner_chain_incomplete": 23,
+      "desired_template_without_observed_digest": 5
+    },
+    "scope": "point-in-time EKS image/package inventory; not source/static/secret findings or external compute",
+    "init_container_policy": "include init images attached to active pods; report their exposure class separately"
+  },
+  "unmapped_observed": [],
+  "closure_limit": "Coverage gaps remain explicit. This is image/package scope; source findings are separately reconciled.",
+  "candidate_fixes_not_automatically_deducted": true
+}

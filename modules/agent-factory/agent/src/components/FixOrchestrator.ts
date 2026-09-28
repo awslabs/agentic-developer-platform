@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { createPolicyQuery } from '../model-policy-runtime';
 import { IssueContext, CodeResult } from '../types';
 import { Logger } from './Logger';
 import { GitHubClient } from './GitHubClient';
@@ -53,23 +53,37 @@ export class FixOrchestrator {
       console.log('\n📋 Analyzing codebase and generating proposal...\n');
       const proposal = await this.generateProposal(fixInstructions, repoDir);
 
-      // Step 2: Post proposal and wait for approval
+      // Step 2: Post proposal and wait for approval.
+      // The request id must be named in the answer so a stale `/approve` on a
+      // busy PR cannot authorize this fix (issue #4181).
+      const requestId = `fix-${prNumber}`;
       await this.githubClient.createComment(prNumber,
-        `## 📋 Proposed Fix\n\n${proposal}\n\n---\n**To approve:** Comment \`/approve\`\n**To reject:** Comment \`/reject <feedback>\``
+        `## 📋 Proposed Fix\n\n${proposal}\n\n---\n**To approve:** Comment \`/approve ${requestId}\`\n**To reject:** Comment \`/reject ${requestId} <feedback>\`\n\n_The request id is required. You need write access to this repository to approve._`
       );
 
-      console.log('\n⏳ Waiting for /approve or /reject...\n');
-      const approval = await this.approvalService.pollForApproval(prNumber, new Date());
+      console.log(`\n⏳ Waiting for \`/approve ${requestId}\` or \`/reject ${requestId}\`...\n`);
+      const approval = await this.approvalService.pollForApproval(prNumber, new Date(), requestId);
 
-      if (!approval.approved) {
+      // Fail-closed: only 'allowed-once' proceeds.
+      if (approval.outcome !== 'allowed-once') {
+        const reason =
+          approval.outcome === 'unavailable'
+            ? 'Could not reach GitHub to request approval, so no changes were made.'
+            : approval.feedback || 'No feedback';
+        this.logger.warn('Fix not approved — making no changes', {
+          component: 'FixOrchestrator',
+          prNumber,
+          outcome: approval.outcome,
+          approver: approval.approver,
+        });
         await this.githubClient.createComment(prNumber,
-          `## ❌ Fix Rejected\n\n${approval.feedback || 'No feedback'}\n\nUse \`/fixPR\` again with updated instructions.`
+          `## ❌ Fix Not Applied\n\n**Outcome:** \`${approval.outcome}\`\n\n${reason}\n\nUse \`/fixPR\` again with updated instructions.`
         );
         return;
       }
 
       // Step 3: Apply the fix (with retries)
-      console.log('\n✅ Approved! Applying fix...\n');
+      console.log(`\n✅ Approved by ${approval.approver ?? 'approver'}! Applying fix...\n`);
       await this.githubClient.createComment(prNumber, `## 🔨 Applying fix...`);
 
       const MAX_FIX_ATTEMPTS = 3;
@@ -146,7 +160,7 @@ export class FixOrchestrator {
   private async generateProposal(instructions: string, repoDir: string): Promise<string> {
     let proposal = '';
 
-    for await (const message of query({
+    for await (const message of await createPolicyQuery({
       prompt: `You are analyzing a PR branch to propose a targeted fix.
 
 ## Fix Instructions:
@@ -188,7 +202,7 @@ Do NOT reimplement the entire feature. Only propose changes related to the fix i
     let turnCount = 0;
     const filesModified: string[] = [];
 
-    for await (const message of query({
+    for await (const message of await createPolicyQuery({
       prompt: `You are applying a targeted fix to an existing PR.
 
 ## Fix Instructions:

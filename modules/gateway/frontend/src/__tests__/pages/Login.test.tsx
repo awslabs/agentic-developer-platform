@@ -8,6 +8,7 @@ vi.mock('@/services/auth', () => ({
   buildLoginUrl: vi.fn(),
   buildGitHubLoginUrl: vi.fn(),
   fetchLoginOptions: vi.fn(),
+  storePostLoginRedirect: vi.fn(),
 }));
 
 // Mock cognito config
@@ -27,6 +28,14 @@ function renderLogin() {
 }
 
 describe('Login Page', () => {
+  it('offers a deployment-specific public install command before sign-in', () => {
+    renderLogin();
+    const command = screen.getByTestId('cli-install-command').textContent;
+    expect(command).toContain(`${window.location.origin}/api/cli/install.sh`);
+    expect(command).toContain(`--gateway-url '${window.location.origin}/api'`);
+    expect(screen.getByText('adp admin setup')).toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(isCognitoConfigured).mockReturnValue(true);

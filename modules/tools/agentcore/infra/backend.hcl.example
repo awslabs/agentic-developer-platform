@@ -1,0 +1,5 @@
+# Supply a separate, locked S3 backend and confirm the existing Cyber key differs.
+bucket         = "REPLACE-with-existing-state-bucket"
+key            = "REPLACE/tools/agentcore/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "REPLACE-with-existing-lock-table"

@@ -1,0 +1,108 @@
+[project]
+name = "harness-jobs"
+version = "0.1.0"
+description = "Shared durable operation store and transactional dispatch outbox"
+requires-python = ">=3.11"
+# Standard library only. Every entry point is handed a connection or a factory, so
+# the package never opens one and does not need a driver -- which is what lets the
+# API server (asyncpg) and any other consumer install it without a dependency
+# conflict, and what keeps a DSN from ever being read here. Same reasoning as
+# `superplane-contracts`.
+dependencies = []
+
+[project.optional-dependencies]
+# Only the test lane needs a driver, because only the tests open a connection.
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "asyncpg>=0.30.0",
+    # A real PostgreSQL binary run against a temp directory over a unix socket -- no
+    # Docker, no root, no listening port. Needed because ARC runners have no
+    # Docker-in-Docker (`gateway-ci.yml:344`), so a service container is not an option
+    # and a lane with no server would report green on 56 skips.
+    #
+    # The marker is not optional: pgserver publishes wheels for <= 3.12 only, and
+    # without it `pip install .[dev]` fails outright on 3.13 instead of falling back to
+    # an external database. Same declaration as `modules/gateway/pyproject.toml:85`.
+    "pgserver>=0.1.4; python_version < '3.13'",
+    # Python 3.13+ fallback: pgserver has no 3.13 wheel, so use embedded-postgres
+    # which ships a real PostgreSQL binary for all supported CPython versions.
+    # conftest.py tries pgserver first (for < 3.12 compatibility), then falls back to
+    # embedded_postgres. Both provide get_uri() and cleanup().
+    "embedded-postgres>=18.0; python_version >= '3.13'",
+    # Needed only to IMPORT the upstream being compared against, not by this package:
+    # `contracts/hitl-ticket/v1/models.py` is a pydantic module, and
+    # `test_approval_contract_agreement.py` reads the four HITL result values off it to
+    # prove this package's copy has not drifted. Without pydantic here those two tests
+    # `importorskip`, so the drift guard skipped in CI -- honest, but it meant the
+    # duplicated vocabulary was checked by nothing anywhere: locally the author may
+    # happen to have pydantic, and in CI nobody did.
+    #
+    # This does NOT put pydantic in the runtime closure. `dependencies` above stays
+    # empty and pydantic is not imported by `harness_jobs`; only the test that reads
+    # the contract needs it. Pinned as `hitl-ticket-contract-tests.yml` pins it.
+    "pydantic>=2,<3",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["harness_jobs*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+# ADP's ruleset, stated here rather than inherited. There is no repository-root ruff
+# config, so a bare `ruff check` on this directory silently uses ruff's *defaults* --
+# a different ruleset from the one the repo's modules select, which means "lint passes"
+# would mean something different depending on where it was run from. Pinning it makes
+# the local run and the CI run the same run.
+#
+# `select` and `line-length` match `modules/gateway/pyproject.toml`, which is what "ADP
+# conventions" refers to elsewhere in the repo (see
+# `modules/domain-apps/superplane/.ruff.toml`, which cites the same pair).
+[tool.ruff]
+# 88, ruff's default, which is what the neighbouring `superplane-contracts` package is
+# actually formatted at (`ruff format --check contracts/` -> 28 files already
+# formatted; the same check at 150 reformats them).
+#
+# Deliberately NOT the gateway's `line-length = 150`. That value is a lint *ceiling* for
+# a tree formatted to no particular width; adopting it here would make `ruff format`
+# rewrite this package to long lines and put it out of step with the contracts package
+# it is read side-by-side with. A lint ceiling and a formatter width are different
+# settings that happen to share a name.
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+# Two exemptions, both because this package's spelling is fixed by a contract it
+# consumes rather than chosen here. Listed as config with reasons rather than sprinkled
+# as `# noqa`, so the justification is in one reviewable place and a reader does not
+# have to reconstruct it from eight suppression comments.
+ignore = [
+    # N818 wants an `Error` suffix on every exception. These names mirror the domain
+    # contract's (`ContractViolation`, `ProvisioningRefused`, `ProvisioningUnavailable`
+    # in `superplane_contracts`), which do not carry the suffix either. Renaming to
+    # `OperationRefusedError` would mean the two halves of one contract spell the same
+    # concept differently, and `tests/test_contract_agreement.py` exists precisely to
+    # stop that kind of drift -- so satisfying this rule would defeat a check this
+    # package is built around.
+    "N818",
+    # UP042 suggests `enum.StrEnum` in place of `(str, Enum)`. The domain contract's
+    # `OperationState` is `(str, Enum)`, and these values are stored in a database
+    # column and compared across the boundary. Matching the upstream spelling keeps the
+    # two enums obviously the same shape; switching one side to StrEnum changes
+    # `str()` and formatting behaviour, which is a silent difference in exactly the
+    # values that cross the boundary.
+    "UP042",
+]
+
+[tool.ruff.lint.isort]
+# `harness_jobs` is the package in this directory, not a third-party dependency. Without
+# this, isort groups it with `pytest` and the resulting "fix" is import ordering that
+# contradicts every other module in the repo.
+known-first-party = ["harness_jobs"]

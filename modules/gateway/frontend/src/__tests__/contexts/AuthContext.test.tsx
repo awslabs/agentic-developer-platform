@@ -355,6 +355,25 @@ describe('AuthContext', () => {
     });
   });
 
+  it('reloads existing pages when a timed refresh picks up another workspace', async () => {
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    const home = { id: 'sub', orgId: 'home', role: AdminRole.ORG_ADMIN, permissions: [], createdAt: '' };
+    vi.mocked(authService.getAccessToken).mockReturnValue('home-token');
+    vi.mocked(authService.isTokenExpired).mockReturnValue(false);
+    vi.mocked(authService.getTokenExpiry).mockReturnValue(Date.now() + 3600000);
+    vi.mocked(authService.getCurrentUserFromToken).mockReturnValue(home);
+    vi.mocked(authService.refreshToken).mockResolvedValue({ token: 'work-token', expiresAt: '' });
+    const { result } = renderHook(() => useAuthContext(), { wrapper: createWrapper() });
+    await waitFor(() => expect(result.current.isAuthenticated).toBe(true));
+    vi.mocked(authService.getCurrentUserFromToken).mockReturnValue({ ...home, orgId: 'work', role: AdminRole.MEMBER });
+    await act(async () => { await vi.advanceTimersByTimeAsync(55 * 60 * 1000); });
+    expect(assign).toHaveBeenCalledWith('/');
+    // Until document navigation completes, old components keep the old label.
+    expect(result.current.user?.orgId).toBe('home');
+    vi.unstubAllGlobals();
+  });
+
   describe('setAuthState', () => {
     it('updates auth state directly', async () => {
       vi.mocked(authService.getAccessToken).mockReturnValue(null);

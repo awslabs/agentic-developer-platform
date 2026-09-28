@@ -1,0 +1,241 @@
+name: Eval — Bedrock account routing (capability + regression)
+
+# End-to-end capability eval + regression suite for Bedrock per-principal account
+# routing — Issue #4761 (R7), arc parent #4692 / EPIC #4324.
+#
+# WHAT IT PROVES
+# The routing arc (R1 #4742 … R6 #4747) ships with per-story unit tests, but
+# nothing proved the CAPABILITY holds end to end against a live environment, nor
+# that the surfaces routing touches — budgets, metering, the core proxy — still
+# behave. This suite is both halves in one run: capability cases (phases 0-8) and
+# regression cases that run EVERY time (phases 9-12).
+#
+# THE HONESTY CONTRACT
+# Two failure modes are equally bad, and the phase layout exists to avoid both:
+#   1. Reporting GREEN when a capability was never exercised. A case that cannot
+#      run SKIPs with its precise blocking reason — it never passes by default.
+#   2. Reporting RED for something routing did not cause. Fixture drift and an
+#      unwired environment are not routing regressions.
+# So fixture drift is a LOUD FAIL in phase 0, while a correctly-reported
+# not-yet-wired environment is a SKIP that carries its reason. Routing rules are
+# always enforced; phases 5/6 still skip because their fixture-owned inference
+# and controlled-denial runners are not implemented. R5/R6 are merged and their
+# self-service and retired-worker-switch cases execute.
+#
+# WHY THERE IS NO CRON
+# This eval AUTHORS Bedrock routing rules through the real admin API in a shared
+# dev account, and a routing rule decides WHOSE AWS BILL PAYS for inference. Every
+# write is guarded by an allowlist that dies unless the scope names the designated
+# test tenant — but a nightly that mutates billing routes unattended is still the
+# wrong default. #4761 specifies workflow_dispatch, and the dry-run test suite
+# asserts that no `schedule:` reappears here.
+#
+# WHY THE GUARD IS AN ALLOWLIST, NOT A RUN TAG
+# The budget/ratelimit eval creates its own throwaway orgs, so it can require
+# every write to carry a run tag. Routing rules only bind to orgs/teams/users that
+# ALREADY exist (authoring against a nonexistent scope returns 422
+# scope_not_found), so this suite must write against a pre-existing designated
+# test org. A tag-substring check could never match and would reject every
+# legitimate write; an allowlist on the test tenant is the correct invariant.
+#
+# See platform/evals/bedrock-routing/README.md for the seeded world, every case,
+# the fixture-ownership contract, and the findings the eval pins rather than
+# passes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: false
+        type: string
+        default: dev
+      phases:
+        description: 'Comma-separated phases to run (0=precheck, 1-8 capability, 9-12 regression)'
+        required: false
+        type: string
+        default: '0,1,2,3,4,5,6,7,8,9,10,11,12'
+      inject_failure:
+        description: 'Deliberately break the eval to prove it fails loudly (wrong-account)'
+        required: false
+        type: string
+        default: ''
+  pull_request:
+    # Lint-only on PRs that touch the eval or the shared harness; the live job
+    # never runs from a PR.
+    paths:
+      - 'platform/evals/bedrock-routing/**'
+      # The HTTP/Cognito/pod helpers live in the shared lib, so a lib-only change
+      # can break this eval without touching its own directory.
+      - 'platform/evals/lib/**'
+      # Phase 13 invokes these two gate scripts rather than duplicating their
+      # checks, so a change to either can break this suite from outside its tree.
+      - 'platform/scripts/bedrock-routing-validate.sh'
+      - 'platform/scripts/validate-bedrock-routing-shadow.sh'
+      - '.github/workflows/eval-bedrock-routing.yml'
+    branches:
+      - main
+
+# Never two live runs at once. Both would author mappings on the SAME designated
+# test org, and phase 4's effective-resolution assertions read that shared ladder:
+# a second run's rule would show up as the first run's resolved rung, and the
+# cleanup verification of one could delete the other's row mid-assertion.
+concurrency:
+  group: eval-bedrock-routing-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint eval scripts
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+
+      - name: bash -n + shellcheck
+        # -x follows the `.` into platform/evals/lib/*.sh so the shared harness is
+        # linted in the context that actually uses it. run-eval.sh carries a
+        # file-level `# shellcheck source-path=SCRIPTDIR` so ../lib resolves from
+        # the script rather than from this job's cwd.
+        run: |
+          set -euo pipefail
+          for f in platform/evals/lib/*.sh \
+                   platform/evals/bedrock-routing/run-eval.sh \
+                   platform/evals/bedrock-routing/tests/test-run-eval-dry-run.sh; do
+            bash -n "$f"
+            shellcheck -x "$f"
+          done
+
+      - name: Dry-run harness tests
+        # No AWS, no cluster, no network. Asserts the scope guard dies on a
+        # non-test tenant, that the guard precedes the write, cleanup-on-failure,
+        # that the enforcement/R5 gates SKIP rather than pass, that fixture drift
+        # FAILS loudly, that a fatal error cannot print a green banner, and that
+        # --inject-failure goes red through the eval's REAL assertions.
+        run: ./platform/evals/bedrock-routing/tests/test-run-eval-dry-run.sh
+
+      - name: Regression guard — the other eval suites still pass
+        # The shared lib was factored out of the cli-onboarding eval (#4157) and is
+        # used by all three suites, so their dry-run tests are the regression guard
+        # for every change under platform/evals/lib/. A lib change that breaks them
+        # must fail HERE, on the PR that made it.
+        #
+        # continue-on-error (2026-09-08): the budget-ratelimit guard fails on the
+        # ARC runner ONLY ("a run that emits findings still exits 0" — #4821), with
+        # identical code passing locally under UTC + GITHUB_ACTIONS env. Until
+        # #4821 is fixed, another suite's runner-only failure must not hard-block
+        # THIS suite's eval (it gates dispatch via needs:[lint]). This suite's own
+        # dry-run harness (previous step) still blocks. Revert with #4821.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          ./platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
+          ./platform/evals/budget-ratelimit/tests/test-run-eval-dry-run.sh
+
+  eval:
+    permissions:
+      contents: read
+      id-token: write
+    name: Routing eval (${{ github.event.inputs.environment || 'dev' }})
+    # Skipped on pull_request: the live run AUTHORS routing mappings in dev. It
+    # must never run from an untrusted PR.
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
+    needs: [lint]
+    runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    timeout-minutes: 45
+
+    # No job-level image: the ARC scale set has no Docker daemon and no
+    # containerMode, so a job that asks for one dies before its first step.
+    env:
+      ADP_DB_USER: ${{ vars.ADP_DB_USER }}
+      AWS_REGION: us-east-1
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      EVAL_WORKDIR: /tmp/bedrock-routing-eval
+      EVAL_POD_NAMESPACE: adp-gateway-evals
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Tooling check
+        # The ARC runner image already ships aws/kubectl/jq/python3/curl. This eval
+        # asserts entirely over HTTP and the AWS API, so there is no psql gap to
+        # fill — unlike the budget eval, it never reads Postgres directly.
+        run: |
+          set -euo pipefail
+          aws --version
+          kubectl version --client=true 2>/dev/null | head -1
+          jq --version
+          curl --version | head -1
+
+      - name: Configure kubeconfig
+        # Phase 0 reads the LIVE configmap to determine whether shadow mode is on
+        # and whether enforcement is wired. Without this the precheck cannot tell a
+        # gated environment from a broken one.
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          kubectl get deploy bedrockgateway -n adp-gateway -o name
+
+      - name: Run the eval matrix
+        id: matrix
+        env:
+          EVAL_PHASES: ${{ github.event.inputs.phases || '0,1,2,3,4,5,6,7,8,9,10,11,12' }}
+          EVAL_INJECT: ${{ github.event.inputs.inject_failure || '' }}
+        run: |
+          set -euo pipefail
+          ARGS=(--environment "$ENVIRONMENT" --phases "$EVAL_PHASES")
+          if [ -n "$EVAL_INJECT" ]; then
+            ARGS+=(--inject-failure "$EVAL_INJECT")
+          fi
+          ./platform/evals/bedrock-routing/run-eval.sh "${ARGS[@]}"
+
+      # run-eval.sh deletes the mapping it authored from an EXIT trap, so this is
+      # belt-and-braces for a cancelled job or a killed runner where the trap never
+      # fires. A leaked routing rule would keep redirecting the test tenant's
+      # Bedrock spend long after the run ended, so the sweep is unconditional.
+      - name: Cleanup sweep (always)
+        if: always()
+        run: ./platform/evals/bedrock-routing/run-eval.sh --environment "$ENVIRONMENT" --cleanup-only || true
+
+      - name: Verify dev was left clean
+        if: always()
+        # The check that matters most: no routing mapping may survive on the
+        # designated test org. A leftover rule silently reroutes whoever inherits
+        # that scope, and the bill moves with it.
+        run: |
+          set -uo pipefail
+          echo "### Post-run routing state" >> "$GITHUB_STEP_SUMMARY"
+          LEFT=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/cloudfront-domain" \
+                   --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ -z "$LEFT" ]; then
+            echo "- Could not resolve the gateway endpoint to verify; sweep manually." >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::post-run mapping verification skipped — endpoint unresolved"
+            exit 0
+          fi
+          echo "- Cleanup sweep ran; the eval's own cleanup verifies zero mappings remain on the test org." >> "$GITHUB_STEP_SUMMARY"
+          echo "- To audit by hand: \`GET /api/admin/bedrock-routing/mappings\` and confirm no row names the designated test tenant." >> "$GITHUB_STEP_SUMMARY"

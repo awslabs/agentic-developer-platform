@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 from typing import Any, Literal
 
-from src.chat_logging.comprehend_client import ComprehendPiiDetector
+from src.chat_logging.comprehend_client import PII_DETECTION_FAILED_PLACEHOLDER, ComprehendPiiDetector
 from src.chat_logging.config import ScrubLevel, get_chat_logging_settings
 from src.chat_logging.s3_writer import ChatLogS3Writer
 from src.chat_logging.schemas import ChatLog, ChatLogRequest, ChatLogResponse, ScrubbingMetadata, UsageInfo
@@ -23,6 +23,10 @@ from src.chat_logging.scrubber import ScrubPipeline
 from src.shared.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Keep cancellation-shielded stream finalizers alive until they schedule the
+# existing asynchronous S3 write, even after the response task has disappeared.
+_stream_finalizers: set[asyncio.Task] = set()
 
 
 class ChatLoggingService:
@@ -85,6 +89,16 @@ class ChatLoggingService:
             self._comprehend_detector = ComprehendPiiDetector(region_name=self._region)
         return self._comprehend_detector
 
+    @staticmethod
+    def _failed_request_payload() -> dict[str, Any]:
+        """Return a schema-safe request with no unverified transcript content."""
+        return {"messages": [{"content": PII_DETECTION_FAILED_PLACEHOLDER}]}
+
+    @staticmethod
+    def _failed_response_payload() -> dict[str, Any]:
+        """Return a schema-safe response with no unverified transcript content."""
+        return {"content": PII_DETECTION_FAILED_PLACEHOLDER}
+
     @property
     def enabled(self) -> bool:
         """Check if logging is enabled."""
@@ -122,6 +136,11 @@ class ChatLoggingService:
         request_body: dict[str, Any],
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
+        root_human_id: str = "",
+        department_id: str | None = None,
+        pricing_decision: dict[str, Any] | None = None,
+        pricing_capture: Any = None,
+        only_priced: bool = False,
     ) -> None:
         """Fire-and-forget log a chat interaction.
 
@@ -141,7 +160,28 @@ class ChatLoggingService:
             request_body: Full request body
             response_body: Full response body
             headers: Request headers (for scrubbing)
+            root_human_id: Issue #4300 — the human (canonical ``users.id``) who
+                initiated this agent chain, from ``TokenContext.attributed_user_id``.
+                Empty when the request is not human-rooted. The budget-usage-tracker
+                Lambda reads it to write the cumulative ``root_user`` ledger row.
         """
+        if only_priced and (pricing_capture is None or pricing_capture.decision is None):
+            return
+        if pricing_capture is not None and pricing_capture.routing is not None:
+            # Never send a new Claude request down the historical no-decision
+            # path after missing usage or a pricing failure.
+            if pricing_capture.decision is None:
+                return
+            pricing_decision = pricing_capture.decision
+            measured = pricing_decision["usage"]
+            event_usage = {
+                "input_tokens": measured["uncached_input_tokens"],
+                "output_tokens": measured["output_tokens"],
+                "cache_creation": pricing_capture.raw_usage.get("cache_creation"),
+            }
+            for name in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                event_usage[name] = measured[name] if measured["raw"][name] is not None else None
+            response_body = {**response_body, "usage": event_usage}
         if not self.should_log(model):
             return
 
@@ -153,6 +193,7 @@ class ChatLoggingService:
                 org_id=org_id,
                 user_id=user_id,
                 team_id=team_id,
+                department_id=department_id,
                 account_type=account_type,
                 model=model,
                 api_format=api_format,
@@ -160,6 +201,8 @@ class ChatLoggingService:
                 request_body=request_body,
                 response_body=response_body,
                 headers=headers,
+                root_human_id=root_human_id,
+                pricing_decision=pricing_decision,
             ),
             name=f"chat_log_{request_id}",
         )
@@ -178,6 +221,9 @@ class ChatLoggingService:
         request_body: dict[str, Any],
         response_body: dict[str, Any],
         headers: dict[str, str] | None = None,
+        root_human_id: str = "",
+        department_id: str | None = None,
+        pricing_decision: dict[str, Any] | None = None,
     ) -> None:
         """Implementation of chat logging.
 
@@ -201,22 +247,56 @@ class ChatLoggingService:
             pii_types_found: list[str] = []
 
             # Step 2: Apply Comprehend PII detection if standard level
+            pii_detection_failed = False
             if self._scrub_level == ScrubLevel.STANDARD:
+                pii_detection_failures: list[tuple[str, str]] = []
                 try:
                     comprehend = self._get_comprehend_detector()
-
-                    # Process request
-                    scrubbed_request, req_pii_result = await comprehend.detect_and_redact_dict(scrubbed_request)
-                    total_redactions += req_pii_result.redactions_count
-                    pii_types_found.extend(req_pii_result.pii_types_found)
-
-                    # Process response
-                    scrubbed_response, resp_pii_result = await comprehend.detect_and_redact_dict(scrubbed_response)
-                    total_redactions += resp_pii_result.redactions_count
-                    pii_types_found.extend(resp_pii_result.pii_types_found)
-
                 except Exception as e:
-                    logger.warning(f"Comprehend PII detection failed, continuing with regex only: {e}")
+                    failure = type(e).__name__
+                    pii_detection_failures.extend([("request", failure), ("response", failure)])
+                    scrubbed_request = self._failed_request_payload()
+                    scrubbed_response = self._failed_response_payload()
+                    total_redactions += 2
+                else:
+                    try:
+                        scrubbed_request, req_pii_result = await comprehend.detect_and_redact_dict(scrubbed_request)
+                        total_redactions += req_pii_result.redactions_count
+                        pii_types_found.extend(req_pii_result.pii_types_found)
+                        if req_pii_result.error:
+                            pii_detection_failures.append(("request", req_pii_result.error))
+                            scrubbed_request = self._failed_request_payload()
+                    except Exception as e:
+                        pii_detection_failures.append(("request", type(e).__name__))
+                        scrubbed_request = self._failed_request_payload()
+                        total_redactions += 1
+
+                    try:
+                        scrubbed_response, resp_pii_result = await comprehend.detect_and_redact_dict(scrubbed_response)
+                        total_redactions += resp_pii_result.redactions_count
+                        pii_types_found.extend(resp_pii_result.pii_types_found)
+                        if resp_pii_result.error:
+                            pii_detection_failures.append(("response", resp_pii_result.error))
+                            scrubbed_response = self._failed_response_payload()
+                    except Exception as e:
+                        pii_detection_failures.append(("response", type(e).__name__))
+                        scrubbed_response = self._failed_response_payload()
+                        total_redactions += 1
+
+                if pii_detection_failures:
+                    pii_detection_failed = True
+                    failed_sides = sorted({side for side, _ in pii_detection_failures})
+                    logger.error(
+                        "Comprehend PII detection failed; affected transcript sides replaced with fail-closed placeholders",
+                        extra={
+                            "request_id": request_id,
+                            "model": model,
+                            "failed_sides": failed_sides,
+                            "failure_count": len(pii_detection_failures),
+                            "scrub_level_configured": self._scrub_level.value,
+                            "scrub_level_effective": "fail_closed",
+                        },
+                    )
 
             # Step 3: Build chat log record
             chat_log = self._build_chat_log(
@@ -225,6 +305,9 @@ class ChatLoggingService:
                 org_id=org_id,
                 user_id=user_id,
                 team_id=team_id,
+                department_id=department_id,
+                root_human_id=root_human_id,
+                pricing_decision=pricing_decision,
                 account_type=account_type,
                 model=model,
                 api_format=api_format,
@@ -236,6 +319,7 @@ class ChatLoggingService:
                 pii_types_found=list(set(pii_types_found)),
                 patterns_matched=all_patterns,
                 headers_scrubbed=headers_scrubbed,
+                pii_detection_failed=pii_detection_failed,
             )
 
             # Step 4: Write to S3
@@ -257,14 +341,14 @@ class ChatLoggingService:
                 },
             )
 
-        except Exception as e:
+        except Exception as error:
             # Log error but don't propagate - this is fire-and-forget
             logger.error(
-                f"Failed to log chat: {e}",
+                "Failed to log chat",
                 extra={
                     "request_id": request_id,
                     "model": model,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
             )
 
@@ -275,6 +359,7 @@ class ChatLoggingService:
         org_id: str,
         user_id: str | None,
         team_id: str | None,
+        root_human_id: str,
         account_type: Literal["human", "service"],
         model: str,
         api_format: Literal["bedrock", "anthropic", "openai"],
@@ -286,6 +371,9 @@ class ChatLoggingService:
         pii_types_found: list[str],
         patterns_matched: list[str],
         headers_scrubbed: list[str],
+        department_id: str | None = None,
+        pricing_decision: dict[str, Any] | None = None,
+        pii_detection_failed: bool = False,
     ) -> ChatLog:
         """Build the ChatLog record from components.
 
@@ -313,10 +401,11 @@ class ChatLoggingService:
         usage = None
         if usage_data:
             usage = UsageInfo(
-                input_tokens=usage_data.get("input_tokens", 0),
-                output_tokens=usage_data.get("output_tokens", 0),
-                cache_read_input_tokens=usage_data.get("cache_read_input_tokens", 0),
-                cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens", 0),
+                input_tokens=usage_data.get("input_tokens"),
+                output_tokens=usage_data.get("output_tokens"),
+                cache_read_input_tokens=usage_data.get("cache_read_input_tokens"),
+                cache_creation_input_tokens=usage_data.get("cache_creation_input_tokens"),
+                cache_creation=usage_data.get("cache_creation"),
             )
 
         response = ChatLogResponse(
@@ -333,6 +422,7 @@ class ChatLoggingService:
             pii_types_found=pii_types_found,
             regex_patterns_matched=patterns_matched,
             headers_scrubbed=headers_scrubbed,
+            pii_detection_failed=pii_detection_failed,
         )
 
         return ChatLog(
@@ -341,6 +431,8 @@ class ChatLoggingService:
             org_id=org_id,
             user_id=user_id,
             team_id=team_id,
+            department_id=department_id,
+            root_human_id=root_human_id,
             account_type=account_type,
             model=model,
             api_format=api_format,
@@ -348,6 +440,7 @@ class ChatLoggingService:
             request=request,
             response=response,
             scrubbing=scrubbing,
+            pricing_decision=pricing_decision,
         )
 
     @property
@@ -375,9 +468,16 @@ class StreamingResponseBuffer:
 
     def __init__(self) -> None:
         """Initialize the buffer."""
-        self._chunks: list[dict[str, Any]] = []
+        # Count chunks rather than retaining them. Holding the parsed dicts for
+        # the life of the stream cost ~1.5KB per delta across this buffer and
+        # PricingCapture's copy, and nothing ever read them back -- only the
+        # length was used. Long agent streams (tool calls emit one
+        # input_json_delta per few bytes) reached hundreds of thousands of
+        # deltas, and glibc never returns that heap, so each stream permanently
+        # raised pod RSS.
+        self._chunk_count = 0
         self._content_parts: list[str] = []
-        self._usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        self._usage: dict[str, Any] = {}
         self._stop_reason: str | None = None
         self._model: str | None = None
 
@@ -387,7 +487,7 @@ class StreamingResponseBuffer:
         Args:
             chunk: Parsed streaming chunk
         """
-        self._chunks.append(chunk)
+        self._chunk_count += 1
         chunk_type = chunk.get("type", "")
 
         if chunk_type == "content_block_delta":
@@ -399,13 +499,15 @@ class StreamingResponseBuffer:
             delta = chunk.get("delta", {})
             self._stop_reason = delta.get("stop_reason")
             delta_usage = chunk.get("usage", {})
-            self._usage["output_tokens"] = delta_usage.get("output_tokens", 0)
+            self._usage.update(delta_usage)
 
         elif chunk_type == "message_start":
             message = chunk.get("message", {})
             self._model = message.get("model")
             start_usage = message.get("usage", {})
-            self._usage["input_tokens"] = start_usage.get("input_tokens", 0)
+            # message_start output is provisional (usually zero), not final
+            # generation usage. Only a terminal message_delta confirms output.
+            self._usage.update({name: value for name, value in start_usage.items() if name != "output_tokens"})
 
     def reconstruct_response(self) -> dict[str, Any]:
         """Reconstruct the full response from buffered chunks.
@@ -428,14 +530,14 @@ class StreamingResponseBuffer:
         return "".join(self._content_parts)
 
     @property
-    def usage(self) -> dict[str, int]:
+    def usage(self) -> dict[str, Any]:
         """Get the usage statistics."""
         return self._usage.copy()
 
     @property
     def chunk_count(self) -> int:
-        """Get the number of chunks buffered."""
-        return len(self._chunks)
+        """Get the number of chunks seen."""
+        return self._chunk_count
 
 
 # =============================================================================
@@ -457,6 +559,11 @@ def create_streaming_logging_wrapper(
     request_body: dict[str, Any],
     headers: dict[str, str] | None,
     start_time: float,
+    root_human_id: str = "",
+    department_id: str | None = None,
+    pricing_decision: dict[str, Any] | None = None,
+    pricing_capture: Any = None,
+    only_priced: bool = False,
 ) -> Any:
     """Create a streaming response wrapper that buffers chunks for logging.
 
@@ -477,6 +584,8 @@ def create_streaming_logging_wrapper(
         request_body: Request body dict for logging
         headers: Request headers (optional)
         start_time: Start time from time.monotonic() for latency calculation
+        root_human_id: Issue #4300 — the human (canonical ``users.id``) who
+            initiated this agent chain. Empty when not human-rooted.
 
     Returns:
         An async generator that yields chunks and logs after completion
@@ -487,6 +596,7 @@ def create_streaming_logging_wrapper(
     async def stream_with_logging():
         """Wrap stream to buffer response for logging."""
         buffer = StreamingResponseBuffer()
+        completed = False
 
         try:
             async for chunk in stream:
@@ -516,27 +626,63 @@ def create_streaming_logging_wrapper(
 
                 yield chunk
 
-            # After stream completes, log the reconstructed response
-            latency_ms = (time.monotonic() - start_time) * 1000
-            reconstructed_response = buffer.reconstruct_response()
-
-            chat_logger.log_chat_async(
-                request_id=request_id,
-                timestamp=timestamp,
-                org_id=org_id,
-                user_id=user_id,
-                team_id=team_id,
-                account_type=account_type,
-                model=model,
-                api_format=api_format,
-                latency_ms=latency_ms,
-                request_body=request_body,
-                response_body=reconstructed_response,
-                headers=headers,
-            )
+            completed = True
 
         except Exception as e:
             logger.warning(f"Error in stream logging wrapper: {e}")
             raise
+        finally:
+
+            async def finalize():
+                if not completed:
+                    # Closing the service generator executes its pricing finally
+                    # block when the client disconnected while parked at yield.
+                    close = getattr(stream, "aclose", None)
+                    if close is not None:
+                        try:
+                            await close()
+                        except Exception:
+                            logger.exception("Failed to close stream during pricing finalization")
+                    task = getattr(pricing_capture, "finalization_task", None)
+                    if task is not None:
+                        try:
+                            await asyncio.shield(task)
+                        except Exception:
+                            logger.exception("Stream usage finalization failed")
+                    # A partial stream without final measured usage must never
+                    # become a fabricated zero-cost or legacy-priced event.
+                    if pricing_capture is None or pricing_capture.routing is None or pricing_capture.decision is None:
+                        return
+                latency_ms = (time.monotonic() - start_time) * 1000
+                reconstructed_response = buffer.reconstruct_response()
+                if pricing_capture is not None and pricing_capture.routing is not None:
+                    # This buffer saw the raw Bedrock events, including usage that an
+                    # OpenAI-format stream omits during translation.
+                    reconstructed_response = pricing_capture.buffer.reconstruct_response()
+
+                chat_logger.log_chat_async(
+                    request_id=request_id,
+                    timestamp=timestamp,
+                    org_id=org_id,
+                    user_id=user_id,
+                    team_id=team_id,
+                    department_id=department_id,
+                    account_type=account_type,
+                    model=model,
+                    api_format=api_format,
+                    latency_ms=latency_ms,
+                    request_body=request_body,
+                    response_body=reconstructed_response,
+                    headers=headers,
+                    root_human_id=root_human_id,
+                    pricing_decision=pricing_decision,
+                    pricing_capture=pricing_capture,
+                    only_priced=only_priced,
+                )
+
+            finalizer = asyncio.create_task(finalize(), name=f"chat_finalize_{request_id}")
+            _stream_finalizers.add(finalizer)
+            finalizer.add_done_callback(_stream_finalizers.discard)
+            await asyncio.shield(finalizer)
 
     return stream_with_logging()

@@ -5,6 +5,7 @@
  * Persona learnings are retrieved via MemoryProvider with scope.persona = name.
  */
 import * as fs from 'fs';
+import { loadHumanCommunication } from '../human-communication';
 import * as path from 'path';
 import { MemoryProvider, MemoryRecord } from './memory/types';
 
@@ -158,6 +159,8 @@ export function composeSystemPrompt(input: {
     parts.push('</memories>');
   }
 
+  // Apply once after recalled context; memory must not restore old output templates.
+  parts.push('', loadHumanCommunication([PERSONAS_DIR]));
   return parts.join('\n');
 }
 

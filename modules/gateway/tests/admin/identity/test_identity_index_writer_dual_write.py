@@ -59,6 +59,9 @@ class TestDualWritePutUserIdentity:
             user_id="user-001",
             org_id="org-001",
             provider_username=None,
+            user_kind=None,
+            bot_kind=None,
+            verification_method=None,
         )
         # PutItem NOT called (would wipe member_org_ids)
         mock_old_client.put_identity.assert_not_awaited()
@@ -85,15 +88,28 @@ class TestDualWritePutUserIdentity:
             user_id="user-001",
             org_id="org-001",
             provider_username="testuser",
+            user_kind=None,
+            bot_kind=None,
+            verification_method=None,
         )
         mock_old_client.put_identity.assert_not_awaited()
-        # New table: UpdateItem (preserves member_org_ids)
+        # New table: UpdateItem (preserves member_org_ids).
+        #
+        # `verification_method=None` because this caller passed none (#5664, A10).
+        # The attribute is forwarded on every write so the DDB projection can carry
+        # provenance at all; `None` means "this writer did not state it", which the
+        # webhook authority gate treats as unproven and refuses. It must be present
+        # in the call rather than dropped — a silently omitted attribute leaves a
+        # stale, more-permissive value in place on the existing row.
         mock_new_client.update_user_core_attrs.assert_awaited_once_with(
             provider="github",
             provider_user_id="12345",
             user_id="user-001",
             org_id="org-001",
             provider_username="testuser",
+            user_kind=None,
+            bot_kind=None,
+            verification_method=None,
         )
         mock_new_client.put_user_identity.assert_not_awaited()
 
@@ -121,6 +137,9 @@ class TestDualWritePutUserIdentity:
             org_id="org-001",
             provider_username="testuser",
             member_org_ids=["org-001", "org-002"],
+            user_kind=None,
+            bot_kind=None,
+            verification_method=None,
         )
         mock_new_client.update_user_core_attrs.assert_not_awaited()
 
@@ -178,6 +197,9 @@ class TestDualWritePutUserIdentity:
             user_id="user-002",
             org_id="org-001",
             provider_username=None,
+            user_kind=None,
+            bot_kind=None,
+            verification_method=None,
         )
 
     @pytest.mark.asyncio
@@ -195,7 +217,44 @@ class TestDualWritePutUserIdentity:
             user_id="user-001",
             org_id="org-001",
             provider_username=None,
+            user_kind=None,
+            bot_kind=None,
+            verification_method=None,
         )
+
+    @pytest.mark.asyncio
+    @patch("src.admin.identity.identity_index_writer._v2_write_enabled", return_value=True)
+    async def test_a_supplied_verification_method_reaches_both_tables(self, _mock_flag, writer, mock_old_client, mock_new_client):
+        """#5664 (A10): provenance must survive the dual write, on BOTH paths.
+
+        The webhook authority gate reads `verification_method` off these projected
+        rows, so a writer that forwards it to one table and not the other leaves the
+        hot path reading whichever row it happens to hit — proven on one, unknown on
+        the other. Asserted on the UpdateItem path here and on the PutItem path
+        below, because the two build their payloads separately.
+        """
+        await writer.put_user_identity(
+            provider_user_id="12345",
+            user_id="user-001",
+            org_id="org-001",
+            verification_method="oauth",
+        )
+        assert mock_new_client.update_user_core_attrs.await_args.kwargs["verification_method"] == "oauth"
+        assert mock_old_client.update_user_identity_core.await_args.kwargs["verification_method"] == "oauth"
+
+    @pytest.mark.asyncio
+    @patch("src.admin.identity.identity_index_writer._v2_write_enabled", return_value=True)
+    async def test_a_supplied_verification_method_reaches_the_put_item_path(self, _mock_flag, writer, mock_old_client, mock_new_client):
+        """The `member_org_ids` branch is a full overwrite, so omitting provenance
+        there would ERASE it from an existing row rather than merely not setting it."""
+        await writer.put_user_identity(
+            provider_user_id="12345",
+            user_id="user-001",
+            org_id="org-001",
+            member_org_ids=["org-001"],
+            verification_method="magic_link_confirmed",
+        )
+        assert mock_new_client.put_user_identity.await_args.kwargs["verification_method"] == "magic_link_confirmed"
 
 
 class TestDualWriteDeleteUserIdentity:

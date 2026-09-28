@@ -36,13 +36,17 @@ from s3_store import S3ContentStore
 # Input validators — guard subprocess args against flag-injection
 # ---------------------------------------------------------------------------
 
-_REPO_NAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+$")  # owner/name pattern
+_REPO_NAME_RE = re.compile(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+")
 _URL_RE = re.compile(r"^https://[a-zA-Z0-9.-]+(/[a-zA-Z0-9._~!$&'()*+,;=:@%/-]*)?$")
 
 
 def _safe_repo(repo: str) -> str:
     """Validate repo name before passing to subprocess."""
-    if repo.startswith("-") or not _REPO_NAME_RE.match(repo):
+    if (
+        repo.startswith("-")
+        or not _REPO_NAME_RE.fullmatch(repo)
+        or any(part in {".", ".."} for part in repo.split("/"))
+    ):
         raise ValueError(f"refusing to ingest repo with suspicious name: {repo!r}")
     return repo
 
@@ -179,7 +183,7 @@ def git_clone_full(repo: str, dest: str, old_sha: str | None = None) -> bool:
         return False
 
 
-def git_diff_names(clone_path: str, old_sha: str, new_sha: str) -> list[str]:
+def git_diff_names(clone_path: str, old_sha: str, new_sha: str) -> list[str] | None:
     """Get list of changed file names between two SHAs."""
     try:
         result = subprocess.run(
@@ -189,10 +193,10 @@ def git_diff_names(clone_path: str, old_sha: str, new_sha: str) -> list[str]:
         )
         if result.returncode == 0:
             return [f for f in result.stdout.decode().strip().split("\n") if f]
-        return []
+        return None
     except Exception as e:
         log.warning("git diff --name-only failed: %s", e)
-        return []
+        return None
 
 
 def git_diff_stat(clone_path: str, old_sha: str, new_sha: str) -> str:
@@ -225,11 +229,33 @@ def fetch_existing_wiki(org_repo: str) -> str | None:
     return None
 
 
+def _new_scratch(prefix: str) -> str:
+    """Create only beneath the runtime's bounded /tmp mount, never shared state.
+
+    Resolve configured symlinks before validation. Volume size/deadline limits
+    are supplied by the runtime manifests; a configurable path is not a quota.
+    """
+    root = Path(settings.scratch_base).resolve(strict=True)
+    if not root.is_dir() or not root.is_relative_to(Path("/tmp").resolve()):
+        raise ValueError("SCRATCH_BASE must resolve beneath the bounded /tmp mount")
+    for persistent in (STATE_DIR, CLONE_BASE):
+        if root.is_relative_to(Path(persistent).resolve()):
+            raise ValueError("SCRATCH_BASE must not be a shared state/source path")
+    return tempfile.mkdtemp(prefix=prefix, dir=str(root))
+
+
 def incremental_wiki_update(repo: str, old_sha: str, new_sha: str) -> bool:
     """Update an existing wiki based on what changed, instead of full regeneration.
 
     Returns True if the wiki was updated successfully.
+
+    The diff clone is placed on bounded /tmp scratch (never on CLONE_BASE which
+    may be an S3 Mountpoint FUSE volume that does not support Git locking or
+    random writes).  Each call gets a unique mkdtemp directory so concurrent
+    refreshes cannot collide, and cleanup is in a finally block.
     """
+
+    _safe_repo(repo)
 
     # 1. Fetch existing wiki
     existing_wiki = fetch_existing_wiki(repo)
@@ -237,20 +263,21 @@ def incremental_wiki_update(repo: str, old_sha: str, new_sha: str) -> bool:
         log.info("No existing wiki found for %s — cannot do incremental update", repo)
         return False
 
-    # 2. Clone and get diff
-    clone_path = os.path.join(CLONE_BASE, repo.replace("/", "-") + "-diff")
-    if os.path.exists(clone_path):
+    # 2. Clone to bounded scratch and get diff
+    clone_path = _new_scratch("wiki-diff-")
+    try:
+        if not git_clone_full(repo, os.path.join(clone_path, "repo"), old_sha):
+            return False
+
+        repo_dir = os.path.join(clone_path, "repo")
+        changed_files = git_diff_names(repo_dir, old_sha, new_sha)
+        diff_summary = git_diff_stat(repo_dir, old_sha, new_sha)
+    finally:
         shutil.rmtree(clone_path, ignore_errors=True)
 
-    if not git_clone_full(repo, clone_path, old_sha):
+    if changed_files is None:
+        log.warning("Cannot verify diff for %s — wiki remains retryable", repo)
         return False
-
-    changed_files = git_diff_names(clone_path, old_sha, new_sha)
-    diff_summary = git_diff_stat(clone_path, old_sha, new_sha)
-
-    # Cleanup clone
-    shutil.rmtree(clone_path, ignore_errors=True)
-
     if not changed_files:
         log.info("No file changes detected for %s — skipping wiki update", repo)
         return False
@@ -364,6 +391,7 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
 
     Returns True if the repo was re-processed.
     """
+    _safe_repo(repo)
     current_sha = git_ls_remote(repo)
     if not current_sha:
         log.error("Could not get SHA for %s — skipping (auth/network failure?)", repo)
@@ -382,9 +410,10 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
         log.info("NEW %s — first ingestion", repo)
 
     # Re-ingest using ingest-repo.py.
-    # Use an ephemeral local clone dir to avoid git-on-S3-Mountpoint issues
-    # (S3 Mountpoint FUSE doesn't reliably support git worktrees).
-    ingest_clone_dir = tempfile.mkdtemp(prefix="ingest-")
+    # Use an ephemeral local clone dir on bounded scratch to avoid
+    # git-on-S3-Mountpoint issues (S3 Mountpoint FUSE doesn't support Git
+    # locking/random writes). Each attempt gets a unique directory.
+    ingest_clone_dir = _new_scratch("ingest-")
     env_override = os.environ.copy()
     env_override["CLONE_BASE"] = ingest_clone_dir
 
@@ -410,10 +439,13 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
                 result.returncode,
                 result.stderr.decode()[:500],
             )
+            return False
     except subprocess.TimeoutExpired:
         log.warning("ingest-repo.py timed out for %s", repo)
+        return False
     except Exception as e:
         log.warning("ingest-repo.py error for %s: %s", repo, e)
+        return False
     finally:
         shutil.rmtree(ingest_clone_dir, ignore_errors=True)
 
@@ -453,7 +485,7 @@ def refresh_repo(repo: str, state: dict[str, Any], force: bool = False) -> bool:
     else:
         deepwiki_sha_val = prev_state.get("deepwiki_sha")
 
-    # Update state regardless (to avoid re-processing on next run)
+    # Advance state only after successful ingestion so failures remain retryable.
     state[repo] = {
         "last_sha": current_sha,
         "last_ingested": datetime.now(timezone.utc).isoformat(),

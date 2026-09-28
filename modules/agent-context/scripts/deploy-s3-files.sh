@@ -103,9 +103,19 @@ apply_k8s_manifests() {
     echo "  Continuing anyway — the PV/PVC will be created but may not bind until the driver is ready."
   fi
 
-  # Template the manifest with the bucket name and apply
+  # Validate substitutions before passing them through sed or into YAML.
+  local storage_region="${AWS_REGION:-us-east-1}"
+  if [[ ! "${BUCKET_NAME}" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || \
+     [[ ! "${storage_region}" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]]; then
+    echo "ERROR: Invalid BUCKET_NAME or AWS_REGION for S3 storage."
+    return 1
+  fi
+
+  # Template the manifest with the bucket name and explicit mount region.
   echo "  Applying PV + PVC..."
-  sed "s/<BUCKET_NAME>/${BUCKET_NAME}/g" "${MANIFESTS_DIR}/s3-files-storage.yaml" | kubectl apply -f -
+  sed -e "s/<BUCKET_NAME>/${BUCKET_NAME}/g" \
+      -e "s/<AWS_REGION>/${storage_region}/g" \
+      "${MANIFESTS_DIR}/s3-files-storage.yaml" | kubectl apply -f -
 
   # Wait for PVC to bind
   echo "  Waiting for PVC to bind..."

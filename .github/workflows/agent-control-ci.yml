@@ -1,0 +1,1342 @@
+name: Agent Control CI
+
+# Test gates for the live-control path (Issue #3960, revision revival-2026-09-12).
+#
+# The control path is split across three languages and four directories, and no
+# existing workflow covers all of them: the gateway proxy is Python, the in-pod
+# listener is TypeScript, the token minting is Python in a different module with a
+# different dependency set, and the evaluation harness is a standalone script. A
+# change to any one of them can break the contract the other three rely on, so
+# they are gated together here rather than left to whichever module workflow
+# happens to be triggered by the paths in a given PR.
+#
+# Job names are fixed by the story's acceptance criteria (AC-S7) and are used as
+# required-check names — renaming a job silently removes a required check rather
+# than failing, so treat these three strings as a contract:
+#   Agent control tests / Worker control tests / Control evaluation harness tests
+#
+# Test files are pinned BY NAME in every job. A directory-wide invocation would
+# pass in the state that matters least — a PR that deletes a control test file
+# would go green, because "no tests" and "all tests pass" are the same exit code
+# to a glob. Pinning means removing a file breaks the build, which is the point of
+# a gate. For the same reason no job uses `--passWithNoTests`.
+#
+# This workflow deliberately requires NO AWS credentials and no cluster. Every
+# test here is a unit or text assertion; the live acceptance of this path against
+# a real cluster belongs to evaluation #3967, which is a separate, credentialed,
+# operator-initiated run. A CI job that needed a deploy credential to prove a
+# proxy's authorization logic would be both slower and a much larger blast radius
+# than the thing it verifies.
+
+on:
+  pull_request:
+    paths:
+      # Gateway control proxy: the authorization, status-ordering and SSRF surface
+      - 'modules/gateway/src/activity/control_service.py'
+      - 'modules/gateway/src/activity/control_schemas.py'
+      - 'modules/gateway/src/activity/routes.py'
+      - 'modules/gateway/src/orchestration/controls.py'
+      - 'modules/gateway/src/features/routes.py'
+      - 'modules/gateway/tests/activity/test_control_proxy.py'
+      - 'modules/gateway/tests/activity/test_agent_control_flag_parity.py'
+      - 'modules/gateway/tests/orchestration/test_controls.py'
+      - 'modules/gateway/tests/features/test_routes.py'
+      # Shared terminal vocabulary (#3964). `liveness.py` is the single frozenset
+      # every backend terminal reader derives from, including control_service's
+      # own terminality — a status added there changes whether a control is
+      # advertised as available on a run, so a PR touching it has to be able to
+      # trigger the control gates above. The two local-literal readers are listed
+      # for the same reason: they do NOT inherit the set, so drift between them
+      # and liveness.py is invisible to a runtime test on either one alone.
+      # (`src/agentauth/composition.py`, the other local-literal reader, is
+      # already covered by the `src/agentauth/**` glob below.)
+      - 'modules/gateway/src/activity/liveness.py'
+      - 'modules/gateway/src/activity/stats_service.py'
+      - 'modules/gateway/src/activity/stats_schemas.py'
+      - 'modules/gateway/tests/activity/test_status_aborted.py'
+      - 'modules/gateway/tests/activity/test_liveness.py'
+      - 'modules/gateway/tests/activity/test_stats_service.py'
+      # Read as text by test_agent_control_flag_parity.py, which is the only check
+      # that the flag exists in all four places at once. Editing one of these
+      # without the others is exactly the drift that suite exists to catch — so a
+      # PR touching them has to be able to trigger it.
+      - 'modules/gateway/frontend/src/services/features.ts'
+      - 'modules/gateway/k8s/deployment.yaml'
+      - 'modules/gateway/k8s/configmap.yaml'
+      - '.github/workflows/gateway-deploy.yml'
+      # In-pod control listener (TypeScript)
+      - 'modules/agent-factory/agent/src/explanation-events.ts'
+      - 'modules/agent-factory/agent/src/explanation-events.test.ts'
+      - 'modules/gateway/src/activity/explanation_stream.py'
+      - 'modules/gateway/tests/activity/test_explanation_stream.py'
+      - 'modules/agent-factory/agent/src/control-listener.ts'
+      - 'modules/agent-factory/agent/src/control-deadline*'
+      - 'modules/agent-factory/agent/src/control-credentials.ts'
+      - 'modules/agent-factory/agent/src/control-keyring.ts'
+      - 'modules/agent-factory/agent/src/control-state.ts'
+      - 'modules/agent-factory/agent/src/control-authorization.ts'
+      - 'modules/agent-factory/agent/src/lib/runIdentity*'
+      - 'modules/agent-factory/agent/src/lib/artifactGateway*'
+      - 'modules/agent-factory/agent/src/lib/gitArchiveGateway*'
+      - 'modules/agent-factory/agent/src/lib/proxyPort*'
+      - 'modules/agent-factory/agent/src/lib/knowledgeBridge*'
+      - 'modules/agent-factory/agent/src/services/S3Fallback.ts'
+      - 'modules/agent-factory/agent/src/utils/ghPost.ts'
+      - 'modules/agent-factory/agent/src/beads*'
+      - 'modules/agent-factory/agent/src/sigv4-proxy*'
+      - 'modules/agent-factory/agent/src/lib/githubTokenBroker*'
+      # The token-withholding guard and the two files that decide it (#5223).
+      # token-refresh.ts owns `canInitTokenManager`, the single predicate that
+      # keeps a mediated run from re-minting the credential it was denied, and
+      # mediated-github-config.ts owns `isMediatedRun`, which that predicate
+      # consults. Listed explicitly because a change confined to either one
+      # matches none of the paths above, so the guard would not run on exactly
+      # the PRs able to break it.
+      - 'modules/agent-factory/agent/src/token-refresh.ts'
+      - 'modules/agent-factory/agent/src/token-init-guard.test.ts'
+      - 'modules/agent-factory/agent/src/mediated-github-config.ts'
+      - 'modules/agent-factory/agent-worker-image/adp_trigger/transport_identity.py'
+      - 'modules/agent-factory/agent-worker-image/adp_cred/**'
+      - 'modules/agent-factory/agent-worker-image/tests/test_task_credentials.py'
+      - 'modules/agent-factory/agent-worker-image/lib/gateway_credential_client.py'
+      - 'modules/agent-factory/agent/src/control-revalidation.ts'
+      - 'modules/agent-factory/agent/src/control-revalidation.test.ts'
+      - 'modules/agent-factory/agent/src/control-listener.test.ts'
+      - 'modules/agent-factory/agent/src/agent-worker.ts'
+      # Worker-side verification of the gateway's authorization envelope (#5028).
+      # Listed separately from the listener because a change confined to the
+      # verifier or its fixture matches none of the paths above, so the parity
+      # gate would not run on exactly the PRs most likely to break it.
+      - 'modules/agent-factory/agent/src/control-envelope.ts'
+      - 'modules/agent-factory/agent/src/control-envelope.test.ts'
+      # Harness-neutral control runtime (#3962). The adapter contract, the Claude
+      # adapter and the retry-safe attempt lifecycle in resilientQuery.
+      #
+      # resilientQuery.ts is listed even though it is not a "control" file by
+      # name: it is where an attempt is torn down and rebuilt, so it is where the
+      # three retry-safety properties (replace-on-retry, invalidate-before-
+      # teardown, stale-is-inert) are actually enforced. It also has 17 callers
+      # outside the control path, which is the reason a PR touching it must run
+      # this gate — the regression most likely to reach production from that file
+      # is breaking one of those callers, not breaking control.
+      - 'modules/agent-factory/agent/src/control-runtime.ts'
+      - 'modules/agent-factory/agent/src/control-runtime.test.ts'
+      # Live steering (#3965): the run-level delivery pump and its suite. Listed
+      # explicitly because a change confined to either file matches none of the
+      # paths above, so the verb gates — which now expect `steer` in
+      # EXPECTED_SUPPORTED on both sides — would not run on exactly the PRs able to
+      # break the delivery path they vouch for.
+      - 'modules/agent-factory/agent/src/steer-queue.ts'
+      - 'modules/agent-factory/agent/src/agent-worker-steer.test.ts'
+      # The W2-05 pause_expiry producer (#5840). The `.integration.ts` half is
+      # listed too: jest cannot collect it, but `tsc --noEmit` in this workflow is
+      # the only thing that checks it at all, and it is the file that has to stay
+      # in step with the PauseGate/adapter seams it measures through.
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.integration.ts'
+      # The shared heartbeat / exit-watchdog emitter (#5840). One production copy,
+      # started by both `agent-worker.ts` and the live pause runner, so an edit here
+      # changes what an operator sees during a real paused run AND what the W2-05
+      # visibility fields measure. Listed as its own path because a change confined
+      # to this module matches none of the names above.
+      - 'modules/agent-factory/agent/src/run-heartbeat.ts'
+      - 'modules/agent-factory/agent/src/run-heartbeat.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-timeout.assembly.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-fault-probe.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-steering-probe.test.ts'
+      - 'modules/agent-factory/agent/src/control-runtime.integration.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-factory.ts'
+      - 'modules/agent-factory/agent/src/control-runtime-factory.test.ts'
+      - 'modules/agent-factory/agent/src/registered-control-fixture.ts'
+      - 'modules/agent-factory/agent/src/registered-control-fixture.test.ts'
+      - 'modules/agent-factory/agent/src/harnesses/**'
+      - 'modules/agent-factory/agent/src/utils/resilientQuery.ts'
+      - 'modules/agent-factory/agent/src/utils/resilientQuery.test.ts'
+      # The shared vectors both verifiers must agree on. The fixture is generated
+      # by the Python script below and consumed by the TypeScript suite: an edit
+      # to either side alone is the drift these vectors exist to catch.
+      - 'modules/agent-factory/agent/src/__fixtures__/control-envelope-vectors.json'
+      - 'modules/gateway/src/agentauth/envelope.py'
+      - 'modules/gateway/tests/agentauth/test_envelope_vectors.py'
+      - 'modules/gateway/tests/agentauth/generate_envelope_vectors.py'
+      # Delegated authority and the CLI need the same fast gate as the listener.
+      - 'modules/gateway/src/agentauth/**'
+      - 'modules/gateway/tests/agentauth/**'
+      # The gateway contract tests exercise these real ingress writers/handlers.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/agent_authority.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/service_authority.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/service_identity.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/spawn_persona.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/sqs_publisher.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/webhook_events.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/eventbridge/handler.py'
+      - 'modules/agent-factory/webhook-ingress/infra/eventbridge.tf'
+      - 'modules/gateway/src/orchestration/dispatch_pass.py'
+      - 'modules/gateway/tests/orchestration/test_dispatch_pass.py'
+      - 'modules/agent-factory/agent-worker-image/adp_trigger/**'
+      - 'modules/agent-factory/agent-worker-image/tests/test_adp_trigger.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_adp_trigger_control.py'
+      # Formal review submission and its self-review fallback (#5350). Grouped
+      # here because it mints through the same gateway credential path as
+      # adp-trigger, and because the failure it guards — a refused verdict
+      # silently downgraded to a comment — is invisible at runtime.
+      - 'modules/agent-factory/agent-worker-image/adp_review/**'
+      - 'modules/agent-factory/agent-worker-image/tests/test_adp_review.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_reviewer_no_artifact_pr.py'
+      - 'modules/agent-factory/agent-worker-image/lib/gateway_credential_client.py'
+      - 'modules/gateway/src/knowledge/github_app_service.py'
+      - 'modules/gateway/tests/internal/test_github_installation_token_route.py'
+      - 'modules/agent-factory/agent-worker-image/lib/run_identity.py'
+      - 'modules/agent-factory/agent-worker-image/lib/control_renewal.py'
+      - 'modules/agent-factory/agent-worker-image/lib/task_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_task_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/lib/run_service_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_run_service_client.py'
+      - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_control_renewal.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_run_identity.py'
+      # Per-run token minting and the control record on the invocation row
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/agent-factory/agent-worker-image/lib/invocation_status.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_control_token.py'
+      # The writer's own status allowlist (#3964). Its parity suite reads
+      # entrypoint.py as text to find every call site, so it is the only check
+      # that a NEW write site was added without its status being permitted — no
+      # runtime test sees a call that this PR did not execute.
+      - 'modules/agent-factory/agent-worker-image/tests/test_status_vocabulary.py'
+      # Pod security surface: ingress policy, bind address, flag/port propagation
+      - 'modules/agent-factory/webhook-ingress/infra/scaledjob-netpol.tf'
+      - 'modules/agent-factory/webhook-ingress/infra/scaledjob.tf'
+      - 'modules/agent-factory/webhook-ingress/infra/variables.tf'
+      - 'modules/agent-factory/webhook-ingress/tests/test_agent_control_manifest.py'
+      # Evaluation harness
+      - 'platform/scripts/agent-control-eval.py'
+      - 'platform/scripts/tests/test_agent_control_eval.py'
+      # Wave 2 operator fixture tooling (#3968). This is the executable lifecycle
+      # that creates, observes, probes and tears down the isolated fixture the
+      # evaluation runs against. Root's finding 5808491910: PR #5839's rollup was
+      # empty because no workflow in the branch referenced these paths at all, so
+      # a change to the teardown logic or the workload-verifier composition had no
+      # merge check whatsoever. A `**` glob covers the scripts, the libraries and
+      # the tests together, because they are a single unit: a library change that
+      # breaks a script is only visible when both are exercised.
+      - 'platform/scripts/operator/wave2/**'
+      - 'platform/scripts/operator/wave3/**'
+      # Wave 4 operator collectors (#3970). Same reasoning as wave 2's glob above,
+      # and listed for the reason root's finding 5808491910 named: a package no
+      # workflow references has no merge check at all. The wave-4 tests in
+      # `test_agent_control_eval.py` drive these modules end to end — collector →
+      # artifact → evaluator — so a change here that breaks a measurement is only
+      # visible when both halves run, and the harness's own path entry above does
+      # not fire on an edit confined to this directory.
+      #
+      # The directory is hyphenated rather than `operator/wave4` deliberately: a
+      # nested package needs `platform/scripts/operator/__init__.py`, which shadows
+      # the standard library's `operator` module for anything importing with
+      # `platform/scripts` on the path.
+      - 'platform/scripts/operator-wave4/**'
+      # The fixture-config runbook. Listed because its example config is parsed
+      # and validated by the harness tests: a doc-only edit that drifts the
+      # example from the harness must fail CI, not merge quietly. The operator
+      # cannot run the harness in CI, so this doc is all they have going in.
+      - 'docs/runbooks/agent-control-evaluation.md'
+      # This workflow
+      - '.github/workflows/agent-control-ci.yml'
+    branches:
+      - main
+
+  # Manual entry point, for gating a revision the `paths` filters above never ran.
+  #
+  # The filters are correct for their purpose — they keep this workflow off PRs that
+  # cannot affect the control path — but they mean a deployed revision may have no run
+  # of these three jobs at all. Evaluation #3967's W2-01 requires each required gate to
+  # have passed ON a deployed revision, so without a way to run them against an
+  # arbitrary commit that requirement is unsatisfiable for exactly the revisions it
+  # matters for.
+  #
+  # `source_sha` is required and must be a full 40-character SHA. It is validated in
+  # `resolve-source` BEFORE any checkout, because the value is used as a git ref: a
+  # partial SHA or a branch name would resolve to whatever it happened to point at,
+  # which is the opposite of naming one revision. Every test job then checks that ref
+  # out and VERIFIES `git rev-parse HEAD` equals it, and archives what it actually got
+  # — see the `checked-out-revision` artifacts. A manual run's `github.sha` names the
+  # ref this workflow FILE was loaded from, not the revision under test, so it must
+  # never be recorded as the tested source.
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Full 40-character commit SHA to test (not a branch or short SHA)'
+        required: true
+        type: string
+
+concurrency:
+  # The dispatched SHA is part of the group so two manual runs against different
+  # revisions do not cancel each other: on a workflow_dispatch `github.sha` is the
+  # workflow ref, which would be identical for both.
+  group: agent-control-ci-${{ github.event.pull_request.number || inputs.source_sha || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Validate the dispatch input before anything uses it as a ref, and hand the test
+  # jobs the ref to check out. On a `pull_request` run this resolves to the empty
+  # string, which is `actions/checkout`'s default — so the PR path is unchanged.
+  #
+  # This job is deliberately NOT one of the three required checks. Its name is not part
+  # of the AC-S7 contract, and adding a fourth required check would silently change the
+  # merge gate for every PR.
+  resolve-source:
+    name: Resolve source revision
+    runs-on: arc-runner-org
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+      expected: ${{ steps.resolve.outputs.expected }}
+    steps:
+      - name: Validate and resolve the requested revision
+        id: resolve
+        shell: bash
+        env:
+          # Through the environment rather than interpolated into the script: the input
+          # is attacker-influencable text and must never be expanded into a shell body.
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            echo "expected=" >> "$GITHUB_OUTPUT"
+            echo "Triggered by $EVENT_NAME; checking out the triggering ref as usual."
+            exit 0
+          fi
+          # Whole-VALUE validation, not line-based. An earlier revision used
+          # `grep -Eq '^[0-9a-f]{40}$'`, which matches a LINE: root executed this block
+          # with a 40-hex SHA followed by a newline, `ref=main` and another `expected=`
+          # line, and it exited 0 and appended those attacker-chosen lines to
+          # $GITHUB_OUTPUT — where the LAST value of a key wins, so the jobs would have
+          # checked out `main` while reporting a different expected SHA. The length test
+          # rejects a trailing CR or any extra line, and bash's `=~` anchors at the ends
+          # of the whole string rather than of a line, so the two together accept
+          # exactly 40 lowercase hex characters and nothing else.
+          if [ "${#SOURCE_SHA}" -ne 40 ] || ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_sha must be exactly 40 lowercase hexadecimal" \
+                 "characters and nothing else; got a value of length" \
+                 "${#SOURCE_SHA}. A branch name or abbreviated SHA names whatever a" \
+                 "ref currently points at, so it cannot identify the revision a gate" \
+                 "tested, and a value carrying a newline or carriage return is" \
+                 "rejected outright rather than truncated to its first line."
+            exit 1
+          fi
+          echo "ref=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "expected=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Manual run against $SOURCE_SHA." >> "$GITHUB_STEP_SUMMARY"
+
+  agent-control-tests:
+    # AC-S7 required-check name. Do not rename.
+    name: Agent control tests
+    runs-on: arc-runner-org
+    needs: resolve-source
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined rather than factored into a local composite action, deliberately: a
+      # `uses: ./...` step resolves from the CHECKED-OUT tree, so a dispatch against a
+      # revision that predates the action would fail to find it — and the whole point
+      # of the manual path is gating revisions other than this one.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: agent-control-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          # `workflow_ref_sha` is recorded ALONGSIDE the checked-out SHA, never as it:
+          # on a manual run github.sha names the ref this workflow file came from, not
+          # the revision under test. Evaluation #3967 reads `checked_out_revision`.
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-agent-control-tests
+          path: ${{ runner.temp }}/checked-out-revision/agent-control-tests.json
+          if-no-files-found: error
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/gateway/pyproject.toml
+
+      - name: Install dependencies
+        working-directory: modules/gateway
+        run: pip install -e ".[dev]"
+
+      - name: Lint control modules
+        working-directory: modules/gateway
+        run: |
+          ruff check \
+            src/activity/control_service.py \
+            src/activity/control_schemas.py \
+            tests/activity/test_control_proxy.py
+          ruff format --check \
+            src/activity/control_service.py \
+            src/activity/control_schemas.py \
+            tests/activity/test_control_proxy.py
+
+      - name: Run gateway control-proxy tests
+        working-directory: modules/gateway
+        # test_agent_control_flag_parity.py is pinned here rather than left to a
+        # glob because it is the only check that the flag exists in all three
+        # places (backend dict, frontend interface + default, k8s env) and is
+        # rendered per environment instead of hard-coded. Those are text-level
+        # assertions about files no runtime test can see, so nothing else fails
+        # when a PR lands two of the three edits.
+        run: |
+          pytest \
+            tests/activity/test_control_proxy.py \
+            tests/activity/test_agent_control_flag_parity.py \
+            tests/orchestration/test_controls.py \
+            tests/features/test_routes.py \
+            -v --tb=short --timeout=120
+
+      - name: Run shared terminal-vocabulary tests
+        working-directory: modules/gateway
+        # Issue #3964. Pinned by name like every other suite here: the terminal set
+        # in `activity/liveness.py` decides whether control_service reports a run as
+        # controllable at all, so a status added there without its readers updated
+        # changes the behaviour the proxy tests above assert — and it changes it in
+        # the direction of advertising a control on a run that has already ended.
+        #
+        # test_status_aborted.py specifically holds the cross-module identity
+        # assertions (that the budget, orchestration-draft and stats readers are all
+        # looking at the SAME frozenset object, not a copy of it). Nothing else fails
+        # when one reader is forked into a local literal, because a fork behaves
+        # identically until the sets diverge.
+        run: |
+          pytest \
+            tests/activity/test_status_aborted.py \
+            tests/activity/test_liveness.py \
+            tests/activity/test_stats_service.py \
+            -v --tb=short --timeout=120
+
+      - name: Run delegated authorization tests
+        working-directory: modules/gateway
+        # Require the existing security suites by name, then collect the whole
+        # directory so new bootstrap/route integration tests join this gate.
+        # Deleting a required suite must fail rather than reduce coverage silently.
+        run: |
+          for suite in \
+            test_adapter.py test_envelope.py test_envelope_vectors.py \
+            test_execution.py test_grants.py test_policy.py \
+            test_run_credential.py test_store.py test_store_lifecycle.py \
+            test_store_reservations.py test_wave_dispatch.py test_revalidation.py test_human_control.py \
+            test_run_services.py test_artifact_service.py \
+            test_task_delivery.py test_task_routes.py \
+            test_abort_receipt.py test_abort_redelivery_refusal.py \
+            test_abort_intent_store.py test_abort_reconciliation.py \
+            test_exit_retention.py test_retained_abort_recovery.py \
+            test_knowledge_service.py test_knowledge_service_postgres.py; do
+            test -f "tests/agentauth/$suite" || exit 1
+          done
+          # -n 4 pinned to the runner's cpu limit (arc-runner/main.tf). This step
+          # was 12m29s of a ~15m job — every other step here is under a minute —
+          # because it ran ~1700 tests serially on one core while tests/agentauth
+          # grew by 313 tests in three days. Measured on the exact selection
+          # above: 328s serial -> 126s at -n 4, 2.6x, with byte-identical results
+          # (1703 passed, 5 skipped both ways).
+          #
+          # NEVER `-n auto`: nproc inside the runner pod reports the NODE's 32
+          # cores, not the pod's cgroup limit, so auto oversubscribes and runs
+          # slower than a pinned value.
+          #
+          # `--dist loadfile` keeps every test in a file on one worker. The
+          # gateway suite has cross-file ordering dependencies that the default
+          # round-robin distribution breaks (see gateway-ci.yml for the measured
+          # case: 9 phantom failures without it, 6 with). Removing it here
+          # invites the same class of flake.
+          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py \
+            -v --tb=short --timeout=120 -n 4 --dist loadfile
+
+      # Coverage is enforced per-file with `--cov-fail-under`, not as a repo-wide
+      # average. The story requires >=85% line AND branch on the NEW control
+      # modules specifically; a global gate would let a large well-covered
+      # codebase mask an untested branch in exactly the authorization code this
+      # story exists to establish. `--cov-branch` is required: the interesting
+      # failures here are all one-sided branches (a tenant check that only ever
+      # sees the matching tenant is 100% line-covered and unproven).
+      - name: Enforce abort recovery coverage per module
+        working-directory: modules/gateway
+        run: |
+          pytest tests/agentauth/test_exit_retention.py tests/agentauth/test_retained_abort_recovery.py \
+            tests/agentauth/test_abort_reconciliation.py \
+            --cov=src.agentauth.exit_retention --cov=src.agentauth.retained_abort_recovery \
+            --cov=src.agentauth.abort_reconciliation --cov-branch \
+            --cov-report=json:abort-recovery-coverage.json --timeout=120
+          python - <<'PYCODE'
+          import json
+          report = json.load(open("abort-recovery-coverage.json"))
+          for name in ("exit_retention", "retained_abort_recovery", "abort_reconciliation"):
+              summary = report["files"][f"src/agentauth/{name}.py"]["summary"]
+              for covered, total in (("covered_lines", "num_statements"), ("covered_branches", "num_branches")):
+                  assert summary[total] > 0, f"{name}: no {total} measured"
+                  assert summary[covered] / summary[total] >= 0.85, f"{name}: {covered} below 85%"
+          PYCODE
+
+      - name: Enforce control-module coverage (>=85% line and branch)
+        working-directory: modules/gateway
+        # `--cov=src.activity.control_service` (dotted module), NOT
+        # `--cov=src/activity/control_service.py`. The path form does not error —
+        # coverage warns "No data to report" and totals 0%, so the gate measures
+        # nothing at all. Verified locally: the dotted form reports 100% line and
+        # branch on both modules; the path form reports 0.00%.
+        run: |
+          pytest tests/activity/test_explanation_stream.py tests/activity/test_control_proxy.py tests/agentauth/test_human_control.py \
+            --cov=src.activity.control_service \
+            --cov=src.activity.control_schemas \
+            --cov=src.agentauth.human_control \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-fail-under=85 \
+            --timeout=120
+
+      - name: Assert only implemented control verbs are advertised
+        working-directory: modules/gateway
+        # The story's central invariant, asserted outside the test suite too. A
+        # verb added to SUPPORTED_ACTIONS without its transport would make every
+        # control route report outcomes it cannot deliver; this fails the build on
+        # that change even if the suite were edited in the same commit.
+        #
+        # #3962 made this stage-parameterized instead of an unconditional "must be
+        # empty". S2/S4/S6 each deliver one verb, and against the old form their
+        # only way forward was to delete the guard — which is how a gate that
+        # cannot express "three of four" dies. It now compares against an explicit
+        # expected set (pause/resume/abort at this stage) and
+        # additionally pins the verb universe, so adding a fifth verb without
+        # updating this list fails here rather than passing unexamined.
+        #
+        # #3963 added the second constant. The human service's SUPPORTED_ACTIONS and
+        # the agent policy's SUPPORTED_AGENT_ACTIONS are both read, because checking
+        # one of two sets that must agree is how they stop agreeing.
+        env:
+          # Importing control_service pulls in src/activity/__init__.py -> routes.py
+          # -> src/auth/__init__.py, and the auth middleware constructs AuthService()
+          # at import time, which raises without this variable. The first version of
+          # this step had no env block and died in the import, so the assertion below
+          # never executed — a failing build, but for the wrong reason, and it would
+          # have kept failing identically after a real verb was added.
+          #
+          # A dummy value is correct here: this step imports a module and reads one
+          # constant. It signs nothing and serves no request. The gateway's own suite
+          # sets the same placeholder in tests/conftest.py.
+          BG_TOKEN_SECRET_KEY: ci-placeholder-not-a-real-secret
+        run: |
+          python - <<'PY'
+          import sys
+
+          from src.activity.control_service import SUPPORTED_ACTIONS
+          from src.agentauth.policy import SUPPORTED_AGENT_ACTIONS
+
+          # The four public verbs. Pinned here so a fifth verb cannot appear
+          # without a deliberate edit to this gate.
+          ALL_VERBS = {"pause", "resume", "steer", "abort"}
+
+          # Pause/resume: #3961 admission barrier plus #5222 signed human path.
+          # Abort: #3963 cancellation plus the terminal finalization that reports it.
+          # Steer: #3965 — the run-level delivery pump (steer-queue.ts) plus the
+          # observed handoff boundary on the adapter (canAcceptInput /
+          # notifyWhenInputAccepted), which is what the verb was missing. The
+          # streaming input transport and the authority re-check immediately before
+          # the physical handoff already existed; what did not was anything that
+          # *waited* for a boundary, so a command submitted mid-tool was refused.
+          #
+          # This completes the set: all four verbs are now implemented. A fifth verb
+          # still fails the ALL_VERBS pin below.
+          #
+          # Keep both language gates, gateway and worker in lockstep.
+          EXPECTED_SUPPORTED: set[str] = {"pause", "resume", "steer", "abort"}
+
+          # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
+          # a truthiness check, so a refactor that drops the constant could report
+          # OK. Assert the real type first.
+          if not isinstance(SUPPORTED_ACTIONS, frozenset):
+              sys.exit(
+                  f"SUPPORTED_ACTIONS must be a frozenset, got {type(SUPPORTED_ACTIONS).__name__}."
+              )
+
+          unknown = set(SUPPORTED_ACTIONS) - ALL_VERBS
+          if unknown:
+              sys.exit(
+                  f"SUPPORTED_ACTIONS contains verbs this gate does not know about: {sorted(unknown)}. "
+                  "Add them to ALL_VERBS here and to the adapter capability contract."
+              )
+
+          if set(SUPPORTED_ACTIONS) != EXPECTED_SUPPORTED:
+              unexpected = sorted(set(SUPPORTED_ACTIONS) - EXPECTED_SUPPORTED)
+              missing = sorted(EXPECTED_SUPPORTED - set(SUPPORTED_ACTIONS))
+              sys.exit(
+                  "SUPPORTED_ACTIONS does not match this stage's expected set.\n"
+                  f"  advertised without proof: {unexpected}\n"
+                  f"  expected but absent:      {missing}\n"
+                  "Implementing a verb requires its transport, state contract and evaluation "
+                  "in the same change; then add it to EXPECTED_SUPPORTED in this workflow."
+              )
+          # The *agent* control path's set, added by #3963. Until then this gate
+          # read the human set alone, which is why ABORT could sit in
+          # `control_service.SUPPORTED_ACTIONS` and the worker's
+          # `IMPLEMENTED_CONTROL_VERBS` while the agent policy still answered 501 —
+          # a one-sided lag in the very direction the gate exists to catch. The two
+          # sets are compared but deliberately NOT merged: they are allowed to
+          # differ, because the human path authorizes a session and the agent path
+          # authorizes a delegated grant, and MONITOR exists only on the agent side.
+          # What must not differ is the live-control verbs.
+          agent_verbs = {action.value for action in SUPPORTED_AGENT_ACTIONS}
+
+          if not isinstance(SUPPORTED_AGENT_ACTIONS, frozenset):
+              sys.exit(
+                  f"SUPPORTED_AGENT_ACTIONS must be a frozenset, got {type(SUPPORTED_AGENT_ACTIONS).__name__}."
+              )
+
+          # MONITOR is a read, not a live control, so it is excluded from the
+          # comparison rather than added to ALL_VERBS — putting it there would let a
+          # *live* verb be advertised on one side and excused as "a read" on the other.
+          agent_live = agent_verbs - {"monitor", "dispatch"}
+          unknown_agent = agent_live - ALL_VERBS
+          if unknown_agent:
+              sys.exit(
+                  f"SUPPORTED_AGENT_ACTIONS contains verbs this gate does not know about: {sorted(unknown_agent)}."
+              )
+
+          if agent_live != EXPECTED_SUPPORTED:
+              sys.exit(
+                  "SUPPORTED_AGENT_ACTIONS does not match this stage's expected set.\n"
+                  f"  advertised without proof: {sorted(agent_live - EXPECTED_SUPPORTED)}\n"
+                  f"  expected but absent:      {sorted(EXPECTED_SUPPORTED - agent_live)}\n"
+                  "The agent and human control paths must enable a live verb together: one side "
+                  "authorizing a verb the other refuses with 501 is a caller-visible contradiction."
+              )
+
+          if "monitor" not in agent_verbs:
+              sys.exit(
+                  "SUPPORTED_AGENT_ACTIONS lost MONITOR. Every agent status read goes through "
+                  "require_supported(MONITOR), so dropping it breaks the read path silently."
+              )
+
+          print(
+              "OK: advertised verbs match this stage — "
+              f"supported={sorted(EXPECTED_SUPPORTED)}, "
+              f"unsupported={sorted(ALL_VERBS - EXPECTED_SUPPORTED)}"
+          )
+          print(f"OK: agent path agrees — live={sorted(agent_live)}, reads={sorted(agent_verbs - agent_live)}")
+          PY
+
+      - name: Run pod-security manifest assertions
+        working-directory: modules/agent-factory/webhook-ingress
+        # In this job rather than a fourth one: these assert the same boundary the
+        # gateway tests assume (which pods may reach the listener port), and a
+        # failure here means the proxy tests above are proving a contract the
+        # cluster does not enforce.
+        run: pytest tests/test_agent_control_manifest.py -v --tb=short --timeout=60
+
+      - name: Validate control Terraform
+        working-directory: modules/agent-factory/webhook-ingress/infra
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false -no-color
+          terraform validate -no-color
+
+  worker-control-tests:
+    # AC-S7 required-check name. Do not rename.
+    name: Worker control tests
+    runs-on: arc-runner-org
+    needs: resolve-source
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined for the same reason as in `agent-control-tests`: a local composite
+      # action would have to exist in the revision being dispatched against.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: worker-control-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-worker-control-tests
+          path: ${{ runner.temp }}/checked-out-revision/worker-control-tests.json
+          if-no-files-found: error
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+
+      - name: Install agent dependencies
+        working-directory: modules/agent-factory/agent
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: modules/agent-factory/agent
+        # The listener is wired into agent-worker.ts; a type error there is a
+        # runtime crash in a pod that is already executing a customer's work.
+        #
+        # This step also carries the control runtime's provider-free guarantee,
+        # which is partly a TYPE guarantee: the shared surface must not expose
+        # Query/SDKUserMessage or require an AsyncIterable input. ts-jest
+        # typechecks per test file, so a cross-module boundary break — exactly
+        # what a bad adapter/consumer seam produces — can pass the suite below
+        # and still fail the image build. Project-wide `tsc` is what catches it.
+        run: npx tsc --noEmit
+
+      - name: Run control-listener tests
+        working-directory: modules/agent-factory/agent
+        # Pinned by path, and --coverage scoped to the new modules so the
+        # threshold below cannot be satisfied by unrelated well-covered files.
+        #
+        # control-envelope.test.ts is selected explicitly alongside the listener
+        # suite. It is the cross-language half of the parity gate: it verifies the
+        # committed vectors the gateway's test_envelope_vectors.py verifies from
+        # the other side, so leaving it out meant a divergence between the two
+        # verifiers could merge green.
+        #
+        # Issue #3962 adds the three control-runtime suites. They are pinned by
+        # path for the same reason as everything else here — a deleted control
+        # test file must break the build rather than glob to a green "no tests".
+        # resilientQuery.test.ts is included because it holds the retry-safety
+        # evidence (cancel during backoff, stale-handle inertness, dispose-once)
+        # AND the regression guard proving the legacy no-option path used by 17
+        # other callers is unchanged. A control edit that broke those callers
+        # would otherwise merge green from this workflow's point of view.
+        #
+        # token-init-guard.test.ts is pinned here (#5223) because it holds the
+        # evidence for a security property, not just a behaviour: that a mediated
+        # run's withheld GitHub token is never restored to the environment or to
+        # disk by any refresh path. That guarantee is what lets the platform hand
+        # an agent no write credential at all. Unpinned, the suite ran in no
+        # required workflow, so a change re-enabling the refresh path for a
+        # mediated run — handing back the exact credential mediation exists to
+        # withhold — could merge green.
+        #
+        # The two abort suites are pinned here for #3963, and the pair is the point.
+        # control-abort-sentinel.test.ts holds the channel's "may lose an abort, may
+        # never invent one" direction; agent-worker-abort.test.ts holds the inverse —
+        # the run stops unconditionally while the *report* that it was deliberately
+        # stopped stays contingent on gateway-signed evidence. Between them they are
+        # the only place the ordering (record before cancel), the refusal to forward
+        # an unsigned operator reason, and the settle-to-`unknown` path are checked,
+        # and that last one already caught a real defect: `unknown` was missing from
+        # TERMINAL_STATUSES, so a failed-record abort silently leaked a `maxPending`
+        # slot. Unpinned, an abort that cancels but reports a clean stop it never
+        # achieved — the one outcome an operator cannot detect — merges green.
+        # control-runtime-timeout.test.ts is pinned here (#5840) because it is the
+        # ONLY automated check on the W2-05 pause_expiry producer. The measurement
+        # half of that producer lives in a `.integration.ts` file that jest cannot
+        # collect and that needs a real model, so nothing in CI will ever run it.
+        # What CI can run — and what this suite covers — is the honesty logic: that
+        # an unobserved field stays null rather than defaulting to a value the
+        # evaluator accepts, that auto-resume is not claimed from an explicit
+        # resume, that "no extra turn" comes from the live stream rather than the
+        # transport flag, and that a run which held no work cannot satisfy the
+        # cancellation fields vacuously. Unpinned, a change that turned any of
+        # those into a passing default would merge green and the evaluation would
+        # then read a fabricated pass as live evidence.
+        #
+        # run-heartbeat.test.ts is pinned alongside it (#5840) because that module is
+        # the only production copy of the heartbeat and the post-completion exit
+        # watchdog, and it has two distinct consumers: `agent-worker.ts` runs it on
+        # every real run, and the live pause runner starts it to measure the W2-05
+        # visibility fields. Two properties there are load-bearing and silent when
+        # broken. The watchdog must stand down while a pause is in force — unguarded
+        # it cannot tell a hung stream from a tool parked at the barrier, so an
+        # operator pausing a run to look at something would come back to a killed pod,
+        # and nothing else in CI asserts that. And the heartbeat must keep logging
+        # *and say it is paused*: a silent log is indistinguishable from a crash, so
+        # the suite pins the wording and fields literally rather than paraphrasing
+        # them. Suppression is also asserted to be a deferral rather than an amnesty,
+        # so removing the bound cannot pass as fixing the kill.
+        #
+        # control-runtime-timeout.assembly.test.ts is pinned for a third reason (#5840):
+        # the two suites above cover the producer's *decisions*, and two real defects
+        # still got past them because both were in how the live runner **composes**
+        # those decisions — a spread that dropped one experiment's pod observations
+        # before the field-wise merge could see them, and a force-exit callback that
+        # recorded a verdict it had no way to attribute, so the required after-release
+        # firing was reported as a firing during the pause. Unit-green pieces say
+        # nothing about their assembly, so this suite calls the runner's real exported
+        # assembly and folds a real tick sequence from the real PauseGate through it.
+        # It imports `control-runtime-timeout.integration.ts` on purpose and that is
+        # safe: the only SDK-backed dependency there is behind a lazy `await import`
+        # inside the run function, so importing the module evaluates no SDK, starts no
+        # subprocess and spends nothing. The `.integration.ts` file itself still cannot
+        # be collected by jest, which is what keeps the live experiments out of CI.
+        run: |
+          npx jest src/explanation-events.test.ts src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
+            src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
+            src/sigv4-proxy.identity.test.ts src/beads-s3-config.test.ts \
+            src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
+            src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
+            src/pause-attempt-fencing.test.ts \
+            src/pause-output-race.test.ts src/control-deadline.test.ts \
+            src/control-abort-sentinel.test.ts src/agent-worker-abort.test.ts \
+            src/agent-worker-steer.test.ts \
+            src/control-runtime-timeout.test.ts src/run-heartbeat.test.ts \
+            src/control-runtime-timeout.assembly.test.ts \
+            src/control-runtime-steering-probe.test.ts \
+            src/control-runtime-factory.test.ts src/registered-control-fixture.test.ts \
+            --coverage \
+            --collectCoverageFrom='src/control-listener.ts' \
+            --collectCoverageFrom='src/control-state.ts' \
+            --collectCoverageFrom='src/control-envelope.ts' \
+            --collectCoverageFrom='src/control-credentials.ts' \
+            --collectCoverageFrom='src/control-keyring.ts' \
+            --collectCoverageFrom='src/control-revalidation.ts' \
+            --collectCoverageFrom='src/lib/runIdentity.ts' \
+            --collectCoverageFrom='src/control-runtime.ts' \
+            --collectCoverageFrom='src/control-runtime-factory.ts' \
+            --collectCoverageFrom='src/registered-control-fixture.ts' \
+            --collectCoverageFrom='src/pause-gate.ts' \
+            --collectCoverageFrom='src/control-command-apply.ts' \
+            --collectCoverageFrom='src/steer-queue.ts' \
+            --collectCoverageFrom='src/harnesses/claude-control.ts' \
+            --collectCoverageFrom='src/utils/resilientQuery.ts' \
+            --collectCoverageFrom='src/control-runtime-timeout.ts' \
+            --collectCoverageFrom='src/run-heartbeat.ts' \
+            --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
+            --maxWorkers=2 --ci --verbose
+
+      - name: Assert the control adapter advertises no verb as supported
+        working-directory: modules/agent-factory/agent
+        # The pod-side half of the gateway's SUPPORTED_ACTIONS gate above. Those
+        # two sets are owned by different modules in different languages and
+        # nothing else compares them, so a verb enabled on one side only is
+        # exactly the drift this pair exists to catch — and it is the worse of the
+        # two directions: an adapter that claims `pause: true` while the gateway
+        # rejects the verb is a dashboard promising an operator a capability that
+        # no route will honour.
+        #
+        # This runs the real adapter rather than reading the source as text,
+        # because the property under test is the *intersection* result. Grepping
+        # for `supported: false` would pass on an adapter whose intersection was
+        # written with `||` instead of `&&`, which is the specific mistake that
+        # turns three independent gates into one.
+        #
+        # Reading the adapter's capability map alone does NOT catch that mistake,
+        # which was verified by mutation rather than assumed: with no attempt
+        # attached all three inputs are falsy, so `a || b || c` and `a && b && c`
+        # both yield false and the gate passed. Hence the explicit veto probes
+        # below — each one supplies exactly one true input and requires the result
+        # to still be false, which is what "independently owned gates" means and is
+        # false under `||` for every probe.
+        run: |
+          cat > .verb-gate.ts <<'TS'
+          import { ClaudeControlAdapter } from './src/harnesses/claude-control';
+          import { SUPPORTED_ACTIONS } from './src/control-listener';
+          import {
+            CONTROL_PROTOCOL_VERSION,
+            IMPLEMENTED_CONTROL_VERBS,
+            intersectCapabilities,
+            listenerActionsFor,
+            noVerbsSupported,
+          } from './src/control-runtime';
+
+          const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
+          // #3961 pause barrier plus the #5222 signed human command path, #3963's
+          // abort (cancellation plus reported terminal finalization), and #3965's
+          // steering (the run-level delivery pump plus the adapter's observed
+          // handoff boundary).
+          // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume', 'steer', 'abort']);
+
+          const fail = (msg: string): never => {
+            console.error(msg);
+            process.exit(1);
+          };
+
+          if (CONTROL_PROTOCOL_VERSION !== 1) {
+            fail(`Control protocol version changed to ${CONTROL_PROTOCOL_VERSION}. Bump the gateway peer and this gate together.`);
+          }
+
+          const implemented = [...IMPLEMENTED_CONTROL_VERBS];
+          if (implemented.length !== EXPECTED_SUPPORTED.size) {
+            fail(`IMPLEMENTED_CONTROL_VERBS is ${JSON.stringify(implemented)}, expected ${JSON.stringify([...EXPECTED_SUPPORTED])}.`);
+          }
+
+          // A live adapter with an attempt attached would be the strongest form of
+          // this check, but no attempt is needed: availability only ever removes
+          // verbs from the intersection, so an adapter that reports false here with
+          // no attempt and true with one would mean availability ADDED a
+          // capability, which the contract forbids.
+          const caps = new ClaudeControlAdapter().capabilities();
+          const advertised = ALL_VERBS.filter((v) => caps[v] === true);
+          const unexpected = advertised.filter((v) => !EXPECTED_SUPPORTED.has(v));
+          if (unexpected.length > 0) {
+            fail(
+              `Adapter advertises verbs with no proven boundary: ${JSON.stringify(unexpected)}. ` +
+                'A verb becomes true only in the change that proves its runtime boundary, ' +
+                "and the gateway's SUPPORTED_ACTIONS must enable it in the same PR.",
+            );
+          }
+
+          // Every verb must be explicitly present. `caps[v] === undefined` is
+          // falsy, so a dropped key would read as "unsupported" and pass silently
+          // while the real surface reported nothing at all for that verb.
+          const missingKeys = ALL_VERBS.filter((v) => typeof caps[v] !== 'boolean');
+          if (missingKeys.length > 0) {
+            fail(`Capability map is missing boolean entries for: ${JSON.stringify(missingKeys)}.`);
+          }
+
+          // The adapter's RAW claim, before any intersection.
+          //
+          // Checked separately because every other assertion in this gate reads a
+          // post-intersection value, and the intersection hides this defect
+          // perfectly: an adapter claiming `pause: true` with no pause transport
+          // still intersects to false while ADP implements nothing, so the gate
+          // above passes. Verified by mutation — setting `pause: { supported: true }`
+          // in `adapterCapabilities()` exited 0 before this block existed, which
+          // made the comment at the top of this step false.
+          //
+          // It matters because the claim is not inert. W2-02 records it as contract
+          // evidence, and the story that implements pause widens
+          // IMPLEMENTED_CONTROL_VERBS — at which point a stale `true` here silently
+          // becomes a live verb whose `requestPause` still answers 'unavailable'.
+          // The claim must be false while the transport is absent, not merely
+          // outvoted while ADP is empty.
+          const claimed = new ClaudeControlAdapter().describe().capabilities;
+          const claimedTrue = ALL_VERBS.filter((v) => claimed[v]?.supported === true);
+          const unproven = claimedTrue.filter((v) => !EXPECTED_SUPPORTED.has(v));
+          if (unproven.length > 0) {
+            fail(
+              `The adapter CLAIMS support for verbs with no transport: ${JSON.stringify(unproven)}. ` +
+                'The intersection currently hides this, but the story that implements one of these verbs ' +
+                'would turn the stale claim into a live capability.',
+            );
+          }
+          // A false claim must say why: the reason is what an operator reads when
+          // the dashboard shows a verb greyed out, and an empty one renders as an
+          // unexplained absence.
+          const unexplained = ALL_VERBS.filter(
+            (v) => claimed[v]?.supported === false && !(claimed[v]?.reason ?? '').trim(),
+          );
+          if (unexplained.length > 0) {
+            fail(`Unsupported verbs carry no reason: ${JSON.stringify(unexplained)}.`);
+          }
+
+          // Each of the three inputs must be able to veto on its own. One true
+          // input with the other two false must still produce false; under `||` it
+          // produces true, which is precisely the collapse of three gates into one.
+          const supported = { supported: true as const, reason: '' };
+          const allSupported = { pause: supported, resume: supported, steer: supported, abort: supported };
+          const probes: ReadonlyArray<{ name: string; caps: Record<string, boolean> }> = [
+            {
+              name: 'adapter support alone must not enable a verb',
+              caps: intersectCapabilities({
+                implemented: new Set(),
+                adapter: allSupported,
+                available: new Set(ALL_VERBS),
+              }),
+            },
+            {
+              name: 'ADP implementation alone must not enable a verb',
+              caps: intersectCapabilities({
+                implemented: new Set(ALL_VERBS),
+                adapter: noVerbsSupported('no proven boundary'),
+                available: new Set(ALL_VERBS),
+              }),
+            },
+            {
+              name: 'availability alone must not enable a verb',
+              caps: intersectCapabilities({
+                implemented: new Set(),
+                adapter: noVerbsSupported('no proven boundary'),
+                available: new Set(ALL_VERBS),
+              }),
+            },
+            {
+              name: 'unavailability must veto an implemented+supported verb',
+              caps: intersectCapabilities({
+                implemented: new Set(ALL_VERBS),
+                adapter: allSupported,
+                available: new Set(),
+              }),
+            },
+          ];
+          for (const probe of probes) {
+            const leaked = ALL_VERBS.filter((v) => probe.caps[v] === true);
+            if (leaked.length > 0) {
+              fail(
+                `Capability intersection is not an intersection: ${probe.name} — but ${JSON.stringify(leaked)} came back true. ` +
+                  'The three inputs are independently owned and must be combined with && so each can veto alone.',
+              );
+            }
+          }
+
+          // The verb set the in-pod listener actually serves. Checked separately
+          // from `caps` because it is a different derivation with a different
+          // consumer: `caps` is what a verb's execution path consults, while this
+          // is what the HTTP surface answers 200-or-501 from. They were two
+          // independently-maintained empty sets until #3962 made one derive from
+          // the other, and the direction that matters is a listener advertising a
+          // verb whose transport does not exist — a command accepted and then
+          // never performed.
+          const served = [...listenerActionsFor(new ClaudeControlAdapter())];
+          const overAdvertised = served.filter((v) => !EXPECTED_SUPPORTED.has(v));
+          if (overAdvertised.length > 0) {
+            fail(
+              `The control listener would serve verbs with no proven boundary: ${JSON.stringify(overAdvertised)}. ` +
+                'The listener set is derived from the adapter, so this means a verb was enabled without its transport.',
+            );
+          }
+
+          // Identity, not equality. Two empty sets compare equal today and would
+          // keep comparing equal right up until one of them was widened alone,
+          // which is the whole failure this alias exists to make impossible.
+          if (SUPPORTED_ACTIONS !== IMPLEMENTED_CONTROL_VERBS) {
+            fail(
+              "control-listener's SUPPORTED_ACTIONS is no longer the same object as IMPLEMENTED_CONTROL_VERBS. " +
+                'Two sets that must agree have become two sets that merely happen to agree.',
+            );
+          }
+
+          console.log(`OK: adapter advertises supported=${JSON.stringify(advertised)}, unsupported=${JSON.stringify(ALL_VERBS.filter((v) => !caps[v]))}`);
+          console.log(`OK: adapter claims supported=${JSON.stringify(claimedTrue)} before intersection`);
+          console.log(`OK: listener would serve ${JSON.stringify(served)}`);
+          console.log(`OK: all ${probes.length} intersection veto probes hold`);
+          TS
+          # The exit code is captured and re-raised explicitly, and the temp file is
+          # removed on both paths. Written this way because the obvious form —
+          # `npx ts-node .verb-gate.ts` then `rm -f` — makes the successful `rm` the
+          # step's last command, so the whole gate reports success on a real
+          # violation under any shell without `-e`. Verified by mutation: enabling a
+          # verb exits 1 here, and exited 0 before this change.
+          npx ts-node .verb-gate.ts
+          status=$?
+          rm -f .verb-gate.ts
+          exit $status
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install worker test dependencies
+        # Intentionally a minimal, explicit set rather than the gateway's
+        # pyproject: this module ships in the agent-runtime image and must not
+        # acquire the gateway's dependency tree just to be tested.
+        #
+        # `requests` and `PyJWT` are here because the test imports `entrypoint`,
+        # which imports `lib.check_run` (-> requests) and `lib.github_token`
+        # (-> jwt) at module scope. Without them collection errors and the job
+        # exits 2 having run ZERO tests, which is how this step first failed: the
+        # suite did not fail, it never ran, so the story's coverage bar was
+        # unproven rather than met.
+        #
+        # Both are pinned to the same floors as the agent-runtime image's own
+        # install (see agent-worker-image/Dockerfile) so the tests exercise the
+        # versions that actually ship, not whatever pip resolves today.
+        #
+        # This list is the transitive import closure of entrypoint.py + lib/,
+        # audited with an AST walk rather than by fixing one ImportError at a
+        # time — `jwt` is one import line past `requests` and would have failed
+        # the job again on the next run.
+        run: |
+          pip install pytest pytest-cov pytest-timeout \
+            'boto3>=1.34' \
+            'requests>=2.31' \
+            'PyJWT[crypto]>=2.9'
+
+      - name: Run control token-minting tests
+        working-directory: modules/agent-factory/agent-worker-image
+        # `--cov=lib.invocation_status` (dotted), NOT `--cov=lib/invocation_status.py`:
+        # the path form collects no data at all and reports 0%.
+        #
+        # `--cov=entrypoint` as well, because the decisions that make the channel
+        # safe live there: the flag read, the pod-IP hard stop, the TTL bound and
+        # the teardown backstops. Measuring only the DDB writer left all four
+        # ungated.
+        #
+        # test_status_vocabulary.py joins this step rather than getting its own,
+        # because it covers the same module (#3964's allowlist lives in
+        # `lib/invocation_status.py`) and the coverage gate below is scoped to that
+        # module's functions. Run separately, the guard branch it adds to
+        # `update_status` would be measured as uncovered by the very step that
+        # enforces the threshold.
+        run: |
+          pytest tests/test_control_token.py tests/test_status_gateway_client.py tests/test_control_renewal.py tests/test_control_evaluation.py \
+            tests/test_status_vocabulary.py \
+            --cov=lib.invocation_status \
+            --cov=entrypoint \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-report=json:coverage-control.json \
+            -v --tb=short --timeout=60
+
+      - name: Run agent trigger compatibility and control CLI tests
+        working-directory: modules/agent-factory/agent-worker-image
+        run: |
+          pytest tests/test_adp_trigger.py tests/test_adp_trigger_control.py tests/test_run_identity.py tests/test_gateway_credential_client.py \
+            tests/test_control_renewal.py tests/test_task_credentials.py tests/test_task_gateway_client.py tests/test_run_service_client.py tests/test_transport_identity.py \
+            tests/test_adp_cred.py tests/test_adp_cred_assume.py \
+            tests/test_adp_review.py tests/test_reviewer_no_artifact_pr.py \
+            tests/test_entrypoint.py::TestBedrockViaGateway tests/test_entrypoint.py::TestBedrockViaFlag \
+            -v --tb=short --timeout=60
+
+      - name: Enforce coverage on the new control functions (>=85% line and branch)
+        working-directory: modules/agent-factory/agent-worker-image
+        # Scoped to the functions this story adds rather than `--cov-fail-under` on
+        # the whole file. `lib/invocation_status.py` and `entrypoint.py` are both
+        # pre-existing — the latter is 2800 lines of unrelated code — so a
+        # whole-file gate would fail on code this PR never touched, and the usual
+        # fix for that is to lower the threshold, which defeats the gate. This
+        # asserts the new functions at >=85% line AND branch while leaving the
+        # legacy baseline recorded but not weakened.
+        run: python tests/assert_control_coverage.py coverage-control.json
+
+  control-evaluation-harness-tests:
+    # AC-S7 required-check name. Do not rename.
+    name: Control evaluation harness tests
+    runs-on: arc-runner-org
+    needs: resolve-source
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.ref }}
+
+      # Inlined for the same reason as in the two jobs above.
+      - name: Verify and record the checked-out revision
+        env:
+          EXPECTED: ${{ needs.resolve-source.outputs.expected }}
+          JOB: control-evaluation-harness-tests
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ -n "$EXPECTED" ] && [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::This job checked out $ACTUAL but was asked for $EXPECTED." \
+                 "A gate is evidence about the revision its jobs actually built, so a" \
+                 "mismatch must fail rather than report a pass on the requested commit."
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/checked-out-revision"
+          cat > "${RUNNER_TEMP}/checked-out-revision/${JOB}.json" <<JSON
+          {
+            "job": "${JOB}",
+            "checked_out_revision": "${ACTUAL}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_attempt": "${GITHUB_RUN_ATTEMPT}",
+            "event_name": "${GITHUB_EVENT_NAME}",
+            "workflow_ref_sha": "${GITHUB_SHA}"
+          }
+          JSON
+          echo "Verified: working tree is at $ACTUAL."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checked-out-revision-control-evaluation-harness-tests
+          path: ${{ runner.temp }}/checked-out-revision/control-evaluation-harness-tests.json
+          if-no-files-found: error
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install harness test dependencies
+        # httpx is a real dependency of the harness, not a test-only one: `main`
+        # imports it to build the probe client. Without it the eleven tests that
+        # drive the published end-to-end command cannot run — and because they are
+        # the ones covering `main`, their absence showed up as a coverage drop
+        # (83%) rather than as an obviously missing dependency.
+        #
+        # pyyaml is REQUIRED, not optional. The tests that cover the `resolve-source`
+        # step do not describe it, they EXECUTE it: they parse this workflow file to
+        # extract that step's real script and run it under bash. Without a YAML reader
+        # all seventeen fail on import — which is how they failed in run 35956224007,
+        # on a missing dependency rather than on any behaviour of the thing they gate.
+        # They are the only check that the dispatch input is validated as a whole value
+        # rather than line-by-line, so a job that cannot run them is a job that gates
+        # nothing here.
+        run: pip install pytest pytest-cov pytest-timeout 'boto3>=1.34' 'httpx>=0.28' pyyaml
+
+      - name: Run evaluation harness tests
+        # The harness itself never runs in CI — it requires an operator-created
+        # isolated fixture and a real credential (evaluation #3967). What CI
+        # proves is that its GUARDS work: that it refuses a non-isolated fixture,
+        # refuses the wrong account, and redacts credentials from evidence. Those
+        # are exactly the properties that are unverifiable at the moment they
+        # matter, because by then someone is running it against a live account.
+        #
+        # Bare `--cov` with an explicit --cov-config, rather than
+        # `--cov=platform/scripts/agent-control-eval.py`: the harness is a
+        # hyphenated executable, so coverage cannot import that name to locate it
+        # and silently measures NOTHING ("No data was collected") while the job
+        # still goes green. `--cov=.` collects the whole scripts tree instead,
+        # which makes --cov-fail-under a statement about unrelated scripts. The
+        # config's `include` is what pins the threshold to this one file.
+        run: |
+          pytest platform/scripts/tests/test_agent_control_eval.py \
+            --cov \
+            --cov-config=platform/scripts/tests/.coveragerc-agent-control \
+            --cov-report=term-missing \
+            --cov-fail-under=85 \
+            -v --tb=short --timeout=60
+
+      - name: Assert the harness cannot run without an explicit fixture
+        # A smoke check that the entry point fails closed when invoked bare. If
+        # this ever exits 0, the harness has acquired a default target — and the
+        # default target for a control-plane evaluation would be whatever account
+        # the ambient credential resolves to.
+        run: |
+          if python platform/scripts/agent-control-eval.py > /tmp/bare.log 2>&1; then
+            echo "FAIL: harness exited 0 with no fixture configured"
+            cat /tmp/bare.log
+            exit 1
+          fi
+          echo "OK: harness refused to run without an explicit fixture"
+
+  operator-fixture-tests:
+    # Required-check name for the Wave 2 operator lifecycle tooling. Do not rename:
+    # renaming a job silently removes a required check rather than failing.
+    name: Operator fixture tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install operator fixture test dependencies
+        # Deliberately short, and that is the point: the suite imports only the
+        # standard library plus pytest, and stubs `aws` and `kubectl` on PATH itself
+        # (tests/conftest.py) rather than reaching a cluster. pyyaml is needed
+        # because the tests that validate this workflow parse it to assert its own
+        # triggers and job names — a suite that claims a required check exists must
+        # read the file that defines it.
+        run: pip install pytest pyyaml
+
+      - name: Assert the prerequisites are actually present
+        # An honest failure on a missing dependency, rather than a skip. A suite that
+        # skips when its interpreter or shell is absent reports the same green tick as
+        # one that ran, which is precisely the failure mode root objected to: "no
+        # tests" and "all tests pass" are the same exit code to a glob.
+        run: |
+          set -euo pipefail
+          for tool in bash python3; do
+            command -v "$tool" >/dev/null || { echo "FAIL: $tool is required and absent"; exit 1; }
+          done
+          python3 -c 'import pytest, yaml' || { echo "FAIL: pytest/pyyaml did not install"; exit 1; }
+          echo "OK: bash, python3, pytest, pyyaml present"
+
+      - name: Run the full operator fixture suite
+        # The WHOLE directory, not the newly added files. A gate that runs only the
+        # latest suite cannot catch a change that breaks an older one, and the older
+        # ones cover teardown and ownership — the paths whose silent failure leaves
+        # real resources running in the account.
+        #
+        # No `-k`, no `--ignore`, and no `-p no:cacheprovider` shortcuts: every test
+        # here is hermetic, so there is nothing legitimate to exclude. `-o
+        # addopts=` neutralises any repo-level pytest config that might inject
+        # coverage flags this tree has no settings for.
+        working-directory: platform/scripts/operator/wave2
+        run: python3 -m pytest tests/ -o addopts= -v --tb=short
+
+      - name: Assert the suite is non-empty and collects cleanly
+        # Guards the gate itself. If a refactor moved or renamed the tests directory,
+        # pytest would collect nothing and exit 5; without this step a PR that
+        # deleted the entire suite could pass review with a green check. The floor is
+        # deliberately well below the current count (487) so it fails on collapse,
+        # not on ordinary churn.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          collected="$(python3 -m pytest tests/ -o addopts= --collect-only -q 2>/dev/null \
+            | grep -cE '^tests/.*::' || true)"
+          echo "collected $collected tests"
+          [ "$collected" -ge 400 ] || {
+            echo "FAIL: only $collected tests collected; the suite has lost coverage"
+            exit 1
+          }
+
+      - name: Check every shell script parses and every Python module compiles
+        # Syntax-only, because these scripts cannot be executed in CI: they mutate a
+        # real account. `bash -n` and py_compile are the strongest checks available
+        # without a cluster, and they catch the class of error that would otherwise
+        # surface for the first time mid-run against a live fixture, after resources
+        # already exist.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          for script in $(find . -name '*.sh' | sort); do
+            bash -n "$script" || { echo "FAIL: $script has a syntax error"; exit 1; }
+          done
+          for module in $(find . -name '*.py' -not -path './tests/__pycache__/*' | sort); do
+            python3 -m py_compile "$module" || { echo "FAIL: $module does not compile"; exit 1; }
+          done
+          echo "OK: all shell scripts parse and all Python modules compile"
+
+      - name: Assert no fixture script can run without an explicit target
+        # The same fail-closed smoke check the harness job applies, for the scripts
+        # that CREATE resources. If either exits 0 when invoked bare, it has acquired
+        # a default target — and for these the default would be whatever account the
+        # ambient credential resolves to, with real objects as the result.
+        working-directory: platform/scripts/operator/wave2
+        run: |
+          set -euo pipefail
+          for script in 10-create-fixture.sh 20-collect-pause-evidence.sh; do
+            if bash "$script" > "/tmp/bare-$script.log" 2>&1; then
+              echo "FAIL: $script exited 0 with no target configured"
+              cat "/tmp/bare-$script.log"
+              exit 1
+            fi
+            echo "OK: $script refused to run bare"
+          done

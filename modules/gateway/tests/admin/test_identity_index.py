@@ -45,8 +45,10 @@ class TestIdentityIndexClient:
             org_id="org-001",
         )
         assert result is True
-        mock_dynamodb.put_item.assert_called_once()
-        call_args = mock_dynamodb.put_item.call_args
+        mock_dynamodb.transact_write_items.assert_called_once()
+        transaction = mock_dynamodb.transact_write_items.call_args.kwargs["TransactItems"]
+        assert transaction[0]["ConditionCheck"]["Key"]["identity_type"] == {"S": "github_installation_revoked"}
+        call_args = ((), transaction[1]["Put"])
         assert call_args[1]["TableName"] == "adp-dev-identity-index"
         item = call_args[1]["Item"]
         assert item["identity_type"]["S"] == "github_installation_id"
@@ -78,7 +80,7 @@ class TestIdentityIndexClient:
     async def test_put_identity_exhausts_retries(self, index_client, mock_dynamodb):
         """Test that put returns False after exhausting retries."""
         error_response = {"Error": {"Code": "InternalServerError", "Message": "Service unavailable"}}
-        mock_dynamodb.put_item.side_effect = ClientError(error_response, "PutItem")
+        mock_dynamodb.transact_write_items.side_effect = ClientError(error_response, "PutItem")
 
         result = await index_client.put_identity(
             identity_type="github_installation_id",
@@ -86,7 +88,7 @@ class TestIdentityIndexClient:
             org_id="org-003",
         )
         assert result is False
-        assert mock_dynamodb.put_item.call_count == 3
+        assert mock_dynamodb.transact_write_items.call_count == 3
 
     @pytest.mark.asyncio
     async def test_delete_identity_success(self, index_client, mock_dynamodb):
@@ -128,7 +130,7 @@ class TestIdentityIndexClient:
         # Issue #3134 fix: installation rows use UpdateItem (preserves policy attrs),
         # cognito rows still use PutItem.
         # Should have: update new-1, update kept-1, put client-new, delete removed-1, delete client-old
-        assert mock_dynamodb.update_item.call_count == 2
+        assert mock_dynamodb.transact_write_items.call_count == 2
         assert mock_dynamodb.put_item.call_count == 1
         assert mock_dynamodb.delete_item.call_count == 2
 
@@ -156,6 +158,91 @@ class TestIdentityIndexClient:
 # =============================================================================
 # AdminService integration tests with identity-index
 # =============================================================================
+
+
+class TestUpdateInstallationIdentityConditionalWrite:
+    """Issue #4072: the identity-index row must not be re-pointed cross-tenant.
+
+    ·A0 (#4070) made ``update_installation_identity`` conditional, but shipped no
+    test for the rejection path — so nothing failed if the guard were dropped. The
+    row this write produces is what webhook-ingress consults to decide which tenant
+    an event belongs to, so a silent overwrite re-routes a victim tenant's GitHub
+    events to the attacker.
+
+    Every test here asserts the OUTCOME — was the row overwritten, and did the
+    caller learn it was not — rather than the shape of the request. In particular
+    none of them assert the ConditionExpression string, which would keep passing
+    with the condition removed as long as the literal stayed in the source.
+    """
+
+    @pytest.fixture
+    def mock_dynamodb(self):
+        client = MagicMock()
+        client.transact_write_items = MagicMock(return_value={})
+        return client
+
+    @pytest.fixture
+    def index_client(self, mock_dynamodb):
+        return IdentityIndexClient(
+            table_name="adp-dev-identity-index",
+            dynamodb_client=mock_dynamodb,
+        )
+
+    @pytest.mark.asyncio
+    async def test_cross_tenant_overwrite_is_refused_and_reported(self, index_client, mock_dynamodb):
+        """A row owned by another tenant is not overwritten, and the caller is told."""
+        # DynamoDB itself enforces the condition; a rejected write surfaces as
+        # ConditionalCheckFailedException. Simulating the store's verdict is the
+        # only way to test our handling of it without a real table.
+        mock_dynamodb.transact_write_items.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "The conditional request failed"}},
+            "UpdateItem",
+        )
+
+        result = await index_client.update_installation_identity(
+            identity_value="124731131",
+            org_id="attacker-org",
+        )
+
+        # False, not True and not an exception: the caller must be able to tell
+        # "the mapping now says attacker-org" from "the mapping was refused".
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_conditional_failure_is_terminal_not_retried(self, index_client, mock_dynamodb):
+        """A conditional failure must not burn the retry budget — it is deterministic."""
+        mock_dynamodb.transact_write_items.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "The conditional request failed"}},
+            "UpdateItem",
+        )
+
+        await index_client.update_installation_identity(identity_value="124731131", org_id="attacker-org")
+
+        # Exactly one attempt. Re-evaluating the same condition against the same
+        # data fails identically, so a retry loop here would only delay the
+        # answer and make a refusal look like an outage.
+        assert mock_dynamodb.transact_write_items.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_transient_error_still_retries(self, index_client, mock_dynamodb):
+        """Guard against over-correcting: a genuine transient fault must still retry."""
+        mock_dynamodb.transact_write_items.side_effect = [
+            ClientError({"Error": {"Code": "InternalServerError", "Message": "boom"}}, "UpdateItem"),
+            {},
+        ]
+
+        result = await index_client.update_installation_identity(identity_value="124731131", org_id="own-org")
+
+        assert result is True
+        assert mock_dynamodb.transact_write_items.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_same_tenant_reconfirmation_succeeds(self, index_client, mock_dynamodb):
+        """Re-writing a row for the tenant that already owns it stays allowed."""
+        result = await index_client.update_installation_identity(identity_value="124731131", org_id="own-org")
+
+        assert result is True
+        assert mock_dynamodb.transact_write_items.call_count == 1
 
 
 class TestAdminServiceIdentityWriteThrough:
@@ -296,3 +383,55 @@ class TestAdminServiceIdentityWriteThrough:
         org = db_result.scalar_one_or_none()
         assert org is not None
         assert org.name == "Resilient Org"
+
+
+class TestUpdateUserIdentityCoreBotFields:
+    """Issue #780 follow-up: user_kind/bot_kind on the UpdateItem path.
+
+    Bot-identity seeding (src/admin/connections/bot_identity.py) writes these
+    fields so the webhook Lambda's identity_resolver recognizes the platform
+    App's own bot sender instead of 403'ing as unknown_user.
+    """
+
+    @pytest.fixture
+    def mock_dynamodb(self):
+        client = MagicMock()
+        client.update_item = MagicMock(return_value={})
+        return client
+
+    @pytest.fixture
+    def index_client(self, mock_dynamodb):
+        return IdentityIndexClient(table_name="adp-dev-identity-index", dynamodb_client=mock_dynamodb)
+
+    @pytest.mark.asyncio
+    async def test_sets_user_kind_and_bot_kind_when_provided(self, index_client, mock_dynamodb):
+        result = await index_client.update_user_identity_core(
+            identity_value="317952797",
+            user_id="user-bot-1",
+            org_id="org-001",
+            provider_username="es-adp[bot]",
+            user_kind="bot",
+            bot_kind="es-adp",
+        )
+        assert result is True
+        call_args = mock_dynamodb.update_item.call_args
+        expr = call_args[1]["UpdateExpression"]
+        values = call_args[1]["ExpressionAttributeValues"]
+        assert "user_kind = :ukind" in expr
+        assert "bot_kind = :bkind" in expr
+        assert values[":ukind"] == {"S": "bot"}
+        assert values[":bkind"] == {"S": "es-adp"}
+
+    @pytest.mark.asyncio
+    async def test_omits_user_kind_and_bot_kind_when_not_provided(self, index_client, mock_dynamodb):
+        """Human/default calls (no user_kind/bot_kind passed) must not touch
+        these attrs — an existing bot row's fields must survive an unrelated
+        core-attrs update, and a human row must never gain them."""
+        await index_client.update_user_identity_core(
+            identity_value="100",
+            user_id="user-human-1",
+            org_id="org-001",
+        )
+        expr = mock_dynamodb.update_item.call_args[1]["UpdateExpression"]
+        assert "user_kind" not in expr
+        assert "bot_kind" not in expr

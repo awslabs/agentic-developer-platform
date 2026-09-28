@@ -22,6 +22,9 @@ from moto import mock_aws
 ROUTER_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "gateway", "lambdas", "response"
 )
+OWNER_A = '["org-a","org-a","team-a","user-a","webchat"]'
+OWNER_VICTIM = '["org-victim","org-victim","team-v","user-victim","webchat"]'
+OWNER_ATTACKER = '["org-attacker","org-attacker","team-a","user-attacker","webchat"]'
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +43,146 @@ def _import_router():
     return WebSocketRouter
 
 
+def _make_sessions_table(name: str, item: dict | None = None):
+    """Create a moto-backed sessions table, optionally seeded with one row."""
+    ddb = boto3.resource("dynamodb", region_name="us-east-1")
+    table = ddb.create_table(
+        TableName=name,
+        KeySchema=[{"AttributeName": "session_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "session_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    if item:
+        table.put_item(Item=item)
+    return table
+
+
+class TestDeliveryOwnership:
+    """#5660 (A07): a session row must not redirect another owner's stream.
+
+    `session_id` reaches this path from the client, so the row it resolves may be
+    one a caller named rather than one they own. When the task records the owner it
+    was enqueued for, a row naming a different owner must not move delivery.
+    """
+
+    @mock_aws
+    def test_row_naming_another_owner_does_not_redirect_delivery(self):
+        # The row was rebound to the attacker's live connection.
+        table = _make_sessions_table("test-sessions-owner-mismatch", {
+            "session_id": "sess-victim",
+            "connection_id": "conn-ATTACKER",
+            "owner_principal": OWNER_ATTACKER,
+        })
+
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=table)
+        mock_client = MagicMock()
+        router._client = mock_client
+
+        result = router.route("Private agent output", {
+            "connection_id": "conn-VICTIM",
+            "session_id": "sess-victim",
+            "owner_principal": OWNER_VICTIM,
+        }, "task-owned-by-victim")
+
+        assert result is True
+        # Delivered to the task's own connection, never the row's.
+        call_kwargs = mock_client.post_to_connection.call_args[1]
+        assert call_kwargs["ConnectionId"] == "conn-VICTIM"
+        for call in mock_client.post_to_connection.call_args_list:
+            assert call[1]["ConnectionId"] != "conn-ATTACKER"
+
+    @mock_aws
+    def test_refusal_emits_a_metric(self):
+        table = _make_sessions_table("test-sessions-owner-metric", {
+            "session_id": "sess-victim",
+            "connection_id": "conn-ATTACKER",
+            "owner_principal": OWNER_ATTACKER,
+        })
+
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=table)
+        router._client = MagicMock()
+
+        with patch("routers.websocket.logger") as mock_logger:
+            router.route("Reply", {
+                "connection_id": "conn-VICTIM",
+                "session_id": "sess-victim",
+                "owner_principal": OWNER_VICTIM,
+            }, "task-1")
+
+        emitted = [
+            json.loads(c[0][0])
+            for c in mock_logger.info.call_args_list
+            if c[0] and isinstance(c[0][0], str) and c[0][0].startswith("{")
+        ]
+        mismatch = [m for m in emitted if m.get("DeliveryOwnerMismatch")]
+        assert mismatch, f"expected a DeliveryOwnerMismatch metric, got {emitted}"
+        assert mismatch[0]["reason"] == "session_owner_mismatch"
+
+    @mock_aws
+    def test_unowned_legacy_row_does_not_redirect_a_stamped_task(self):
+        # A row predating owner recording carries no attribution, so it cannot be
+        # shown to match. Quarantine rather than guess.
+        table = _make_sessions_table("test-sessions-owner-legacy", {
+            "session_id": "sess-legacy",
+            "connection_id": "conn-UNKNOWN",
+        })
+
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=table)
+        mock_client = MagicMock()
+        router._client = mock_client
+
+        router.route("Reply", {
+            "connection_id": "conn-TASK",
+            "session_id": "sess-legacy",
+            "owner_principal": OWNER_A,
+        }, "task-2")
+
+        assert mock_client.post_to_connection.call_args[1]["ConnectionId"] == "conn-TASK"
+
+    @mock_aws
+    def test_matching_owner_still_follows_a_reconnect(self):
+        # The reconnect fix (#68) must survive: a row whose owner matches the task
+        # is still authoritative for the current connection.
+        table = _make_sessions_table("test-sessions-owner-match", {
+            "session_id": "sess-own",
+            "connection_id": "conn-NEW",
+            "owner_principal": OWNER_A,
+        })
+
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=table)
+        mock_client = MagicMock()
+        router._client = mock_client
+
+        router.route("Reply", {
+            "connection_id": "conn-OLD",
+            "session_id": "sess-own",
+            "owner_principal": OWNER_A,
+        }, "task-3")
+
+        assert mock_client.post_to_connection.call_args[1]["ConnectionId"] == "conn-NEW"
+
+    @mock_aws
+    def test_task_without_an_owner_stamp_uses_only_its_immutable_connection(self):
+        table = _make_sessions_table("test-sessions-owner-absent", {
+            "session_id": "sess-x",
+            "connection_id": "conn-NEW",
+            "owner_principal": OWNER_A,
+        })
+
+        WebSocketRouter = _import_router()
+        router = WebSocketRouter("https://abc.execute-api.us-east-1.amazonaws.com/v1", sessions_table=table)
+        mock_client = MagicMock()
+        router._client = mock_client
+
+        router.route("Reply", {"connection_id": "conn-OLD", "session_id": "sess-x"}, "task-4")
+
+        assert mock_client.post_to_connection.call_args[1]["ConnectionId"] == "conn-OLD"
+
+
 class TestActiveConnectionLookup:
     """Bug 1: route() should prefer the session table's active connection_id."""
 
@@ -56,6 +199,7 @@ class TestActiveConnectionLookup:
         table.put_item(Item={
             "session_id": "sess-001",
             "connection_id": "conn-NEW",  # active connection after reconnect
+            "owner_principal": OWNER_A,
         })
 
         WebSocketRouter = _import_router()
@@ -68,6 +212,7 @@ class TestActiveConnectionLookup:
         metadata = {
             "connection_id": "conn-OLD",  # stale snapshot from SQS
             "session_id": "sess-001",
+            "owner_principal": OWNER_A,
         }
 
         result = router.route("Hello!", metadata, "task-001")

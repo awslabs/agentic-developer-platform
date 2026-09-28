@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Budget &amp; Spend — Dashboard Mockup (EPIC #4324)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // Match the shipped ADP theme: sky-blue "primary" ramp + Inter, from
+  // modules/gateway/frontend/src/index.css @theme block + tailwind.config.js
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          primary: {
+            50:'#f0f9ff',100:'#e0f2fe',200:'#bae6fd',300:'#7dd3fc',400:'#38bdf8',
+            500:'#0ea5e9',600:'#0284c7',700:'#0369a1',800:'#075985',900:'#0c4a6e'
+          }
+        },
+        fontFamily: { sans: ['Inter','system-ui','Avenir','Helvetica','Arial','sans-serif'] }
+      }
+    }
+  }
+</script>
+<style>
+  body{font-family:Inter,system-ui,sans-serif}
+  /* striped fill for reserved / in-flight spend */
+  .striped{background-image:repeating-linear-gradient(45deg,rgba(2,132,199,.45),rgba(2,132,199,.45) 5px,transparent 5px,transparent 10px)}
+</style>
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+
+<!-- ============ TOP BAR (mirrors MainLayout.tsx) ============ -->
+<header class="bg-white shadow-sm sticky top-0 z-30 border-b border-gray-200">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="flex items-center justify-between h-16">
+      <h1 class="text-xl font-bold text-gray-900">Agentic Developer Platform</h1>
+      <div class="flex items-center gap-3">
+        <!-- MOCKUP CONTROL: preview the page as each role. Not a shipped element. -->
+        <div class="flex items-center gap-2 mr-2 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200">
+          <span class="text-xs font-semibold text-amber-700">Preview as</span>
+          <select id="roleSelect" onchange="applyRole()" class="text-xs font-medium bg-white border border-amber-300 rounded px-2 py-1 text-amber-800">
+            <option value="member">member</option>
+            <option value="dept_admin">dept_admin</option>
+            <option value="org_admin" selected>org_admin</option>
+            <option value="platform_admin">platform_admin</option>
+          </select>
+        </div>
+        <div class="w-8 h-8 rounded-full bg-primary-600 text-white flex items-center justify-center text-sm font-semibold">JD</div>
+        <span class="text-sm text-gray-700 hidden sm:inline">jordan@acme.dev</span>
+        <span id="rolePill" class="text-xs font-medium px-2.5 py-0.5 rounded-full bg-primary-100 text-primary-800">org_admin</span>
+        <button class="text-sm text-gray-500 hover:text-gray-700">Logout</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+  <div class="flex gap-8">
+
+    <!-- ============ SIDEBAR NAV (mirrors Navigation.tsx) ============ -->
+    <aside class="hidden lg:block w-64 shrink-0">
+      <nav class="space-y-1 sticky top-24">
+        <a class="flex items-center gap-3 px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100"><span>📊</span> Dashboard</a>
+        <a class="flex items-center gap-3 px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100"><span>📋</span> Agent Activity</a>
+        <a class="flex items-center gap-3 px-4 py-2 rounded-lg bg-primary-100 text-primary-700 font-medium"><span>💵</span> Budget &amp; Spend</a>
+        <!-- admin-only nav, gated exactly like Navigation.tsx canViewBudgets()/isOrgAdmin() -->
+        <a data-role-min="dept_admin" class="flex items-center gap-3 px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100"><span>💰</span> Budgets <span class="ml-auto text-[10px] uppercase tracking-wide text-gray-400">admin</span></a>
+        <a data-role-min="org_admin" class="flex items-center gap-3 px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100"><span>🚦</span> Rate Limits <span class="ml-auto text-[10px] uppercase tracking-wide text-gray-400">admin</span></a>
+        <a data-role-min="platform_admin" class="flex items-center gap-3 px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100"><span>🏥</span> System Health <span class="ml-auto text-[10px] uppercase tracking-wide text-gray-400">platform</span></a>
+        <a data-role-min="platform_admin" class="flex items-center gap-3 px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100"><span>🏢</span> Organizations <span class="ml-auto text-[10px] uppercase tracking-wide text-gray-400">platform</span></a>
+      </nav>
+    </aside>
+
+    <!-- ============ MAIN ============ -->
+    <main class="flex-1 min-w-0 space-y-6">
+
+      <!-- page header -->
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900">Budget &amp; Spend</h1>
+        <p class="text-sm text-gray-500 mt-1" id="scopeSubtitle">Your spend across everything you drive — direct tools and cloud agents — this month.</p>
+      </div>
+
+      <!-- shadow-mode banner -->
+      <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 flex gap-3">
+        <span class="text-xs font-bold text-amber-800 bg-amber-200 rounded px-2 py-0.5 h-fit whitespace-nowrap">SHADOW MODE</span>
+        <p class="text-sm text-amber-800">Caps are being <b>tracked but not enforced yet</b>. Numbers reflect real recorded spend and your configured caps; a run that would exceed a cap is <em>logged</em>, not stopped. The striped band shows in-flight (reserved) spend from runs still executing.</p>
+      </div>
+
+      <!-- scope tabs — appear only for dept_admin+ (Tabs.tsx idiom). Member sees none. -->
+      <div id="scopeTabs" class="flex border-b border-gray-200 hidden">
+        <button onclick="setScope('me',this)" class="scopeTab px-4 py-2 -mb-px border-b-2 border-primary-500 text-primary-600 text-sm font-medium">My spend</button>
+        <button data-role-min="dept_admin" onclick="setScope('team',this)" class="scopeTab px-4 py-2 -mb-px border-b-2 border-transparent text-gray-500 hover:border-gray-300 text-sm font-medium">Team — Platform Eng</button>
+        <button data-role-min="org_admin" onclick="setScope('org',this)" class="scopeTab px-4 py-2 -mb-px border-b-2 border-transparent text-gray-500 hover:border-gray-300 text-sm font-medium">Org — Acme Corp</button>
+      </div>
+
+      <!-- period segment -->
+      <div class="flex items-center justify-between flex-wrap gap-3">
+        <div class="inline-flex rounded-lg border border-gray-300 overflow-hidden bg-white">
+          <button class="px-4 py-1.5 text-sm font-medium text-gray-500 hover:bg-gray-50">Daily</button>
+          <button class="px-4 py-1.5 text-sm font-medium text-gray-500 hover:bg-gray-50 border-l border-gray-300">Weekly</button>
+          <button class="px-4 py-1.5 text-sm font-medium bg-primary-600 text-white border-l border-gray-300">Monthly</button>
+        </div>
+        <span class="text-xs text-gray-400">Aug 1 – Aug 29, 2026 · resets in 2 days</span>
+      </div>
+
+      <!-- ===== KPI tiles (StatCard pattern) ===== -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex items-start justify-between">
+            <div>
+              <p class="text-sm text-gray-500">This period — total</p>
+              <p class="text-3xl font-bold text-gray-900 mt-1">$412.80</p>
+              <p class="text-xs text-gray-400 mt-1">of $600.00 envelope</p>
+            </div>
+            <div class="p-3 bg-primary-100 rounded-lg text-2xl">💵</div>
+          </div>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex items-start justify-between">
+            <div>
+              <p class="text-sm text-gray-500">Direct usage (my machine)</p>
+              <p class="text-3xl font-bold text-gray-900 mt-1">$148.20</p>
+              <p class="text-xs text-gray-400 mt-1">Claude Code, Codex, IDE</p>
+            </div>
+            <div class="p-3 bg-primary-100 rounded-lg text-2xl">💻</div>
+          </div>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex items-start justify-between">
+            <div>
+              <p class="text-sm text-gray-500">Cloud agents</p>
+              <p class="text-3xl font-bold text-gray-900 mt-1">$264.60</p>
+              <p class="text-xs text-gray-400 mt-1">chains I triggered</p>
+            </div>
+            <div class="p-3 bg-primary-100 rounded-lg text-2xl">☁️</div>
+          </div>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex items-start justify-between">
+            <div>
+              <p class="text-sm text-gray-500">Headroom</p>
+              <p class="text-3xl font-bold text-yellow-600 mt-1">$187.20</p>
+              <p class="text-xs text-gray-400 mt-1">31% left · 69% used</p>
+            </div>
+            <div class="p-3 bg-primary-100 rounded-lg text-2xl">📈</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Envelope decomposition: direct + cloud = envelope ===== -->
+      <div class="bg-white rounded-lg shadow p-6">
+        <div class="flex items-center justify-between mb-1">
+          <h3 class="text-lg font-semibold text-gray-900">My monthly envelope</h3>
+          <span class="text-sm text-gray-500">$412.80 <span class="text-gray-400">/ $600.00 cap · chain-inclusive (#4300)</span></span>
+        </div>
+        <p class="text-sm text-gray-500 mb-4">Everything you set in motion — your direct tool usage <b>plus</b> the cloud agent chains you triggered — counts against one envelope.</p>
+        <!-- stacked bar: direct | cloud | reserved(striped) | remaining -->
+        <div class="relative w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+          <div class="absolute inset-y-0 left-0 bg-primary-600" style="width:24.7%" title="Direct $148.20"></div>
+          <div class="absolute inset-y-0 bg-primary-400" style="left:24.7%;width:44.1%" title="Cloud $264.60"></div>
+          <div class="absolute inset-y-0 striped bg-primary-200" style="left:68.8%;width:6%" title="Reserved / in-flight $36"></div>
+          <!-- threshold marks -->
+          <div class="absolute -top-1 -bottom-1 w-0.5 bg-gray-400/60" style="left:80%"></div>
+          <div class="absolute -top-1 -bottom-1 w-0.5 bg-red-500/70" style="left:95%"></div>
+        </div>
+        <div class="flex flex-wrap gap-x-6 gap-y-1 mt-3 text-xs text-gray-500">
+          <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-sm bg-primary-600"></i> Direct $148.20</span>
+          <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-sm bg-primary-400"></i> Cloud agents $264.60</span>
+          <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-sm striped bg-primary-200"></i> Reserved / in-flight +$36</span>
+          <span class="inline-flex items-center gap-1.5"><i class="w-0.5 h-3 bg-gray-400"></i> warn @ 80%</span>
+          <span class="inline-flex items-center gap-1.5"><i class="w-0.5 h-3 bg-red-500"></i> stop @ 95%</span>
+        </div>
+      </div>
+
+      <!-- ===================================================== -->
+      <!-- SECTION 1 — DIRECT USAGE (your machine / interactive)  -->
+      <!-- ===================================================== -->
+      <div>
+        <div class="flex items-center justify-between mt-2 mb-3">
+          <div>
+            <h2 class="text-lg font-semibold text-gray-900">💻 Direct usage — from your machine</h2>
+            <p class="text-sm text-gray-500">Interactive tools connected to the gateway with your own key. You are at the keyboard; each call spends live.</p>
+          </div>
+        </div>
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+          <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+              <tr class="text-xs uppercase tracking-wider text-gray-500">
+                <th class="px-6 py-3 text-left">Client / tool</th>
+                <th class="px-6 py-3 text-left">Device / session</th>
+                <th class="px-6 py-3 text-left">Requests</th>
+                <th class="px-6 py-3 text-left">Last active</th>
+                <th class="px-6 py-3 text-left">Cost</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200 text-sm">
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">Claude Code</div><div class="text-xs text-gray-400">CLI · v2.x</div></td>
+                <td class="px-6 py-4 text-gray-500">jordan-mbp <span class="font-mono text-xs text-gray-400">·sess a1f…</span></td>
+                <td class="px-6 py-4 text-gray-700">3,410</td>
+                <td class="px-6 py-4 text-gray-500">2 min ago</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$92.40</td>
+              </tr>
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">Codex CLI</div><div class="text-xs text-gray-400">gpt-5.6-sol</div></td>
+                <td class="px-6 py-4 text-gray-500">jordan-mbp</td>
+                <td class="px-6 py-4 text-gray-700">1,255</td>
+                <td class="px-6 py-4 text-gray-500">1 hr ago</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$41.60</td>
+              </tr>
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">Cursor</div><div class="text-xs text-gray-400">IDE extension</div></td>
+                <td class="px-6 py-4 text-gray-500">jordan-desktop</td>
+                <td class="px-6 py-4 text-gray-700">402</td>
+                <td class="px-6 py-4 text-gray-500">yesterday</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$14.20</td>
+              </tr>
+            </tbody>
+            <tfoot class="bg-gray-50 text-sm">
+              <tr>
+                <td class="px-6 py-3 font-medium text-gray-700" colspan="4">Direct usage subtotal</td>
+                <td class="px-6 py-3 font-mono font-bold text-gray-900">$148.20</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- ===================================================== -->
+      <!-- SECTION 2 — CLOUD AGENTS (autonomous runs on platform) -->
+      <!-- ===================================================== -->
+      <div>
+        <div class="flex items-center justify-between mt-2 mb-3">
+          <div>
+            <h2 class="text-lg font-semibold text-gray-900">☁️ Cloud agents — running on the platform</h2>
+            <p class="text-sm text-gray-500">Autonomous runs you triggered (issues, schedules, chains). They spend on your behalf while you're away — attributed back to you as the root human.</p>
+          </div>
+          <span class="text-xs text-gray-400">showing 6 of 41 runs · click a row to open</span>
+        </div>
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+          <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+              <tr class="text-xs uppercase tracking-wider text-gray-500">
+                <th class="px-6 py-3 text-left">Run</th>
+                <th class="px-6 py-3 text-left">Agent · chain</th>
+                <th class="px-6 py-3 text-left">Started</th>
+                <th class="px-6 py-3 text-left">Cost</th>
+                <th class="px-6 py-3 text-left">Status</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200 text-sm">
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">issue #4408 — retry backoff</div><div class="font-mono text-xs text-gray-400">a91f2c…</div></td>
+                <td class="px-6 py-4 text-gray-500">developer<div class="text-xs text-gray-400">chain: onboarding-sweep</div></td>
+                <td class="px-6 py-4 text-gray-500">Aug 29, 09:14</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$22.60</td>
+                <td class="px-6 py-4"><span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800"><i class="w-2 h-2 rounded-full bg-blue-500"></i> in&nbsp;progress</span></td>
+              </tr>
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">issue #4390 — refactor auth mw</div><div class="font-mono text-xs text-gray-400">7de4b1…</div></td>
+                <td class="px-6 py-4 text-gray-500">developer</td>
+                <td class="px-6 py-4 text-gray-500">Aug 29, 08:02</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$18.35</td>
+                <td class="px-6 py-4"><span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-0.5 rounded-full bg-green-100 text-green-800"><i class="w-2 h-2 rounded-full bg-green-500"></i> complete</span></td>
+              </tr>
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">PR #4375 review</div><div class="font-mono text-xs text-gray-400">3c88fa…</div></td>
+                <td class="px-6 py-4 text-gray-500">reviewer<div class="text-xs text-gray-400">chain: onboarding-sweep</div></td>
+                <td class="px-6 py-4 text-gray-500">Aug 29, 07:41</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$9.20</td>
+                <td class="px-6 py-4"><span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-0.5 rounded-full bg-green-100 text-green-800"><i class="w-2 h-2 rounded-full bg-green-500"></i> complete</span></td>
+              </tr>
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">nightly doc sync</div><div class="font-mono text-xs text-gray-400">bb0192…</div></td>
+                <td class="px-6 py-4 text-gray-500">architect</td>
+                <td class="px-6 py-4 text-gray-500">Aug 29, 03:00</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$25.00</td>
+                <td class="px-6 py-4"><span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800"><span>⊘</span> budget_stopped</span></td>
+              </tr>
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">issue #4322 — label mismatch</div><div class="font-mono text-xs text-gray-400">f10aa7…</div></td>
+                <td class="px-6 py-4 text-gray-500">developer</td>
+                <td class="px-6 py-4 text-gray-500">Aug 28, 22:15</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$14.05</td>
+                <td class="px-6 py-4"><span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-0.5 rounded-full bg-green-100 text-green-800"><i class="w-2 h-2 rounded-full bg-green-500"></i> complete</span></td>
+              </tr>
+              <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4"><div class="font-medium text-gray-900">codex eval batch</div><div class="font-mono text-xs text-gray-400">2af7c9…</div></td>
+                <td class="px-6 py-4 text-gray-500">service · scheduled<div class="text-xs text-gray-400">no human root</div></td>
+                <td class="px-6 py-4 text-gray-500">Aug 28, 20:00</td>
+                <td class="px-6 py-4 font-mono font-semibold text-gray-900">$6.55</td>
+                <td class="px-6 py-4"><span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-0.5 rounded-full bg-red-100 text-red-800"><i class="w-2 h-2 rounded-full bg-red-500"></i> failed</span></td>
+              </tr>
+            </tbody>
+            <tfoot class="bg-gray-50 text-sm">
+              <tr>
+                <td class="px-6 py-3 font-medium text-gray-700" colspan="3">Cloud agents subtotal (all 41 runs)</td>
+                <td class="px-6 py-3 font-mono font-bold text-gray-900">$264.60</td>
+                <td class="px-6 py-3"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- ===== Caps that bound runs/chains (blast-radius ceilings) ===== -->
+      <div>
+        <h2 class="text-lg font-semibold text-gray-900 mt-2 mb-3">Per-run &amp; per-chain caps</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="bg-white rounded-lg shadow p-6">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-[10px] font-bold tracking-wide px-2 py-0.5 rounded bg-gray-100 text-gray-500">PER RUN</span>
+              <h3 class="text-sm font-semibold text-gray-900">Run cap (any single run)</h3>
+            </div>
+            <p class="text-xs text-gray-500 mb-3">Ceiling for one run · default $25.00 · highest live run shown</p>
+            <div class="flex items-baseline gap-2 mb-2"><span class="text-2xl font-bold text-gray-900">$22.60</span><span class="text-sm text-gray-400">/ $25.00</span><span class="ml-auto text-xs text-red-600 font-medium">headroom $2.40</span></div>
+            <div class="w-full bg-gray-200 rounded-full h-4"><div class="bg-red-500 h-4 rounded-full" style="width:90.4%"></div></div>
+            <p class="text-xs text-red-600 mt-2">90% used — run <span class="font-mono">a91f…</span> near cap</p>
+          </div>
+          <div class="bg-white rounded-lg shadow p-6">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-[10px] font-bold tracking-wide px-2 py-0.5 rounded bg-gray-100 text-gray-500">PER CHAIN</span>
+              <h3 class="text-sm font-semibold text-gray-900">Chain cap (a run + its sub-runs)</h3>
+            </div>
+            <p class="text-xs text-gray-500 mb-3">Ceiling for one chain · default $100.00</p>
+            <div class="flex items-baseline gap-2 mb-2"><span class="text-2xl font-bold text-gray-900">$54.10</span><span class="text-sm text-gray-400">/ $100.00</span><span class="ml-auto text-xs text-gray-500">headroom $45.90</span></div>
+            <div class="w-full bg-gray-200 rounded-full h-4"><div class="bg-green-500 h-4 rounded-full" style="width:54.1%"></div></div>
+            <p class="text-xs text-gray-500 mt-2">54% used · +$8 in flight — chain <span class="font-mono">onboarding-sweep</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== ORG panel — admin-only (org_admin / platform_admin) ===== -->
+      <div data-role-min="org_admin" class="hidden">
+        <div class="flex items-center justify-between mt-2 mb-3">
+          <div>
+            <h2 class="text-lg font-semibold text-gray-900">🏢 Organization — Acme Corp</h2>
+            <p class="text-sm text-gray-500">All members &amp; agents. Only org / platform admins see this — and only they can <b>raise</b> a cap toward the platform ceiling (#4187).</p>
+          </div>
+          <button class="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg bg-primary-600 text-white hover:bg-primary-700">Edit caps</button>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex items-center justify-between mb-1">
+            <h3 class="text-sm font-semibold text-gray-900">Org monthly spend <span class="font-mono text-xs text-gray-400">(entity_type="org")</span></h3>
+            <span class="text-sm text-gray-500">$8,140 <span class="text-gray-400">/ $20,000 cap</span></span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-4 mt-2"><div class="bg-green-500 h-4 rounded-full" style="width:40.7%"></div></div>
+          <p class="text-xs text-gray-500 mt-2">41% used · +$410 in flight · headroom $11,860</p>
+          <!-- top spenders drill-down (admin privacy boundary) -->
+          <table class="min-w-full divide-y divide-gray-200 mt-5">
+            <thead class="bg-gray-50"><tr class="text-xs uppercase tracking-wider text-gray-500">
+              <th class="px-6 py-3 text-left">Member</th><th class="px-6 py-3 text-left">Direct</th><th class="px-6 py-3 text-left">Cloud agents</th><th class="px-6 py-3 text-left">Total</th><th class="px-6 py-3 text-left">Envelope</th>
+            </tr></thead>
+            <tbody class="divide-y divide-gray-200 text-sm">
+              <tr class="hover:bg-gray-50"><td class="px-6 py-3 text-gray-900">jordan@acme.dev</td><td class="px-6 py-3 font-mono text-gray-700">$148.20</td><td class="px-6 py-3 font-mono text-gray-700">$264.60</td><td class="px-6 py-3 font-mono font-semibold">$412.80</td><td class="px-6 py-3 text-gray-500">$600 · 69%</td></tr>
+              <tr class="hover:bg-gray-50"><td class="px-6 py-3 text-gray-900">sam@acme.dev</td><td class="px-6 py-3 font-mono text-gray-700">$88.10</td><td class="px-6 py-3 font-mono text-gray-700">$612.00</td><td class="px-6 py-3 font-mono font-semibold text-yellow-700">$700.10</td><td class="px-6 py-3 text-gray-500">$800 · 88%</td></tr>
+              <tr class="hover:bg-gray-50"><td class="px-6 py-3 text-gray-900">ci-bot (service)</td><td class="px-6 py-3 font-mono text-gray-400">—</td><td class="px-6 py-3 font-mono text-gray-700">$1,420.00</td><td class="px-6 py-3 font-mono font-semibold">$1,420.00</td><td class="px-6 py-3 text-gray-500">$2,000 · 71%</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- member-only note about what they can't see -->
+      <p id="memberNote" class="text-xs text-gray-400 hidden">You're viewing your own spend. Team and organization totals are visible to team leads and admins. Caps are set by your administrators; you can see them here but not change them.</p>
+
+      <footer class="text-xs text-gray-400 border-t border-gray-200 pt-4 mt-4">
+        Mockup for <b>EPIC #4324 — Budget &amp; Spend visibility dashboard</b>. Read-only over
+        <span class="font-mono">budget_configs</span> (caps) + <span class="font-mono">budget_usage</span> (settled spend) + the #4287 reservation engine (in-flight band).
+        <b>Direct usage</b> = interactive gateway traffic authenticated as the user (no run-binding); <b>cloud agents</b> = run-bound traffic attributed to the root human via #4300.
+        Org line depends on the #4322 label fix (merged). Theme mirrors the shipped ADP frontend (Tailwind, sky-primary, light default); role gating mirrors <span class="font-mono">usePermissions</span> — the <span class="font-mono">custom:role</span> claim is a display hint only, real authz is server-side. Layout &amp; data are illustrative.
+      </footer>
+
+    </main>
+  </div>
+</div>
+
+<script>
+  const RANK = { member:0, dept_admin:1, org_admin:2, platform_admin:3 };
+  function applyRole(){
+    const role = document.getElementById('roleSelect').value;
+    const r = RANK[role];
+    document.getElementById('rolePill').textContent = role;
+    // show/hide anything gated by a minimum role
+    document.querySelectorAll('[data-role-min]').forEach(el=>{
+      el.classList.toggle('hidden', r < RANK[el.getAttribute('data-role-min')]);
+    });
+    // scope tabs only for dept_admin+ ; member gets none + the "your own spend" note
+    const showScope = r >= RANK['dept_admin'];
+    document.getElementById('scopeTabs').classList.toggle('hidden', !showScope);
+    document.getElementById('memberNote').classList.toggle('hidden', showScope);
+    // reset scope to "My spend" whenever role changes
+    setScope('me', document.querySelector('.scopeTab'));
+  }
+  function setScope(scope, btn){
+    document.querySelectorAll('.scopeTab').forEach(t=>{
+      t.classList.remove('border-primary-500','text-primary-600');
+      t.classList.add('border-transparent','text-gray-500');
+    });
+    if(btn){ btn.classList.add('border-primary-500','text-primary-600'); btn.classList.remove('border-transparent','text-gray-500'); }
+    const sub = document.getElementById('scopeSubtitle');
+    if(scope==='org')  sub.textContent = 'Organization-wide spend across all members and agents this month.';
+    else if(scope==='team') sub.textContent = 'Your team’s spend — per-member breakdown — this month.';
+    else sub.textContent = 'Your spend across everything you drive — direct tools and cloud agents — this month.';
+  }
+  applyRole();
+</script>
+</body>
+</html>

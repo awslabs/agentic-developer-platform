@@ -31,59 +31,16 @@ STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
 ECS_CLUSTER="adp-research-gbrain"
 ECS_SERVICE="adp-research-gbrain-mcp"
 
-echo "=== gbrain Deployment (end-to-end) ==="
-echo "Account:  ${ACCOUNT_ID}"
-echo "Region:   ${AWS_REGION}"
-echo "Cluster:  ${ECS_CLUSTER}"
-echo "Service:  ${ECS_SERVICE}"
-echo ""
-
-# -----------------------------------------------------------------------------
-# Step 1: Terraform init + apply (creates all infra including CodeBuild project)
-# -----------------------------------------------------------------------------
-echo "--- Step 1: Terraform apply..."
-cd "${TF_DIR}"
-
-terraform init \
-  -backend-config="bucket=${STATE_BUCKET}" \
-  -backend-config="key=research/gbrain/terraform.tfstate" \
-  -backend-config="region=${AWS_REGION}" \
-  -backend-config="encrypt=true" \
-  -backend-config="dynamodb_table=adp-terraform-locks" \
-  -input=false \
-  -reconfigure
-
-terraform apply \
-  -var-file=environments/dev.tfvars \
-  -var="state_bucket=${STATE_BUCKET}" \
-  -auto-approve
-
-echo "  ✅ Step 1: Terraform apply complete"
-
-# -----------------------------------------------------------------------------
-# Step 2: Build and push the container image via CodeBuild
-# Uses codebuild-run.sh which uploads source to a per-build-unique S3 key
-# and passes --source-location-override, eliminating the shared-key race.
-# -----------------------------------------------------------------------------
-echo ""
-echo "--- Step 2: Building container image via CodeBuild..."
-PROJECT=$(terraform output -raw build_project_name)
-echo "  CodeBuild project: ${PROJECT}"
-
-# Resolve the repo root for zip-source.sh (4 levels up from terraform/)
-REPO_ROOT="$(cd "${TF_DIR}/../../../.." && pwd)"
-
-STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
-  SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)" \
-  bash "${REPO_ROOT}/platform/scripts/codebuild-run.sh" "${PROJECT}"
-
-echo "  ✅ Step 2: Build succeeded"
+# Image publication and verified digest activation are a separate executable step.
+# It never updates ECS before a build succeeds, and supports an explicit prior digest.
+bash "$SCRIPT_DIR/deploy-image.sh"
+cd "$TF_DIR"
 
 # -----------------------------------------------------------------------------
 # Step 4: Force new deployment + wait for service to stabilize
-# This rolls the ECS service onto the freshly-built image. Idempotent — if the
-# service is already running the latest image, force-new-deployment still
-# succeeds (just a rolling restart with zero downtime).
+# This rolls the ECS service onto the freshly-built, digest-pinned image.
+# Idempotent — if the service is already running the target image,
+# force-new-deployment still succeeds (just a rolling restart).
 # -----------------------------------------------------------------------------
 echo ""
 echo "--- Step 4: Rolling ECS service onto new image..."

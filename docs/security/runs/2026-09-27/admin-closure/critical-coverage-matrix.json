@@ -1,0 +1,356 @@
+[
+  {
+    "advisory": "CVE-2022-32511",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2022-48174",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2024-41110",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2024-45337",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2025-22871",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2025-3277",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2025-68121",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-10536",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-11856",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-12087",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-13221",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-18924",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-19931",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-31789",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-33186",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-33815",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-33816",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-33845",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-34182",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-39830",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-39831",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-39832",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-39833",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-39834",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-42010",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-42496",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-42508",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-46595",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-48930",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-50195",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-53492",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-53790",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-53791",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-53793",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-54133",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-5450",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-56123",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-57433",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-58016",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-59873",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-60002",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-63073",
+    "status": "remaining High",
+    "remaining_critical": 0,
+    "remaining_high": 3
+  },
+  {
+    "advisory": "CVE-2026-63374",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-70452",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-70460",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-75595",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-75604",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-75803",
+    "status": "remaining High",
+    "remaining_critical": 0,
+    "remaining_high": 3
+  },
+  {
+    "advisory": "CVE-2026-7598",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-77405",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-77408",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-77411",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-78676",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-8376",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-8924",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-8926",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-8927",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "CVE-2026-9079",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  },
+  {
+    "advisory": "GHSA-2xp9-vwfh-vxw4",
+    "status": "absent from current Critical/High register",
+    "remaining_critical": 0,
+    "remaining_high": 0
+  }
+]

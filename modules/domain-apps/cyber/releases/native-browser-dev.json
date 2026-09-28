@@ -1,0 +1,16 @@
+{
+  "domain_app_settings": {
+    "cyber": {
+      "browser_mode": "native",
+      "browser_broker_enabled": "false",
+      "session_owner_routing": "true",
+      "common_crawl_partitions": "CC-MAIN-2026-39,CC-MAIN-2026-34,CC-MAIN-2026-30,CC-MAIN-2026-25,CC-MAIN-2026-21,CC-MAIN-2026-17"
+    }
+  },
+  "agent_authority_worker_image_digests": [
+    "sha256:1cb3550ee64d72b3b5261ccba7c874378a309d71ca277cb985dc4c911edce51f",
+    "sha256:f14998af44cc77df24365371675ffe7fef54878d7a254c83e65a9dcbcbfdbabe",
+    "sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d"
+  ],
+  "agent_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:f90e802c40b20edffd7ae7ccaa7ba6af1072158e7ae349535d6a1728e2bfa63d"
+}

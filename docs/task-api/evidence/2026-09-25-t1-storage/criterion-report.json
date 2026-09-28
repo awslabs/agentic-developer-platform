@@ -1,0 +1,82 @@
+{
+  "story": 5794,
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "reviewer": "runtime_contracts independent operator review",
+  "environment": "879318057152/us-east-1 dev",
+  "criteria": {
+    "T1-AC01": {
+      "status": "PASS",
+      "lane": "live public API and canonical Dynamo transaction tests",
+      "evidence": "Four concurrent initial same-key/same-body submits returned one Task and invocation; stable replay; changed payload409; fixture cancelled before any runtime attempt."
+    },
+    "T1-AC02": {
+      "status": "PASS",
+      "lane": "deterministic Dynamo transaction semantics",
+      "evidence": "Canonical store transaction abort, ambiguous response recovery, bound locator/envelope and policy/grant/attempt fence tests. No claim of live fault injection."
+    },
+    "T1-AC03": {
+      "status": "PASS",
+      "lane": "deterministic plus read-only live",
+      "evidence": "Canonical old-fixture query equality/index isolation tests. Live 12 owned rows over 9 exact partitions have no complete legacy-index key; existing table ARN created2026-05-01 remains."
+    },
+    "T1-AC04": {
+      "status": "PASS",
+      "lane": "real AWS IAM + real HTTP ownership + deterministic authority races",
+      "evidence": "Actual worker-role PutItem and TransactWriteItems denied; live policies unchanged; six public other-owner/tenant read denials; canonical stale-attempt/policy/grant mutation races pass. Direct S3 policy tested via IAM simulation only."
+    },
+    "T1-AC05": {
+      "status": "PASS",
+      "lane": "deterministic plus read-only live artifact",
+      "evidence": "Canonical TTL/active-work/locator retention, payload limit, wrong-owner/object-retarget and sharded-query-no-scan tests. Actual bound input artifact 287 bytes exactly matches SHA256 f2396494fc842ee9dec5f5365b5eae35a64d8f4e7efddc99e0c6c4f9dea2a529; no task output artifact claim."
+    }
+  },
+  "closure": "All fiveT1criteria PASS; closes implementation story #5794 only. Not an overall V1/V3 or V4/V5 qualification verdict.",
+  "infrastructure": "Reviewed exact additive UpdateTable request task-work-index-plan.json and authoritative CloudTrail success at 2026-09-24T23:23:08Z event fe74f143-402a-355a-9259-00d45be9b730: creates only task-work-index on existing table; all 5 legacy indexes retained. Broader Terraform plan was blocked and not applied.",
+  "live_deployed_source": "573d71ef312a52ad60d9f805f7c17c98506154e5",
+  "candidate_regression_source": "42b1d989672fa49e916c181838e2d5d5488eccfd",
+  "candidate_regressions": "220 passed, 4709 warnings in 30.52 seconds",
+  "artifacts": [
+    {
+      "path": "README.md",
+      "sha256": "c402df49926be0d29d6a6dd13e831a070bd23bda6ae78324b1608e9951bd9ce3"
+    },
+    {
+      "path": "additive-index-cloudtrail.json",
+      "sha256": "5d08dec89b590e9a864e2c32889dda94917348d2c867eba23b1b7a065de5211f"
+    },
+    {
+      "path": "candidate-regressions.json",
+      "sha256": "731b0b8fae7a6374e91ca4ff78d942fad363e4f2958f5f8896111c69179de2fa"
+    },
+    {
+      "path": "iam-real-probe.json",
+      "sha256": "460dae9f408510b55b223407d36648db68609b7611b3d798cd814863340af5cf"
+    },
+    {
+      "path": "live-concurrent-admission.json",
+      "sha256": "f6c2f00666b97f310cdfaf7b5ca212a9d5b81be136dc0d5ef828690a5a4e3139"
+    },
+    {
+      "path": "primary-owner-denial.json",
+      "sha256": "f0aa2591e97ea44684ac6c22b014400968875a13238669ed387ca633affdae02"
+    },
+    {
+      "path": "t1-artifact-integrity-proof.json",
+      "sha256": "56a4fe4c7c3ce43ba3a2a3ebe16b29ee0364f91d2e5b57715a5b0d18e6f61ea1"
+    },
+    {
+      "path": "t1-live-iam-policy-recheck.json",
+      "sha256": "6635744bb6a47fb971111617ecedae21f190fcaef664140e3b7c5c96dcde9d28"
+    },
+    {
+      "path": "t1-live-index-proof.json",
+      "sha256": "fee9b28d5508b68ef422a799dfa031ac4fbea2e3273494e726b6bbebf78d297e"
+    },
+    {
+      "path": "t1-worker-artifact-iam-simulation.json",
+      "sha256": "560d7458e58be4c18a8af0d024c3f4749c780ee925174e83a60cf45120f6e95d"
+    }
+  ],
+  "independent_reviewer_submitted_tasks": false,
+  "live_concurrency_fixture_submitted_by": "root operator"
+}

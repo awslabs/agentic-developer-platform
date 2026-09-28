@@ -4,7 +4,8 @@ data "aws_caller_identity" "current" {}
 
 # EKS Cluster Service Role
 resource "aws_iam_role" "eks_cluster" {
-  name = "${var.name_prefix}-role-eks-cluster"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-role-eks-cluster"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -44,7 +45,8 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
 
 # EKS Node Group Service Role
 resource "aws_iam_role" "eks_node_group" {
-  name = "${var.name_prefix}-role-eks-node-group"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-role-eks-node-group"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -85,7 +87,8 @@ resource "aws_iam_role_policy_attachment" "eks_node_group_policies" {
 # Gateway Service Role (will be created after OIDC provider exists)
 # This is a placeholder - actual IRSA role will be created after EKS cluster
 resource "aws_iam_role" "gateway_service_placeholder" {
-  name = "${var.name_prefix}-role-gateway-service-placeholder"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-role-gateway-service-placeholder"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

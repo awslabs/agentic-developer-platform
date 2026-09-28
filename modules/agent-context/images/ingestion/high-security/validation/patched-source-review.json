@@ -1,0 +1,113 @@
+{
+  "config_digest": "sha256:a0f49b82ecc0eaa0ff08c7069c2b7a072e1224a4aca1dce26c193216d384e134",
+  "raw_receipt": {
+    "image": "security27/ingestion:high-maintenance-adp3",
+    "docker_root_descriptor": "sha256:41b743bb0e0600c0c9e2dc62ba01af3e07a88723732fc7ca6a8765491d55ea8b",
+    "config_digest": "sha256:a0f49b82ecc0eaa0ff08c7069c2b7a072e1224a4aca1dce26c193216d384e134",
+    "time": "2026-09-27T21:08:54.549866+00:00",
+    "packages": 3952,
+    "native_counts": {
+      "Negligible": 703,
+      "Critical": 25,
+      "High": 111,
+      "Low": 27,
+      "Medium": 135,
+      "Unknown": 5
+    },
+    "sbom_sha256": "ebceb140bb3ebe3371cea42fd1625d9d2fe4d1c9772f4fdb0670d4767747c6dd",
+    "grype_sha256": "8ec4bd56ad542d73aca7a129dc872c76f79215ac2ff1794c18e8d5b9a6d15029",
+    "archive_sha256": "0ede80618635407d049f01d6daf3e08c49f212ccc7675c1704152d9da25f3ba4"
+  },
+  "exact_patched_files": {
+    "/usr/lib/x86_64-linux-gnu/libxml2.so.2": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6",
+    "/usr/local/lib/python3.13/site-packages/nltk/parse/transitionparser.py": "27bc34ecc7abb5b25b556fa9fa6ce7aa640587bd3adc2654795eeea0e5b4dfb8",
+    "/usr/local/lib/python3.13/site-packages/nltk/tag/perceptron.py": "3f10a584f9c6982702bc49e467732942b5c89cd1e593d6d728fe94cbbe5b42ce",
+    "/usr/local/lib/python3.13/site-packages/nltk/classify/maxent.py": "21f45094caf7e411c86726f707709ff7f361744a9b4970e5850486bf03ac52a4",
+    "/usr/local/lib/python3.13/site-packages/nltk/pathsec.py": "1ef519870ab061d44452fd61cd903654bfb4069e58884d3f134ebbe44b46a99e"
+  },
+  "libxml_patch_sha256": "7116d8d569b3ed2bbc59b9b6ba860087a9f51d9779fcd2235b0725548748c81a",
+  "dispositions": [
+    {
+      "native_match_index": 21,
+      "id": "CVE-2026-74860",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp3",
+      "status": "not-affected-exact-build-scope",
+      "basis": "Vendor scope requires libxml2 Python SAX bindings. This exact library build uses --without-python; package contains only ABI-2 shared library and copyright. No Python bindings are built or distributed in this package.",
+      "binary_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6"
+    },
+    {
+      "native_match_index": 70,
+      "id": "CVE-2026-6653",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp3",
+      "status": "fixed-upstream-source-in-exact-image",
+      "basis": "Actual upstream source 2.13.9 is newer than upstream fixed 2.11.0; Debian distribution version threshold does not describe this downstream source build.",
+      "binary_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6"
+    },
+    {
+      "native_match_index": 110,
+      "id": "GHSA-8mgp-746c-j5xp",
+      "package": "nltk",
+      "version": "3.10.3+adp1",
+      "status": "fixed-upstream-source-in-exact-image",
+      "basis": "Actual wheel built from NLTK 574270e2ad368c8816976e584da56ddfb3fefbad incorporating merged model-path security PRs 3757/3759/3813. Installed affected API file hashes equal source. Four upstream path-security suites: 700 passed, 63 optional skips.",
+      "binary_sha256": null
+    },
+    {
+      "native_match_index": 175,
+      "id": "CVE-2026-86142",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp3",
+      "status": "fixed-upstream-source-in-exact-image",
+      "basis": "Official upstream 2.13.9 source plus reviewed upstream fix 6b3a736c0edc74ceec3d82f5252499d7911b3a58. Full upstream make check passed. For output callbacks the guard additionally covers legacy WriteEscape, with fail-adp2/pass-adp3 regression.",
+      "binary_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6"
+    },
+    {
+      "native_match_index": 184,
+      "id": "CVE-2026-86140",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp3",
+      "status": "fixed-upstream-source-in-exact-image",
+      "basis": "Official upstream 2.13.9 source plus reviewed upstream fix d1686f91dbda141a752200419d35639fd6b38340. Full upstream make check passed. For output callbacks the guard additionally covers legacy WriteEscape, with fail-adp2/pass-adp3 regression.",
+      "binary_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6"
+    },
+    {
+      "native_match_index": 190,
+      "id": "CVE-2026-86144",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp3",
+      "status": "fixed-upstream-source-in-exact-image",
+      "basis": "Official upstream 2.13.9 source plus reviewed upstream fix b63cd517afecb76582dd9488c55e54ceaf50de61. Full upstream make check passed. For output callbacks the guard additionally covers legacy WriteEscape, with fail-adp2/pass-adp3 regression.",
+      "binary_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6"
+    },
+    {
+      "native_match_index": 205,
+      "id": "CVE-2026-86138",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp3",
+      "status": "fixed-upstream-source-in-exact-image",
+      "basis": "Official upstream 2.13.9 source plus reviewed upstream fix a4cba4b5b5a8c42e155ed42d2d2a44955465a2e4. Full upstream make check passed. For output callbacks the guard additionally covers legacy WriteEscape, with fail-adp2/pass-adp3 regression.",
+      "binary_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6"
+    },
+    {
+      "native_match_index": 211,
+      "id": "CVE-2026-86143",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp3",
+      "status": "fixed-upstream-source-in-exact-image",
+      "basis": "Official upstream 2.13.9 source plus reviewed upstream fix 90f293ba74d28b1d570920382e707586f68ebf35. Full upstream make check passed. For output callbacks the guard additionally covers legacy WriteEscape, with fail-adp2/pass-adp3 regression.",
+      "binary_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6"
+    },
+    {
+      "native_match_index": 237,
+      "id": "CVE-2026-86139",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp3",
+      "status": "fixed-upstream-source-in-exact-image",
+      "basis": "Official upstream 2.13.9 source plus reviewed upstream fix 8edbbdb09f24d26a2f900141fddc2b9d014f53b0. Full upstream make check passed. For output callbacks the guard additionally covers legacy WriteEscape, with fail-adp2/pass-adp3 regression.",
+      "binary_sha256": "91ed51f91f06eb5a7c9fedff2ead9cb7ac6b54c9b5a10fc08ca46a61f5a699e6"
+    }
+  ],
+  "scope": "Exact published candidate only; not live closure."
+}

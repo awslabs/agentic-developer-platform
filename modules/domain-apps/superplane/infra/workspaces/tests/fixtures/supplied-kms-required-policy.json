@@ -1,0 +1,72 @@
+{
+  "key_arn": "arn:aws:kms:us-east-1:111122223333:key/11111111-2222-3333-4444-555555555555",
+  "required_statements": [
+    {
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey*",
+        "kms:DescribeKey"
+      ],
+      "Condition": {
+        "ArnEquals": {
+          "kms:EncryptionContext:aws:logs:arn": "arn:aws:logs:us-east-1:111122223333:log-group:/aws/eks/adp-dev-spw-970b320a868d197402321c9d69957998/cluster"
+        }
+      },
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "logs.us-east-1.amazonaws.com"
+      },
+      "Resource": "*",
+      "Sid": "AllowCloudWatchLogsToEncryptThisWorkspacesClusterLogGroup"
+    },
+    {
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:ReEncrypt*",
+        "kms:GenerateDataKey*",
+        "kms:DescribeKey"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ec2.us-east-1.amazonaws.com"
+        }
+      },
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::111122223333:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+      },
+      "Resource": "*",
+      "Sid": "AllowAutoScalingToUseThisKeyForNodeRootVolumes"
+    },
+    {
+      "Action": "kms:CreateGrant",
+      "Condition": {
+        "Bool": {
+          "kms:GrantIsForAWSResource": "true"
+        }
+      },
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::111122223333:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+      },
+      "Resource": "*",
+      "Sid": "AllowAutoScalingToCreateGrantsForAttachedVolumes"
+    },
+    {
+      "Action": [
+        "kms:DescribeKey",
+        "kms:CreateGrant"
+      ],
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::111122223333:role/workspace-provisioner"
+      },
+      "Resource": "*",
+      "Sid": "AllowProvisioningCallerToConfigureEKSEncryption"
+    }
+  ],
+  "verify": "aws kms get-key-policy --key-id arn:aws:kms:us-east-1:111122223333:key/11111111-2222-3333-4444-555555555555 --policy-name default --query Policy --output text"
+}

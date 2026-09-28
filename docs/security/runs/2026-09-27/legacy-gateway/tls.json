@@ -1,0 +1,1 @@
+{"uid": 10001, "curl_verified_tls": "passed", "untrusted_cert_refused": "passed", "wrong_host_refused": "passed", "git_https_clone_fetch": "passed", "git_untrusted_cert_refused": "passed", "network": "isolated loopback", "credentials": "fresh synthetic TLS key only"}

@@ -181,6 +181,27 @@ resource "aws_route_table_association" "sandbox" {
 }
 
 # ---------------------------------------------------------------------------
+# Default Security Group — deny-all (CKV2_AWS_12)
+# ---------------------------------------------------------------------------
+# Every VPC gets a default security group that allows all internal traffic.
+# Adopting it with no rules ensures nothing can accidentally rely on those
+# permissive defaults. All workloads in this VPC already use dedicated,
+# scoped security groups (vpc_endpoints SG, plus any CAPE-host SGs).
+
+resource "aws_default_security_group" "threat_research" {
+  vpc_id = aws_vpc.threat_research.id
+
+  # Explicit empty sets keep both adoption and later drift reconciliation deny-all.
+  # Omitting these Optional+Computed fields would leave rules state-derived.
+  ingress = []
+  egress  = []
+
+  tags = {
+    Name = "${local.name_prefix}-default-sg-restricted"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # VPC Endpoints (Gateway)
 # ---------------------------------------------------------------------------
 
@@ -297,5 +318,20 @@ resource "aws_vpc_endpoint" "sqs" {
 
   tags = {
     Name = "${local.name_prefix}-vpce-sqs"
+  }
+}
+
+# IRSA exchanges projected service-account tokens through regional STS.
+# Keep that exchange inside the worker NetworkPolicies' private-subnet allowlist.
+resource "aws_vpc_endpoint" "sts" {
+  vpc_id              = aws_vpc.threat_research.id
+  service_name        = "com.amazonaws.${var.aws_region}.sts"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${local.name_prefix}-vpce-sts"
   }
 }

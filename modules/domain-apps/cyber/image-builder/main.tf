@@ -24,7 +24,7 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
-  name_prefix = "adp-${var.environment}-imgbuilder"
+  name_prefix = "adp-${var.environment}-imgbuilder${var.builder_name_suffix == "" ? "" : "-${var.builder_name_suffix}"}"
 
   common_tags = {
     Project     = "adp"

@@ -129,7 +129,7 @@ class TestACLParity:
     """
 
     @pytest.mark.asyncio
-    async def test_rest_search_no_headers_returns_empty(self, client):
+    async def test_rest_search_no_headers_returns_empty(self, client, acl_store_live):
         """REST path: search without x-github-login returns empty (baseline)."""
         resp = await client.post(
             "/call",
@@ -143,7 +143,7 @@ class TestACLParity:
         assert body["results"] == []
 
     @pytest.mark.asyncio
-    async def test_rest_understand_no_headers_returns_empty(self, client):
+    async def test_rest_understand_no_headers_returns_empty(self, client, acl_store_live):
         """REST path: understand without headers returns empty definitions."""
         resp = await client.post(
             "/call",
@@ -156,7 +156,7 @@ class TestACLParity:
         assert body["definitions"] == []
 
     @pytest.mark.asyncio
-    async def test_rest_impact_no_headers_returns_empty(self, client):
+    async def test_rest_impact_no_headers_returns_empty(self, client, acl_store_live):
         """REST path: impact without headers returns empty affected list."""
         resp = await client.post(
             "/call",
@@ -169,7 +169,7 @@ class TestACLParity:
         assert body["affected"] == []
 
     @pytest.mark.asyncio
-    async def test_rest_browse_no_headers_returns_empty(self, client):
+    async def test_rest_browse_no_headers_returns_empty(self, client, acl_store_live):
         """REST path: browse without headers returns empty entries."""
         resp = await client.post(
             "/call",
@@ -182,10 +182,13 @@ class TestACLParity:
         assert body["entries"] == []
 
     @pytest.mark.asyncio
-    async def test_rest_with_headers_does_not_fail_closed(self, client):
-        """REST path: search WITH x-github-login does NOT fail closed.
+    async def test_rest_with_headers_reaches_the_verb(self, client, acl_store_live):
+        """REST path: a resolved caller passes the gates and reaches the verb.
 
-        (May still return empty if no Zoekt backend, but the ACL gate passes.)
+        With the ACL store live and identity headers present, the request is
+        answered by the verb itself — a normal result envelope, not a refusal.
+        Results may still be empty because Zoekt is not configured in tests;
+        what this asserts is that neither gate rejected the call.
         """
         resp = await client.post(
             "/call",
@@ -198,10 +201,39 @@ class TestACLParity:
             ).encode(),
         )
         assert resp.status_code == 200
-        # The request itself succeeds (ACL passes); results may be empty
-        # because Zoekt is not configured in test, but no ACL error
         body = resp.json()
         assert "results" in body
+        assert body.get("code") != "acl_store_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_rest_with_headers_refused_when_acl_store_down(self, client):
+        """A resolved caller is STILL refused when the ACL store is unavailable.
+
+        This is the #5658 invariant, and it is the case this test previously
+        asserted the opposite of: it was named
+        ``test_rest_with_headers_does_not_fail_closed`` and required a result
+        envelope with no ACL store present, pinning the fail-OPEN behaviour in
+        place. Identity alone is not authorisation — without the store there is
+        nothing to authorise against, so the verb must refuse rather than serve
+        unfiltered results.
+
+        No acl_store_live fixture here on purpose: the app's default test state
+        has no store.
+        """
+        resp = await client.post(
+            "/call",
+            headers={
+                "x-github-login": "testuser",
+                "x-github-teams": "org/team-a",
+            },
+            content=json.dumps(
+                {"name": "search", "arguments": {"query": "hello", "scope": "code"}}
+            ).encode(),
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == "acl_store_unavailable"
+        assert "results" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +251,7 @@ class TestMCPToolHandlerACL:
     """
 
     @pytest.mark.asyncio
-    async def test_mcp_search_no_context_returns_empty(self):
+    async def test_mcp_search_no_context_returns_empty(self, acl_store_live):
         """MCP search without headers returns empty (fail-closed)."""
         from door.mcp_app import mcp_server
 
@@ -232,7 +264,7 @@ class TestMCPToolHandlerACL:
         assert parsed["results"] == []
 
     @pytest.mark.asyncio
-    async def test_mcp_understand_no_context_returns_empty(self):
+    async def test_mcp_understand_no_context_returns_empty(self, acl_store_live):
         """MCP understand without headers returns empty definitions (fail-closed)."""
         from door.mcp_app import mcp_server
 
@@ -243,7 +275,7 @@ class TestMCPToolHandlerACL:
         assert parsed["definitions"] == []
 
     @pytest.mark.asyncio
-    async def test_mcp_impact_no_context_returns_empty(self):
+    async def test_mcp_impact_no_context_returns_empty(self, acl_store_live):
         """MCP impact without headers returns empty affected (fail-closed)."""
         from door.mcp_app import mcp_server
 
@@ -254,7 +286,7 @@ class TestMCPToolHandlerACL:
         assert parsed["affected"] == []
 
     @pytest.mark.asyncio
-    async def test_mcp_browse_no_context_returns_empty(self):
+    async def test_mcp_browse_no_context_returns_empty(self, acl_store_live):
         """MCP browse without headers returns empty entries (fail-closed)."""
         from door.mcp_app import mcp_server
 
@@ -319,22 +351,58 @@ class TestExtractHeaders:
 
 
 class TestDNSRebindingDisabled:
-    """Verify DNS-rebinding protection is disabled on the MCP server.
+    """DNS-rebinding protection is ENABLED with an explicit host allowlist.
 
-    Issue #3254: The MCP SDK's default DNS-rebinding protection rejects
-    Host headers that don't match localhost, returning 421 to in-cluster
-    callers using the Kubernetes service DNS name. With the protection
-    disabled, all Host values are accepted.
+    Issue #3254 turned this protection off wholesale: the MCP SDK's default
+    allowlist is localhost-only and returned 421 to in-cluster callers using the
+    Kubernetes service DNS name. The diagnosis was right, the remedy too broad —
+    with the check off the Door accepted any Host header.
+
+    Issue #4073 (finding #8) supersedes that: protection is on, and every real
+    caller hostname is enumerated in ``door/mcp_app.py``. The class name is kept
+    so the history of this decision stays greppable from the #3254 references.
+
+    The behavioural assertions — that real cluster hostnames are accepted and
+    foreign ones rejected — live in ``tests/unit/test_door_auth.py``
+    (``TestDnsRebindingProtection``), which tests the SDK matcher directly rather
+    than just the flag.
     """
 
-    def test_transport_security_dns_rebinding_disabled(self):
-        """MCP server has enable_dns_rebinding_protection=False."""
+    def test_transport_security_dns_rebinding_enabled(self):
+        """MCP server has enable_dns_rebinding_protection=True (#4073).
+
+        Replaces the #3254 assertion that it be False.
+        """
         from door.mcp_app import mcp_server
 
         ts = mcp_server.settings.transport_security
         assert ts is not None, "transport_security not configured"
-        assert ts.enable_dns_rebinding_protection is False, (
-            "DNS rebinding protection must be disabled for cluster-internal service"
+        assert ts.enable_dns_rebinding_protection is True, (
+            "DNS rebinding protection is disabled, so any Host header is accepted "
+            "(issue #4073 finding #8, superseding #3254)."
+        )
+
+    def test_cluster_dns_name_is_allowlisted(self):
+        """The hostname #3254 was reacting to must still be accepted.
+
+        This is the regression that made #3254 disable the check: without the
+        FQDN on the allowlist, every in-cluster MCP caller gets 421.
+
+        Asserted through the SDK's matcher rather than by substring-searching
+        ``allowed_hosts``: the entries use the SDK's ``host:*`` port wildcard, so
+        an ``in allowed_hosts`` check for the ``:5100`` spelling fails even though
+        the host is accepted. Testing the matcher is both correct and robust to
+        the allowlist being re-spelled.
+        """
+        from mcp.server.transport_security import TransportSecurityMiddleware
+
+        from door.mcp_app import mcp_server
+
+        settings = mcp_server.settings.transport_security
+        host = "context-mcp.agent-context.svc.cluster.local:5100"
+        assert TransportSecurityMiddleware(settings)._validate_host(host) is True, (
+            f"The canonical in-cluster URL {host!r} is rejected; agent workers would "
+            f"get 421 Misdirected Request. allowed_hosts={settings.allowed_hosts}"
         )
 
     def test_transport_security_is_explicit(self):
@@ -381,7 +449,7 @@ class TestLegacyRESTPreserved:
         }
 
     @pytest.mark.asyncio
-    async def test_post_call_still_works(self, client):
+    async def test_post_call_still_works(self, client, acl_store_live):
         """POST /call routes correctly (REST contract preserved)."""
         resp = await client.post(
             "/call",

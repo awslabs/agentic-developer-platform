@@ -1,0 +1,98 @@
+{
+  "_comment": [
+    "Mixed-age Terraform state record for issue #5831. See README.md in this",
+    "directory for provenance and for what each field is doing here.",
+    "",
+    "Two resource records of DIFFERENT ages, which is the whole point:",
+    "  aws_eks_addon.coredns      — written by a NEWER provider: carries",
+    "                               namespace_config and the four identity",
+    "                               fields that provider 5.x cannot serialise.",
+    "  aws_launch_template.gvisor_nodes — written by an OLDER provider:",
+    "                               schema_version 0, while provider 6.16.0+",
+    "                               declares schema version 1.",
+    "",
+    "A fixture carrying only the first record passes on the raised provider",
+    "floor while the real targeted plan still fails. That happened on this",
+    "issue. Both ages must be present or the test certifies the wrong thing.",
+    "",
+    "Terraform ignores unknown top-level keys, so this comment is inert.",
+    "It is a literal string array, not a real state field."
+  ],
+
+  "version": 4,
+  "terraform_version": "1.14.6",
+  "serial": 84,
+  "lineage": "00000000-0000-0000-0000-000000000000",
+  "outputs": {},
+  "check_results": null,
+
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "aws_eks_addon",
+      "name": "coredns",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "addon_name": "coredns",
+            "cluster_name": "adp-dev",
+            "id": "adp-dev:coredns",
+            "namespace_config": [
+              {
+                "namespace": "kube-system"
+              }
+            ],
+            "tags": {},
+            "tags_all": {}
+          },
+          "identity_schema_version": 0,
+          "identity": {
+            "account_id": "000000000000",
+            "addon_name": "coredns",
+            "cluster_name": "adp-dev",
+            "region": "us-east-1"
+          },
+          "sensitive_attributes": []
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_launch_template",
+      "name": "gvisor_nodes",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "arn": "arn:aws:ec2:us-east-1:000000000000:launch-template/lt-0123456789abcdef0",
+            "default_version": 1,
+            "description": null,
+            "disable_api_stop": null,
+            "disable_api_termination": null,
+            "ebs_optimized": null,
+            "id": "lt-0123456789abcdef0",
+            "image_id": null,
+            "instance_initiated_shutdown_behavior": null,
+            "instance_type": "m6i.large",
+            "kernel_id": null,
+            "key_name": null,
+            "latest_version": 1,
+            "name": "adp-dev-gvisor-20250101000000000000000000",
+            "name_prefix": "adp-dev-gvisor-",
+            "ram_disk_id": null,
+            "security_group_names": null,
+            "tags": {},
+            "tags_all": {},
+            "update_default_version": null,
+            "user_data": null,
+            "vpc_security_group_ids": null
+          },
+          "sensitive_attributes": []
+        }
+      ]
+    }
+  ]
+}

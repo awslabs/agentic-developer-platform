@@ -38,6 +38,49 @@ def test_env() -> TestEnvConfig:
 
 
 # ---------------------------------------------------------------------------
+# Door authentication (issue #4073, finding #8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _door_auth_disabled_by_default(request, monkeypatch):
+    """Disable Door shared-secret auth for tests that predate it.
+
+    Issue #4073 added an authentication middleware to the Door: every path except
+    ``/health`` now requires ``X-Internal-Api-Key``. The suites that predate it
+    drive the app directly and send no credential, so without this they receive
+    401 (or 503 when no key is configured) and stop testing what they were
+    written to test — ACL filtering, verb dispatch, MCP parity and cross-tenant
+    isolation.
+
+    Turning auth off for them is the honest option. Weakening the middleware to
+    keep them green would defeat the control, and threading a key through every
+    call site would only re-test the middleware dozens of times while adding
+    nothing to what each suite is actually asserting. Critically, the tenant
+    isolation suite still proves what it always proved: authentication is not
+    authorization, so with auth off those tests exercise the ACL layer in
+    isolation, which is exactly their subject.
+
+    Lives in the ROOT conftest, not ``tests/unit/``: ``tests/integration/`` needs
+    it too (``test_cross_tenant_isolation.py`` posts to ``/call`` with identity
+    headers and no key).
+
+    ``tests/unit/test_door_auth.py`` and any other auth test opt OUT via the
+    ``door_auth`` marker and assert the real behaviour.
+    """
+    if request.node.get_closest_marker("door_auth"):
+        # This test is about authentication — leave the real config alone.
+        return
+    try:
+        from door.config import config
+    except ImportError:
+        # Door package not importable in this environment (e.g. a missing
+        # optional runtime dep); nothing to disable.
+        return
+    monkeypatch.setattr(config, "door_auth_enabled", False, raising=False)
+
+
+# ---------------------------------------------------------------------------
 # Pytest markers — auto-skip live_only in unit mode
 # ---------------------------------------------------------------------------
 

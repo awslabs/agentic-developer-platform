@@ -1,0 +1,100 @@
+name: S14 shared IRSA acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/security-s14-shared-irsa.yml'
+      - 'scripts/security/s14/**'
+permissions:
+  contents: read
+concurrency:
+  group: security-s14-shared-irsa-acceptance
+  cancel-in-progress: false
+jobs:
+  offline-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s scripts/security/s14 -p 'test_*.py' -v
+  acceptance:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    # A fixed remote journal prevents new runs from replaying this acceptance.
+    env:
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: diagnostic
+      - uses: actions/checkout@v7
+        with:
+          # Reviewed smoke-build bytes, independent of a moving main branch.
+          ref: c6f20b35491541a99bc48e83b8e801296ffc645f
+          persist-credentials: false
+          path: source
+      - name: Set private receipt path
+        shell: bash
+        run: echo "RECEIPT=$RUNNER_TEMP/s14-$GITHUB_RUN_ID/receipt.json" >> "$GITHUB_ENV"
+      - name: Verify genuine shared IRSA and installed dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$AWS_ROLE_ARN" = arn:aws:iam::879318057152:role/adp-dev-agent-runner-role
+          test -r "$AWS_WEB_IDENTITY_TOKEN_FILE"
+          test -z "${AWS_ACCESS_KEY_ID:-}"
+          test -z "${AWS_SECRET_ACCESS_KEY:-}"
+          test -z "${AWS_SESSION_TOKEN:-}"
+          python3 -c 'import boto3, botocore'
+      - name: Bounded runtime and denied-resource checks
+        run: python3 diagnostic/scripts/security/s14/diagnostic.py --config diagnostic/scripts/security/s14/config.json --receipt "$RECEIPT" --stage runtime --execute
+      - name: Preserve runtime summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: s14-${{ github.run_id }}-runtime
+          path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Start exactly one nonpublishing PR build
+        run: python3 diagnostic/scripts/security/s14/diagnostic.py --config diagnostic/scripts/security/s14/config.json --receipt "$RECEIPT" --stage start-build --source-root "$GITHUB_WORKSPACE/source" --source-sha c6f20b35491541a99bc48e83b8e801296ffc645f --execute
+      - name: Preserve build-start summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: s14-${{ github.run_id }}-build-start
+          path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Poll saved build without restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 40); do
+            python3 diagnostic/scripts/security/s14/diagnostic.py --config diagnostic/scripts/security/s14/config.json --receipt "$RECEIPT" --stage poll-build --execute
+            status=$(python3 -c 'import json,os;print(json.load(open(os.environ["RECEIPT"]))["build_status"])')
+            case "$status" in
+              SUCCEEDED) exit 0 ;;
+              FAILED|FAULT|STOPPED|TIMED_OUT) exit 1 ;;
+            esac
+            sleep 30
+          done
+          exit 1
+      - name: Preserve final summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: s14-${{ github.run_id }}-final
+          path: ${{ runner.temp }}/s14-${{ github.run_id }}/summary.json
+          if-no-files-found: warn
+          retention-days: 14

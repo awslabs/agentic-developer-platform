@@ -17,6 +17,9 @@ RESERVED_TENANT_IDS = frozenset({"admin", "system", "api", "root", "internal", "
 class AccessStatusResponse(BaseModel):
     status: str  # "registered" | "new" | "pending"
     request_id: str | None = None
+    tenant_id: str | None = None
+    membership_role: str | None = None
+    spend_eligibility: str = "not_evaluated"
 
 
 class AccessRequestPayload(BaseModel):
@@ -29,6 +32,7 @@ class AccessRequestPayload(BaseModel):
     """
 
     motivation: str | None = None
+    target_tenant: str | None = None
 
 
 class AccessRequestResponse(BaseModel):
@@ -58,3 +62,20 @@ class AdminAccessRequestList(BaseModel):
 
 class AdminDecisionPayload(BaseModel):
     decision_note: str | None = None
+    expected_role: str | None = None
+    expected_scope: str | None = None
+
+
+class AdminApprovalResponse(BaseModel):
+    """The outcome of an approval, including the role it granted — #5666 (A11).
+
+    The route previously returned a bare ``dict`` with no ``response_model``, so an
+    approval never reported what authority it conferred. That is the one fact an
+    approver most needs to see: with the role derived server-side, the response is
+    the only place the decision becomes visible to the person who made it, and an
+    unexpected ``org_admin`` is precisely what an operator should be able to notice.
+    """
+
+    status: str
+    tenant_id: str
+    granted_role: str

@@ -62,8 +62,6 @@ class TestWritePointer:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=1",
             correlation_id="corr-123",
-            root_human_id="user-456",
-            is_human_rooted=True,
         )
 
     @patch("lib.correlation_store._get_client")
@@ -75,8 +73,6 @@ class TestWritePointer:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=42",
             correlation_id="corr-abc",
-            root_human_id="user-xyz",
-            is_human_rooted=True,
             ttl_days=7,
         )
 
@@ -89,8 +85,6 @@ class TestWritePointer:
         vals = call_kwargs["ExpressionAttributeValues"]
         # Issue #1661: attribute names must match what the webhook reads
         assert vals[":cid"] == {"S": "corr-abc"}
-        assert vals[":rh"] == {"S": "user-xyz"}
-        assert vals[":hr"] == {"BOOL": True}
         assert ":ua" in vals  # updated_at
         assert ":ea" in vals  # expires_at
         # When last_triggered_persona is NOT passed, update_item must NOT include
@@ -108,8 +102,6 @@ class TestWritePointer:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=42",
             correlation_id="corr-abc",
-            root_human_id="user-xyz",
-            is_human_rooted=True,
             last_triggered_persona="developer",
         )
 
@@ -131,8 +123,6 @@ class TestWritePointer:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=1",
             correlation_id="corr-123",
-            root_human_id="user-456",
-            is_human_rooted=False,
         )
 
     @patch("lib.correlation_store._get_client")
@@ -145,8 +135,6 @@ class TestWritePointer:
         correlation_store.write_pointer(
             channel_key="github:repo=org/repo,issue=1",
             correlation_id="corr-123",
-            root_human_id="user-456",
-            is_human_rooted=True,
             ttl_days=14,
         )
 

@@ -31,6 +31,34 @@ logger = logging.getLogger(__name__)
 _verification_keys: list[bytes] | None = None
 _keys_loaded: bool = False
 
+# Issue #4128: Terraform seeds the marker-signing secret with a literal
+# placeholder (infra/secrets.tf, `ignore_changes = [secret_string]`) that an
+# operator is expected to replace with `openssl rand -base64 32`. In any
+# environment where that rotation never happened, the placeholder is the live
+# secret value — and it is readable by anyone with the repo.
+#
+# Loading it as a key would make verify_marker() return a confident True/False
+# computed against a PUBLIC secret, which is strictly worse than not verifying
+# at all: it reports success. Treat a placeholder as "no key available" so
+# verify_marker() returns None (indeterminate) and the caller's fail-closed
+# policy applies instead.
+_PLACEHOLDER_KEYS = frozenset(
+    {
+        "PLACEHOLDER_GENERATE_WITH_OPENSSL_RAND",
+        "PLACEHOLDER",
+        "CHANGEME",
+    }
+)
+
+
+def _is_placeholder_key(key_str: str) -> bool:
+    """True when a secret value is a known un-rotated placeholder.
+
+    Also treats an empty/whitespace-only secret as a placeholder — an empty
+    HMAC key is not a meaningful secret either.
+    """
+    return key_str.strip() == "" or key_str.strip() in _PLACEHOLDER_KEYS
+
 
 def _load_verification_keys() -> list[bytes]:
     """Load the HMAC verification key(s) from Secrets Manager.
@@ -63,7 +91,23 @@ def _load_verification_keys() -> list[bytes]:
 
         # Fetch current version
         resp = client.get_secret_value(SecretId=secret_arn, VersionStage="AWSCURRENT")
-        current_key = resp["SecretString"].encode("utf-8")
+        current_key_str = resp["SecretString"]
+        current_key = current_key_str.encode("utf-8")
+
+        # Issue #4128: refuse to operate on an un-rotated placeholder.
+        if _is_placeholder_key(current_key_str):
+            logger.error(
+                "Marker signing secret %s still holds the un-rotated PLACEHOLDER "
+                "value — refusing to use it as an HMAC key. Marker verification "
+                "is INDETERMINATE (returns None) until an operator sets a real "
+                "key: aws secretsmanager put-secret-value --secret-id %s "
+                "--secret-string \"$(openssl rand -base64 32)\"",
+                secret_arn,
+                secret_arn,
+            )
+            _verification_keys = []
+            return []
+
         keys.append(current_key)
 
         # Attempt to fetch previous version for rotation grace (7-day window).
@@ -72,9 +116,13 @@ def _load_verification_keys() -> list[bytes]:
             resp_prev = client.get_secret_value(
                 SecretId=secret_arn, VersionStage="AWSPREVIOUS"
             )
-            prev_key = resp_prev["SecretString"].encode("utf-8")
-            if prev_key != current_key:
-                keys.append(prev_key)
+            prev_key_str = resp_prev["SecretString"]
+            # A rotation FROM the placeholder leaves the placeholder as
+            # AWSPREVIOUS. Never accept it as a grace-window key.
+            if not _is_placeholder_key(prev_key_str):
+                prev_key = prev_key_str.encode("utf-8")
+                if prev_key != current_key:
+                    keys.append(prev_key)
         except Exception:
             # No previous version — expected for fresh secrets
             pass

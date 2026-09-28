@@ -13,7 +13,11 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
+from src.chat_logging.scrubber import redact_numeric_value
+
 logger = logging.getLogger(__name__)
+
+PII_DETECTION_FAILED_PLACEHOLDER = "[PII:DETECTION_FAILED]"
 
 # PII entity types that Comprehend can detect
 # https://docs.aws.amazon.com/comprehend/latest/dg/how-pii.html
@@ -135,12 +139,20 @@ class ComprehendPiiDetector:
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             error_msg = f"Comprehend API error: {error_code}"
-            logger.error(error_msg, extra={"error": str(e)})
-            return PiiDetectionResult(content=text, error=error_msg)
-        except Exception as e:
-            error_msg = f"PII detection error: {str(e)}"
             logger.error(error_msg)
-            return PiiDetectionResult(content=text, error=error_msg)
+            return PiiDetectionResult(
+                content=PII_DETECTION_FAILED_PLACEHOLDER,
+                redactions_count=1,
+                error=error_msg,
+            )
+        except Exception as e:
+            error_msg = f"PII detection error: {type(e).__name__}"
+            logger.error(error_msg)
+            return PiiDetectionResult(
+                content=PII_DETECTION_FAILED_PLACEHOLDER,
+                redactions_count=1,
+                error=error_msg,
+            )
 
     def _detect_pii_sync(self, text: str, language_code: str) -> PiiDetectionResult:
         """Synchronous PII detection (runs in thread pool).
@@ -210,6 +222,7 @@ class ComprehendPiiDetector:
         language_code: str = "en",
         depth: int = 0,
         max_depth: int = 10,
+        path: tuple[str, ...] = (),
     ) -> tuple[dict[str, Any], PiiDetectionResult]:
         """Recursively detect and redact PII from a dictionary.
 
@@ -223,28 +236,40 @@ class ComprehendPiiDetector:
             Tuple of (redacted_dict, combined_result)
         """
         if depth > max_depth:
-            return data, PiiDetectionResult(content="")
+            return data, PiiDetectionResult(content="", error="Maximum PII detection depth exceeded")
 
         redacted = {}
         total_redactions = 0
         all_pii_types: set[str] = set()
+        errors: list[str] = []
 
         for key, value in data.items():
-            if isinstance(value, str) and len(value) > 10:  # Skip very short strings
+            value_path = (*path, str(key))
+            if isinstance(value, str) and value:
                 result = await self.detect_and_redact(value, language_code)
                 redacted[key] = result.content
                 total_redactions += result.redactions_count
                 all_pii_types.update(result.pii_types_found)
+                if result.error:
+                    errors.append(result.error)
             elif isinstance(value, dict):
-                nested_data, result = await self.detect_and_redact_dict(value, language_code, depth + 1, max_depth)
+                nested_data, result = await self.detect_and_redact_dict(value, language_code, depth + 1, max_depth, value_path)
                 redacted[key] = nested_data
                 total_redactions += result.redactions_count
                 all_pii_types.update(result.pii_types_found)
+                if result.error:
+                    errors.append(result.error)
             elif isinstance(value, list):
-                nested_list, result = await self._process_list(value, language_code, depth + 1, max_depth)
+                nested_list, result = await self._process_list(value, language_code, depth + 1, max_depth, value_path)
                 redacted[key] = nested_list
                 total_redactions += result.redactions_count
                 all_pii_types.update(result.pii_types_found)
+                if result.error:
+                    errors.append(result.error)
+            elif redaction := redact_numeric_value(value, value_path):
+                redacted[key] = redaction[0]
+                total_redactions += 1
+                all_pii_types.add(redaction[2])
             else:
                 redacted[key] = value
 
@@ -252,11 +277,19 @@ class ComprehendPiiDetector:
             content="",
             redactions_count=total_redactions,
             pii_types_found=list(all_pii_types),
+            error="; ".join(dict.fromkeys(errors)) or None,
         )
 
         return redacted, combined_result
 
-    async def _process_list(self, data: list[Any], language_code: str, depth: int, max_depth: int) -> tuple[list[Any], PiiDetectionResult]:
+    async def _process_list(
+        self,
+        data: list[Any],
+        language_code: str,
+        depth: int,
+        max_depth: int,
+        path: tuple[str, ...] = (),
+    ) -> tuple[list[Any], PiiDetectionResult]:
         """Process a list for PII detection.
 
         Args:
@@ -269,28 +302,39 @@ class ComprehendPiiDetector:
             Tuple of (redacted_list, combined_result)
         """
         if depth > max_depth:
-            return data, PiiDetectionResult(content="")
+            return data, PiiDetectionResult(content="", error="Maximum PII detection depth exceeded")
 
         redacted = []
         total_redactions = 0
         all_pii_types: set[str] = set()
+        errors: list[str] = []
 
         for item in data:
-            if isinstance(item, str) and len(item) > 10:
+            if isinstance(item, str) and item:
                 result = await self.detect_and_redact(item, language_code)
                 redacted.append(result.content)
                 total_redactions += result.redactions_count
                 all_pii_types.update(result.pii_types_found)
+                if result.error:
+                    errors.append(result.error)
             elif isinstance(item, dict):
-                nested_data, result = await self.detect_and_redact_dict(item, language_code, depth + 1, max_depth)
+                nested_data, result = await self.detect_and_redact_dict(item, language_code, depth + 1, max_depth, path)
                 redacted.append(nested_data)
                 total_redactions += result.redactions_count
                 all_pii_types.update(result.pii_types_found)
+                if result.error:
+                    errors.append(result.error)
             elif isinstance(item, list):
-                nested_list, result = await self._process_list(item, language_code, depth + 1, max_depth)
+                nested_list, result = await self._process_list(item, language_code, depth + 1, max_depth, path)
                 redacted.append(nested_list)
                 total_redactions += result.redactions_count
                 all_pii_types.update(result.pii_types_found)
+                if result.error:
+                    errors.append(result.error)
+            elif redaction := redact_numeric_value(item, path):
+                redacted.append(redaction[0])
+                total_redactions += 1
+                all_pii_types.add(redaction[2])
             else:
                 redacted.append(item)
 
@@ -298,6 +342,7 @@ class ComprehendPiiDetector:
             content="",
             redactions_count=total_redactions,
             pii_types_found=list(all_pii_types),
+            error="; ".join(dict.fromkeys(errors)) or None,
         )
 
         return redacted, combined_result

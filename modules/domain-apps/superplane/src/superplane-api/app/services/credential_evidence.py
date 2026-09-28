@@ -1,0 +1,78 @@
+"""Trusted ADP vault evidence port; never infer ownership from registration.
+
+A startup adapter must retrieve vault-owned metadata and independently verify any
+provider validation attestation. No adapter is installed by default. The domain
+stores references and evidence only, never a credential value or vault replacement.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol
+
+from superplane_contracts.connections import CredentialReference, VaultOwnership
+
+
+@dataclass(frozen=True)
+class VerifiedCredentialEvidence:
+    org_id: str
+    workspace_id: str
+    reference: CredentialReference
+    ownership: VaultOwnership
+    expires_at: datetime
+    attested_report_digest: str | None = None
+    report_checked_at: datetime | None = None
+
+
+class CredentialEvidenceReader(Protocol):
+    async def read(
+        self,
+        *,
+        org_id: str,
+        workspace_id: str,
+        reference: CredentialReference,
+        principal: str,
+        report_digest: str | None,
+    ) -> VerifiedCredentialEvidence | None:
+        """Return current vault metadata and independently verified report binding.
+
+        report_digest is untrusted request context, not proof. The adapter must
+        compare it against an authenticated provider/vault validation report bound
+        to this exact credential and workspace; echoing it would authorize forgery.
+        Return None if ownership or requested attestation cannot be established.
+        """
+        ...
+
+
+_reader: CredentialEvidenceReader | None = None
+
+
+def get_credential_evidence_reader() -> CredentialEvidenceReader | None:
+    return _reader
+
+
+def install_credential_evidence_reader(reader: CredentialEvidenceReader) -> None:
+    """Startup composition only; no HTTP endpoint may replace the trust source."""
+    global _reader
+    if _reader is not None:
+        raise RuntimeError("credential evidence reader is already installed")
+    _reader = reader
+
+
+def uninstall_credential_evidence_reader(reader: CredentialEvidenceReader) -> bool:
+    """Remove `reader` if it is the installed one. Returns whether it was.
+
+    Takes the reader to remove rather than clearing unconditionally, and that
+    argument is the whole safety property: shutdown must release only what it
+    installed. A bare `clear()` lets one composition's shutdown uninstall a
+    different composition's live adapter — and since `install_` refuses a second
+    install, the surviving composition could not put its own reader back.
+
+    Returns `False` rather than raising when another reader is installed: a
+    shutdown path that raised would abandon the rest of its cleanup over a
+    condition it is correctly declining to act on.
+    """
+    global _reader
+    if _reader is not reader:
+        return False
+    _reader = None
+    return True

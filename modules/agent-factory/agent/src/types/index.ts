@@ -63,9 +63,26 @@ export interface GitHubAppCredentials {
 }
 
 // Approval Result
+//
+// Fail-closed outcome vocabulary (issue #4181). There is deliberately NO
+// permissive value other than 'allowed-once' and no durable/always-allow grant:
+// every caller must treat anything that is not 'allowed-once' as non-permissive.
+//
+//   'allowed-once' — an authorized approver approved THIS request. The only
+//                    value that permits the action to proceed.
+//   'rejected'     — an authorized approver denied it, OR the wait expired with
+//                    no authorized answer. Deny-on-expiry is the default.
+//   'cancelled'    — the request was withdrawn before it was answered.
+//   'unavailable'  — we could not ask (e.g. persistent GitHub API failure).
+//                    Non-permissive like 'rejected', but kept distinct so the
+//                    audit trail never records a transport failure as a human
+//                    denial.
+export type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable';
+
 export interface ApprovalResult {
-  approved: boolean;
-  rejected: boolean;
+  outcome: ApprovalOutcome;
+  /** Login of the authorized approver, when a human answered. Recorded for audit. */
+  approver?: string;
   feedback?: string;
   comment?: string;
 }
