@@ -41,6 +41,18 @@ from .stage_attempts import stage_attempts
 ACTOR = "system:review-cycle"
 
 
+def failed_review(raw):
+    """A terminal failed review may retry within its remaining stage allowance."""
+    return bool(
+        raw
+        and raw.get("persona") == {"S": "agent-codex-reviewer"}
+        and raw.get("orchestration_continuation_action") == {"S": "review"}
+        and raw.get("orchestration_continuation_receipt")
+        and raw.get("status") == {"S": "completed"}
+        and raw.get("terminal_outcome") == {"S": "failed"}
+    )
+
+
 def continuation_run_id(key):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "adp-review-cycle:" + key))
 
@@ -298,14 +310,16 @@ class ReviewCycleServices:
         raw, grant, inputs, _, meter = await self.authorize(session, context, node, binding, active, Action.REVIEW)
         status = raw.get("status", {}).get("S")
         bootstrap_failed = bool(dispatches) and is_bootstrap_failure(raw)
+        review_failed = bool(dispatches) and failed_review(raw)
         if status in {"cancelled", "revoked"} or (
-            status == "completed" and raw.get("terminal_outcome") != {"S": "complete"} and not bootstrap_failed
+            status == "completed" and raw.get("terminal_outcome") != {"S": "complete"} and not bootstrap_failed and not review_failed
         ):
             raise CycleBlockedError("worker_failed_or_halted", BlockCode.HUMAN_INPUT_REQUIRED)
         return {
             "active_run_id": active,
             "worker_complete": status == "completed",
             "bootstrap_retry_of": active if bootstrap_failed else None,
+            "review_retry_of": active if review_failed else None,
             "head_sha": await self.head(binding),
             "remaining_spend_usd": str(inputs.policy.limits.max_spend_usd - meter.total_usd)
             if inputs.policy._budget_enforcement_enabled and meter
@@ -481,7 +495,12 @@ class ReviewCycleServices:
                     # access. The persona itself cannot grant repair authority.
                     pass
             bootstrap_retry = detail.get("bootstrap_retry_of") == detail["active_run_id"] and is_bootstrap_failure(raw)
-            if not bootstrap_retry and (raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}):
+            review_retry = detail.get("review_retry_of") == detail["active_run_id"] and failed_review(raw)
+            if (
+                not bootstrap_retry
+                and not review_retry
+                and (raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"})
+            ):
                 raise CycleBlockedError("previous_worker_not_completed")
             if await self.head(binding) != detail["head_sha"]:
                 raise CycleBlockedError("head_changed_before_dispatch")

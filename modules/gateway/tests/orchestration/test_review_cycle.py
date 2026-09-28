@@ -763,3 +763,34 @@ async def test_issued_bootstrap_authority_cannot_be_reclassified_as_startup_fail
     with pytest.raises(AuthorityStoreError):
         record_refusal(ctx.store, record=record, request_id="late-failure", events_table="cycle-events")
     assert ctx.store._read(f"TENANT#{ORG}", f"EXEC#{run}")["status"] == {"S": "active"}
+
+
+@pytest.mark.parametrize("allowance", [1, 2])
+async def test_failed_reviewer_retries_retained_pr_with_remaining_allowance(cycle, allowance):
+    async with cycle.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, cycle.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = allowance
+        plan.plan_document = document
+        await db.commit()
+    assert (await tick(cycle)).effects_succeeded == 1
+    failed_run = cycle.calls[-1]["message_id"]
+    raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")
+    raw.update(status={"S": "completed"}, terminal_outcome={"S": "failed"}, bootstrap_authority_issued_at={"S": "2026-09-20T00:00:00Z"})
+    cycle.store.client.put_item(TableName=cycle.store.table, Item=raw)
+    result = await tick(cycle)
+    execution, claim, node, actions = await state(cycle)
+    assert node.attempts == 1 and claim.generation == 5
+    assert len(actions) == allowance
+    assert cycle.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")["terminal_outcome"] == {"S": "failed"}
+    if allowance == 1:
+        assert result.effects_succeeded == 0
+        assert execution.block_code == "attempts_exhausted"
+        return
+    assert result.effects_succeeded == 1
+    assert actions[-1].detail["review_retry_of"] == failed_run
+    assert cycle.calls[-1]["message_id"] != failed_run
+    assert cycle.calls[-1]["review_expect"]["author_run_id"] == cycle.root
+    await review(cycle, approve=True)
+    await tick(cycle)
+    assert (await state(cycle))[0].phase == "merge_ready"
