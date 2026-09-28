@@ -174,9 +174,9 @@ class TestPersonaRuntimeRouting:
     def test_future_codex_personas_are_explicitly_fail_closed(self):
         from entrypoint import persona_runtime, worker_command
 
-        assert persona_runtime("agent-codex-architect") == "codex"
+        assert persona_runtime("agent-codex-unknown") == "codex"
         with pytest.raises(ValueError, match="not packaged yet"):
-            worker_command("agent-codex-architect")
+            worker_command("agent-codex-unknown")
 
 
 # --- Test: vault_client ---
@@ -4849,3 +4849,34 @@ def test_developer_cause_is_in_the_first_terminal_status_write(monkeypatch):
                                      failure_error="Agent developer exit 1: budget_exceeded") == 1
     status.assert_called_once_with("run", "now", "failed", summary="Agent `developer` failed with exit code 1.",
                                    error_message="Agent developer exit 1: budget_exceeded")
+
+
+@pytest.mark.parametrize("persona", ["architect", "product", "pm", "intent-refinement"])
+def test_shared_codex_persona_uses_packaged_host(persona):
+    from entrypoint import worker_command
+    assert worker_command(f"agent-codex-{persona}") == ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
+
+
+@pytest.mark.parametrize("mode", ["complete", "missing", "wrong-run", "wrong-issue", "unpublished"])
+def test_shared_codex_report_finalization_never_commits_or_opens_pr(tmp_path, monkeypatch, mode):
+    import entrypoint
+    path = tmp_path / "result.json"
+    metadata = {"session_completed": True, "codex_persona_report": True, "codex_persona_invocation": "run-a",
+                "outcome_comment_url": "https://github.com/owner/repo/issues/12#issuecomment-42"}
+    if mode == "wrong-run":
+        metadata["codex_persona_invocation"] = "another-run"
+    elif mode == "wrong-issue":
+        metadata["outcome_comment_url"] = "https://github.com/owner/repo/issues/99#issuecomment-42"
+    elif mode == "unpublished":
+        metadata["session_completed"] = False
+    if mode != "missing":
+        path.write_text(json.dumps(metadata))
+    monkeypatch.setattr(entrypoint, "RESULT_METADATA_PATH", str(path))
+    status = MagicMock()
+    command = MagicMock(side_effect=AssertionError("report finalization cannot run shell or git"))
+    monkeypatch.setattr(entrypoint, "update_invocation_status", status)
+    monkeypatch.setattr(entrypoint, "run_cmd", command)
+    monkeypatch.setattr(entrypoint.run_report, "enabled", lambda: False)
+    assert entrypoint._handle_success("owner/repo", 12, "main", "agent-codex-architect", "run-a", "now") == (0 if mode == "complete" else 1)
+    assert status.call_args.args[2] == ("complete" if mode == "complete" else "failed")
+    command.assert_not_called()

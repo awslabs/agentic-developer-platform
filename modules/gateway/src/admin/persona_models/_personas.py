@@ -25,7 +25,11 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-aidlc": "aidlc",
     "@agent-architect": "architect",
     "@agent-codex": "codex",
+    "@agent-codex-architect": "agent-codex-architect",
     "@agent-codex-developer": "agent-codex-developer",
+    "@agent-codex-intent-refinement": "agent-codex-intent-refinement",
+    "@agent-codex-pm": "agent-codex-pm",
+    "@agent-codex-product": "agent-codex-product",
     "@agent-codex-reviewer": "agent-codex-reviewer",
     "@agent-developer": "developer",
     "@agent-malware-analysis-agent": "malware-analysis-agent",
@@ -44,7 +48,11 @@ AUTOMATIC_PERSONAS: set[str] = {
 }
 
 PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
+    "agent-codex-architect": "codex-sdk",
     "agent-codex-developer": "codex-sdk",
+    "agent-codex-intent-refinement": "codex-sdk",
+    "agent-codex-pm": "codex-sdk",
+    "agent-codex-product": "codex-sdk",
     "agent-codex-reviewer": "codex-sdk",
     "aidlc": "claude-agent-sdk",
     "architect": "claude-agent-sdk",

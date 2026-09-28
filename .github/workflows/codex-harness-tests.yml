@@ -54,6 +54,7 @@ jobs:
         run: python3 test/run-isolated.py -- npm --prefix ../task-agents/investigator ci --include=dev --ignore-scripts
       - run: python3 test/run-isolated.py -- npm --prefix ../task-agents/investigator run build
       - run: python3 test/run-isolated.py -- npm test
+      - run: python3 test/run-isolated.py -- node scripts/github-catalogue.mjs --check
       - run: python3 test/run-isolated.py -- node test/sdk-request-shape.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-turn.mjs
       - run: python3 test/run-isolated.py -- node test/sdk-tools.mjs
@@ -75,7 +76,7 @@ jobs:
       - name: Workspace and run-bound worker client tests
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest ../agent-worker-image/tests/test_codex_workspace.py ../agent-worker-image/tests/test_codex_workspace_tools.py ../agent-worker-image/tests/test_codex_validation_source.py ../agent-worker-image/tests/test_codex_service_validation.py ../agent-worker-image/tests/test_task_run_client.py ../agent-worker-image/tests/test_codex_validation_tool.py ../agent-worker-image/tests/test_codex_kubernetes_validation.py ../agent-worker-image/tests/test_workspace_validation_binding.py -q
       - name: Real worker and Codex SDK Task lifecycle with fixture inference
-        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_task_codex_host.py -q
+        run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pytest integration/test_task_codex_host.py integration/test_github_codex_host.py -q
       - name: Install gateway fixture dependencies
         run: python3 test/run-isolated.py -- "$RUNNER_TEMP/codex-task-fixtures/bin/python" -m pip install -e "../../gateway[dev]"
       - name: Dedicated validation service admission and cancellation

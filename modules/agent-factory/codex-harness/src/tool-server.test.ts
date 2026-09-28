@@ -143,3 +143,18 @@ test("a new SDK client cannot reset an uncertain tool outcome", async () => {
     assert.throws(() => server.advanceClient(), /cannot advance/);
   } finally { await server.close(); }
 });
+
+test('steering may reconnect beyond two repairs without renewing the tool budget', async () => {
+  let calls = 0;
+  const server = await startToolServer(tools, { ...host, async execute() {
+    calls++; return { status: 'confirmed', content: 'ok' };
+  } }, { ...policy(), maxClientContinuations: 4 });
+  try {
+    for (let index = 0; index < 4; index++) server.advanceClient();
+    assert.match((await post(server, body(1))).text, /"text":"ok"/);
+    assert.match((await post(server, body(2))).text, /"text":"ok"/);
+    assert.match((await post(server, body(3))).text, /refused/);
+    assert.equal(calls, 2);
+    assert.throws(() => server.advanceClient(), /cannot advance/);
+  } finally { await server.close(); }
+});

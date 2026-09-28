@@ -19,6 +19,8 @@ export interface SessionHost {
   assertCurrent(signal: AbortSignal): Promise<void>;
   model: TextResponsesHost;
   progress(event: Progress): Promise<void>;
+  /** Optional signed GitHub control adapter. Called only at safe boundaries. */
+  takeSteering?(): string[];
   /** Trusted invocation adapter checks durable persona completion evidence.
    * No model response is passed here. Required for every non-report persona. */
   verifyCompletion?(signal: AbortSignal): Promise<boolean>;
@@ -112,7 +114,8 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       execute: (name, args, active) => receipts.execute({ assertCurrent: signal => host.assertCurrent(signal),
         execute: (...args) => broker.execute(...args) }, name, args, active),
     }, { capabilities: plan.capabilities, maxCalls: broker.maxCalls, maxRequestBytes: 63 * 1024,
-      maxResultBytes: maxResponseBytes, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000), signal });
+      maxResultBytes: maxResponseBytes, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000), signal,
+      maxClientContinuations: host.takeSteering ? plan.limits.maxTurns - 1 : 2 });
     let modelOperations = 0;
     proxy = await startTextResponsesProxy(async (request, requestSignal) => {
       const active = AbortSignal.any([signal, requestSignal]);
@@ -169,19 +172,29 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     };
     let nextPrompt = prompt;
     let previousUsage: Awaited<ReturnType<typeof runSdkTurn>>["usage"] | undefined;
-    for (let continuation = 0; continuation <= 2; continuation++) {
+    let repairs = 0;
+    for (let continuation = 0; ; continuation++) {
       await host.assertCurrent(signal);
       signal.throwIfAborted();
       if (modelOperations >= plan.limits.maxTurns) throw new Error("Persona completion exhausted model budget");
       if (continuation > 0) tools?.advanceClient();
       const evidence = await runSdkTurn(thread, nextPrompt, { ...turnContext, previousUsage }, event => host.progress(event));
       previousUsage = evidence.usage;
+      if (host.takeSteering) {
+        await host.assertCurrent(signal);
+        signal.throwIfAborted();
+        const amendments = host.takeSteering();
+        if (amendments.length) {
+          nextPrompt = JSON.stringify({ instruction: 'Apply these admitted user follow-ups to the existing task and workspace. Preserve previous requirements unless explicitly changed.', amendments });
+          continue;
+        }
+      }
       if (plan.persona.completionPolicy === "report" || await verifyCompletion!(signal) === true) {
         await host.assertCurrent(signal);
         signal.throwIfAborted();
         return evidence;
       }
-      if (continuation === 2) throw new Error("Persona completion evidence was not verified");
+      if (repairs++ === 2) throw new Error("Persona completion evidence was not verified");
       // Only confirmed unverified results permit continuation. Exceptions and
       // uncertain effects never enter this path. Keep the thread and budgets.
       nextPrompt = "The host has not verified the configured completion requirements. Continue the accepted task using the existing workspace and evidence. "
@@ -190,7 +203,6 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
         + "Do not replay uncertain mutations or repeat successful checks on unchanged input. Preserve incomplete work honestly if authority or budget is unavailable. "
         + "Keep the original report schema and cite the confirmed tool artifacts.";
     }
-    throw new Error("Persona completion evidence was not verified");
   } catch (error) {
     throw proxy?.failure ?? error;
   } finally {

@@ -28,6 +28,7 @@ export interface ToolServerPolicy {
   maxResultBytes: number;
   timeoutMs: number;
   signal: AbortSignal;
+  maxClientContinuations?: number;
 }
 const envelope = z.strictObject({
   jsonrpc: z.literal("2.0"), id: z.union([z.string().min(1).max(128), z.number().int().safe()]).optional(),
@@ -41,6 +42,10 @@ const receiptSchema = z.strictObject({ status: z.literal("confirmed"), content: 
  * This restricts the advertised catalogue and bounds SDK traffic. Privileged
  * execution and durable reconciliation remain the host/gateway's responsibility. */
 export async function startToolServer(tools: readonly HostTool[], host: ToolHost, policy: ToolServerPolicy) {
+  const maxClientContinuations = policy.maxClientContinuations ?? 2;
+  if (!Number.isSafeInteger(maxClientContinuations) || maxClientContinuations < 0 || maxClientContinuations > 100) {
+    throw new Error("Invalid client continuation bound");
+  }
   for (const value of [policy.maxCalls, policy.maxRequestBytes, policy.maxResultBytes, policy.timeoutMs]) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid tool server bound");
   }
@@ -152,7 +157,7 @@ export async function startToolServer(tools: readonly HostTool[], host: ToolHost
     // starts a new MCP client whose JSON-RPC IDs restart at zero. Clear only
     // transport correlation; effect counts, receipt history and poison persist.
     advanceClient() {
-      if (busy || failed || lifetime.signal.aborted || policy.signal.aborted || clientGeneration >= 2) {
+      if (busy || failed || lifetime.signal.aborted || policy.signal.aborted || clientGeneration >= maxClientContinuations) {
         throw new Error("Tool client cannot advance");
       }
       clientGeneration++;

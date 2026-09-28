@@ -52,6 +52,7 @@ UNIT_MODULES = [
     "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
     "src.internal.persona_model_selection",
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
+    "src.agentauth.codex_github_session",
     "src.agentauth.arc_model",
     "src.agentauth.model_policy_keys",
     "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.

@@ -309,6 +309,80 @@
       "qualifiedByThisChange": false,
       "registeredPersonaSource": "modules/domain-apps/superplane/agent/personas/superplane-researcher.md",
       "sharedPersonaSource": "modules/domain-apps/superplane/agent/personas/superplane-researcher.md"
+    },
+    {
+      "registeredPersona": "agent-codex-architect",
+      "sourceStatus": "present",
+      "codexKey": "gpt-architect",
+      "definition": "modules/agent-factory/codex-harness/personas/architect.json",
+      "status": "github-report-host-opt-in",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "repository.read",
+        "story.create"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/architect.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/architect.md"
+    },
+    {
+      "registeredPersona": "agent-codex-product",
+      "sourceStatus": "present",
+      "codexKey": "gpt-product",
+      "definition": "modules/agent-factory/codex-harness/personas/product.json",
+      "status": "github-report-host-opt-in",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "repository.read",
+        "story.create"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/product.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/product.md"
+    },
+    {
+      "registeredPersona": "agent-codex-pm",
+      "sourceStatus": "present",
+      "codexKey": "gpt-pm",
+      "definition": "modules/agent-factory/codex-harness/personas/pm.json",
+      "status": "github-report-host-opt-in",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [
+        "agents.delegate",
+        "repository.read",
+        "story.create"
+      ],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/pm.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/pm.md"
+    },
+    {
+      "registeredPersona": "agent-codex-intent-refinement",
+      "sourceStatus": "present",
+      "codexKey": "gpt-intent-refinement",
+      "definition": "modules/agent-factory/codex-harness/personas/intent-refinement.json",
+      "status": "github-report-host-opt-in",
+      "completionPolicy": "report",
+      "requiredCapabilities": [
+        "artifacts.publish"
+      ],
+      "optionalCapabilities": [],
+      "skillDependencies": [],
+      "qualifiedByThisChange": false,
+      "registeredPersonaSource": "modules/agent-factory/rules/personas/intent-refinement.md",
+      "sharedPersonaSource": "modules/agent-factory/rules/personas/intent-refinement.md"
     }
   ],
   "claudeTools": [

@@ -10,3 +10,4 @@ await mkdir(resolve(root, 'dist/task-sdk'), { recursive: true });
 for (const file of ['protocol.js', 'artifact-transfer.js']) await copyFile(resolve(contracts, file), resolve(root, 'dist/task-contracts', file));
 await copyFile(resolve(sdk, 'protocol.mjs'), resolve(root, 'dist/task-sdk/protocol.mjs'));
 await copyFile(resolve(root, 'src/task-entry.mjs'), resolve(root, 'dist/task-entry.mjs'));
+await copyFile(resolve(root, 'src/github-entry.mjs'), resolve(root, 'dist/github-entry.mjs'));

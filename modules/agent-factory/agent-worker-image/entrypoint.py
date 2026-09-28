@@ -92,6 +92,7 @@ SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
 CODEX_REVIEWER_BINARY = "/app/codex-reviewer/dist/index.js"
 CODEX_PERSONA_PREFIX = "agent-codex-"
+SHARED_CODEX_PERSONAS = frozenset({"agent-codex-architect", "agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"})
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
@@ -192,6 +193,8 @@ def worker_command(persona: str) -> list[str]:
         return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
     if persona == "agent-codex-developer":
         return ["node", "/app/codex-reviewer/dist/developer-entry.js", "--embedded"]
+    if persona in SHARED_CODEX_PERSONAS:
+        return ["node", "/app/codex-harness/dist/github-entry.mjs", "--embedded"]
     raise ValueError(f"Codex persona is not packaged yet: {persona}")
 
 
@@ -1580,6 +1583,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     persona = envelope["persona"]
     runtime = persona_runtime(persona)
     is_codex_review = persona == "agent-codex-reviewer"
+    is_shared_codex = persona in SHARED_CODEX_PERSONAS
     is_codex_pr_review = is_codex_review and isinstance(
         (envelope.get("payload") or {}).get("pull_request"), dict
     )
@@ -2469,6 +2473,13 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             raise
         work_branch_ready = True
         bootstrap_log.step_success(7, "review_cycle_branch", sha=wip_sha[:7])
+    elif is_shared_codex:
+        if _mediated_run:
+            raise RuntimeError("Shared GitHub Codex reports require scoped GitHub token delivery")
+        branch_name = run_cmd(["git", "branch", "--show-current"], cwd=WORK_DIR).stdout.strip() or "HEAD"
+        wip_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        work_branch_ready = True
+        bootstrap_log.step_success(7, "codex_report_base", sha=wip_sha[:7])
     elif is_codex_review:
         if _mediated_run:
             raise RuntimeError(
@@ -4331,6 +4342,26 @@ def _handle_success(
     review_only: bool = False,
 ) -> int:
     """Step 11: Finalize delivery, preserving incomplete developer work separately."""
+    if persona in SHARED_CODEX_PERSONAS:
+        # Host-verified report delivery never creates or commits a PR as a side effect.
+        try:
+            metadata = json.loads(Path(RESULT_METADATA_PATH).read_text())
+            if metadata.get("codex_persona_report") is not True or metadata.get("session_completed") is not True:
+                raise ValueError("missing report receipt")
+            if metadata.get("codex_persona_invocation") != message_id:
+                raise ValueError("report invocation mismatch")
+            if not re.fullmatch(rf"https://github\.com/{re.escape(repo)}/issues/{issue}#issuecomment-[1-9][0-9]*", str(metadata.get("outcome_comment_url", ""))):
+                raise ValueError("report destination mismatch")
+        except (OSError, ValueError, TypeError):
+            update_invocation_status(message_id, arrived_at, "failed", error_message="Codex report delivery was not verified")
+            return 1
+        if run_report.enabled():
+            try:
+                run_report.terminal("complete")
+            except run_report.RunReportError:
+                return AGENT_EXIT_RETRYABLE
+        update_invocation_status(message_id, arrived_at, "complete", summary="Codex persona report delivered")
+        return 0
     if review_only:
         # The review already names its inspected commit. Auto-committing a report
         # here changes that head and causes an endless fresh-review cycle.

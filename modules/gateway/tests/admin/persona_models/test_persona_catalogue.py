@@ -24,10 +24,10 @@ from src.admin.persona_models.catalogue_service import build_persona_catalogue
 class TestPersonaCatalogue:
     """AC-01 and AC-02: the persona catalogue reads from the authoritative source."""
 
-    def test_catalogue_has_exactly_24_personas(self):
-        """AC-02: all 24 registered keys, including automatic personas."""
+    def test_catalogue_has_exactly_28_personas(self):
+        """AC-02: all 28 registered keys, including automatic personas."""
         catalogue = build_persona_catalogue()
-        assert len(catalogue) == 24, f"Expected 24 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
+        assert len(catalogue) == 28, f"Expected 28 personas, got {len(catalogue)}: {[p.key for p in catalogue]}"
 
     def test_catalogue_keys_match_valid_personas(self):
         """AC-01/AC-02: keys are exactly VALID_PERSONAS, no more, no less."""
@@ -50,7 +50,7 @@ class TestPersonaCatalogue:
         """The native Codex reviewer is never classified as Claude."""
         catalogue = build_persona_catalogue()
         for persona in catalogue:
-            expected = COMPATIBILITY_CLASS_CODEX if persona.key in {"agent-codex-reviewer", "agent-codex-developer"} else COMPATIBILITY_CLASS_CLAUDE
+            expected = COMPATIBILITY_CLASS_CODEX if persona.key.startswith("agent-codex-") else COMPATIBILITY_CLASS_CLAUDE
             if persona.key in {
                 "agent-task-gpt-developer",
                 "agent-task-gpt-intent-refinement",
@@ -78,10 +78,14 @@ class TestPersonaCatalogue:
                 assert persona.not_configurable_reason is None, f"{persona.key} is configurable but has reason: {persona.not_configurable_reason}"
 
     def test_expected_persona_keys_present(self):
-        """All 24 expected persona keys are present."""
+        """All 28 expected persona keys are present."""
         expected = {
             "agent-codex-reviewer",
             "agent-codex-developer",
+            "agent-codex-architect",
+            "agent-codex-product",
+            "agent-codex-pm",
+            "agent-codex-intent-refinement",
             "aidlc",
             "architect",
             "codex",

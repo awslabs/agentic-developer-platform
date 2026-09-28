@@ -62,6 +62,10 @@ MENTION_TO_PERSONA: dict[str, str] = {
     # token-aware parsing so the older supervisor name cannot shadow it.
     "@agent-codex-reviewer": "agent-codex-reviewer",
     "@agent-codex-developer": "agent-codex-developer",
+    "@agent-codex-architect": "agent-codex-architect",
+    "@agent-codex-product": "agent-codex-product",
+    "@agent-codex-pm": "agent-codex-pm",
+    "@agent-codex-intent-refinement": "agent-codex-intent-refinement",
     # Issue #2706: codex supervisor persona. Mention-triggered only (the
     # platform standard); intentionally NOT in LABEL_TO_PERSONA. Placed last so
     # it cannot shadow an earlier persona under the first-match dict-order
@@ -83,6 +87,10 @@ VALID_PERSONAS: set[str] = (
 PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
     "agent-codex-reviewer": "codex-sdk",
     "agent-codex-developer": "codex-sdk",
+    "agent-codex-architect": "codex-sdk",
+    "agent-codex-product": "codex-sdk",
+    "agent-codex-pm": "codex-sdk",
+    "agent-codex-intent-refinement": "codex-sdk",
     "aidlc": "claude-agent-sdk",
     "architect": "claude-agent-sdk",
     "codex": "claude-agent-sdk",
