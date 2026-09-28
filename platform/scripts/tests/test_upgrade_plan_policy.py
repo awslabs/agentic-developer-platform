@@ -236,6 +236,30 @@ class PlanPolicyTests(unittest.TestCase):
             policy.evaluate(plan, "webhook-ingress", "123456789012"),
             {"routine": [address, address], "blocked": [], "protected": []},
         )
+        # A second timeout can leave another deposed state-only marker. The
+        # reviewed #6729 timeout script also changes the marker's file hash.
+        recovery = copy.deepcopy(plan)
+        previous, extended = policy.WORKER_ROLLOUT_TIMEOUT_MIGRATION
+        recovery["resource_changes"][0]["change"]["before"]["triggers_replace"]["rollout_script"] = previous
+        recovery["resource_changes"][0]["change"]["after"]["triggers_replace"]["rollout_script"] = extended
+        recovery["resource_changes"][1]["change"]["before"]["triggers_replace"]["rollout_script"] = previous
+        second = copy.deepcopy(recovery["resource_changes"][1])
+        second["deposed"] = "93fe14da"
+        second["change"]["before"]["triggers_replace"]["configuration"] = "e" * 64
+        recovery["resource_changes"].append(second)
+        self.assertEqual(
+            policy.evaluate(recovery, "webhook-ingress", "123456789012"),
+            {"routine": [address] * 3, "blocked": [], "protected": []},
+        )
+        for mutate in (
+            lambda p: p["resource_changes"][0]["change"]["after"]["triggers_replace"].update(rollout_script="f" * 64),
+            lambda p: p["resource_changes"][2]["change"]["before"]["triggers_replace"].update(rollout_script="f" * 64),
+            lambda p: p["resource_changes"][2].update(deposed="invalid"),
+            lambda p: p["variables"]["agent_authority_enabled"].update(value=True),
+        ):
+            bad = copy.deepcopy(recovery)
+            mutate(bad)
+            self.assertTrue(policy.evaluate(bad, "webhook-ingress", "123456789012")["blocked"])
         for mutate in (
             lambda p: p["resource_changes"][0].pop("action_reason"),
             lambda p: p["resource_changes"][0]["change"]["after"][

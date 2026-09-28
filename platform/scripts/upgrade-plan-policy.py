@@ -10,6 +10,13 @@ spec = importlib.util.spec_from_file_location("actions", Path(__file__).with_nam
 actions = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(actions)
 
+# The reviewed gateway rollout change in #6729 only extends its bounded wait.
+# Keep this migration explicit: another script change must review the gate again.
+WORKER_ROLLOUT_TIMEOUT_MIGRATION = (
+    "c77563053075fc3ef8487094a1b99e12aba81d006eb37e5c281d7a5c5fb5165d",
+    "a7445dc5de28a2001adb32c29d98e93cbf0dc97bbffa044aeb96bf86551bc5a6",
+)
+
 
 def routine(resource, module, account, plan):
     change = resource["change"]
@@ -100,9 +107,8 @@ def routine(resource, module, account, plan):
     ):
         # This carrier only runs the rollout script on create. The old marker
         # has no destroy provisioner, and protected authority stays disabled.
-        # A failed create can leave its marker tainted and a predecessor deposed.
-        # Recreating reruns the same rollout; retiring the predecessor only
-        # removes Terraform state.
+        # Repeated failed creates can leave a tainted marker and multiple
+        # predecessors deposed. Retiring them only removes Terraform state.
         old, new = before.get("triggers_replace", {}), after.get("triggers_replace", {})
         variables = plan.get("variables", {})
 
@@ -140,17 +146,19 @@ def routine(resource, module, account, plan):
                 and change.get("after") is None
                 and len(current) == 1
                 and current[0].get("action_reason") == "replace_because_tainted"
-                and current[0]["change"]["before"]["triggers_replace"]
-                == current[0]["change"]["after"]["triggers_replace"]
                 and routine(current[0], module, account, plan)
                 and old["rollout_script"]
-                == current[0]["change"]["after"]["triggers_replace"]["rollout_script"]
+                == current[0]["change"]["before"]["triggers_replace"]["rollout_script"]
             )
         return (
             order == ["create", "delete"]
             and set(new) == keys
             and new.get("marker_version") == "disabled"
-            and old["rollout_script"] == new["rollout_script"]
+            and (
+                old["rollout_script"] == new["rollout_script"]
+                or (old["rollout_script"], new["rollout_script"])
+                == WORKER_ROLLOUT_TIMEOUT_MIGRATION
+            )
             and bool(re.fullmatch(r"[0-9a-f]{64}", new["configuration"]))
             and (
                 (
