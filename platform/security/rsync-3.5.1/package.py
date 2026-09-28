@@ -39,7 +39,8 @@ for file in sorted(root.rglob("*")):
         and "DEBIAN" not in file.relative_to(root).parts
     ):
         md5.append(
-            hashlib.md5(file.read_bytes()).hexdigest()
+            # Debian md5sums is compatibility metadata; SHA-256 below binds security evidence.
+            hashlib.md5(file.read_bytes(), usedforsecurity=False).hexdigest()
             + "  "
             + str(file.relative_to(root))
         )
