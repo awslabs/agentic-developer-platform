@@ -20,9 +20,32 @@
     "docs/security/runs/2026-09-27/admin-closure/api-compat",
     "modules/agent-context/images/deepwiki",
     "modules/agent-context/images/deepwiki/high-security",
-    "modules/agent-context/images/ingestion"
+    "modules/agent-context/images/ingestion",
+    "modules/agent-factory/agent-worker-image",
+    "modules/agent-factory/gateway"
   ],
   "input_restoration_completed": true,
   "full_coverage_verified": false,
-  "zero_findings_claimed": false
+  "zero_findings_claimed": false,
+  "known_target_failures_by_tool": {
+    "grype": [
+      "docs/security/runs/2026-09-27/admin-closure/api-compat",
+      "modules/agent-context/images/deepwiki",
+      "modules/agent-context/images/deepwiki/high-security",
+      "modules/agent-context/images/ingestion"
+    ],
+    "syft": [
+      "docs/security/runs/2026-09-27/admin-closure/api-compat",
+      "modules/agent-context/images/deepwiki",
+      "modules/agent-context/images/deepwiki/high-security",
+      "modules/agent-context/images/ingestion",
+      "modules/agent-factory/agent-worker-image",
+      "modules/agent-factory/gateway"
+    ]
+  },
+  "failure_log_checked_at": "2026-09-28T18:35:25.204983+00:00",
+  "later_successful_grype_builds": [
+    "modules/agent-factory/agent-worker-image",
+    "modules/agent-factory/gateway"
+  ]
 }

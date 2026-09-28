@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28T18:26:56.017508+00:00",
+  "generated_at": "2026-09-28T18:39:25.141710+00:00",
   "workflow_run": 36456950756,
   "source_sha": "8a2e7632b322e82e692587a1920042f2e2693976",
   "scope": "Partial triage of newly rated Semgrep Critical/High matches plus six Bandit High matches. Not repository-wide source clearance.",
@@ -345,8 +345,9 @@
       "line": 16,
       "severity": "high",
       "source_sha256": "c83562338041a5a1b75e11de85b8f109e2496d4e4b0f84fe2d534b76ebf23163",
-      "status": "open-needs-complete-dataflow-review",
-      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+      "status": "reviewed-fixed-argv",
+      "reason": "The matched call runs the literal absolute /usr/lib/apt/apt-helper executable with fixed cat-file and a single absolute path obtained from /var/lib/apt/lists/*_main_source_Sources*. subprocess.check_output receives an argument list with shell=False by default. Neither index contents nor path metacharacters are interpreted as shell commands; the absolute path cannot become an option.",
+      "review_method": "Manual exact-source review of command executable, argument construction and input path origin."
     },
     {
       "rule": "tmp.gitlab.bandit.B603",
@@ -390,8 +391,9 @@
       "line": 16,
       "severity": "high",
       "source_sha256": "5c31b70c1180976c10dd5e4cfa8cb9cd2c783ea4ff99eadb000df71082998c6f",
-      "status": "open-needs-complete-dataflow-review",
-      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+      "status": "reviewed-fixed-argv",
+      "reason": "The matched call runs the literal absolute /usr/lib/apt/apt-helper executable with fixed cat-file and a single absolute path obtained from /var/lib/apt/lists/*_main_source_Sources*. subprocess.check_output receives an argument list with shell=False by default. Neither index contents nor path metacharacters are interpreted as shell commands; the absolute path cannot become an option.",
+      "review_method": "Manual exact-source review of command executable, argument construction and input path origin."
     },
     {
       "rule": "tmp.gitlab.bandit.B606",
@@ -435,8 +437,9 @@
       "line": 16,
       "severity": "high",
       "source_sha256": "c83562338041a5a1b75e11de85b8f109e2496d4e4b0f84fe2d534b76ebf23163",
-      "status": "open-needs-complete-dataflow-review",
-      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+      "status": "reviewed-fixed-argv",
+      "reason": "The matched call runs the literal absolute /usr/lib/apt/apt-helper executable with fixed cat-file and a single absolute path obtained from /var/lib/apt/lists/*_main_source_Sources*. subprocess.check_output receives an argument list with shell=False by default. Neither index contents nor path metacharacters are interpreted as shell commands; the absolute path cannot become an option.",
+      "review_method": "Manual exact-source review of command executable, argument construction and input path origin."
     },
     {
       "rule": "tmp.gitlab.python_exec_rule-subprocess-call-array",
@@ -471,15 +474,17 @@
       "line": 16,
       "severity": "high",
       "source_sha256": "5c31b70c1180976c10dd5e4cfa8cb9cd2c783ea4ff99eadb000df71082998c6f",
-      "status": "open-needs-complete-dataflow-review",
-      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+      "status": "reviewed-fixed-argv",
+      "reason": "The matched call runs the literal absolute /usr/lib/apt/apt-helper executable with fixed cat-file and a single absolute path obtained from /var/lib/apt/lists/*_main_source_Sources*. subprocess.check_output receives an argument list with shell=False by default. Neither index contents nor path metacharacters are interpreted as shell commands; the absolute path cannot become an option.",
+      "review_method": "Manual exact-source review of command executable, argument construction and input path origin."
     }
   ],
   "status_counts": {
     "reviewed-rule-not-applicable": 11,
-    "open-needs-complete-dataflow-review": 31,
+    "open-needs-complete-dataflow-review": 27,
     "reviewed-destination-constrained": 3,
     "reviewed-security-regression-fixture": 5,
-    "fixed-in-later-source": 1
+    "fixed-in-later-source": 1,
+    "reviewed-fixed-argv": 4
   }
 }

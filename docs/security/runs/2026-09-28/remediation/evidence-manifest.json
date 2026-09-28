@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-09-28T18:32:18.928806+00:00",
+  "generated_at": "2026-09-28T18:39:25.142851+00:00",
   "private_evidence_root": "/workspaces/projects/security28-remediation-evidence",
   "artifacts": [
     {
       "artifact": "README.md",
-      "sha256": "1fe33ddd74bb756cc565c4278f2c73af40a819f8972b4f80d7ecebad4df8e82f"
+      "sha256": "d5e66fc0d9b06ee2dc6c012bb40457c82ffc8016f8a6c1b49a75adf0a89af9a8"
     },
     {
       "artifact": "api-candidate-recheck.json",
@@ -60,7 +60,7 @@
     },
     {
       "artifact": "full-scan-final-status.json",
-      "sha256": "975f725aa8c7e7024042a4a108c9c55fe0a92ab12ff916f7a39c2bbc3a908381"
+      "sha256": "7cbed13d632963727ecbdaa47b938d6309e963566f00994412baabb8a560404c"
     },
     {
       "artifact": "gateway-source-acceptance.json",
@@ -107,6 +107,10 @@
       "sha256": "5bfb4107ab5b468b861ebc97d91fba56b8892ff824494e3419344a4ec3733443"
     },
     {
+      "artifact": "scanner-input-restoration-cross-check.json",
+      "sha256": "bdbb66f739b97e34861658d9296f964b7be110b3e9d13400665d5b7d9838adc5"
+    },
+    {
       "artifact": "scanner-parity-detailed.json",
       "sha256": "03ca0117748b78af927aa9666143a7c19cdac8d4fe535f4e06b35c67ad8bbadb"
     },
@@ -132,7 +136,7 @@
     },
     {
       "artifact": "source-triage-reviewed.json",
-      "sha256": "913de7e211322c577a4fc6f7a36ce83e187a1a0dd45a758ad45e6f57799c9ce6"
+      "sha256": "8a56c40d5640ab46913ce05df49f727989c2c07c34d658b6c909d17c503353c2"
     },
     {
       "artifact": "worker-compiler-parity.json",
