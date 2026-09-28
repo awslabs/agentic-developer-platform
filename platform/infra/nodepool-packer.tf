@@ -93,12 +93,9 @@ resource "null_resource" "aggressive_packer_nodepool" {
     cluster_region = var.aws_region
   }
 
-  # A manifest change must apply the new NodePool before retiring the old
-  # Terraform marker. Delete-first replacement runs the destroy provisioner
-  # and briefly removes the live NodePool during an ordinary upgrade.
-  lifecycle {
-    create_before_destroy = true
-  }
+  # This marker has no destroy provisioner: replacing it must never delete the
+  # live NodePool before the new manifest is applied. EKS teardown removes the
+  # NodePool with the cluster.
 
   provisioner "local-exec" {
     environment = {
@@ -111,17 +108,6 @@ resource "null_resource" "aggressive_packer_nodepool" {
 ${local.aggressive_packer_nodepool_yaml}
 EOF
     CMD
-  }
-
-  # Best-effort destroy — remove the NodePool so its nodes fall back to
-  # general-purpose rather than being orphaned.
-  provisioner "local-exec" {
-    when = destroy
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
-    command    = "kubectl delete nodepool aggressive-packer --ignore-not-found || true"
-    on_failure = continue
   }
 
   depends_on = [module.eks]

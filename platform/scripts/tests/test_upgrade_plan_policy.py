@@ -92,11 +92,10 @@ class PlanPolicyTests(unittest.TestCase):
         old = {"cluster_name": "adp-dev-eks-cluster", "cluster_region": "us-east-1",
                "manifest_sha": "a" * 64}
         resource = change("null_resource.aggressive_packer_nodepool", "null_resource",
-                          {"triggers": old}, {"triggers": dict(old, manifest_sha="b" * 64)},
-                          ("create", "delete"))
+                          {"triggers": old}, {"triggers": dict(old, manifest_sha="b" * 64)})
         self.assertEqual(self.evaluate(resource, "platform")["routine"], [resource["address"]])
         mutations = {
-            "delete first": lambda r: r["change"].update(actions=["delete", "create"]),
+            "unexpected order": lambda r: r["change"].update(actions=["create", "delete"]),
             "different cluster": lambda r: r["change"]["after"]["triggers"].update(cluster_name="adp-prod-eks-cluster"),
             "different region": lambda r: r["change"]["after"]["triggers"].update(cluster_region="us-west-2"),
             "unknown trigger": lambda r: r["change"]["after"]["triggers"].update(extra="value"),
