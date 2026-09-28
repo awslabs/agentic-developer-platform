@@ -10,7 +10,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, or_, select
 
 from pricing_policy import RoutingEvidence, build_pricing_decision, load_snapshot, normalize_usage, verify_pricing_decision
 from src.shared.models.budget import BudgetPricingCorrection, BudgetSettlementReceipt, BudgetUsage
@@ -79,29 +79,16 @@ async def correct_request(db, *, org_id, request_id, log, source_key, actor, app
     """Caller owns commit/rollback. Trusted S3 allocation must match the debit hash."""
     if not actor or log.get("org_id") != org_id or log.get("request_id") != request_id:
         raise ValueError("correction identity mismatch")
-    receipt = (
-        await db.execute(
-            select(BudgetSettlementReceipt)
-            .where(
-                BudgetSettlementReceipt.org_id == org_id,
-                BudgetSettlementReceipt.request_id == request_id,
-            )
-            .with_for_update()
-        )
-    ).scalar_one()
+    receipt_query = select(BudgetSettlementReceipt).where(
+        BudgetSettlementReceipt.org_id == org_id,
+        BudgetSettlementReceipt.request_id == request_id,
+    )
+    receipt = (await db.execute(receipt_query.with_for_update() if apply else receipt_query)).scalar_one()
     existing = await db.get(BudgetPricingCorrection, (org_id, request_id, CORRECTION))
     if existing:
         return {"status": "already_corrected", "credit_usd": str(existing.credit_usd)}
-    row = (
-        await db.execute(
-            select(UsageLog)
-            .where(
-                UsageLog.org_id == org_id,
-                UsageLog.request_id == request_id,
-            )
-            .with_for_update()
-        )
-    ).scalar_one()
+    usage_query = select(UsageLog).where(UsageLog.org_id == org_id, UsageLog.request_id == request_id)
+    row = (await db.execute(usage_query.with_for_update() if apply else usage_query)).scalar_one()
     original = log["pricing_decision"]
     amount = verify_pricing_decision(original, org_id=org_id, request_id=request_id)
     day, entities, allocation_key = allocation_from_log(log)
@@ -114,25 +101,25 @@ async def correct_request(db, *, org_id, request_id, log, source_key, actor, app
     decision = corrected_decision(original)
     credit = amount - decision.ledger_cost
     periods = {"daily": day, "weekly": day - timedelta(days=day.weekday()), "monthly": day.replace(day=1)}
-    balances = []
-    for kind, identity in entities:
-        for period, start in periods.items():
-            balance = (
-                await db.execute(
-                    select(BudgetUsage)
-                    .where(
-                        BudgetUsage.org_id == org_id,
-                        BudgetUsage.entity_type == kind,
-                        BudgetUsage.entity_id == identity,
-                        BudgetUsage.period_type == period,
-                        BudgetUsage.period_start == start,
-                    )
-                    .with_for_update()
-                )
-            ).scalar_one()
-            if balance.total_cost_usd < credit:
-                raise ValueError("credit exceeds settled balance")
-            balances.append(balance)
+    allocation_filters = [
+        and_(BudgetUsage.entity_type == kind, BudgetUsage.entity_id == identity, BudgetUsage.period_type == period, BudgetUsage.period_start == start)
+        for kind, identity in entities
+        for period, start in periods.items()
+    ]
+    balance_query = (
+        select(BudgetUsage)
+        .where(BudgetUsage.org_id == org_id, or_(*allocation_filters))
+        .order_by(
+            BudgetUsage.entity_type,
+            BudgetUsage.entity_id,
+            case({"daily": 0, "weekly": 1, "monthly": 2}, value=BudgetUsage.period_type),
+        )
+    )
+    balances = (await db.scalars(balance_query.with_for_update() if apply else balance_query)).all()
+    if len(balances) != len(allocation_filters):
+        raise ValueError("original budget allocation is incomplete")
+    if any(balance.total_cost_usd < credit for balance in balances):
+        raise ValueError("credit exceeds settled balance")
     if apply:
         db.add(
             BudgetPricingCorrection(

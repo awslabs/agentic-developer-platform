@@ -58,19 +58,14 @@ async def reconcile(args):
                 .order_by(UsageLog.timestamp, UsageLog.id)
             )
         ).all()
-        for row in rows:
-            audit = await db.get(BudgetPricingCorrection, (args.org_id, row.request_id, CORRECTION)) if row.request_id else None
-            if audit:
-                report["skipped"].append({"request_id": row.request_id, "reason": "already_corrected"})
-                continue
-            if not row.pricing_decision or "unknown_model" not in row.pricing_decision.get("estimate_reasons", []):
-                report["skipped"].append({"request_id": row.request_id, "reason": "not_captured_fallback"})
-                continue
-            # Derive the object address from trusted SQL identity and UTC date;
-            # do not follow an arbitrary supplied bucket or cross-tenant key.
+        # Fetch and strip conversation content before acquiring budget locks.
+        # Network retries must not stall concurrent gateway settlements.
+        semaphore = asyncio.Semaphore(8)
+
+        def read_receipt(row):
             key = f"{row.org_id}/{row.user_id}/{row.timestamp:%Y/%m/%d}/{row.request_id}.json"
             try:
-                response = await asyncio.to_thread(s3.get_object, Bucket=args.bucket, Key=key, ExpectedBucketOwner=args.account_id)
+                response = s3.get_object(Bucket=args.bucket, Key=key, ExpectedBucketOwner=args.account_id)
                 payload = json.loads(response["Body"].read())
                 fields = (
                     "request_id",
@@ -83,8 +78,32 @@ async def reconcile(args):
                     "timestamp",
                     "pricing_decision",
                 )
-                log = {field: payload.get(field) for field in fields}
-                del payload
+                return row.id, (key, {field: payload.get(field) for field in fields})
+            except Exception as exc:
+                return row.id, exc
+
+        async def fetch(row):
+            async with semaphore:
+                return await asyncio.to_thread(read_receipt, row)
+
+        receipts = dict(
+            await asyncio.gather(
+                *(fetch(row) for row in rows if row.pricing_decision and "unknown_model" in row.pricing_decision.get("estimate_reasons", []))
+            )
+        )
+        for row in rows:
+            audit = await db.get(BudgetPricingCorrection, (args.org_id, row.request_id, CORRECTION)) if row.request_id else None
+            if audit:
+                report["skipped"].append({"request_id": row.request_id, "reason": "already_corrected"})
+                continue
+            if not row.pricing_decision or "unknown_model" not in row.pricing_decision.get("estimate_reasons", []):
+                report["skipped"].append({"request_id": row.request_id, "reason": "not_captured_fallback"})
+                continue
+            try:
+                captured = receipts[row.id]
+                if isinstance(captured, Exception):
+                    raise captured
+                key, log = captured
                 # A failed record must not leave partial credits in the batch.
                 async with db.begin_nested():
                     result = await correct_request(

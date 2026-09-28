@@ -11,6 +11,9 @@ depends_on = None
 
 
 def upgrade():
+    # A code rollback retains this audit table, so re-upgrade must retain it too.
+    if sa.inspect(op.get_bind()).has_table("budget_pricing_corrections"):
+        return
     op.create_table(
         "budget_pricing_corrections",
         sa.Column("org_id", sa.String(255), primary_key=True),
@@ -27,4 +30,6 @@ def upgrade():
 
 
 def downgrade():
-    raise RuntimeError("Pricing credits and their audit trail must survive application rollback")
+    # Older applications do not consult this table. Keep credits and their audit
+    # trail while allowing code rollback; never make a downgrade undo a credit.
+    pass
