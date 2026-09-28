@@ -50,7 +50,7 @@ locals {
     if contains([
       "CloudWatchLogGroups", "BootstrapLogging", "ProvenanceMetrics"
     ], statement.Sid)
-    ], try(module.cyber[0].worker_browser_permissions, []), [
+    ], local.domain_worker_browser_permissions, [
     {
       Sid      = "InputQueueConsumer"
       Effect   = "Allow"

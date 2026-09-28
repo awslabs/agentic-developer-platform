@@ -110,13 +110,20 @@ CodeBuild by default; you only need Docker if you pass `--local`.
 The default full command installs the shared platform, gateway and agent stack.
 It does not install domain apps. Superplane is a separate optional phase
 (`SUPERPLANE_ENABLED=true` or `--superplane-only`); cyber's sandbox is deployed
-through `modules/domain-apps/cyber/scripts/deploy.sh`. A hosted cyber worker
-integration requires an explicit `domain_app_settings.cyber` overlay. Their
+through `modules/domain-apps/cyber/scripts/deploy.sh`. A hosted Cyber worker
+integration is installed separately through
+`modules/domain-apps/cyber/scripts/deploy-hosted-integration.sh`, then wired to
+the shared worker by selecting `enabled_domain_integrations = ["cyber"]` in the
+webhook update settings. Their
 image build jobs are created by each domain app's own Terraform root. A basic
 platform deployment does not create them. Upgrading an older installation whose
 domain image jobs still live in platform state will show those jobs as removals;
 review that saved plan and migrate installed apps to their own state before
 applying. `ADP_ENABLED_DOMAIN_APPS` is retired.
+
+Older webhook states that own `module.cyber` also need a reviewed state migration
+before enabling the new Cyber hosted-integration root. A base platform update
+does not create Cyber resources or read its module state.
 
 If you just want to see the platform work with the least setup,
 **`--gateway-only`** is simplest — no GitHub involvement at all.

@@ -625,20 +625,14 @@ variable "gateway_authority_managed_policies" {
   default     = false
 }
 
-variable "domain_app_images" {
-  type        = map(string)
-  default     = {}
-  description = "Optional immutable image overrides for installed domain applications."
+variable "enabled_domain_integrations" {
+  type        = set(string)
+  default     = []
+  description = "Installed domain apps whose worker configuration is read from their own Terraform state. Empty for the base platform."
   validation {
-    condition     = alltrue([for image in values(var.domain_app_images) : can(regex("@sha256:[0-9a-f]{64}$", image))])
-    error_message = "Domain application image overrides must use an immutable sha256 digest."
+    condition     = length(setsubtract(var.enabled_domain_integrations, ["cyber"])) == 0
+    error_message = "Only the Cyber hosted worker integration is currently supported."
   }
-}
-
-variable "domain_app_settings" {
-  type        = map(map(string))
-  default     = {}
-  description = "Application-owned deployment settings passed through platform composition."
 }
 
 # This controls only pull_request event reviews, not mentions, labels or engine work.

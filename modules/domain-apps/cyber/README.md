@@ -7,10 +7,13 @@ identity, and GitHub integration.
 
 The basic platform deployment does not install cyber resources. Deploy the
 cyber sandbox through `scripts/deploy.sh` when the app is needed. Select its
-CodeBuild jobs from the Cyber Terraform root through `scripts/deploy.sh`;
-hosted worker integration additionally requires an explicit
-`domain_app_settings.cyber` overlay. Those settings must not be copied into a
-basic platform account.
+CodeBuild jobs from the Cyber Terraform root through `scripts/deploy.sh`.
+Install the optional hosted worker integration through
+`scripts/deploy-hosted-integration.sh --apply <reviewed.tfvars>`, then select
+`enabled_domain_integrations = ["cyber"]` in the webhook update settings.
+The hosted resources live in Cyber's own state; the webhook stack only reads
+its worker configuration. Older installations must migrate their legacy
+`module.cyber` resources from webhook state before using the new script.
 
 | Directory | Ownership |
 | --- | --- |

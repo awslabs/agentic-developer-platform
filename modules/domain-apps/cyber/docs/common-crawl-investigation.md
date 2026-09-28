@@ -114,14 +114,12 @@ index reads under `commoncrawl/cc-index/table/cc-main/warc/` and read-only WARC
 access under `crawl-data/<configured-crawl>/segments/*/warc/*.warc.gz`. No additional
 evidence-bucket or operator access is granted.
 
-Pass application settings through webhook-stack composition:
+Pass application settings to the Cyber hosted-integration root:
 
 ```hcl
-domain_app_settings = {
-  cyber = {
-    common_crawl_partitions = "CC-MAIN-2026-39,CC-MAIN-2026-34,CC-MAIN-2026-30"
-    session_owner_routing   = "true"
-  }
+settings = {
+  common_crawl_partitions = "CC-MAIN-2026-39,CC-MAIN-2026-34,CC-MAIN-2026-30"
+  session_owner_routing   = "true"
 }
 ```
 

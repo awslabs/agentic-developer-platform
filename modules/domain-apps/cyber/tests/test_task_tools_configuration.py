@@ -33,8 +33,11 @@ def test_tools_config_validation(tmp_path, values, valid):
 
 
 def test_composition_preserves_domain_endpoint_and_generic_permission_ownership():
-    source = (ROOT/'modules/agent-factory/webhook-ingress/infra/domain-apps.tf').read_text()
-    assert 'tools_endpoint          = lookup(lookup(var.domain_app_settings, "cyber", {}), "tools_endpoint", "")' in source
+    source = (ROOT/'modules/domain-apps/cyber/infra/hosted-integration/main.tf').read_text()
+    assert 'tools_endpoint          = lookup(var.settings, "tools_endpoint", "")' in source
+    webhook = (ROOT/'modules/agent-factory/webhook-ingress/infra/domain-apps.tf').read_text()
+    assert 'data "terraform_remote_state" "cyber"' in webhook
+    assert 'module "cyber"' not in webhook
     output = (ROOT/'modules/domain-apps/cyber/infra/platform-integration/outputs.tf').read_text()
     assert 'ADP_CYBER_TOOLS_ENDPOINT = var.tools_endpoint' in output
     gateway = (ROOT/'modules/agent-factory/webhook-ingress/infra/worker-gateway-config.tf').read_text()

@@ -122,9 +122,10 @@ gateway and the agent runtime, so teardown must remove it before its dependencie
 
 Registered in both the deploy and undeploy paths deliberately. Cyber's sandbox
 has its own deployment script and state; the base `deploy-all.sh` does not run it.
-The hosted cyber integration in webhook Terraform is explicit opt-in through
-`domain_app_settings.cyber`. Cyber and Superplane build project declarations
-live in their app directories and are omitted from a fresh base platform apply.
+The hosted Cyber integration has its own Terraform root and state; webhook
+Terraform reads its worker outputs only with `enabled_domain_integrations = ["cyber"]`.
+Cyber and Superplane image build jobs live in their app Terraform states and
+are omitted from a basic platform apply.
 
 | Resource | AWS Service | Validation Command | Expected |
 |----------|------------|-------------------|----------|

@@ -50,8 +50,9 @@ The image preserves UID/GID 1001, port 8765, and the broker command path. It
 connects to the managed AgentCore browser and does not install a local Chromium.
 The manual **Cyber Browser Build** workflow builds and publishes it without
 rolling out workloads. After reviewing/verifying the built image, supply its
-immutable digest through the webhook root's `domain_app_images["cyber-browser"]`
-setting. No broad agent-image change is needed to release the broker.
+immutable digest through the Cyber hosted-integration root's
+`images["cyber-browser"]` setting. No broad agent-image change is needed to
+release the broker.
 
 An empty override uses `releases/browser-runtime.json`, the immutable image from
 the verified September 23 deployment. This deliberately keeps the running image

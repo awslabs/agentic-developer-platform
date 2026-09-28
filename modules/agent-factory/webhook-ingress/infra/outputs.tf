@@ -185,6 +185,11 @@ output "agent_scaledjob_role_arn" {
   value       = local.agent_worker_role_arn
 }
 
+output "agent_scaledjob_role_name" {
+  description = "Legacy ScaledJob IAM role name for app-owned inline policies"
+  value       = aws_iam_role.agent_scaledjob.name
+}
+
 output "agent_scaledjob_sa_name" {
   description = "Service account name for the agent ScaledJob pods"
   value       = local.agent_worker_sa_name

@@ -7,7 +7,7 @@ run "domain_apps_are_absent_without_an_explicit_opt_in" {
   command = plan
   assert {
     condition = (
-      length(module.cyber) == 0 &&
+      length(data.terraform_remote_state.cyber) == 0 &&
       length(local.domain_worker_environment) == 0 &&
       length(local.domain_worker_artifact_resources) == 0 &&
       length(local.domain_worker_egress) == 0
@@ -19,11 +19,22 @@ run "domain_apps_are_absent_without_an_explicit_opt_in" {
 run "cyber_settings_install_the_domain_app" {
   command = plan
   variables {
-    domain_app_settings = { cyber = {} }
+    enabled_domain_integrations = ["cyber"]
+  }
+  override_data {
+    target = data.terraform_remote_state.cyber[0]
+    values = {
+      outputs = {
+        worker_environment         = { URL_ANALYSIS_BROWSER_MODE = "broker" }
+        worker_artifact_resources  = ["arn:aws:s3:::adp-dev-url-analysis-evidence-v2-111122223333/*"]
+        worker_egress              = []
+        worker_browser_permissions = []
+      }
+    }
   }
   assert {
-    condition     = length(module.cyber) == 1 && length(local.domain_worker_artifact_resources) == 1
-    error_message = "Explicit cyber settings must retain the cyber installation and worker integration."
+    condition     = length(data.terraform_remote_state.cyber) == 1 && length(local.domain_worker_artifact_resources) == 1
+    error_message = "Explicit Cyber integration must read its app-owned worker configuration."
   }
 }
 
@@ -556,9 +567,24 @@ run "continuation_cannot_outrun_reporting" {
 run "native_browser_preserves_protected_worker_boundary" {
   command = plan
   variables {
-    agent_authority_prepared = true
-    agent_authority_enabled  = false
-    domain_app_settings      = { cyber = { browser_mode = "native" } }
+    agent_authority_prepared    = true
+    agent_authority_enabled     = false
+    enabled_domain_integrations = ["cyber"]
+  }
+  override_data {
+    target = data.terraform_remote_state.cyber[0]
+    values = {
+      outputs = {
+        worker_environment        = { URL_ANALYSIS_BROWSER_MODE = "native" }
+        worker_artifact_resources = ["arn:aws:s3:::adp-dev-url-analysis-evidence-v2-111122223333/*"]
+        worker_egress             = []
+        worker_browser_permissions = [{
+          Sid       = "DirectAgentCoreBrowser", Effect = "Allow",
+          Action    = ["bedrock-agentcore:StartBrowserSession"], Resource = "*",
+          Condition = { StringEquals = { "aws:RequestedRegion" = "us-east-1" } }
+        }]
+      }
+    }
   }
   assert {
     condition = length([
