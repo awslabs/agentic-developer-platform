@@ -151,8 +151,11 @@ def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.lstrip().startswith('"'), result.stdout
-    assert json.loads(json.loads(result.stdout)) == {
+    # Console writes warnings about unrelated/deprecated overlay inputs before
+    # the evaluated value. Verify that value without treating stdout as an API.
+    value = result.stdout.strip().splitlines()[-1]
+    assert value.startswith('"'), result.stdout
+    assert json.loads(json.loads(value)) == {
         "persona_mapping": True,
         "reserved": selected != "dev",
         "adversarial": selected == "dev",
