@@ -46,4 +46,7 @@ if [[ "$ADP_AUTHORITY_ENABLED" == true ]]; then
   done
 fi
 kubectl rollout restart deployment/bedrockgateway -n "$ADP_NAMESPACE"
-kubectl rollout status deployment/bedrockgateway -n "$ADP_NAMESPACE" --timeout=300s
+# A four-replica rollout can replace pods serially while EKS provisions new
+# nodes and pulls the gateway plus instrumentation images. Keep the gate bounded,
+# but allow the observed node-startup time without tainting Terraform mid-rollout.
+kubectl rollout status deployment/bedrockgateway -n "$ADP_NAMESPACE" --timeout=900s
