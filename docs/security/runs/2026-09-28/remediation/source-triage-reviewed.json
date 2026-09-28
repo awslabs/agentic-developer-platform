@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28T18:39:25.141710+00:00",
+  "generated_at": "2026-09-28T18:43:11.138768+00:00",
   "workflow_run": 36456950756,
   "source_sha": "8a2e7632b322e82e692587a1920042f2e2693976",
   "scope": "Partial triage of newly rated Semgrep Critical/High matches plus six Bandit High matches. Not repository-wide source clearance.",
@@ -327,8 +327,9 @@
       "line": 51,
       "severity": "high",
       "source_sha256": "7a4f584eb3e3d0d9c6e70da23c9b8ac7026018464a8be81abdc39e38a05d6c3f",
-      "status": "open-needs-complete-dataflow-review",
-      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+      "status": "reviewed-fixed-argv",
+      "reason": "At the matched line the executable, kubeconfig, namespace and get pods arguments are all literal constants. No CLI parameter, network response or shell string enters this subprocess argument list. This read-only listing is an explicitly invoked historical verification fixture, not a production request handler.",
+      "review_method": "Manual exact-source review of the complete matched command and its constant argument definitions."
     },
     {
       "rule": "tmp.gitlab.bandit.B603",
@@ -336,8 +337,9 @@
       "line": 51,
       "severity": "high",
       "source_sha256": "7a4f584eb3e3d0d9c6e70da23c9b8ac7026018464a8be81abdc39e38a05d6c3f",
-      "status": "open-needs-complete-dataflow-review",
-      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+      "status": "reviewed-fixed-argv",
+      "reason": "At the matched line the executable, kubeconfig, namespace and get pods arguments are all literal constants. No CLI parameter, network response or shell string enters this subprocess argument list. This read-only listing is an explicitly invoked historical verification fixture, not a production request handler.",
+      "review_method": "Manual exact-source review of the complete matched command and its constant argument definitions."
     },
     {
       "rule": "tmp.gitlab.bandit.B603",
@@ -355,8 +357,9 @@
       "line": 12,
       "severity": "high",
       "source_sha256": "e5e34bcb7e33236536e7ffbf1d4d5a8cd9d63f57a01079ab2c1d90d9a8e692f4",
-      "status": "open-needs-complete-dataflow-review",
-      "reason": "Requires input provenance and subprocess/exec argument review; a scanner match alone does not establish exploitation."
+      "status": "reviewed-fixed-argv",
+      "reason": "The matched subprocess call is the literal argument list [\"go\", \"version\"], used to require Go 1.26.8 before a maintenance build. It has no variable arguments and no shell interpretation. This review is limited to that scanner sink; it does not classify every subsequent build command.",
+      "review_method": "Manual exact-source review of the complete matched command and its constant argument definitions."
     },
     {
       "rule": "tmp.gitlab.bandit.B603",
@@ -481,10 +484,10 @@
   ],
   "status_counts": {
     "reviewed-rule-not-applicable": 11,
-    "open-needs-complete-dataflow-review": 27,
+    "open-needs-complete-dataflow-review": 24,
     "reviewed-destination-constrained": 3,
     "reviewed-security-regression-fixture": 5,
     "fixed-in-later-source": 1,
-    "reviewed-fixed-argv": 4
+    "reviewed-fixed-argv": 7
   }
 }

@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-09-28T18:39:25.142851+00:00",
+  "generated_at": "2026-09-28T18:44:50.740838+00:00",
   "private_evidence_root": "/workspaces/projects/security28-remediation-evidence",
   "artifacts": [
     {
       "artifact": "README.md",
-      "sha256": "d5e66fc0d9b06ee2dc6c012bb40457c82ffc8016f8a6c1b49a75adf0a89af9a8"
+      "sha256": "510161360ca8bf0277e0a537553fbe6faa802ccf4d3f880a6ce1493077b01a2c"
     },
     {
       "artifact": "api-candidate-recheck.json",
@@ -17,6 +17,10 @@
     {
       "artifact": "browser-live-acceptance.json",
       "sha256": "0d0c550b0167e86d13add0e449e4bc3ee3475b87618654e6475e4f7368f9ae2e"
+    },
+    {
+      "artifact": "completion-audit.json",
+      "sha256": "306fdb6b22b02d9adc2f3af43a399b78a6a56561f6edd2f75dcb9d62a31119a4"
     },
     {
       "artifact": "debian-supported-release-check.json",
@@ -123,6 +127,10 @@
       "sha256": "26e45abb02623e82cb162df230382e2bc4e723397350f30a8f49a373e364525b"
     },
     {
+      "artifact": "services-1844-status.json",
+      "sha256": "8239852abecaf2f869dcae673c7b53415f5b40aba34fcfc696fceef89cfaaa64"
+    },
+    {
       "artifact": "services-final-status.json",
       "sha256": "13d3d8cf14cabb2019368bcbd1236736e9f8d328b2359b1db39cf7b8b578b660"
     },
@@ -136,7 +144,7 @@
     },
     {
       "artifact": "source-triage-reviewed.json",
-      "sha256": "8a56c40d5640ab46913ce05df49f727989c2c07c34d658b6c909d17c503353c2"
+      "sha256": "dcc0497b7f70b47f512fa350fd3bbdeed0fe76ba637f6d08f0278a0d70472076"
     },
     {
       "artifact": "worker-compiler-parity.json",
