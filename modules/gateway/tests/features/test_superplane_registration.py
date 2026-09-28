@@ -1,4 +1,4 @@
-"""Superplane is registered in every central list that governs it (#5037).
+"""Superplane deployment is module-owned and teardown remains ordered (#5037).
 
 R1 acc. 3 is about a class of defect rather than a behaviour: several hardcoded central
 lists live outside the module directory, so somebody working inside `modules/domain-apps/
@@ -96,36 +96,34 @@ class TestModuleLayout:
 
 
 class TestDeployRegistration:
-    """`deploy-all.sh` gates the phase off by default and offers explicit flags."""
+    """`deploy-all.sh` leaves the optional module to its own installer."""
 
-    def test_gate_variable_defaults_false(self):
+    def test_old_environment_opt_in_is_rejected(self):
         body = _DEPLOY_ALL.read_text()
-        assert 'SUPERPLANE_ENABLED="${SUPERPLANE_ENABLED:-false}"' in body, (
-            "SUPERPLANE_ENABLED must default to false, following the AGENT_CONTEXT_ENABLED "
-            "precedent. A default-true gate deploys the domain app in every environment."
-        )
+        assert 'if [ "${SUPERPLANE_ENABLED:-false}" = true ]; then' in body
+        assert 'fail "SUPERPLANE_ENABLED no longer deploys Superplane' in body
 
-    def test_enable_and_skip_flags_exist(self):
+    def test_old_scope_flags_are_rejected(self):
         body = _DEPLOY_ALL.read_text()
-        for flag in ("--superplane-only", "--skip-superplane"):
-            assert flag in body, f"{flag} missing from deploy-all.sh argument parsing"
+        assert "--superplane-only|--skip-superplane)" in body
+        assert "modules/domain-apps/superplane/deploy.sh" in body
 
-    def test_phase_is_present_and_conditional(self):
+    def test_platform_contains_no_superplane_apply(self):
         body = _DEPLOY_ALL.read_text()
-        assert "DEPLOY_SUPERPLANE=false" in body, "No DEPLOY_SUPERPLANE gate computation found"
-        assert 'if [ "$DEPLOY_SUPERPLANE" = true ]; then' in body, "The superplane deploy step must be guarded by DEPLOY_SUPERPLANE"
+        assert 'terraform_update_apply "superplane"' not in body
+        assert "Deploy superplane domain app" not in body
 
     def test_step_denominators_are_consistent(self):
-        """Adding a 12th phase must renumber the `Step N/M` labels.
+        """Removing the optional phase leaves eleven basic deployment steps.
 
         These labels are display-only, but a run that prints "Step 12/11" tells an
         operator the script is confused about its own phase count.
         """
         body = _DEPLOY_ALL.read_text()
         denominators = set(re.findall(r"Step \d+/(\d+)", body))
-        assert denominators == {"12"}, f"Inconsistent step denominators in deploy-all.sh: {denominators}"
-        numerators = {int(n) for n in re.findall(r"Step (\d+)/12", body)}
-        assert max(numerators) == 12, f"Expected a Step 12/12; highest numerator is {max(numerators)}"
+        assert denominators == {"11"}, f"Inconsistent step denominators in deploy-all.sh: {denominators}"
+        numerators = {int(n) for n in re.findall(r"Step (\d+)/11", body)}
+        assert max(numerators) == 11, f"Expected a Step 11/11; highest numerator is {max(numerators)}"
 
 
 class TestUndeployRegistration:
@@ -200,10 +198,10 @@ class TestManifestRegistration:
         body = _MANIFEST.read_text()
         assert "## Superplane Domain App" in body, "deployment-manifest.md has no Superplane section"
 
-    def test_manifest_documents_the_default_off_gate(self):
+    def test_manifest_documents_module_installation(self):
         body = _MANIFEST.read_text()
         section = body.split("## Superplane Domain App", 1)[1].split("\n## ", 1)[0]
-        assert "SUPERPLANE_ENABLED" in section, "Manifest section must name the deploy gate"
+        assert "modules/domain-apps/superplane/deploy.sh" in section
         assert "FEATURE_SUPERPLANE_ENABLED" in section, "Manifest section must name the runtime flag"
         assert "phase_superplane" in section, "Manifest section must name the undeploy phase function, since that is the pairing most easily missed"
 

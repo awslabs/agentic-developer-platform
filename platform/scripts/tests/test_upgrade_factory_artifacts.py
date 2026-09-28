@@ -16,7 +16,7 @@ class FactoryArtifactsTests(unittest.TestCase):
     def run_stage(self, package_exit=0, chat_exit=0):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index(
-            'if [ "$DEPLOY_FACTORY" = true ]; then\n  step "Step 10/12:'
+            'if [ "$DEPLOY_FACTORY" = true ]; then\n  step "Step 10/11:'
         )
         block = source[start : source.index("\nrefresh_credentials", start)]
         prefix = """set -euo pipefail

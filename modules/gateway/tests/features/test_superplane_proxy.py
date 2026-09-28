@@ -228,9 +228,17 @@ def test_route_read_failure_is_off_and_never_falls_back_to_ssm(route_store, monk
 def test_unconfigured_route_store_does_not_use_ambient_aws(monkeypatch):
     monkeypatch.setenv("BG_ENVIRONMENT", "dev")
     monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET", raising=False)
+    monkeypatch.delenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", raising=False)
     monkeypatch.setattr(proxy, "_cache", (0, {}))
     monkeypatch.setattr(proxy.boto3, "client", lambda *a, **kw: pytest.fail("unexpected AWS call"))
     assert proxy.registration() == {}
+
+
+def test_route_bucket_uses_existing_platform_identity(monkeypatch):
+    monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET", raising=False)
+    monkeypatch.setenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", "123456789012")
+    assert proxy.route_bucket() == "adp-terraform-state-123456789012"
+    assert "BG_SUPERPLANE_ROUTE_BUCKET" not in (Path(__file__).resolve().parents[2] / "k8s/configmap.yaml").read_text()
 
 
 async def test_transport_capability_requires_deployed_configuration(route_store, monkeypatch):
@@ -239,4 +247,5 @@ async def test_transport_capability_requires_deployed_configuration(route_store,
     assert result["transport"] == "s3-conditional-domain-registration"
     assert result["features"] == ["account-vault-reference-v1"]
     monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET")
+    monkeypatch.delenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", raising=False)
     assert (await proxy.installation_support())["configured"] is False

@@ -35,8 +35,8 @@ receipts. Local untracked deployment config/shell overlays are outside this
 contract; use canonical tooling directly when they are required. Subprocesses
 use the selected AWS profile and region, with inherited raw credentials,
 shell/Python startup hooks, Terraform arguments and source/config/release overrides
-removed. The optional `AGENT_CONTEXT_ENABLED` and `SUPERPLANE_ENABLED` values
-must be literal true/false and are bound to the review.
+removed. The optional `AGENT_CONTEXT_ENABLED` value must be literal true/false
+and is bound to the review. Superplane is installed through its own module.
 
 ADP login, tenant and gateway selection do not grant AWS deployment authority.
 Only status uses a gateway selection; plan/apply/resume use the explicitly

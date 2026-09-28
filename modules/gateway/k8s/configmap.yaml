@@ -29,9 +29,6 @@ data:
   CYBER_RESULTS_TABLE: "adp-__ENVIRONMENT__-cyber-analysis-results"
 
 
-  # Conditional domain route registration; the gateway reads only its route object.
-  BG_SUPERPLANE_ROUTE_BUCKET: "adp-terraform-state-__PLATFORM_BEDROCK_ACCOUNT_ID__"
-
   # RDS Database Configuration - IAM authentication (passwordless)
   BG_RDS_IAM_AUTH: "true"
   BG_RDS_HOST: "__DB_HOST__"

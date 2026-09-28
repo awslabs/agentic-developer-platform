@@ -43,6 +43,16 @@ ROUTES = tuple(
 )
 
 
+def route_bucket() -> str:
+    # The installer owns the route object and the scoped gateway read grant.
+    # The base gateway only supplies its existing account identity.
+    configured = os.environ.get("BG_SUPERPLANE_ROUTE_BUCKET", "")
+    if configured:
+        return configured
+    account_id = os.environ.get("BG_PLATFORM_BEDROCK_ACCOUNT_ID", "")
+    return f"adp-terraform-state-{account_id}" if re.fullmatch(r"[0-9]{12}", account_id) else ""
+
+
 def registration() -> dict:
     global _cache
     now = time.monotonic()
@@ -50,7 +60,7 @@ def registration() -> dict:
         return _cache[1]
     environment = os.environ.get("BG_ENVIRONMENT", "")
     result = {}
-    bucket = os.environ.get("BG_SUPERPLANE_ROUTE_BUCKET", "")
+    bucket = route_bucket()
     if re.fullmatch(r"[a-z][a-z0-9-]{0,39}", environment) and re.fullmatch(r"adp-terraform-state-[0-9]{12}", bucket):
         try:
             client = boto3.client("s3", config=Config(connect_timeout=1, read_timeout=1, retries={"max_attempts": 0}))
@@ -154,7 +164,7 @@ async def installation_support():
         "cache_seconds": 5,
         "features": ["account-vault-reference-v1"],
         "configured": bool(
-            re.fullmatch(r"adp-terraform-state-[0-9]{12}", os.environ.get("BG_SUPERPLANE_ROUTE_BUCKET", ""))
+            re.fullmatch(r"adp-terraform-state-[0-9]{12}", route_bucket())
             and re.fullmatch(r"[a-z][a-z0-9-]{0,39}", os.environ.get("BG_ENVIRONMENT", ""))
         ),
     }

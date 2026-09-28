@@ -44,12 +44,6 @@ AGENT_FACTORY_ONLY=false
 AGENT_CONTEXT_ONLY=false
 SKIP_AGENT_CONTEXT=false
 AGENT_CONTEXT_ENABLED="${AGENT_CONTEXT_ENABLED:-false}"
-SUPERPLANE_ONLY=false
-SKIP_SUPERPLANE=false
-# Default false, like AGENT_CONTEXT_ENABLED above. The Superplane domain app must not
-# deploy unless somebody asks for it: its Terraform is not this unit's (U3 owns it), so
-# an environment that has not opted in has nothing here to stand up (Issue #5037).
-SUPERPLANE_ENABLED="${SUPERPLANE_ENABLED:-false}"
 DESTROY=false
 SKIP_FRONTEND=false
 SKIP_BROKER=false
@@ -68,8 +62,9 @@ while [ "$#" -gt 0 ]; do
     --agent-factory-only) AGENT_FACTORY_ONLY=true ;;
     --agent-context-only) AGENT_CONTEXT_ONLY=true ;;
     --skip-agent-context) SKIP_AGENT_CONTEXT=true ;;
-    --superplane-only) SUPERPLANE_ONLY=true ;;
-    --skip-superplane) SKIP_SUPERPLANE=true ;;
+    --superplane-only|--skip-superplane)
+      echo "Superplane is deployed from modules/domain-apps/superplane/; use its deploy.sh or module workflows." >&2
+      exit 2 ;;
     --destroy) DESTROY=true ;;
     --skip-frontend) SKIP_FRONTEND=true ;;
     --skip-broker) SKIP_BROKER=true ;;
@@ -97,9 +92,6 @@ while [ "$#" -gt 0 ]; do
       echo "  --gateway-only         Platform + gateway only"
       echo "  --agent-factory-only   Platform + agent-factory only"
       echo "  --agent-context-only   Platform + agent-context only"
-      echo "  --superplane-only      Platform + superplane domain app only (skips gateway,"
-      echo "                         broker, admin bootstrap, webhook-ingress, agent-factory,"
-      echo "                         agent-context; implies SUPERPLANE_ENABLED=true)"
       echo ""
       echo "Skip:"
       echo "  --skip-frontend        Skip frontend build and deploy"
@@ -107,8 +99,7 @@ while [ "$#" -gt 0 ]; do
       echo "  --skip-admin-bootstrap Skip first-admin DB seeding"
       echo "  --skip-webhook-ingress Skip webhook-ingress stack"
       echo "  --skip-agent-context   Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
-      echo "  --skip-superplane      Skip superplane even if SUPERPLANE_ENABLED=true"
-      echo "  Domain image build jobs are installed from their own module Terraform roots"
+      echo "  Domain apps and their build jobs are deployed from their own modules"
       echo ""
       echo "Build:"
       echo "  --local                Use local Docker for image builds (instead of CodeBuild)"
@@ -128,6 +119,9 @@ fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
 
 if [ "${ADP_ENABLED_DOMAIN_APPS+x}" = x ]; then
   fail "ADP_ENABLED_DOMAIN_APPS is retired; deploy optional build jobs from their domain modules"
+fi
+if [ "${SUPERPLANE_ENABLED:-false}" = true ]; then
+  fail "SUPERPLANE_ENABLED no longer deploys Superplane; use modules/domain-apps/superplane/deploy.sh"
 fi
 
 # =============================================================================
@@ -149,7 +143,7 @@ done
 # source, account, manifest and every artifact before any infrastructure apply.
 if [ -n "${ADP_RELEASE_DIR:-}" ]; then
   [ "$UPDATE_MODE" = true ] && [ "$ENVIRONMENT" = dev ] && [ "$AWS_REGION" = us-east-1 ] || fail "Prepared releases require --update --env dev --region us-east-1"
-  for flag in "$DESTROY" "$CI_MODE" "$LOCAL_MODE" "$CONFIRM_DESTRUCTIVE" "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY" "$SUPERPLANE_ONLY" "$SKIP_FRONTEND" "$SKIP_BROKER" "$SKIP_ADMIN_BOOTSTRAP" "$SKIP_WEBHOOK_INGRESS" "$SKIP_AGENT_CONTEXT" "$SKIP_SUPERPLANE"; do
+  for flag in "$DESTROY" "$CI_MODE" "$LOCAL_MODE" "$CONFIRM_DESTRUCTIVE" "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY" "$SKIP_FRONTEND" "$SKIP_BROKER" "$SKIP_ADMIN_BOOTSTRAP" "$SKIP_WEBHOOK_INGRESS" "$SKIP_AGENT_CONTEXT"; do
     [ "$flag" = false ] || fail "Release upgrades require the full deployment and safety gates"
   done
   python3 "$SCRIPT_DIR/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
@@ -251,7 +245,7 @@ if [ "$UPDATE_MODE" = true ]; then
   source "$UPGRADE_RUN_DIR/context.env"
   resolve_deploy_scope
   if [ -n "${ADP_RELEASE_DIR:-}" ]; then
-    [ "$DEPLOY_AGENT_CONTEXT" = false ] && [ "$SUPERPLANE_ENABLED" = false ] || fail "This release contract does not cover agent-context or superplane"
+    [ "$DEPLOY_AGENT_CONTEXT" = false ] || fail "This release contract does not cover agent-context"
     [ "$DEPLOY_GATEWAY" = true ] && [ "$DEPLOY_FACTORY" = true ] && [ "$DEPLOY_WEBHOOK" = true ] || fail "Release upgrade requires gateway, factory and webhook ingress"
   fi
   if [ "$DEPLOY_FACTORY" = true ]; then
@@ -655,10 +649,10 @@ if [ "$CI_MODE" = true ]; then
   }
 
   ci_check_module "platform"      "${ENVIRONMENT}/platform/terraform.tfstate"             "platform-infra-apply.yml"
-  if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
+  if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
     ci_check_module "gateway"       "${ENVIRONMENT}/modules/gateway/terraform.tfstate"      "gateway-infra-apply.yml"
   fi
-  if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
+  if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
     ci_check_module "agent-factory" "${ENVIRONMENT}/modules/agent-factory/terraform.tfstate" "agent-factory-infra-apply.yml"
   fi
   if [ "$AGENT_CONTEXT_ENABLED" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
@@ -689,10 +683,10 @@ fi
 # =============================================================================
 refresh_credentials
 if [ "$UPDATE_MODE" = true ]; then
-  step "Step 1/12: Bootstrap (skipped — update mode)"
+  step "Step 1/11: Bootstrap (skipped — update mode)"
   ok "State bucket verified in preconditions: $STATE_BUCKET"
 else
-  step "Step 1/12: Bootstrap Terraform state backend"
+  step "Step 1/11: Bootstrap Terraform state backend"
 
   if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
     ok "State bucket exists: $STATE_BUCKET"
@@ -743,7 +737,7 @@ refresh_credentials
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
-step "Step 2/12: Deploy shared platform (VPC, EKS, ECR, IAM)"
+step "Step 2/11: Deploy shared platform (VPC, EKS, ECR, IAM)"
 
 # Platform infra runs directly (Terraform + kubectl) — no CodeBuild needed.
 cd "$ROOT_DIR/platform/infra"
@@ -770,7 +764,7 @@ refresh_credentials
 # =============================================================================
 # Step 3: Gateway infra
 # =============================================================================
-step "Step 3/12: Deploy gateway infrastructure"
+step "Step 3/11: Deploy gateway infrastructure"
 
 if [ "$DEPLOY_GATEWAY" = false ]; then
   echo "Skipping gateway infra (scope exclusion)"
@@ -831,7 +825,7 @@ refresh_credentials
 # =============================================================================
 # Step 4: Build + deploy gateway
 # =============================================================================
-step "Step 4/12: Build and deploy gateway"
+step "Step 4/11: Build and deploy gateway"
 
 if [ "$DEPLOY_GATEWAY" = false ]; then
   echo "Skipping gateway deploy (scope exclusion)"
@@ -1255,10 +1249,10 @@ ok "Gateway deployed"
 
 refresh_credentials
 # =============================================================================
-# Step 5/12: Discover internal ALB and wire to API Gateway + CloudFront
+# Step 5/11: Discover internal ALB and wire to API Gateway + CloudFront
 # =============================================================================
 if [ "$DEPLOY_GATEWAY" = true ]; then
-  step "Step 5/12: Wire internal ALB to API Gateway and CloudFront"
+  step "Step 5/11: Wire internal ALB to API Gateway and CloudFront"
 
   # Discover ALB, cache to SSM, export ALB_ARN / ALB_DNS / ALB_SG_IDS.
   # The shared script exits 1 if the ALB is not found after 10 min; in
@@ -1337,7 +1331,7 @@ else
   # Announce the skip rather than passing over silently. Every other phase reports its
   # own exclusion, and a run that jumps from Step 4 to Step 6 with no explanation reads
   # like the script lost a phase.
-  step "Step 5/12: Skipping ALB and API Gateway wiring (scope exclusion)"
+  step "Step 5/11: Skipping ALB and API Gateway wiring (scope exclusion)"
 fi
 
 refresh_credentials
@@ -1347,34 +1341,34 @@ refresh_credentials
 
 refresh_credentials
 # =============================================================================
-# Step 7/12: Broker Lambda code
+# Step 7/11: Broker Lambda code
 # =============================================================================
 # deploy-broker.sh packages the real github-auth-broker Lambda code and updates
 # the live Lambda (terraform ships a 503 placeholder). Required for GitHub login.
 # Gateway-scope: runs only when the resolved scope includes gateway.
 if [ "$DEPLOY_GATEWAY" = true ] && [ "$SKIP_BROKER" = false ] && [ "${UPGRADE_BROKER_ENABLED:-true}" = true ]; then
-  step "Step 7/12: Deploy broker Lambda code"
+  step "Step 7/11: Deploy broker Lambda code"
   bash "$ROOT_DIR/modules/gateway/scripts/deploy-broker.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
   ok "Broker Lambda deployed"
 elif [ "$SKIP_BROKER" = true ]; then
-  step "Step 7/12: Skipping broker Lambda (--skip-broker)"
+  step "Step 7/11: Skipping broker Lambda (--skip-broker)"
 else
-  step "Step 7/12: Skipping broker Lambda (scope exclusion)"
+  step "Step 7/11: Skipping broker Lambda (scope exclusion)"
 fi
 
 refresh_credentials
 # =============================================================================
-# Step 8/12: Bootstrap first admin
+# Step 8/11: Bootstrap first admin
 # =============================================================================
 # bootstrap-admin.sh seeds the first platform_admin's DB rows via kubectl exec.
 # Without it, the onboarding gate shows "request access" for everyone. Requires
 # the gateway pod to be healthy — we enforce a strict rollout gate here.
 # Gateway-scope: runs only when the resolved scope includes gateway.
 if [ "$UPDATE_MODE" = true ]; then
-  step "Step 8/12: Admin bootstrap (skipped — update mode)"
+  step "Step 8/11: Admin bootstrap (skipped — update mode)"
   ok "Admin already exists on live platform"
 elif [ "$DEPLOY_GATEWAY" = true ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
-  step "Step 8/12: Bootstrap first admin"
+  step "Step 8/11: Bootstrap first admin"
   # Strict rollout gate: bootstrap-admin.sh does kubectl exec into the gateway
   # pod, so the deployment must be fully healthy. Wait up to 300s (retries).
   echo "Waiting for gateway rollout to complete (required for admin bootstrap)..."
@@ -1384,14 +1378,14 @@ elif [ "$DEPLOY_GATEWAY" = true ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
   bash "$ROOT_DIR/modules/gateway/scripts/bootstrap-admin.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
   ok "First admin bootstrapped"
 elif [ "$SKIP_ADMIN_BOOTSTRAP" = true ]; then
-  step "Step 8/12: Skipping admin bootstrap (--skip-admin-bootstrap)"
+  step "Step 8/11: Skipping admin bootstrap (--skip-admin-bootstrap)"
 else
-  step "Step 8/12: Skipping admin bootstrap (scope exclusion)"
+  step "Step 8/11: Skipping admin bootstrap (scope exclusion)"
 fi
 
 refresh_credentials
 # =============================================================================
-# Step 9/12: Webhook-ingress stack (KEDA + agent-runtime)
+# Step 9/11: Webhook-ingress stack (KEDA + agent-runtime)
 # =============================================================================
 # deploy-webhook-ingress.sh builds the agent-runtime image, packages the webhook
 # Lambda zip, and terraform-applies the webhook-ingress stack (API GW → Lambda →
@@ -1399,7 +1393,7 @@ refresh_credentials
 # gateway-main.tf references the KEDA CRD and keda-operator-role that this step
 # creates (Issue #1052).
 if [ "$DEPLOY_WEBHOOK" = true ]; then
-  step "Step 9/12: Deploy webhook-ingress stack"
+  step "Step 9/11: Deploy webhook-ingress stack"
   WEBHOOK_UPDATE_ARGS=()
   if [ "$UPDATE_MODE" = true ]; then
     WEBHOOK_UPDATE_ARGS+=(--update)
@@ -1424,20 +1418,20 @@ if [ "$DEPLOY_WEBHOOK" = true ]; then
     )
   fi
 elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
-  step "Step 9/12: Skipping webhook-ingress (--skip-webhook-ingress)"
+  step "Step 9/11: Skipping webhook-ingress (--skip-webhook-ingress)"
 else
-  step "Step 9/12: Skipping webhook-ingress (scope exclusion)"
+  step "Step 9/11: Skipping webhook-ingress (scope exclusion)"
 fi
 
 refresh_credentials
 # =============================================================================
-# Step 10/12: Agent Factory
+# Step 10/11: Agent Factory
 # =============================================================================
 # Runs after webhook-ingress which installs KEDA (CRD + operator role).
 # GitHub App secrets (ARC runner) are optional — enable_github_apps=false on
 # fresh deploys where Apps haven't been registered yet.
 if [ "$DEPLOY_FACTORY" = true ]; then
-  step "Step 10/12: Deploy agent-factory"
+  step "Step 10/11: Deploy agent-factory"
   bash "$SCRIPT_DIR/build-agent-factory-lambdas.sh"
 
   # Agent factory infra runs directly — no CodeBuild needed.
@@ -1509,7 +1503,7 @@ EOF
   fi
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---
-  step "Step 10b/12: Build and deploy agent gateway"
+  step "Step 10b/11: Build and deploy agent gateway"
 
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
@@ -1550,7 +1544,7 @@ EOF
   # The WebSocket ingest Lambda sends to the chat FIFO queue. Its TypeScript
   # consumer has its own repository, so both images use the full source SHA
   # without a suffix that would violate the shared publication contract.
-  step "Step 10c/12: Build and deploy chat agent"
+  step "Step 10c/11: Build and deploy chat agent"
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
     SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
       bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-chat-agent
@@ -1565,16 +1559,16 @@ EOF
     bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
   ok "Chat agent deployed (SHA: $IMAGE_TAG)"
 else
-  step "Step 10/12: Skipping agent-factory"
+  step "Step 10/11: Skipping agent-factory"
 fi
 
 refresh_credentials
 # =============================================================================
-# Step 11/12: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
+# Step 11/11: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
 # =============================================================================
 
 if [ "$DEPLOY_AGENT_CONTEXT" = true ]; then
-  step "Step 11/12: Deploy agent-context"
+  step "Step 11/11: Deploy agent-context"
 
   # Agent context runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/agent-context/terraform"
@@ -1603,62 +1597,7 @@ EOF
   fi
   ok "Agent-context deployed"
 else
-  step "Step 11/12: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"
-fi
-
-refresh_credentials
-# =============================================================================
-# Step 12/12: Superplane domain app (optional — gated by SUPERPLANE_ENABLED or
-# --superplane-only)
-#
-# LAST in the deploy order, and first in undeploy's PHASE_ORDER. A domain app sits on
-# top of the platform, the gateway and the agent runtime, so it deploys after all of
-# them and is destroyed before any of them (Issue #5037).
-#
-# Registered here deliberately: `modules/domain-apps/cyber/` is absent from this script
-# entirely, which is why its resources survive teardown. That is the failure mode this
-# phase exists not to repeat.
-# =============================================================================
-DEPLOY_SUPERPLANE=false
-if [ "$SUPERPLANE_ONLY" = true ]; then
-  DEPLOY_SUPERPLANE=true
-elif [ "$GATEWAY_ONLY" = true ] || [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ] || [ "$SKIP_SUPERPLANE" = true ]; then
-  DEPLOY_SUPERPLANE=false
-elif [ "$SUPERPLANE_ENABLED" = true ]; then
-  DEPLOY_SUPERPLANE=true
-fi
-
-if [ "$DEPLOY_SUPERPLANE" = true ]; then
-  step "Step 12/12: Deploy superplane domain app"
-
-  # The module's Terraform belongs to a later unit (U3). Until it lands there is
-  # nothing to apply, so this phase reports that plainly and succeeds rather than
-  # failing an otherwise healthy deploy. When U3 adds infra/control-plane/*.tf the
-  # apply below starts doing work with no further edit to this script.
-  SUPERPLANE_TF_DIR="$ROOT_DIR/modules/domain-apps/superplane/infra/control-plane"
-  if ! ls "$SUPERPLANE_TF_DIR"/*.tf >/dev/null 2>&1; then
-    warn "Superplane: no Terraform in $SUPERPLANE_TF_DIR yet — skipping infrastructure apply"
-    ok "Superplane: nothing to deploy (module skeleton only)"
-  else
-    cd "$SUPERPLANE_TF_DIR"
-    BACKEND_FILE="$ROOT_DIR/environments/$ENVIRONMENT/modules/superplane-backend.tfvars"
-    [ ! -f "$BACKEND_FILE" ] && cat > "$BACKEND_FILE" << EOF
-bucket         = "${STATE_BUCKET}"
-key            = "${ENVIRONMENT}/modules/superplane/terraform.tfstate"
-region         = "${AWS_REGION}"
-encrypt        = true
-dynamodb_table = "${LOCK_TABLE}"
-EOF
-    terraform init -backend-config="$BACKEND_FILE" -input=false
-    if [ "$UPDATE_MODE" = true ]; then
-      terraform_update_apply "superplane" "$ROOT_DIR/environments/$ENVIRONMENT/modules/superplane.tfvars"
-    else
-      terraform apply -var-file="$ROOT_DIR/environments/$ENVIRONMENT/modules/superplane.tfvars" -auto-approve
-      ok "Superplane infrastructure deployed"
-    fi
-  fi
-else
-  step "Step 12/12: Skipping superplane (set SUPERPLANE_ENABLED=true or use --superplane-only)"
+  step "Step 11/11: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"
 fi
 
 # Finalize after all installed modules have been updated.
@@ -1677,10 +1616,10 @@ if [ "$UPDATE_MODE" = true ]; then
 fi
 
 if [ "$SKIP_FRONTEND" = false ] && [ "$DEPLOY_GATEWAY" = true ]; then
-  step "Step 6/12: Publish frontend and both account-connection templates"
+  step "Step 6/11: Publish frontend and both account-connection templates"
   bash "$ROOT_DIR/modules/gateway/scripts/deploy-frontend.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
 else
-  step "Step 6/12: Skipping frontend"
+  step "Step 6/11: Skipping frontend"
 fi
 
 if [ "$UPDATE_MODE" = true ]; then
@@ -1710,12 +1649,9 @@ echo "Gateway:   kubectl get pods -n adp-gateway (configure kubectl: aws eks upd
 
 CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null) || true
 [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ] && echo "Frontend:  https://${CF_DOMAIN}" && echo "API:       https://${CF_DOMAIN}/api/health"
-[ "$GATEWAY_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
+[ "$GATEWAY_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
 [ "$DEPLOY_AGENT_CONTEXT" = true ] && echo "Context:   kubectl get pods -n agent-context"
-GW_WS=""
-if [ "$SUPERPLANE_ONLY" = false ]; then
-  GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
-fi
+GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
 
 if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
@@ -1726,7 +1662,7 @@ if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
 fi
 
 # --- Next steps (manual — GitHub App wiring; skipped in update mode) ---
-if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
+if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
   echo ""
   echo "━━━ Next steps (manual) ━━━"
   echo "To complete the agent path, wire a GitHub App:"

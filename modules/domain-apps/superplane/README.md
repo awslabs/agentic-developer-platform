@@ -30,7 +30,7 @@ item appears, and the deploy phase does no work.
 |---|---|
 | Gateway backend | `modules/gateway/src/features/routes.py` (`_is_enabled_strict`) |
 | Frontend route + nav | `frontend/src/services/features.ts`, `App.tsx`, `components/Navigation.tsx` |
-| Deploy | `platform/scripts/deploy-all.sh` (`SUPERPLANE_ENABLED`, default `false`) |
+| Deploy | `modules/domain-apps/superplane/deploy.sh` or the module workflows |
 | Undeploy | `platform/scripts/undeploy.sh` `PHASE_ORDER` + `undeploy-phases.sh` `phase_superplane()` |
 
 The strictness is not stylistic. The frontend resolves flags as
@@ -70,9 +70,8 @@ raise — not a directory to create.
 
 ## Related
 
-- Module-shape precedent: `modules/domain-apps/cyber/` — layout only. Its deploy
-  registration is **absent** from `deploy-all.sh`, which is the failure mode this unit
-  exists to avoid repeating.
+- Module-shape precedent: `modules/domain-apps/cyber/`. Both domain apps deploy
+  through their own modules; the basic `deploy-all.sh` does not install either.
 - Offline CI lane: `.github/workflows/superplane-domain-ci.yml` — lint + tests over this
   directory. No AWS account, no image build, no deploy.
 - Teardown: registered as the **first** undeploy phase (destroy order is the reverse of

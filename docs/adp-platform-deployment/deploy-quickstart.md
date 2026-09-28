@@ -108,9 +108,9 @@ CodeBuild by default; you only need Docker if you pass `--local`.
 | Code intelligence | `deploy-all.sh --agent-context-only` | No | ~$800/mo ⚠️ pricey |
 
 The default full command installs the shared platform, gateway and agent stack.
-It does not install domain apps. Superplane is a separate optional phase
-(`SUPERPLANE_ENABLED=true` or `--superplane-only`); cyber's sandbox is deployed
-through `modules/domain-apps/cyber/scripts/deploy.sh`. A hosted Cyber worker
+It does not install domain apps. Install Superplane through
+`modules/domain-apps/superplane/deploy.sh` or its module workflows, and Cyber's
+sandbox through `modules/domain-apps/cyber/scripts/deploy.sh`. A hosted Cyber worker
 integration is installed separately through
 `modules/domain-apps/cyber/scripts/deploy-hosted-integration.sh`, then wired to
 the shared worker by selecting `enabled_domain_integrations = ["cyber"]` in the

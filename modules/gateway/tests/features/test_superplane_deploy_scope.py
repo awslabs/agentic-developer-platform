@@ -1,4 +1,4 @@
-"""`deploy-all.sh` scope flags run the phases they name and skip the rest (#5037).
+"""Basic platform deployment leaves the optional Superplane module alone.
 
 These tests **execute** `deploy-all.sh` against stub tooling rather than reading it as
 text, because the defect they exist to catch is invisible to a text assertion.
@@ -33,8 +33,8 @@ convenience: `assert_no_real_tooling` below fails if a real `aws` is reachable, 
 edit that bypasses the stub directory cannot quietly start making live API calls. These
 tests must never depend on anyone's AWS credentials.
 
-`--superplane-only` is expected to still run bootstrap and platform infra: the flag means
-"platform **plus** the superplane domain app", matching `--agent-context-only`.
+The old Superplane flags now refuse before any platform phase. The module has its
+own installer and workflows.
 """
 
 from __future__ import annotations
@@ -126,21 +126,20 @@ _SUB_SCRIPTS = {
     "modules/agent-context/deploy.sh": "STUB-AGENT-CONTEXT-DEPLOY",
 }
 
-# Phase label -> the `Step N/12` prefix it prints. Keyed by concept so a renumbering
+# Phase label -> the `Step N/11` prefix it prints. Keyed by concept so a renumbering
 # shows up as one failure per phase with a readable name.
 STEP_LABELS = {
-    "bootstrap": "Step 1/12",
-    "platform": "Step 2/12",
-    "gateway_infra": "Step 3/12",
-    "gateway_deploy": "Step 4/12",
-    "alb_wiring": "Step 5/12",
-    "frontend": "Step 6/12",
-    "broker": "Step 7/12",
-    "admin_bootstrap": "Step 8/12",
-    "webhook_ingress": "Step 9/12",
-    "agent_factory": "Step 10/12",
-    "agent_context": "Step 11/12",
-    "superplane": "Step 12/12",
+    "bootstrap": "Step 1/11",
+    "platform": "Step 2/11",
+    "gateway_infra": "Step 3/11",
+    "gateway_deploy": "Step 4/11",
+    "alb_wiring": "Step 5/11",
+    "frontend": "Step 6/11",
+    "broker": "Step 7/11",
+    "admin_bootstrap": "Step 8/11",
+    "webhook_ingress": "Step 9/11",
+    "agent_factory": "Step 10/11",
+    "agent_context": "Step 11/11",
 }
 
 
@@ -318,7 +317,7 @@ def _strip_ansi(text: str) -> str:
 
 
 def phase_section(output: str, phase: str) -> str:
-    """The output from a phase's `Step N/12` header up to the next step header.
+    """The output from a phase's `Step N/11` header up to the next step header.
 
     Reading the *section* rather than the header line is deliberate. Two phases (gateway
     infra and gateway deploy) print their header unconditionally and then branch, emitting
@@ -333,8 +332,8 @@ def phase_section(output: str, phase: str) -> str:
     if start is None:
         return ""
     for j in range(start + 1, len(lines)):
-        # `Step 10b/12` belongs to its parent phase, so it must not end the section.
-        m = re.search(r"Step (\d+)(b?)/12:", lines[j])
+        # `Step 10b/11` belongs to its parent phase, so it must not end the section.
+        m = re.search(r"Step (\d+)(b?)/11:", lines[j])
         if m and not m.group(2):
             return "\n".join(lines[start:j])
     return "\n".join(lines[start:])
@@ -345,13 +344,9 @@ def phase_section(output: str, phase: str) -> str:
 # these specific forms — rather than any occurrence of "skip" — keeps the assertions from
 # being confused by incidental wording.
 #
-# The distinction that matters: Step 12 legitimately prints "skipping infrastructure
-# apply" *while running*, because the module's Terraform belongs to U3 and does not exist
-# yet. That is the phase executing and finding nothing to apply, not the phase being
-# excluded from scope. Conflating the two would make `assert_ran(superplane)` unsatisfiable
-# until U3 lands, and would hide a real scope regression behind an expected message.
+# The optional Superplane module has no phase in this script.
 _PHASE_DECLINED = re.compile(
-    r"^\s*(?:━━━\s*)?Step \d+b?/12:\s*Skipping\b|^\s*Skipping (?:gateway|frontend|agent|webhook|broker|admin|superplane)",
+    r"^\s*(?:━━━\s*)?Step \d+b?/11:\s*Skipping\b|^\s*Skipping (?:gateway|frontend|agent|webhook|broker|admin|superplane)",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -385,58 +380,23 @@ class TestHarnessIsOffline:
         assert result.returncode == 0, f"deploy-all.sh is not valid bash: {result.stderr}"
 
 
-class TestSuperplaneOnlyScope:
-    """`--superplane-only` means platform plus superplane, and nothing else."""
+class TestSuperplaneModuleBoundary:
+    @pytest.mark.parametrize("flag", ["--superplane-only", "--skip-superplane"])
+    def test_old_platform_flags_refuse_before_any_phase(self, harness, flag):
+        result = harness(flag)
+        assert result.returncode == 2
+        assert "modules/domain-apps/superplane" in result.stderr
+        assert "Step 1/11" not in result.stdout
 
-    @pytest.fixture
-    def output(self, harness):
-        result = harness("--superplane-only")
-        assert result.returncode == 0, (
-            f"--superplane-only exited {result.returncode}.\nSTDOUT tail:\n{result.stdout[-3000:]}\nSTDERR tail:\n{result.stderr[-2000:]}"
-        )
-        return result.stdout
-
-    def test_superplane_phase_runs(self, output):
-        assert_ran(output, "superplane")
-
-    @pytest.mark.parametrize(
-        "phase",
-        ["gateway_infra", "gateway_deploy", "alb_wiring", "frontend", "broker", "admin_bootstrap", "webhook_ingress", "agent_factory"],
-    )
-    def test_unrelated_phase_is_skipped(self, output, phase):
-        """Each of these applies real infrastructure; none is in this flag's scope."""
-        assert_skipped(output, phase)
-
-    def test_platform_phases_still_run(self, output):
-        """ "Platform + superplane" — the platform half is deliberately in scope."""
-        assert_ran(output, "bootstrap")
-        assert_ran(output, "platform")
-
-    @pytest.mark.parametrize(
-        "marker",
-        ["STUB-DEPLOY-BROKER", "STUB-BOOTSTRAP-ADMIN", "STUB-WEBHOOK-INGRESS", "STUB-WIRE-ALB", "STUB-DEPLOY-FRONTEND", "STUB-RESTRICTED-ADMISSION"],
-    )
-    def test_out_of_scope_sub_script_never_executes(self, output, marker):
-        """Proves the guard, not just the label.
-
-        A phase could print "Skipping" and still have run its sub-script from an earlier
-        unguarded line; these markers are emitted by the stub itself, so their absence is
-        evidence the script was never invoked. Admin bootstrap is the sharpest case: it
-        seeds the first administrator into the live database.
-        """
-        assert marker not in output, (
-            f"{marker} ran under --superplane-only. The phase's scope guard is missing or the sub-script is invoked outside it."
-        )
-
-    def test_agent_context_not_deployed_even_when_env_enables_it(self, harness):
-        """A scope flag must win over an unrelated module's environment gate."""
-        result = harness("--superplane-only", env={"AGENT_CONTEXT_ENABLED": "true"})
-        assert result.returncode == 0, result.stdout[-2000:]
-        assert_skipped(result.stdout, "agent_context")
+    def test_old_environment_opt_in_refuses_before_any_phase(self, harness):
+        result = harness(env={"SUPERPLANE_ENABLED": "true"})
+        assert result.returncode != 0
+        assert "modules/domain-apps/superplane" in result.stdout
+        assert "Step 1/11" not in result.stdout
 
 
 class TestDefaultDeployIsUnchanged:
-    """Regression guard: the gate is off by default and existing phases still run.
+    """Regression guard: existing platform phases still run without Superplane.
 
     This is R1 acc. 1 at the deploy layer. The scope-guard edits touch conditions that
     every ordinary deployment evaluates, so "superplane skips by default" is not enough —
@@ -451,8 +411,9 @@ class TestDefaultDeployIsUnchanged:
         )
         return result.stdout
 
-    def test_superplane_is_skipped_by_default(self, output):
-        assert_skipped(output, "superplane")
+    def test_superplane_has_no_phase_in_basic_deploy(self, output):
+        assert "Deploy superplane domain app" not in output
+        assert "Skipping superplane" not in output
 
     @pytest.mark.parametrize(
         "phase",
@@ -478,17 +439,6 @@ class TestDefaultDeployIsUnchanged:
     def test_gateway_admission_check_runs_with_the_gateway_phase(self, output):
         assert "STUB-RESTRICTED-ADMISSION" in phase_section(output, "gateway_deploy")
 
-    def test_explicit_enable_runs_the_phase(self, harness):
-        """`SUPERPLANE_ENABLED=true` is the documented opt-in and must work."""
-        result = harness(env={"SUPERPLANE_ENABLED": "true"})
-        assert result.returncode == 0, result.stdout[-2000:]
-        assert_ran(result.stdout, "superplane")
-
-    def test_skip_flag_wins_over_the_env_gate(self, harness):
-        result = harness("--skip-superplane", env={"SUPERPLANE_ENABLED": "true"})
-        assert result.returncode == 0, result.stdout[-2000:]
-        assert_skipped(result.stdout, "superplane")
-
 
 class TestSiblingScopeFlagsUnaffected:
     """The pre-existing scope flags must behave exactly as they did before this change."""
@@ -500,7 +450,6 @@ class TestSiblingScopeFlagsUnaffected:
         assert_ran(result.stdout, "gateway_deploy")
         assert_skipped(result.stdout, "webhook_ingress")
         assert_skipped(result.stdout, "agent_factory")
-        assert_skipped(result.stdout, "superplane")
 
     def test_agent_factory_only_skips_gateway_and_superplane(self, harness):
         result = harness("--agent-factory-only")
@@ -508,7 +457,6 @@ class TestSiblingScopeFlagsUnaffected:
         assert_skipped(result.stdout, "gateway_infra")
         assert_skipped(result.stdout, "gateway_deploy")
         assert_ran(result.stdout, "agent_factory")
-        assert_skipped(result.stdout, "superplane")
 
     def test_agent_context_only_skips_everything_else(self, harness):
         result = harness("--agent-context-only")
@@ -516,7 +464,6 @@ class TestSiblingScopeFlagsUnaffected:
         assert_skipped(result.stdout, "gateway_infra")
         assert_skipped(result.stdout, "agent_factory")
         assert_ran(result.stdout, "agent_context")
-        assert_skipped(result.stdout, "superplane")
 
 
 class TestLegacyDestroy:

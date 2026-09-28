@@ -60,7 +60,7 @@ kubectl() {
 
     def test_tick_second_pass_runs_only_after_in_scope_gateway_and_refresh(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
-        start = source.index('if [ "$DEPLOY_WEBHOOK" = true ]; then', source.index('# Step 9/12:'))
+        start = source.index('if [ "$DEPLOY_WEBHOOK" = true ]; then', source.index('# Step 9/11:'))
         block = source[start:source.index('\nrefresh_credentials\n', start)]
         prefix = '''set -euo pipefail
 step() { :; }
@@ -86,8 +86,6 @@ terraform_update_apply() { echo "terraform $1"; }
         scenarios = [
             ({}, ["true", "true", "true", "false"]),
             ({"GATEWAY_ONLY": "true"}, ["true", "false", "false", "false"]),
-            ({"SUPERPLANE_ONLY": "true", "AGENT_CONTEXT_ENABLED": "true"}, ["false"] * 4),
-            ({"UPDATE_MODE": "false", "SUPERPLANE_ONLY": "true", "AGENT_CONTEXT_ENABLED": "true"}, ["false"] * 4),
             ({"UPGRADE_MODULES": "platform,gateway,webhook-ingress,agent-factory,agent-context"}, ["true"] * 4),
             ({"UPGRADE_MODULES": "platform,gateway,agent-context", "SKIP_AGENT_CONTEXT": "true"}, ["true", "false", "true", "false"]),
             ({"AGENT_FACTORY_ONLY": "true"}, ["false", "true", "true", "false"]),
