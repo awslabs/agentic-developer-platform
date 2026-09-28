@@ -53,6 +53,14 @@ approval. Explain which requirement remains unverified and what would verify it.
 For example, a rebuilt-image scan explicitly required by a security story is a
 blocking gap until that exact artifact has been validated.
 
+Respect an explicit separation of code merge from later deployment or live
+qualification in the driving issue or accepted scope. When the code may merge
+with a separately tracked qualification hold, review and repair the code-stage
+requirements now. Record the linked qualification and its outstanding evidence
+in the summary; do not turn that later stage into a pre-merge validation gap.
+Never claim the live qualification passed or the whole issue is complete merely
+because the code is ready to merge. Missing code-stage evidence still blocks.
+
 When a check fails, determine whether it is a regression, an existing failure,
 or an environment limitation. Verify a claimed existing failure against the base
 revision under the same conditions, or supply equivalent concrete baseline

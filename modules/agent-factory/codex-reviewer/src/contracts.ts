@@ -71,6 +71,7 @@ export interface CodexEngineReviewEnvelope extends CodexEnvelopeBase {
     head_sha: string;
     findings: unknown[];
     allow_story_repairs: boolean;
+    accepted_scope?: string;
     reviewer_owned_delivery?: boolean;
     recovery?: { source: "existing_pr" | "checkpoint"; prior_run_id: string; checkpoint_sha: string };
   };
@@ -136,7 +137,7 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
     if (!cycle || intent?.trigger !== "engine_review_cycle"
         || !["review", "repair"].includes(String(cycle.action))
         || cycle.repo !== repository || !SHA_RE.test(String(cycle.head_sha))
-        || !Array.isArray(cycle.findings) || !cycle.operation_key || !cycle.accepted_scope
+        || !Array.isArray(cycle.findings) || !cycle.operation_key || typeof cycle.accepted_scope !== "string" || !cycle.accepted_scope
         || Buffer.byteLength(JSON.stringify(cycle), "utf8") > 32768) {
       throw new Error("invalid engine review-cycle input");
     }
@@ -157,6 +158,7 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
         head_sha: cycle.head_sha as string,
         findings: cycle.findings,
         allow_story_repairs: cycle.allow_story_repairs === true,
+        accepted_scope: cycle.accepted_scope,
         reviewer_owned_delivery: cycle.reviewer_owned_delivery === true,
         ...(recovery ? { recovery } : {}),
       },

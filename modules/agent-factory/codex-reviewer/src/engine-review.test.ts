@@ -64,17 +64,21 @@ test("engine envelope selects its bound PR without a webhook payload or agent br
     source_ref: { repo: "org/repo", issue: 42, installation_id: 1 }, intent: { trigger: "engine_review_cycle" },
     review_cycle_input: { action: "review", repo: "org/repo", pr_number: 7, head_sha: "a".repeat(40), findings: [],
       operation_key: "operation", accepted_scope: "revision identity", allow_story_repairs: true } };
-  assert.equal(parseEnvelope(JSON.stringify(raw)).kind, "codex_engine_review");
+  const parsed = parseEnvelope(JSON.stringify(raw));
+  assert.equal(parsed.kind, "codex_engine_review");
+  if (parsed.kind === "codex_engine_review") assert.equal(parsed.cycle.accepted_scope, "revision identity");
   assert.throws(() => parseEnvelope(JSON.stringify({ ...raw, intent: {} })), /invalid engine/);
   assert.throws(() => parseEnvelope(JSON.stringify({ ...raw, review_cycle_input: { ...raw.review_cycle_input, repo: "other/repo" } })), /invalid engine/);
 });
 
 test("engine review repairs semantic story issues, re-reviews and pushes the verified child", async t => {
   const state = await fixture(t);
+  state.envelope.cycle.accepted_scope = "Code merge precedes separate qualification #99";
   const prompts: string[] = [];
   let reviews = 0;
   const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
     review: async prompt => {
+      assert.match(prompt, /Code merge precedes separate qualification #99/);
       prompts.push(prompt);
       reviews++;
       if (reviews === 1) {
