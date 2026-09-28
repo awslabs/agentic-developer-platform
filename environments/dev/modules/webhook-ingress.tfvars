@@ -58,17 +58,6 @@ agent_authority_worker_image_digests   = ["sha256:1cb3550ee64d72b3b5261ccba7c874
 # Six-hour Task deadline plus startup/cleanup headroom for the owning pod.
 agent_pod_deadline_seconds = 22200
 
-# Task tools enabled for qualified file analysis and URL investigation.
-task_persona_tools = {
-  agent-task-cyber = ["cyber.triage", "cyber.static", "cyber.result", "cyber.common_crawl_scan", "cyber.common_crawl_result", "cyber.common_crawl_read", "cyber.browser_start", "cyber.browser_step", "cyber.browser_inspect", "cyber.browser_close"]
-}
-
-# Independent tool service; protected workers receive only this exact route.
-task_tool_invoke_resources = [
-  "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/POST/tools/cyber",
-  "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/POST/tools/cyber/common-crawl"
-]
-
 # Authenticated Agent Activity explanation stream; independent of mutation controls.
 agent_explanations_enabled = true
 # Explicit operator activation on 2026-09-25; acceptance evidence remains tracked separately.

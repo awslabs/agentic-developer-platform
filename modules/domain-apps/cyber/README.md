@@ -8,9 +8,19 @@ identity, and GitHub integration.
 The basic platform deployment does not install cyber resources. Deploy the
 cyber sandbox through `scripts/deploy.sh` when the app is needed. Select its
 CodeBuild jobs from the Cyber Terraform root through `scripts/deploy.sh`.
+That script publishes the Cyber gateway broker settings from Cyber state. Run
+`scripts/configure-gateway.sh` after a base platform upgrade if the Cyber
+broker is installed; the base gateway template contains no Cyber settings.
 Install the optional hosted worker integration through
-`scripts/deploy-hosted-integration.sh --apply <reviewed.tfvars>`, then select
-`enabled_domain_integrations = ["cyber"]` in the webhook update settings.
+`scripts/deploy-hosted-integration.sh --apply <reviewed.tfvars>` to create its
+resources, including the Cyber hosted-worker ECR repository. Set
+`CYBER_WORKER_BASE_IMAGE` to the deployed base worker's immutable digest and run
+`scripts/publish-hosted-worker.sh`. Put its `worker_image_digest` output in the
+reviewed Cyber tfvars and apply the hosted integration again. Then select
+`enabled_domain_integrations = ["cyber"]` in the webhook update settings and
+add the Cyber image digest to `agent_authority_worker_image_digests` when protected
+worker authority is enabled. The webhook stack reads the Cyber image and settings
+from Cyber state; the base worker image contains no Cyber skills or tool adapters.
 The hosted resources live in Cyber's own state; the webhook stack only reads
 its worker configuration. Older installations must migrate their legacy
 `module.cyber` resources from webhook state before using the new script.

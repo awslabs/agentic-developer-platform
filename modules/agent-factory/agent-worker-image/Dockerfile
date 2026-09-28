@@ -54,7 +54,6 @@ COPY --from=python314-expat /manifest.json /opt/awscli-adp/python314-expat-manif
 COPY --from=python314-expat /licenses/ /opt/awscli-adp/XML-LICENSES/
 RUN PYTHONPATH=/opt/awscli-adp/lib/aws-cli/python3.14/lib-dynload python -c 'import pyexpat, _elementtree; import xml.etree.ElementTree as E; assert pyexpat.EXPAT_VERSION == "expat_2.8.5"; assert E.fromstring("<root>valid</root>").text == "valid"'
 RUN --network=none /opt/awscli-adp/bin/aws --version | grep -F 'aws-cli/2.37.4 Python/3.14.7'
-COPY modules/domain-apps/superplane/executor/awscli-build/source-build.json /opt/awscli-adp/source-build.json
 
 # =============================================================================
 # adp-agent worker image
@@ -136,10 +135,7 @@ RUN npm ci --ignore-scripts
 COPY modules/agent-factory/task-agents/cyber/src/ ./src/
 COPY modules/agent-factory/task-agents/cyber/build.mjs ./
 COPY modules/tools/task-sdk/ /task-sdk/
-RUN ADP_TASK_SDK_SOURCE=/task-sdk npm run build && npm prune --omit=dev
-COPY modules/domain-apps/cyber/agent/skills/ /skills/
-RUN find /skills -type f ! -name SKILL.md -delete
-COPY modules/domain-apps/cyber/tools/skills/ /skills/
+RUN ADP_TASK_SDK_SOURCE=/task-sdk ADP_TASK_INCLUDE_CYBER=false npm run build && npm prune --omit=dev
 
 # -----------------------------------------------------------------------------
 # Stage 4: Stage personas and skills
@@ -155,7 +151,6 @@ RUN chmod +x /stage/stage-personas.sh
 # Copy persona and skill source trees
 COPY modules/agent-factory/rules/personas/ /source/agent-factory/personas/
 COPY modules/agent-factory/skills/ /source/agent-factory/skills/
-COPY modules/domain-apps/ /source/domain-apps/
 
 # Run the staging script to assemble /stage/personas and /stage/skills
 RUN /stage/stage-personas.sh /source /stage
@@ -314,11 +309,6 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     'cryptography>=44.0' \
     'pydantic>=2.13'
 
-# Install optional app requirements from the same domain staging contract.
-COPY --from=stager /stage/requirements/ /tmp/domain-requirements/
-RUN find /tmp/domain-requirements -name '*.txt' -exec \
-    pip3 install --no-cache-dir --break-system-packages -r {} \;
-
 # Create non-root user
 RUN groupadd -g 1001 agent && \
     useradd -m -u 1001 -g agent -s /bin/bash agent && \
@@ -366,12 +356,10 @@ COPY --from=task-investigator-builder --chown=agent:agent /build/package.json /a
 COPY --from=task-cyber-builder --chown=agent:agent /build/dist/ /app/task-agents/cyber/dist/
 COPY --from=task-cyber-builder --chown=agent:agent /build/package.json /app/task-agents/cyber/package.json
 COPY --from=task-cyber-builder --chown=agent:agent /build/node_modules/ /app/task-agents/cyber/node_modules/
-COPY --from=task-cyber-builder --chown=agent:agent /skills/ /app/task-agents/cyber/skills/
 
 # Trusted local tool adapters; source and execution stay outside the SDK process.
 COPY --chown=agent:agent modules/tools/adp_tools/ /app/adp_tools/
 COPY --chown=agent:agent modules/tools/agentcore/agentcore_tools/ /app/agentcore_tools/
-COPY --chown=agent:agent modules/domain-apps/cyber/tools/cyber_tools/ /app/cyber_tools/
 
 # Copy staged personas and skills
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/

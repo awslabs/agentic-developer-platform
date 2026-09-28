@@ -29,6 +29,7 @@ run "cyber_settings_install_the_domain_app" {
         worker_artifact_resources  = ["arn:aws:s3:::adp-dev-url-analysis-evidence-v2-111122223333/*"]
         worker_egress              = []
         worker_browser_permissions = []
+        worker_image               = "111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-cyber-hosted-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
       }
     }
   }
@@ -583,6 +584,7 @@ run "native_browser_preserves_protected_worker_boundary" {
           Action    = ["bedrock-agentcore:StartBrowserSession"], Resource = "*",
           Condition = { StringEquals = { "aws:RequestedRegion" = "us-east-1" } }
         }]
+        worker_image = "111122223333.dkr.ecr.us-east-1.amazonaws.com/adp-cyber-hosted-worker@sha256:0000000000000000000000000000000000000000000000000000000000000000"
       }
     }
   }

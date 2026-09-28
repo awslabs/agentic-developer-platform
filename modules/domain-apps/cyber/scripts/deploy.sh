@@ -61,6 +61,9 @@ echo "Static queue:  ${STATIC_QUEUE_URL}"
 echo "Results table: ${RESULTS_TABLE}"
 echo ""
 
+# Cyber owns the optional gateway broker configuration and its IAM grant.
+bash "${SCRIPT_DIR}/configure-gateway.sh"
+
 # ---------------------------------------------------------------------------
 # Step 2: Configure kubectl for the cyber cluster
 # ---------------------------------------------------------------------------

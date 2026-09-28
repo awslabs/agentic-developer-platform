@@ -74,8 +74,8 @@ resource "terraform_data" "worker_security_rollout" {
     }
     precondition {
       condition = !var.agent_authority_enabled || (
-        can(regex("@sha256:[0-9a-f]{64}$", var.agent_image)) &&
-        contains(var.agent_authority_worker_image_digests, try(regex("sha256:[0-9a-f]{64}$", var.agent_image), ""))
+        can(regex("@sha256:[0-9a-f]{64}$", local.agent_image)) &&
+        contains(var.agent_authority_worker_image_digests, try(regex("sha256:[0-9a-f]{64}$", local.agent_image), ""))
       )
       error_message = "Protected worker launches must pin agent_image to an approved sha256 digest; an approved list does not make a mutable image tag safe."
     }

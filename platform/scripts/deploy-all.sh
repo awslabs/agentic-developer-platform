@@ -1083,7 +1083,6 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
 
   CONFIGMAP_APPLY_RESULT=$(sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
       -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
-      -e "s|__CYBER_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
       -e "s|__DB_HOST__|${DB_HOST}|g" \
       -e "s|__DB_USER__|${DB_USER}|g" \
       -e "s|__DB_NAME__|${DB_NAME}|g" \

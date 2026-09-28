@@ -301,3 +301,14 @@ def test_shared_codex_candidates_are_disabled_until_host_enablement(monkeypatch)
     assert task_agent_command("agent-task-gpt-developer") == ["node", "/app/codex-harness/dist/task-entry.mjs", "--embedded"]
     assert not is_registered_task_persona("agent-task-unknown")
     assert not is_registered_task_persona("agent-task-gpt-intent-refinement")
+
+
+def test_cyber_task_requires_module_installation(monkeypatch):
+    monkeypatch.delenv("ADP_OPTIONAL_TASK_AGENTS", raising=False)
+    assert not is_registered_task_persona("agent-task-cyber")
+    with pytest.raises(UnknownTaskPersonaError):
+        task_agent_command("agent-task-cyber")
+    monkeypatch.setenv("ADP_OPTIONAL_TASK_AGENTS", "cyber")
+    assert task_agent_command("agent-task-cyber") == [
+        "node", "/app/task-agents/cyber/dist/index.js", "--embedded"
+    ]

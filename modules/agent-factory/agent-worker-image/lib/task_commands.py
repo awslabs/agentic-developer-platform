@@ -34,13 +34,24 @@ import os
 TASK_AGENT_COMMANDS: dict[str, tuple[str, ...]] = {
     "agent-task-codex-developer": ("node", "/app/task-agents/cyber/dist/index.js", "--embedded", "--codex"),
     "agent-task-claude-developer": ("node", "/app/task-agents/cyber/dist/index.js", "--embedded", "--developer"),
-    "agent-task-cyber": ("node", "/app/task-agents/cyber/dist/index.js", "--embedded"),
     "agent-task-investigator": (
         "node",
         "/app/task-agents/investigator/dist/index.js",
         "--embedded",
     ),
 }
+
+OPTIONAL_TASK_AGENT_COMMANDS = {
+    "cyber": {
+        "agent-task-cyber": ("node", "/app/task-agents/cyber/dist/index.js", "--embedded"),
+    },
+}
+
+
+def _optional_command(persona: str) -> tuple[str, ...] | None:
+    enabled = {value.strip() for value in os.environ.get("ADP_OPTIONAL_TASK_AGENTS", "").split(",") if value.strip()}
+    return next((commands[persona] for app, commands in OPTIONAL_TASK_AGENT_COMMANDS.items()
+                 if app in enabled and persona in commands), None)
 
 
 # Packaged candidates require explicit host enablement after qualification.
@@ -74,7 +85,7 @@ def task_agent_command(persona: str) -> list[str]:
     :raises UnknownTaskPersonaError: the persona is not registered. There is no
         default and no fallback to a legacy runtime.
     """
-    command = TASK_AGENT_COMMANDS.get(persona) or _enabled_codex_command(persona)
+    command = TASK_AGENT_COMMANDS.get(persona) or _optional_command(persona) or _enabled_codex_command(persona)
     if command is None:
         raise UnknownTaskPersonaError(f"task persona is not packaged in this image: {persona}")
     return list(command)
@@ -82,4 +93,4 @@ def task_agent_command(persona: str) -> list[str]:
 
 def is_registered_task_persona(persona: str) -> bool:
     """Whether ``persona`` has a registered task executable in this image."""
-    return persona in TASK_AGENT_COMMANDS or _enabled_codex_command(persona) is not None
+    return persona in TASK_AGENT_COMMANDS or _optional_command(persona) is not None or _enabled_codex_command(persona) is not None

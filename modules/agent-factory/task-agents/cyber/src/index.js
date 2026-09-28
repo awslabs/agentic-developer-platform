@@ -3,7 +3,6 @@ import { ArtifactTransfers } from '../../investigator/dist/artifact-transfer.js'
 import { parseHostFrame, assertInvestigatorReport } from '../../investigator/dist/protocol.js';
 import { HostBridge, decode, encode, frame, MAX_FRAME_BYTES } from './protocol.mjs';
 import { executionFailure } from '../../../../tools/task-sdk/execution-failure.mjs';
-import { runCyber } from './driver.mjs';
 import { runCoding } from './coding-driver.mjs';
 import { runCodexCoding } from './codex-driver.mjs';
 
@@ -43,7 +42,12 @@ if (!process.argv.includes('--embedded') || process.env.ADP_TASK_NETWORK !== 'ho
           const start = artifacts.start(parseHostFrame(line));
           bridge = new HostBridge(start, write);
           bridge.send('ready', { capabilities: ['input', 'cancel'] });
-          (process.argv.includes('--codex') ? runCodexCoding : process.argv.includes('--developer') ? runCoding : runCyber)(start, bridge).then(report => finish(null, report), error => finish(error));
+          Promise.resolve().then(async () => {
+            const runner = process.argv.includes('--codex') ? runCodexCoding
+              : process.argv.includes('--developer') ? runCoding
+              : (await import('./driver.mjs')).runCyber;
+            return runner(start, bridge);
+          }).then(report => finish(null, report), error => finish(error));
         } else { if (!bridge) throw new Error('missing start'); bridge.receive(value); }
       }
       if (buffer.length > MAX_FRAME_BYTES) throw new Error('frame bound');

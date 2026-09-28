@@ -41,5 +41,5 @@ def test_composition_preserves_domain_endpoint_and_generic_permission_ownership(
     output = (ROOT/'modules/domain-apps/cyber/infra/platform-integration/outputs.tf').read_text()
     assert 'ADP_CYBER_TOOLS_ENDPOINT = var.tools_endpoint' in output
     gateway = (ROOT/'modules/agent-factory/webhook-ingress/infra/worker-gateway-config.tf').read_text()
-    assert 'ADP_TASK_PERSONA_TOOLS                 = jsonencode(var.task_persona_tools)' in gateway
+    assert 'ADP_TASK_PERSONA_TOOLS                 = jsonencode(merge(var.task_persona_tools, local.domain_worker_task_persona_tools))' in gateway
     assert 'ADP_CYBER_TOOLS_ENDPOINT' not in gateway

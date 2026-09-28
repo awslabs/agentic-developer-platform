@@ -1,0 +1,26 @@
+# Cyber-owned hosted worker layer. The base ADP image contains no domain skills,
+# Cyber tool adapters or Cyber Task driver; this image is published separately.
+ARG WORKER_BASE_IMAGE
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS cyber-task-builder
+WORKDIR /build
+COPY modules/agent-factory/task-agents/cyber/package.json modules/agent-factory/task-agents/cyber/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY modules/agent-factory/task-agents/cyber/src/ ./src/
+COPY modules/agent-factory/task-agents/cyber/build.mjs ./
+COPY modules/tools/task-sdk/ /task-sdk/
+RUN ADP_TASK_SDK_SOURCE=/task-sdk npm run build
+
+FROM ${WORKER_BASE_IMAGE}
+USER root
+COPY --from=cyber-task-builder --chown=agent:agent /build/dist/driver.mjs /build/dist/archive-progress.mjs /app/task-agents/cyber/dist/
+COPY --chown=agent:agent modules/domain-apps/cyber/agent/skills/ /app/task-agents/cyber/skills/
+COPY --chown=agent:agent modules/domain-apps/cyber/agent/personas/ /app/personas/
+COPY --chown=agent:agent modules/domain-apps/cyber/agent/skills/ /app/skills/
+COPY --chown=agent:agent modules/domain-apps/cyber/tools/skills/ /app/skills/
+COPY --chown=agent:agent modules/domain-apps/cyber/tools/cyber_tools/ /app/cyber_tools/
+COPY modules/domain-apps/cyber/agent/requirements.txt /tmp/cyber-requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/cyber-requirements.txt \
+    && rm /tmp/cyber-requirements.txt \
+    && test -f /app/task-agents/cyber/dist/driver.mjs \
+    && test -f /app/skills/url-analysis/SKILL.md
+USER agent

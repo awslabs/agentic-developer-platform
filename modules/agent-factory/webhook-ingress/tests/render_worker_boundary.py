@@ -13,6 +13,7 @@ values = {
  # App outputs are provider-independent inputs, like the fixture resource ARNs below.
  'local.domain_worker_browser_permissions': '[]',
  'local.domain_worker_artifact_resources': '["arn:aws:s3:::fixture-domain-artifacts/*"]',
+ 'local.domain_worker_tool_invoke_resources': '[]',
  'var.agent_authority_enabled': 'true', 'var.aws_region': '"us-east-1"', 'var.environment': '"dev"',
  'local.account_id': '"879318057152"', 'local.name_prefix': '"adp-dev"',
  'local.webhook_secrets_kms_key_arn': '"arn:aws:kms:us-east-1:879318057152:key/shared-secret-key"',

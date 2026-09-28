@@ -42,7 +42,7 @@ locals {
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/credential-materialize",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/GET/internal/v1/user-credentials",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/provenance*",
-  ], var.task_tool_invoke_resources)
+  ], var.task_tool_invoke_resources, local.domain_worker_tool_invoke_resources)
   # Fixed queue-consumer permissions are scoped to this deployment input queue.
   # Run authorization and archives continue to use the authenticated gateway.
   agent_authority_boundary_allow = concat([

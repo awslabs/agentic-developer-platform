@@ -22,12 +22,6 @@ data:
 
   # Environment (dev, test, prod)
   BG_ENVIRONMENT: "__ENVIRONMENT__"
-  # Cyber admission owns sample authorization and broker-only queue delivery.
-  CYBER_SAMPLE_BUCKET: "adp-__ENVIRONMENT__-chat-artifacts-__CYBER_ACCOUNT_ID__"
-  CYBER_TRIAGE_QUEUE: "https://sqs.__AWS_REGION__.amazonaws.com/__CYBER_ACCOUNT_ID__/adp-__ENVIRONMENT__-cyber-triage-tasks.fifo"
-  CYBER_STATIC_QUEUE: "https://sqs.__AWS_REGION__.amazonaws.com/__CYBER_ACCOUNT_ID__/adp-__ENVIRONMENT__-cyber-static-tasks.fifo"
-  CYBER_RESULTS_TABLE: "adp-__ENVIRONMENT__-cyber-analysis-results"
-
 
   # RDS Database Configuration - IAM authentication (passwordless)
   BG_RDS_IAM_AUTH: "true"

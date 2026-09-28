@@ -13,3 +13,14 @@ settings = {
   browser_broker_enabled  = "false"
   tools_endpoint          = "https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/tools/cyber"
 }
+
+tool_invoke_resources = [
+  "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/POST/tools/cyber",
+  "arn:aws:execute-api:us-east-1:879318057152:59o2rakc50/dev/POST/tools/cyber/common-crawl"
+]
+
+task_persona_tools = [
+  "cyber.triage", "cyber.static", "cyber.result",
+  "cyber.common_crawl_scan", "cyber.common_crawl_result", "cyber.common_crawl_read",
+  "cyber.browser_start", "cyber.browser_step", "cyber.browser_inspect", "cyber.browser_close"
+]

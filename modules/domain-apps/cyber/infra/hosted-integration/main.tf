@@ -42,6 +42,31 @@ variable "images" {
     error_message = "Only the Cyber browser image may be supplied, at an immutable digest."
   }
 }
+variable "worker_image_digest" {
+  description = "Digest published by Cyber's hosted-worker build script after this root creates the ECR repository"
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.worker_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.worker_image_digest))
+    error_message = "Supply the published hosted-worker OCI digest."
+  }
+}
+variable "task_persona_tools" {
+  description = "Cyber Task tools published to the shared gateway only when this integration is enabled"
+  type        = list(string)
+  default = [
+    "cyber.triage", "cyber.static", "cyber.result",
+  ]
+}
+variable "tool_invoke_resources" {
+  description = "Exact AWS_IAM Cyber tool routes admitted into the shared protected worker boundary"
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for arn in var.tool_invoke_resources : can(regex("^arn:aws:execute-api:[a-z0-9-]+:[0-9]{12}:[a-z0-9]+/[A-Za-z0-9_-]+/POST/tools/cyber(/[a-z0-9_-]+)*$", arn))])
+    error_message = "Cyber tool grants require exact stage-qualified POST /tools/cyber routes."
+  }
+}
 
 provider "aws" {
   region              = var.aws_region
@@ -55,6 +80,23 @@ provider "aws" {
       ManagedBy   = "terraform"
     }
   }
+}
+
+resource "aws_ecr_repository" "hosted_worker" {
+  name                 = "adp-cyber-hosted-worker"
+  image_tag_mutability = "IMMUTABLE"
+  image_scanning_configuration { scan_on_push = true }
+  encryption_configuration { encryption_type = "AES256" }
+}
+
+resource "aws_ecr_lifecycle_policy" "hosted_worker" {
+  repository = aws_ecr_repository.hosted_worker.name
+  policy = jsonencode({ rules = [{
+    rulePriority = 1
+    description  = "Expire untagged hosted worker images after 7 days"
+    selection    = { tagStatus = "untagged", countType = "sinceImagePushed", countUnit = "days", countNumber = 7 }
+    action       = { type = "expire" }
+  }] })
 }
 
 data "aws_caller_identity" "current" {}
@@ -100,6 +142,18 @@ resource "terraform_data" "browser_image_guard" {
   }
 }
 
+resource "terraform_data" "tool_route_guard" {
+  input = var.tool_invoke_resources
+  lifecycle {
+    precondition {
+      condition = alltrue([
+        for arn in var.tool_invoke_resources : startswith(arn, "arn:aws:execute-api:${var.aws_region}:${var.account_id}:")
+      ]) && (length(var.tool_invoke_resources) == 0 || lookup(var.settings, "tools_endpoint", "") != "")
+      error_message = "Cyber tool grants must target the selected account and region with a configured Cyber tools endpoint."
+    }
+  }
+}
+
 module "cyber" {
   source                  = "../platform-integration"
   name_prefix             = "adp-${var.environment}"
@@ -125,3 +179,10 @@ output "worker_environment" { value = module.cyber.worker_environment }
 output "worker_artifact_resources" { value = module.cyber.worker_artifact_resources }
 output "worker_egress" { value = module.cyber.worker_egress }
 output "worker_browser_permissions" { value = module.cyber.worker_browser_permissions }
+output "worker_image" {
+  value = var.worker_image_digest == "" ? "" : "${aws_ecr_repository.hosted_worker.repository_url}@${var.worker_image_digest}"
+}
+output "worker_task_persona_tools" {
+  value = lookup(var.settings, "tools_endpoint", "") == "" ? {} : { "agent-task-cyber" = var.task_persona_tools }
+}
+output "worker_tool_invoke_resources" { value = var.tool_invoke_resources }

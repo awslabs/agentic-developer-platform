@@ -50,7 +50,7 @@ resource "aws_iam_role_policy" "cyber_job_broker" {
 }
 
 output "cyber_gateway_config" {
-  description = "Merge into bedrockgateway-config before rolling the new workers. No credentials."
+  description = "Cyber-owned gateway settings, applied by scripts/configure-gateway.sh. No credentials."
   value = {
     CYBER_SAMPLE_BUCKET = local.cyber_sample_bucket
     CYBER_TRIAGE_QUEUE  = aws_sqs_queue.cyber_triage_tasks.url

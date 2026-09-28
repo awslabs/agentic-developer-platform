@@ -72,7 +72,7 @@ locals {
   eks_cluster_name       = coalesce(var.eks_cluster_name, "adp-${var.environment}-eks-cluster")
   account_id             = data.aws_caller_identity.current.account_id
   lambda_artifact_bucket = var.lambda_artifact_bucket != "" ? var.lambda_artifact_bucket : "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
-  agent_image            = var.agent_image
+  agent_image            = length(var.enabled_domain_integrations) == 0 ? var.agent_image : local.domain_worker_image
 
   # OIDC issuer URL from the EKS cluster — e.g.
   #   https://oidc.eks.us-east-1.amazonaws.com/id/ABC123...

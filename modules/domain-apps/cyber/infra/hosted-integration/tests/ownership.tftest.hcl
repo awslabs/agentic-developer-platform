@@ -68,3 +68,23 @@ run "broker_refuses_missing_selected_account_image" {
   variables { images = {} }
   expect_failures = [terraform_data.browser_image_guard]
 }
+
+run "hosted_task_routes_come_from_cyber_state" {
+  command = plan
+  variables {
+    settings = {
+      browser_mode           = "native"
+      browser_broker_enabled = "false"
+      tools_endpoint         = "https://example.execute-api.us-east-1.amazonaws.com/dev/tools/cyber"
+    }
+    tool_invoke_resources = ["arn:aws:execute-api:us-east-1:111122223333:example/dev/POST/tools/cyber"]
+  }
+  assert {
+    condition = (
+      output.worker_environment.ADP_OPTIONAL_TASK_AGENTS == "cyber" &&
+      length(output.worker_task_persona_tools["agent-task-cyber"]) == 3 &&
+      length(output.worker_tool_invoke_resources) == 1
+    )
+    error_message = "Cyber must publish its opt-in Task registration and exact route from its own state."
+  }
+}

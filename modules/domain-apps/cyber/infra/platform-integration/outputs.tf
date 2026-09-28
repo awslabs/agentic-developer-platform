@@ -12,6 +12,7 @@ output "worker_environment" {
   value = merge({
     URL_ANALYSIS_EVIDENCE_BUCKET = "adp-${var.environment}-url-analysis-evidence-v2-${var.account_id}"
     URL_ANALYSIS_BROWSER_MODE    = var.browser_mode
+    ADP_OPTIONAL_TASK_AGENTS     = "cyber"
     }, var.browser_mode == "broker" ? {
     URL_ANALYSIS_BROWSER_BROKER = "http://url-analysis-browser-broker.${var.namespace}.svc.cluster.local:8765"
     } : {}, local.cc_enabled ? {
