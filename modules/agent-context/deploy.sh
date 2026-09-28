@@ -253,6 +253,10 @@ if [ -z "${CONTEXT_MCP_IMAGE:-}" ] || [ "${CONTEXT_MCP_IMAGE}" = "python:3.11-sl
     echo "  Run the images-build workflow first to build the context-mcp image."
   fi
 fi
+python3 "${SCRIPT_DIR}/scripts/ensure-zoekt-auth.py" --namespace "${NAMESPACE}"
+export ZOEKT_IMAGE
+# Keep the private backend and its authenticated Door client on the same protocol.
+template_file "${SCRIPT_DIR}/manifests/zoekt.yaml" | kubectl apply -f -
 export CONTEXT_MCP_IMAGE NAMESPACE SERVICE_ACCOUNT
 template_file "${SCRIPT_DIR}/manifests/context-mcp.yaml" | kubectl apply -f -
 echo "  Context MCP Server deployed (image: ${CONTEXT_MCP_IMAGE})"

@@ -72,6 +72,14 @@ class TestParseAssumedRoleArn:
 class TestAgentEntryToTokenContext:
     """Tests for agent_entry_to_token_context function."""
 
+    def test_display_name_cannot_impersonate_a_human_or_change_identity(self):
+        entry = {"agent_id": "registry-id", "agent_name": "victim-human-id", "org_id": "attacker-org", "team_id": ""}
+        before = agent_entry_to_token_context(entry)
+        entry["agent_name"] = "victim-cognito-sub"
+        after = agent_entry_to_token_context(entry)
+        assert before.user_id == after.user_id == "iam-agent:registry-id"
+        assert after.account_type == "service"
+
     def test_converts_entry_to_token_context(self):
         """Test converting agent registry entry to TokenContext."""
         entry: AgentRegistryEntry = {
@@ -96,7 +104,7 @@ class TestAgentEntryToTokenContext:
 
         context = agent_entry_to_token_context(entry)
 
-        assert context.user_id == "test-agent"
+        assert context.user_id == "iam-agent:00000000-0000-0000-0000-000000000001"
         assert context.org_id == "test-org"
         assert context.team_id == "test-team"
         assert context.agent_registry_id == "00000000-0000-0000-0000-000000000001"
@@ -149,6 +157,7 @@ class TestAgentEntryToTokenContext:
         rather than a KeyError that would 500 the whole auth path.
         """
         entry = {
+            "agent_id": "legacy-id",
             "agent_name": "legacy-agent",
             "org_id": "test-org",
             "team_id": "test-team",
@@ -158,7 +167,7 @@ class TestAgentEntryToTokenContext:
         context = agent_entry_to_token_context(entry)  # type: ignore[arg-type]
 
         assert context.credential_scopes == []
-        assert context.agent_registry_id == ""
+        assert context.agent_registry_id == "legacy-id"
 
 
 class TestAgentRegistryService:
@@ -391,7 +400,7 @@ class TestExtractIamIdentityFromHeaders:
             context = extract_iam_identity_from_headers(request)
 
             assert context is not None
-            assert context.user_id == "test-agent"
+            assert context.user_id == "iam-agent:00000000-0000-0000-0000-000000000001"
             assert context.org_id == "test-org"
             assert context.auth_source == "iam"
 
@@ -506,7 +515,7 @@ class TestExtractIamIdentityFromHeaders:
             assert context.org_id != "customer-tenant-123"
             # #747 preserved: attribution still follows the header.
             assert context.attributed_org_id == "customer-tenant-123"
-            assert context.user_id == "scaledjob-worker"
+            assert context.user_id == "iam-agent:00000000-0000-0000-0000-000000000001"
 
     def test_internal_scope_without_header_attributes_to_authenticated_org(self):
         """Issue #4132: absent the header, attributed_org_id defaults to org_id.

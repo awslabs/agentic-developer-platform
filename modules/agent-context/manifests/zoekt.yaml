@@ -83,13 +83,14 @@ spec:
           privileged: false
           capabilities:
             drop: ["ALL"]
-        command: ["zoekt-webserver"]
-        args:
-          - "-index"
-          - "/data/index"
-          - "-listen"
-          - ":6070"
-          - "-rpc"
+        # Raw Zoekt listens only on pod loopback. Only the Door has this key.
+        command: ["zoekt-auth-proxy"]
+        env:
+        - name: ZOEKT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: zoekt-backend-auth
+              key: api-key
         ports:
         - containerPort: 6070
           name: http
@@ -106,7 +107,7 @@ spec:
             memory: "4Gi"
         readinessProbe:
           httpGet:
-            path: /
+            path: /healthz
             port: 6070
           initialDelaySeconds: 15
           periodSeconds: 10
@@ -114,7 +115,7 @@ spec:
           failureThreshold: 3
         livenessProbe:
           httpGet:
-            path: /
+            path: /healthz
             port: 6070
           initialDelaySeconds: 10
           periodSeconds: 30
@@ -210,3 +211,24 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: zoekt-webserver
+
+---
+# Defense in depth; authentication remains mandatory even without CNI enforcement.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zoekt-door-only
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: zoekt-webserver
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: context-mcp
+    ports:
+    - protocol: TCP
+      port: 6070

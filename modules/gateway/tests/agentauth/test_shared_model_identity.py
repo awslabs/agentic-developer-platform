@@ -62,7 +62,8 @@ async def shared(session, assignment, model_path, monkeypatch):
 
 def context():
     return TokenContext(
-        user_id="scaledjob-worker",
+        user_id="iam-agent:scaledjob-worker",
+        agent_registry_id="scaledjob-worker",
         org_id="__platform__",
         team_id="",
         department_id="",

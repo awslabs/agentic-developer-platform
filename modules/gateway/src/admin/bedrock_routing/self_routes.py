@@ -130,6 +130,8 @@ async def _caller_id(db: AsyncSession, current_user: TokenContext) -> str:
     """
     from src.proxy.bedrock_principal import routing_user
 
+    if current_user.account_type != "human":
+        raise HTTPException(status_code=403, detail="Human account required")
     user = await routing_user(db, current_user.user_id)
     return user.id if user else current_user.user_id
 

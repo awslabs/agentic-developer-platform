@@ -3,6 +3,8 @@
 import hashlib
 import hmac
 
+import pytest
+
 from common.signature import verify_github_signature
 
 
@@ -65,3 +67,19 @@ class TestVerifyGithubSignature:
         secret = "secret"
         signature = _make_signature(payload, secret)
         assert verify_github_signature(payload, signature, secret) is True
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "PLACEHOLDER_REPLACE_WITH_ACTUAL_SECRET",
+        "placeholder-known-value",
+        " ROTATE-ME-BEFORE-EXPOSURE",
+        " ",
+    ],
+)
+def test_public_bootstrap_values_never_authenticate(secret):
+    payload = b'{"action":"opened"}'
+    assert not verify_github_signature(
+        payload, _make_signature(payload, secret), secret
+    )

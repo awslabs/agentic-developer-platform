@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
@@ -105,6 +105,19 @@ describe('memory in hosted shallow clones', () => {
     expect(await readComponentContext('general')).toEqual(['new', 'middle', 'old']);
     configureMemory({ cwd: work, issueNumber: '42', agentType: 'reviewer', log: logs, maxFilesPerFolder: 5 });
     expect(await readComponentContext('general')).toEqual(['new', 'middle', 'old', 'prior knowledge', 'legacy']);
+  });
+
+  it('reads shell metacharacters and quoted filenames as literal Git paths', async () => {
+    seedMemory();
+    const names = ['$(touch memory-injected).md', '`touch memory-injected`.md', 'quote" and space.md', 'line\nbreak.md'];
+    for (const [index, name] of names.entries()) {
+      writeFileSync(path.join(seed, 'agent_context/components/general', name), `literal-${index}`);
+    }
+    git(seed, 'add', '.');
+    git(seed, 'commit', '-m', 'literal filenames');
+    git(seed, 'push', 'origin', 'adp');
+    expect(await readComponentContext('general')).toEqual(expect.arrayContaining(names.map((_, i) => `literal-${i}`)));
+    expect(existsSync(path.join(work, 'memory-injected'))).toBe(false);
   });
 
   it('loads an existing orphan branch without attempting to recreate it', async () => {

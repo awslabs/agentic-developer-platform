@@ -1,0 +1,9 @@
+{
+  "image": "security28/zoekt:authenticated",
+  "missing_key_refuses_start": true,
+  "unauthenticated_search": 401,
+  "wrong_key": 401,
+  "authenticated_synthetic_search": 200,
+  "raw_server_not_exposed": true,
+  "nonroot_readonly": true
+}

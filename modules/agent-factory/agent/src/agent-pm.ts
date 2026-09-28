@@ -1,3 +1,4 @@
+import { hasRepositoryWritePermission } from './utils/comment-authority';
 /**
  * @agent-pm - AIDLC Workflow Orchestrator
  *
@@ -1798,7 +1799,9 @@ async function pollForReassessmentChoice(): Promise<{ choice: UserReassessmentCh
           // Try to parse as a reassessment command
           const choice = parseReassessmentResponse(comment.body);
 
-          if (choice.action !== 'unknown') {
+          if (choice.action !== 'unknown' && await hasRepositoryWritePermission(
+            REPO_OWNER, REPO_NAME, comment.author, process.env.GITHUB_TOKEN || GITHUB_TOKEN,
+          )) {
             log('INFO', `User choice detected: ${choice.action}`);
             console.log(`User choice: ${choice.action}`);
             return { choice, comment: comment.body };

@@ -469,3 +469,11 @@ def test_pre_signup_admin_create_user_still_passes_through_under_platform_mode(p
         result = pre_signup.handler(event, None)
     assert result is event
     reader.check_platform_membership.assert_not_called()
+
+
+def test_checked_in_dev_config_requires_platform_membership():
+    import re
+
+    config = (_GATEWAY_ROOT.parents[1] / "environments/dev/modules/gateway.tfvars").read_text()
+    assert re.search(r'^github_auth_allowlist_mode\s*=\s*"platform"\s*$', config, re.M)
+    assert re.search(r"^github_auth_allow_open_signup\s*=\s*false\s*$", config, re.M)

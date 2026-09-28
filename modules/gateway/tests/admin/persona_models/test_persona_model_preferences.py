@@ -2745,7 +2745,7 @@ async def test_cross_namespace_misbinding_is_refused_end_to_end(engine):
 
 
 class TestRealIamAgentRegistryAuth:
-    """Prove Agent Registry / SigV4 auth stamps ``agent_registry`` and uses ``agent_name``.
+    """Prove Agent Registry / SigV4 auth stamps ``agent_registry`` and uses the immutable agent ID.
 
     The request path is: X-Caller-Identity header → parse_assumed_role_arn →
     registry lookup → agent_entry_to_token_context → _stamp_trusted_alias_source.
@@ -2775,6 +2775,7 @@ class TestRealIamAgentRegistryAuth:
         """After the real get_current_user IAM path, canonical_alias_source is agent_registry."""
         entry = {
             "agent_name": "my-worker-agent",
+            "agent_id": "worker-immutable-id",
             "org_id": TEST_ORG_A,
             "team_id": "team-1",
             "scope": "",
@@ -2795,7 +2796,8 @@ class TestRealIamAgentRegistryAuth:
 
         assert ctx.account_type == "service"
         assert ctx.auth_source == "iam"
-        assert ctx.user_id == "my-worker-agent"
+        assert ctx.user_id == "iam-agent:worker-immutable-id"
+        assert ctx.agent_registry_id == "worker-immutable-id"
         assert ctx.canonical_alias_source == "agent_registry"
 
     @pytest.mark.asyncio

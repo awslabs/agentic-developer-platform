@@ -79,6 +79,12 @@ spec:
               name: agent-context-secrets
               key: DATABASE_URL
               optional: true
+        # Private backend credential; never shared with Door callers.
+        - name: ZOEKT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: zoekt-backend-auth
+              key: api-key
         # Shared secret every Door caller must present (#4073 finding #8).
         #
         # Reuses the gateway internal-api-key already bridged into this

@@ -27,6 +27,34 @@ from door.search_backend import (
 )
 
 
+@pytest.fixture(autouse=True)
+def configured_backend_key(monkeypatch):
+    monkeypatch.setenv("ZOEKT_API_KEY", "test-key-" * 8)
+
+
+@pytest.mark.asyncio
+async def test_missing_backend_key_never_sends_a_request(monkeypatch):
+    monkeypatch.delenv("ZOEKT_API_KEY", raising=False)
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post("http://zoekt:6070/api/search").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        assert await ZoektSearchBackend("http://zoekt:6070").search("private") == []
+        assert not route.called
+
+
+@pytest.mark.asyncio
+async def test_backend_credential_is_sent_only_in_authorization_header():
+    with respx.mock as router:
+        route = router.post("http://zoekt:6070/api/search").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        await ZoektSearchBackend("http://zoekt:6070").search("needle")
+        request = route.calls[0].request
+        assert request.headers["Authorization"] == "Bearer " + "test-key-" * 8
+        assert b"test-key" not in request.content
+
+
 # ===========================================================================
 # Z1: Response parsing
 # ===========================================================================

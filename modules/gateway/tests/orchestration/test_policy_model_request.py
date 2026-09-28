@@ -80,7 +80,8 @@ async def invoke(
 ):
     body = b'{ "model": "anthropic.claude-sonnet-4-6", "max_tokens": 16, "messages": [{"role":"user","content":"hello"}] }' if body is None else body
     context = context or TokenContext(
-        user_id="authority-worker",
+        user_id="iam-agent:authority-worker",
+        agent_registry_id="authority-worker",
         org_id="__platform__",
         team_id="",
         department_id="",

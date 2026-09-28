@@ -7,6 +7,8 @@
  * Claude decides which skills to use based on the task.
  */
 /// <reference types="node" />
+import { randomUUID } from 'crypto';
+import { hasRepositoryWritePermission, parsePlanApproval } from './utils/comment-authority';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
@@ -109,7 +111,7 @@ async function getLatestComments(count: number = 5): Promise<Array<{ body: strin
   }));
 }
 
-async function waitForApproval(): Promise<{ approved: boolean; feedback: string }> {
+async function waitForApproval(requestId: string): Promise<{ approved: boolean; feedback: string }> {
   console.log('\n⏳ Waiting for /approve or /reject on issue...');
   const waitStartTime = new Date().toISOString();
   const botAuthors = ['github-actions[bot]', 'gateway-dev-agent', 'BedrockGateway Agent', 'MCP Onboard Agent'];
@@ -122,16 +124,15 @@ async function waitForApproval(): Promise<{ approved: boolean; feedback: string 
       // Skip comments from the bot itself
       if (botAuthors.some(bot => comment.author.toLowerCase().includes(bot.toLowerCase()))) continue;
 
-      const lower = comment.body.toLowerCase().trim();
-      if (lower.includes('/approve') || lower === 'approved') {
-        console.log(`✅ Approval received from ${comment.author}!`);
-        return { approved: true, feedback: '' };
-      }
-      if (lower.includes('/reject')) {
-        const feedback = comment.body.replace(/\/reject\s*/i, '').trim();
-        console.log(`❌ Rejected by ${comment.author}: ${feedback.substring(0, 100)}`);
-        return { approved: false, feedback };
-      }
+      const decision = parsePlanApproval(comment.body, requestId);
+      if (!decision) continue;
+      const token = process.env.GITHUB_TOKEN || GITHUB_TOKEN;
+      if (!await hasRepositoryWritePermission(REPO_OWNER, REPO_NAME, comment.author, token)) continue;
+      const target = (process.env.TARGET_REPO || `${REPO_OWNER}/${REPO_NAME}`).split('/');
+      if (target.length !== 2) continue;
+      if (target.join('/') !== `${REPO_OWNER}/${REPO_NAME}` &&
+          !await hasRepositoryWritePermission(target[0], target[1], comment.author, token)) continue;
+      return decision;
     }
     console.log(`   Poll ${i + 1}/60 — waiting...`);
     await new Promise(r => setTimeout(r, 30000));
@@ -396,14 +397,15 @@ IMPORTANT: Actually read the skill files and codebase during planning. Use Read,
   const planText = planMatch ? planMatch[1].trim() : planResponse.substring(0, 2000);
 
   // Post plan for approval
-  const planComment = `## 🤖 Implementation Plan\n\n${planText}\n\n---\n**To approve:** Comment \`/approve\`\n**To reject:** Comment \`/reject <feedback>\``;
+  const approvalRequestId = randomUUID();
+  const planComment = `## 🤖 Implementation Plan\n\n${planText}\n\n---\n**To approve:** Comment \`/approve ${approvalRequestId}\`\n**To reject:** Comment \`/reject ${approvalRequestId} <feedback>\``;
   await postComment(planComment);
   console.log('\n📋 Plan posted. Waiting for approval...');
 
   // ========== PHASE 2: APPROVAL ==========
   liveComment.transition(0, 'complete', 'Plan posted');
   liveComment.transition(1, 'in_progress', 'Waiting for approval');
-  const approval = await waitForApproval();
+  const approval = await waitForApproval(approvalRequestId);
   if (!approval.approved) {
     liveComment.transition(1, 'complete');
     const reason = approval.feedback === 'Timeout waiting for approval' ? 'Timed out' : 'Rejected';

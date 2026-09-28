@@ -106,7 +106,8 @@ async def invoke(
     """
     body = responses_body() if body is None else body
     context = TokenContext(
-        user_id="authority-worker",
+        user_id="iam-agent:authority-worker",
+        agent_registry_id="authority-worker",
         org_id="__platform__",
         team_id="",
         department_id="",

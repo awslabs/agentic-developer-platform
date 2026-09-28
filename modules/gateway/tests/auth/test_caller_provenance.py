@@ -235,7 +235,7 @@ class TestConsumerTwoMiddleware:
             context = extract_iam_identity_from_headers(_request(_verified_headers()))
 
         assert context is not None
-        assert context.user_id == "scaledjob-worker"
+        assert context.user_id == "iam-agent:scaledjob-worker"
         assert context.auth_source == "iam"
 
 

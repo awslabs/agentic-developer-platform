@@ -72,7 +72,11 @@ def _resolve_webhook_secret() -> str:
     the real webhook secret (fresh-deploy timing issue).
     """
     global _webhook_secret
-    if _webhook_secret is not None and not _webhook_secret.startswith("PLACEHOLDER"):
+    if (
+        _webhook_secret
+        and _webhook_secret.strip()
+        and not _webhook_secret.strip().upper().startswith(("PLACEHOLDER", "ROTATE-ME"))
+    ):
         return _webhook_secret
 
     if WEBHOOK_SECRET_ARN:
@@ -84,6 +88,14 @@ def _resolve_webhook_secret() -> str:
         # Fallback for local dev/testing: allow plaintext env var
         _webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
 
+    if (
+        not _webhook_secret
+        or not _webhook_secret.strip()
+        or _webhook_secret.strip().upper().startswith(("PLACEHOLDER", "ROTATE-ME"))
+    ):
+        _webhook_secret = None
+        _get_secrets().clear_cache()
+        return ""
     return _webhook_secret
 
 

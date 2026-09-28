@@ -54,7 +54,8 @@ async def model_call(ctx, credential, monkeypatch):
     monkeypatch.setattr("src.agentauth.model_identity.quote_request", AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("0.01"))))
     monkeypatch.setattr("src.agentauth.model_identity.revalidate_quote", AsyncMock())
     token = TokenContext(
-        user_id="scaledjob-worker",
+        user_id="iam-agent:scaledjob-worker",
+        agent_registry_id="scaledjob-worker",
         org_id="__platform__",
         team_id="",
         department_id="",

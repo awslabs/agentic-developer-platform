@@ -166,7 +166,7 @@ async def test_valid_caller_reaches_real_handler_with_verified_context(scenario,
         assert context is None
     else:
         scenario.lookup.assert_called_once_with(ROLE_ARN)
-        assert context.user_id == "scaledjob-worker"
+        assert context.user_id == "iam-agent:scaledjob-worker"
         assert context.org_id == "__platform__" and context.team_id == "__agents__"
         assert context.auth_source == "iam" and context.scope == mode
         assert context.agent_registry_id == "scaledjob-worker"

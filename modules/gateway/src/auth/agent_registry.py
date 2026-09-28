@@ -274,8 +274,11 @@ def agent_entry_to_token_context(entry: AgentRegistryEntry) -> TokenContext:
     Returns:
         TokenContext for the agent
     """
+    if not entry.get("agent_id"):
+        raise ValueError("Registered service principal is missing its immutable ID")
     return TokenContext(
-        user_id=entry["agent_name"],
+        # Separate service principals from human IDs and mutable display names.
+        user_id=f"iam-agent:{entry['agent_id']}",
         org_id=entry["org_id"],
         team_id=entry["team_id"],
         department_id="",  # Agents don't have department_id

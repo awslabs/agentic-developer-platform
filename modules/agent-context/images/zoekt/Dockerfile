@@ -7,11 +7,13 @@ WORKDIR /src
 RUN tar -xzf /tmp/zoekt.tar.gz --strip-components=1 && rm /tmp/zoekt.tar.gz
 # Keep the serving/index format revision fixed; update the vulnerable modules.
 COPY go.mod go.sum ./
+COPY auth-proxy ./adp-auth-proxy
 ENV CGO_ENABLED=0
 RUN go mod download && go mod verify
 RUN go build -mod=readonly -trimpath \
     -ldflags '-X github.com/sourcegraph/zoekt.Version=153817f643cd-adp-security1' \
     -o /out/ ./cmd/zoekt-webserver ./cmd/zoekt-git-index ./cmd/zoekt
+RUN go test ./adp-auth-proxy && go build -trimpath -o /out/zoekt-auth-proxy ./adp-auth-proxy
 RUN mkdir -p /rootfs/data/index /rootfs/home/zoekt /rootfs/tmp /rootfs/etc && \
     chmod 1777 /rootfs/tmp && chown -R 100:101 /rootfs/data /rootfs/home/zoekt && \
     printf 'zoekt:x:100:101:Zoekt:/home/zoekt:/sbin/nologin\n' > /rootfs/etc/passwd && \
@@ -34,4 +36,4 @@ ENV PATH=/usr/local/bin DATA_DIR=/data/index
 USER 100:101
 WORKDIR /home/zoekt
 EXPOSE 6070
-CMD ["zoekt-webserver", "-index", "/data/index", "-pprof", "-rpc"]
+CMD ["zoekt-auth-proxy"]

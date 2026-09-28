@@ -19,7 +19,8 @@ from src.shared.schemas.auth import TokenContext
 @pytest.fixture
 def context():
     return TokenContext(
-        user_id="authority-worker",
+        user_id="iam-agent:authority-worker",
+        agent_registry_id="authority-worker",
         org_id="__platform__",
         team_id="",
         department_id="",
@@ -130,9 +131,11 @@ async def test_authoring_policy_refusal_precedes_body_consumption(context, runti
 
 
 async def test_legacy_worker_and_control_routes_keep_existing_auth(context, runtime):
-    context.user_id = "scaledjob-worker"
+    context.user_id = "iam-agent:scaledjob-worker"
+    context.agent_registry_id = "scaledjob-worker"
     assert (await call(context, []))[0][0]["status"] == 200
-    context.user_id = "authority-worker"
+    context.user_id = "iam-agent:authority-worker"
+    context.agent_registry_id = "authority-worker"
     assert (await call(context, [], path="/internal/v1/agent/status"))[0][0]["status"] == 200
     runtime.validate_flow.assert_not_awaited()
 

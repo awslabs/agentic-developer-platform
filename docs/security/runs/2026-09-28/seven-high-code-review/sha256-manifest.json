@@ -1,0 +1,8 @@
+{
+  "README.md": "e86a34d76c4db68761c6e5cf73c2673a26a8f355c899a83610cb8490fe4582c6",
+  "findings.json": "6fa68b16895b03c786fa65387311bff8d53db2557cfc6df0b3b54f7492e9051a",
+  "validation.json": "7db71ad7a9e82c6236893aacbc22935b11e97ef5b89a256b2443cba43d9a4c75",
+  "zoekt-image.json": "6f15c9edec3565a3c6bcde7035ca8d469096d9af6873dc0a50124e805e352e93",
+  "zoekt-index-compatibility.json": "cac5bf5a53e91505fe79884d494ad94c6b712dec88f95eb718556f2795a3f20e",
+  "zoekt-runtime-acceptance.json": "97e186f4150414ae045cf52e9ead0d409a3a32127ead70beeacab70c87dcc7da"
+}

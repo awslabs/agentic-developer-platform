@@ -257,10 +257,10 @@ class AgentModelIdentityMiddleware:
             await self.app(scope, receive, send)
             return
         context = scope.get("state", {}).get("token_context")
-        if context is not None and context.auth_source == "iam" and context.user_id == "scaledjob-worker":
+        if context is not None and context.auth_source == "iam" and context.agent_registry_id == "scaledjob-worker":
             await self._shared_worker(scope, receive, send, context)
             return
-        if context is None or context.auth_source != "iam" or context.user_id != "authority-worker":
+        if context is None or context.auth_source != "iam" or context.agent_registry_id != "authority-worker":
             await self.app(scope, receive, send)
             return
 

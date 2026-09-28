@@ -349,6 +349,7 @@ jobs:
           source scripts/_common.sh
           load_config "$(pwd)"
 
+          python3 scripts/ensure-zoekt-auth.py --namespace "${NAMESPACE}"
           export NAMESPACE SERVICE_ACCOUNT ZOEKT_IMAGE
           template_file manifests/zoekt.yaml | kubectl apply -f -
           echo "Zoekt webserver deployed (image: ${ZOEKT_IMAGE})"

@@ -19,3 +19,13 @@ release receipt; a successful build alone is not evidence of closure.
 The previous Alpine-only Critical remediation and its evidence remain recorded
 in `docs/security/runs/2026-09-27/zoekt-critical/`. This build also replaces the Go
 binaries to address remaining High findings; executable hashes therefore change.
+
+The serving command is now `zoekt-auth-proxy`. It requires `ZOEKT_API_KEY`,
+starts the raw webserver on `127.0.0.1:6071`, and exposes only authenticated
+`POST /api/search` on 6070. `/healthz` returns readiness without index content.
+The deployment creates `zoekt-backend-auth` once and mounts its key only into
+Zoekt and the Door; it is separate from the shared Door caller credential.
+Deploy both the new Zoekt image and the updated Door client together. Existing
+images lack the authentication proxy and cannot be used with this manifest.
+To rotate this key, coordinate updates of the Secret and both Deployments;
+a mismatched or missing key refuses searches instead of allowing anonymous access.
