@@ -1,7 +1,9 @@
 # Keep Terraform1.15.7 behavior while rebuilding its exact dependency graph.
 # Authenticated curl packages and licenses, built and tested in #6540.
 # This immutable artifact is a build input, not a deployable worker image.
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b AS curl-security
+ARG CURL_SECURITY_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:782f7587ec1a803231eb0fa38518975842d1748df09a6b20f179af1caedf823b
+ARG PYTHON314_EXPAT_IMAGE=879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9e6dd602c215e93c5e3cd489d4dbbd070d69ac7944caee65b0e46965bc49b881
+FROM ${CURL_SECURITY_IMAGE} AS curl-security
 
 FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS terraform-security
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
@@ -11,7 +13,12 @@ RUN tar -xzf /tmp/terraform.tar.gz --strip-components=1 -C /src && rm /tmp/terra
 COPY modules/agent-factory/agent-worker-image/terraform-security-dependencies.patch /tmp/security.patch
 RUN git apply --check /tmp/security.patch && git apply /tmp/security.patch \
     && sha256sum go.mod go.sum > /tmp/modules.sha256 \
-    && go mod download && go mod verify \
+    && (for attempt in 1 2 3; do \
+          if go mod download; then break; fi; \
+          [ "$attempt" -lt 3 ] || exit 1; \
+          sleep 5; \
+        done) \
+    && go mod verify \
     && go build -mod=readonly -p 2 -buildvcs=false -trimpath \
       -ldflags "-s -w -X github.com/hashicorp/terraform/version.dev=no" -o /out/terraform . \
     && sha256sum -c /tmp/modules.sha256
@@ -23,7 +30,7 @@ COPY --from=terraform-security /out/terraform /terraform
 # Exact CPython3.14.7 adapters with statically linked Expat2.8.5.
 # Build-only artifact, source and normal XML checks are committed in
 # platform/arc-runner/security/high-tools/Dockerfile.python314-expat.
-FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9e6dd602c215e93c5e3cd489d4dbbd070d69ac7944caee65b0e46965bc49b881 AS python314-expat
+FROM ${PYTHON314_EXPAT_IMAGE} AS python314-expat
 
 # AWS CLI's official 2.37.4 bundle embeds vulnerable Python 3.14.6.
 # Build the maintained portable-exe source distribution with fixed Python.

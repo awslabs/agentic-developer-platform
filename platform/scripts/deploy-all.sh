@@ -299,6 +299,14 @@ SOURCE_SHA=$(git -C "$ROOT_DIR" rev-parse HEAD) || fail "Cannot pin deployment t
 export IMAGE_TAG="$SOURCE_SHA"
 ok "Image tag for this deployment: $IMAGE_TAG"
 GATEWAY_IMAGE="${ADP_RELEASE_GATEWAY_IMAGE:-${REGISTRY}/adp-gateway:${IMAGE_TAG}}"
+GATEWAY_UPDATE_VAR_FILE="$ROOT_DIR/environments/$ENVIRONMENT/modules/gateway.tfvars"
+if [ "$UPDATE_MODE" = true ] && [ "$DEPLOY_GATEWAY" = true ]; then
+  GATEWAY_UPDATE_VAR_FILE=$(terraform_update_var_file \
+    "$GATEWAY_UPDATE_VAR_FILE" \
+    "${ADP_GATEWAY_UPDATE_TFVARS:-}" "$ACCOUNT_ID") \
+    || fail "Gateway update needs target-specific tfvars"
+  ok "Gateway update tfvars: $GATEWAY_UPDATE_VAR_FILE"
+fi
 
 # =============================================================================
 # Helper: refresh AWS credentials (cross-account / short-lived sessions)
@@ -806,7 +814,7 @@ else
     ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/wire-gateway-alb.sh" \
       || fail "Cannot discover existing gateway load balancers"
     gateway_alb_vars
-    terraform_update_apply "gateway" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" "${GATEWAY_ALB_ARGS[@]}"
+    terraform_update_apply "gateway" "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}"
   else
     terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
       -auto-approve
@@ -1278,7 +1286,7 @@ if [ "$DEPLOY_GATEWAY" = true ]; then
     echo "Re-applying gateway Terraform with ALB details to wire API Gateway VPC Link v2 and CloudFront..."
     cd "$ROOT_DIR/modules/gateway/infra"
     if [ "$UPDATE_MODE" = true ]; then
-      terraform_update_apply "gateway-alb-wire" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+      terraform_update_apply "gateway-alb-wire" "$GATEWAY_UPDATE_VAR_FILE" \
         -var "internal_alb_arn=$ALB_ARN" \
         -var "internal_alb_dns=$ALB_DNS" \
         -var "alb_security_group_ids=$ALB_SG_IDS" \
@@ -1391,7 +1399,7 @@ if [ "$DEPLOY_WEBHOOK" = true ]; then
     (
       cd "$ROOT_DIR/modules/gateway/infra"
       terraform_update_apply "gateway-worker-authority" \
-        "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+        "$GATEWAY_UPDATE_VAR_FILE" \
         '-target=module.orchestration_tick[0].aws_iam_role_policy.agent_authority'
     )
   fi
@@ -1643,8 +1651,8 @@ if [ "$UPDATE_MODE" = true ]; then
     step "Reconcile gateway after ALB/controller changes"
     cd "$ROOT_DIR/modules/gateway/infra"
     gateway_alb_vars
-    terraform_update_apply gateway-final "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" "${GATEWAY_ALB_ARGS[@]}"
-    UPGRADE_CHECK_ONLY=true terraform_update_apply gateway-final "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" "${GATEWAY_ALB_ARGS[@]}"
+    terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}"
+    UPGRADE_CHECK_ONLY=true terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}"
   fi
 fi
 

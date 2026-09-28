@@ -15,6 +15,21 @@ spec.loader.exec_module(network)
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_upgrade_tfvars_reject_foreign_account_before_plan(self):
+        helper = ROOT / "platform/scripts/terraform-update.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gateway.tfvars.json"
+            command = 'source "$1"; terraform_update_var_file "$2" "" 608380991969'
+            path.write_text('{"queue_url":"https://sqs.us-east-1.amazonaws.com/879318057152/queue"}')
+            rejected = subprocess.run(["bash", "-c", command, "test", str(helper), str(path)],
+                                      text=True, capture_output=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("different AWS account", rejected.stderr)
+            path.write_text('{"queue_url":"https://sqs.us-east-1.amazonaws.com/608380991969/queue"}')
+            accepted = subprocess.run(["bash", "-c", command, "test", str(helper), str(path)],
+                                      text=True, capture_output=True)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
     def test_tick_second_pass_runs_only_after_in_scope_gateway_and_refresh(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index('if [ "$DEPLOY_WEBHOOK" = true ]; then', source.index('# Step 9/12:'))
@@ -30,7 +45,8 @@ terraform_update_apply() { echo "terraform $1"; }
             with self.subTest(gateway=gateway, webhook=webhook):
                 env = dict(os.environ, ROOT_DIR=str(ROOT), DEPLOY_GATEWAY=str(gateway).lower(),
                            DEPLOY_WEBHOOK=str(webhook).lower(), UPDATE_MODE="true", CONFIRM_DESTRUCTIVE="false",
-                           SKIP_WEBHOOK_INGRESS="false", ENVIRONMENT="dev", AWS_REGION="us-east-1")
+                           SKIP_WEBHOOK_INGRESS="false", ENVIRONMENT="dev", AWS_REGION="us-east-1",
+                           GATEWAY_UPDATE_VAR_FILE="/tmp/gateway.tfvars.json")
                 result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 expected = ["webhook"] if webhook else []
@@ -93,6 +109,7 @@ curl() { echo '{"status":"healthy"}'; }
             calls = Path(tmp) / "calls"
             env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / "platform/scripts"),
                        UPDATE_MODE="true", DEPLOY_GATEWAY="true", DEPLOY_FACTORY="true", SKIP_FRONTEND="false", UPGRADE_RUN_DIR=tmp,
+                       GATEWAY_UPDATE_VAR_FILE="/tmp/gateway.tfvars.json",
                        ENVIRONMENT="test", AWS_REGION="us-east-1", CALLS=str(calls), AUDIT_FAIL=str(audit_fail).lower(),
                        CI_MODE=str(ci_mode).lower(), ADP_BEDROCK_VERIFY_DEFERRED=str(deferred).lower())
             result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)

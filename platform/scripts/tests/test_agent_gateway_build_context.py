@@ -95,11 +95,12 @@ if args[0] == 'login':
 elif args[0] == 'build':
     context = Path(args[-1]).resolve()
     dockerfile = Path(args[args.index('-f') + 1]).resolve() if '-f' in args else context / 'Dockerfile'
-    source_context = Path(os.environ['MODULE_ROOT']).resolve()
-    archived_context = (context.name == 'agent-factory' and context.parent.name == 'modules'
-                        and context.parent.parent.name.startswith('adp-local-image.')
-                        and context.parent.parent.parent == Path(os.environ['TMPDIR']).resolve())
-    assert context == source_context or archived_context, 'Unexpected Docker context'
+    archive_root = next((p for p in context.parents if p.name.startswith('adp-local-image.')
+                         and p.parent == Path(os.environ['TMPDIR']).resolve()), None)
+    root = archive_root or Path(os.environ['REPO_ROOT']).resolve()
+    relative = context.relative_to(root).as_posix()
+    assert relative in ('modules/agent-factory', 'platform/security/curl-8.22.0',
+                        'platform/arc-runner'), 'Unexpected Docker context'
     inputs = []
     stages = set()
     for line in dockerfile.read_text().splitlines():
@@ -116,9 +117,11 @@ elif args[0] == 'build':
                 path = context / source
                 assert path.exists(), 'Missing Docker COPY input: ' + source
                 inputs.append(source)
-    assert (context / 'rules/personas/developer.md').is_file(), 'Shared personas are missing'
+    if relative == 'modules/agent-factory':
+        assert (context / 'rules/personas/developer.md').is_file(), 'Shared personas are missing'
     with record.open('a') as out:
-        out.write(json.dumps({'build': args[args.index('-t') + 1], 'inputs': inputs}) + '\n')
+        out.write(json.dumps({'build': args[args.index('-t') + 1], 'inputs': inputs,
+                              'context': relative}) + '\n')
     if os.environ.get('BUILD_TEST_FAIL') == 'true':
         sys.exit(41)
 elif args[0] == 'push':
@@ -189,6 +192,10 @@ class AgentGatewayBuildTests(unittest.TestCase):
             helper = root / "platform/scripts/publish-shared-image.sh"
             helper.parent.mkdir(parents=True)
             shutil.copyfile(ROOT / "platform/scripts/publish-shared-image.sh", helper)
+            shutil.copytree(ROOT / "platform/security/curl-8.22.0",
+                            root / "platform/security/curl-8.22.0")
+            shutil.copytree(ROOT / "platform/arc-runner/security/high-tools",
+                            root / "platform/arc-runner/security/high-tools")
             for script in ("publish-local-image.sh", "resolve-ecr-image.py"):
                 shutil.copyfile(
                     ROOT / "platform/scripts" / script, helper.parent / script
@@ -235,14 +242,16 @@ elif sys.argv[1:3] == ['ecr','describe-images']:
                 "rm": """#!/usr/bin/env python3
 import os,shutil,sys
 from pathlib import Path
-if len(sys.argv)!=3 or sys.argv[1] not in ('-f','-rf'): sys.exit(97)
+if len(sys.argv)!=3 or sys.argv[1] not in ('-f','-rf'):
+ print('Unexpected rm arguments:',sys.argv,file=sys.stderr);sys.exit(97)
 p=Path(sys.argv[2]).resolve()
 if sys.argv[1]=='-rf' and p.parts[-4:]==('modules','agent-factory','security','stdlib'):
  base=p.parents[3]
  if base==Path(os.environ['REPO_ROOT']).resolve() or (base.name.startswith('adp-local-image.') and base.parent==Path(os.environ['TMPDIR']).resolve()):
   if p.exists(): shutil.rmtree(p)
   sys.exit(0)
-if p.parent!=Path(os.environ['TMPDIR']).resolve(): sys.exit(97)
+if p.parent!=Path(os.environ['TMPDIR']).resolve():
+ print('Unexpected rm path:',p,file=sys.stderr);sys.exit(97)
 if sys.argv[1]=='-rf':
  if not p.name.startswith('adp-local-image.'): sys.exit(97)
  shutil.rmtree(p)
@@ -304,8 +313,11 @@ shutil.copyfile(source,target)
     def assert_build(self, path):
         result, calls, image = self.execute(path)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(calls[0]["build"], image)
-        self.assertIn("rules/personas/", calls[0]["inputs"])
+        builds = [call for call in calls if "build" in call]
+        self.assertEqual(builds[-1]["build"], image)
+        self.assertIn("rules/personas/", builds[-1]["inputs"])
+        self.assertIn("platform/security/curl-8.22.0",
+                      [call["context"] for call in builds])
         self.assertIn({"push": image}, calls)
 
     def assert_failed_build_stops_push(self, path):

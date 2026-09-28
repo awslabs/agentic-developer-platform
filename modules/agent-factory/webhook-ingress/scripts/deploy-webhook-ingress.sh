@@ -86,6 +86,21 @@ if [ "$UPDATE_MODE" = true ]; then
   if [ "$DRY_RUN" = false ]; then
     case ",${UPGRADE_MODULES:-}," in *,webhook-ingress,*) ;; *) fail "--update requires existing webhook-ingress state" ;; esac
   fi
+  WEBHOOK_UPDATE_VAR_FILE="${ADP_WEBHOOK_UPDATE_TFVARS:-}"
+  if [ -z "$WEBHOOK_UPDATE_VAR_FILE" ]; then
+    for suffix in tfvars tfvars.json; do
+      candidate="$REPO_ROOT/environments/$ENVIRONMENT/modules/webhook-ingress.$suffix"
+      if [ -f "$candidate" ]; then
+        [ -z "$WEBHOOK_UPDATE_VAR_FILE" ] || fail "Multiple webhook update tfvars files; select one explicitly"
+        WEBHOOK_UPDATE_VAR_FILE="$candidate"
+      fi
+    done
+  fi
+  if [ -n "$WEBHOOK_UPDATE_VAR_FILE" ]; then
+    WEBHOOK_UPDATE_VAR_FILE=$(terraform_update_var_file "$WEBHOOK_UPDATE_VAR_FILE" \
+      "$WEBHOOK_UPDATE_VAR_FILE" "$ACCOUNT_ID") || fail "Webhook update needs target-specific tfvars"
+    ok "Webhook update tfvars: $WEBHOOK_UPDATE_VAR_FILE"
+  fi
 else
   IMAGE_TAG="${IMAGE_TAG:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
 fi
@@ -241,10 +256,14 @@ import_bootstrap_log_group() {
   warn "Bootstrap log group exists in AWS but not in state — importing (#4051)"
   local import_args=()
   if [ "$UPDATE_MODE" = true ]; then
+    import_args+=(-var-file=terraform.tfvars)
+    [ -z "$WEBHOOK_UPDATE_VAR_FILE" ] || import_args+=("-var-file=$WEBHOOK_UPDATE_VAR_FILE")
     import_args+=(-var-file="$UPGRADE_RUN_DIR/webhook-ingress.tfvars.json")
+    import_args+=(-var="environment=$ENVIRONMENT" -var="aws_region=$AWS_REGION")
+    terraform import "${import_args[@]}" aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
+  else
+    bash "$TF_WEBHOOK" import aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
   fi
-  bash "$TF_WEBHOOK" import ${import_args[@]+"${import_args[@]}"} \
-    aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
   ok "Imported aws_cloudwatch_log_group.agent_bootstrap"
 }
 
@@ -273,13 +292,8 @@ else
       [ -z "$INTERNAL_API_KEY_OVERRIDE" ] || TF_ARGS+=("$INTERNAL_API_KEY_OVERRIDE")
     fi
     if [ "$UPDATE_MODE" = true ]; then
-      # Match the fresh-deploy/CI overlay order while preserving the saved-plan
-      # upgrade gate and the discovered context's existing integration values.
       OVERLAY_ARGS=()
-      for suffix in tfvars tfvars.json; do
-        overlay="$REPO_ROOT/environments/$ENVIRONMENT/modules/webhook-ingress.$suffix"
-        [ ! -f "$overlay" ] || OVERLAY_ARGS+=("-var-file=$overlay")
-      done
+      [ -z "$WEBHOOK_UPDATE_VAR_FILE" ] || OVERLAY_ARGS+=("-var-file=$WEBHOOK_UPDATE_VAR_FILE")
       terraform_update_apply webhook-ingress terraform.tfvars ${OVERLAY_ARGS[@]+"${OVERLAY_ARGS[@]}"} "${TF_ARGS[@]}"
     else
       bash "$TF_WEBHOOK" apply "${TF_ARGS[@]}" -input=false -auto-approve

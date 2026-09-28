@@ -69,6 +69,8 @@ class LocalPublicationTests(unittest.TestCase):
             self.root,
             self.root / "modules/gateway",
             self.root / "modules/agent-factory",
+            self.root / "platform/security/curl-8.22.0",
+            self.root / "platform/arc-runner",
         ):
             context.mkdir(parents=True, exist_ok=True)
             (context / "source-marker").write_text("committed input")
@@ -168,11 +170,16 @@ class LocalPublicationTests(unittest.TestCase):
                     for c in calls
                     if c["tool"] == "docker" and c["args"][0] == "build"
                 ]
-                self.assertEqual(len(builds), 1)
-                self.assertEqual(builds[0]["marker"], "committed input")
-                self.assertNotIn("--no-cache", builds[0]["args"])
-                self.assertNotIn("--pull", builds[0]["args"])
-                self.assertNotIn(str(self.root), builds[0]["context"])
+                self.assertEqual(len(builds), {
+                    "adp-gateway": 1,
+                    "adp-agent-gateway": 2,
+                    "adp-chat-agent": 1,
+                    "adp-agent-runtime": 3,
+                }[repo])
+                self.assertTrue(all(build["marker"] == "committed input" for build in builds))
+                self.assertNotIn("--no-cache", builds[-1]["args"])
+                self.assertNotIn("--pull", builds[-1]["args"])
+                self.assertTrue(all(str(self.root) not in build["context"] for build in builds))
                 pushes = [
                     c["args"]
                     for c in calls
