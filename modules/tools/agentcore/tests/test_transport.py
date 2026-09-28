@@ -375,3 +375,24 @@ def test_non_cyber_missing_grant_refuses_before_any_provider(transport, tool, pa
         invoke(transport, tool, payload)
     assert error.value.status_code == 403
     assert not transport.provider.calls and not transport.browser_calls
+
+
+def test_search_cleanup_fence_after_claim_prevents_paid_work(transport, monkeypatch):
+    from adp_tools.storage import task_partition
+    calls = []
+
+    def search(payload, *, before_search):
+        # Cleanup racing with MCP discovery must still fence the paid query.
+        transport.dynamodb.update_item(
+            TableName="cyber-operations",
+            Key=serialize({"event_id": task_partition(transport.verified.identity.task_id), "arrived_at": "META"}),
+            UpdateExpression="SET cyber_closed_attempt = :attempt",
+            ExpressionAttributeValues=serialize({":attempt": transport.verified.identity.runtime_attempt_id}),
+        )
+        before_search()
+        calls.append("paid")
+
+    monkeypatch.setattr(websearch, "search", search)
+    with pytest.raises(HTTPException) as error:
+        invoke(transport, "websearch.search", {"query": "site"})
+    assert error.value.status_code == 409 and calls == []

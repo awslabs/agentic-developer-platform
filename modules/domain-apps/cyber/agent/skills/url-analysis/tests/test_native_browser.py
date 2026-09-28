@@ -139,7 +139,7 @@ def test_continuity_across_cli_processes_and_idempotent_close(site, monkeypatch)
     original_popen = subprocess.Popen
 
     def spawn(command, **kwargs):
-        return original_popen([command[0], str(fixture), *command[2:]], **kwargs)
+        return original_popen([command[0], str(fixture), *command[3:]], **kwargs)
 
     monkeypatch.setattr(local_browser.subprocess, "Popen", spawn)
     packet = local_browser.investigation_request("start", {"url": url})
@@ -150,7 +150,7 @@ from pathlib import Path
 import local_browser
 local_browser._root=lambda:Path(sys.argv[1])
 print(json.dumps(local_browser.investigation_request(sys.argv[2],json.loads(sys.argv[3]))))"""
-    env = {**os.environ, "PYTHONPATH": str(Path(local_browser.__file__).parent)}
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(Path(__file__).resolve().parents[1]), str(Path(local_browser.__file__).resolve().parents[2])])}
 
     def request(operation, payload):
         command = [

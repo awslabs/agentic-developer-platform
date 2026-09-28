@@ -1,6 +1,5 @@
 """Source, workflow and offline state-ownership fixture (no AWS provisioning)."""
 
-import json
 import re
 import subprocess
 from pathlib import Path
@@ -53,12 +52,6 @@ def test_shared_workflows_are_manual_apply_only_and_keep_cyber_ci():
 
 
 def test_migration_fixture_cannot_delete_or_replace_existing_resources():
-    old = ["aws_dynamodb_table.operations[0]", "aws_api_gateway_resource.websearch[0]", "aws_api_gateway_resource.code_interpreter[0]",
-           "aws_sqs_queue.browser[0]", "aws_dynamodb_table.browser[0]"]
-    migrated = {address: {"change": {"actions": ["no-op"]}} for address in old}
-    migrated["aws_lambda_function.service[0]"] = {"change": {"actions": ["create"]}}
-    fixture = {"resource_changes": list(migrated.values())}
-    assert not any("delete" in row["change"]["actions"] for row in json.loads(json.dumps(fixture))["resource_changes"])
     guard = (SHARED / "infra/deploy.sh").read_text()
     assert guard.count('.change.actions | index("delete")') == 2
     assert "aws_api_gateway_deployment" not in "\n".join(path.read_text() for path in (SHARED / "infra").glob("*.tf"))

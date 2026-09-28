@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from typing import Self
 from urllib.parse import urlsplit
 
-from runtime_limits import LEASE_SECONDS, NAVIGATION_SECONDS
-from denylist import (
+from agentcore_tools.browser_runtime.runtime_limits import LEASE_SECONDS, NAVIGATION_SECONDS
+from agentcore_tools.browser_runtime.denylist import (
     REASON_SCHEME_NOT_ALLOWED,
     DenylistConfig,
     DenylistResult,

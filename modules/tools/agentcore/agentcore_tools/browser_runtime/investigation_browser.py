@@ -14,15 +14,15 @@ import time
 from concurrent.futures import Future
 from urllib.parse import urlsplit, urlunsplit
 
-from case_capture import recorded_browser
-from case_contract import redact_url, sanitize
-from runtime_limits import (
+from agentcore_tools.browser_runtime.case_capture import recorded_browser
+from agentcore_tools.browser_runtime.case_contract import redact_url, sanitize
+from agentcore_tools.browser_runtime.runtime_limits import (
     LEASE_SECONDS,
     NAVIGATION_SECONDS,
     STARTUP_SECONDS,
     ACTION_SECONDS,
 )
-from denylist import DenylistResult, canonical_hostname
+from agentcore_tools.browser_runtime.denylist import DenylistResult, canonical_hostname
 
 MAX_STEPS = 12
 MAX_SESSIONS = 4
@@ -62,7 +62,7 @@ def validate_start(payload):
     if parsed.scheme not in {"https", "http"} or not parsed.hostname:
         raise InvestigationError("An absolute HTTP(S) seed URL is required")
     # Apply the maintained input check; this module is trusted broker code.
-    from research_case import _validate_input
+    from agentcore_tools.browser_runtime.input_validation import validate_input as _validate_input
 
     _validate_input(url)
     if payload.get("scope", "observed_external") not in {"host", "observed_external"}:
@@ -131,7 +131,7 @@ class BrowserInvestigation:
             raise
 
     def navigation_check(self, url):
-        from research_case import _validate_input
+        from agentcore_tools.browser_runtime.input_validation import validate_input as _validate_input
 
         try:
             _validate_input(url)
@@ -389,7 +389,7 @@ class _Actor:
 
 class InvestigationManager:
     def __init__(self, factory=BrowserInvestigation, *, actor_factory=None):
-        from isolated_browser import ProcessActor
+        from agentcore_tools.browser_runtime.isolated_browser import ProcessActor
 
         self.factory = factory
         self.actor_factory = actor_factory or ProcessActor

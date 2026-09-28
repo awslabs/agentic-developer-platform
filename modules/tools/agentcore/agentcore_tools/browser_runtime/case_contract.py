@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from evidence_items import checked_item
+from agentcore_tools.browser_runtime.evidence_items import checked_item
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "url-research/1"

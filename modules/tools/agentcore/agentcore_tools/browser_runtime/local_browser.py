@@ -17,8 +17,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from case_contract import MAX_RESPONSE_BYTES
-from runtime_limits import ACTION_SECONDS, LEASE_SECONDS, STARTUP_SECONDS
+from agentcore_tools.browser_runtime.case_contract import MAX_RESPONSE_BYTES
+from agentcore_tools.browser_runtime.runtime_limits import ACTION_SECONDS, LEASE_SECONDS, STARTUP_SECONDS
 
 MAX_REQUEST_BYTES = 32768
 
@@ -54,16 +54,16 @@ def _write(stream, value, limit):
 
 
 def investigation_request(operation, payload):
-    from browser_client import BrowserBrokerError
+    from agentcore_tools.browser_runtime.errors import BrowserBrokerError
 
     if operation == "start":
-        from investigation_browser import validate_start
+        from agentcore_tools.browser_runtime.investigation_browser import validate_start
 
         payload = validate_start(payload)
         directory = Path(tempfile.mkdtemp(prefix="native-", dir=_root()))
         token = directory.name
         process = subprocess.Popen(
-            [sys.executable, str(Path(__file__).resolve()), "--serve", str(directory)],
+            [sys.executable, "-m", "agentcore_tools.browser_runtime.local_browser", "--serve", str(directory)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -131,7 +131,7 @@ def investigation_request(operation, payload):
 
 
 def serve(directory):
-    from isolated_browser import ProcessActor
+    from agentcore_tools.browser_runtime.isolated_browser import ProcessActor
 
     actor = None
     deadline = time.monotonic() + LEASE_SECONDS + 10
@@ -166,9 +166,8 @@ def serve(directory):
                                 lambda _: None,
                                 command=[
                                     sys.executable,
-                                    str(
-                                        Path(__file__).with_name("isolated_browser.py")
-                                    ),
+                                    "-m",
+                                    "agentcore_tools.browser_runtime.isolated_browser",
                                     "--worker",
                                     "--native",
                                 ],

@@ -39,6 +39,8 @@ runs:
       -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
       -u AWS_PROFILE -u AWS_DEFAULT_PROFILE bash --noprofile --norc -e -o pipefail {0}
   - name: Verify collector, reports and broker contracts
+    env:
+      PYTHONPATH: ${{ github.workspace }}/modules/tools/agentcore:${{ github.workspace }}/modules/tools
     run: python -m pytest modules/domain-apps/cyber/agent/skills/url-analysis/tests -q --tb=short
     shell: env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
       -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE

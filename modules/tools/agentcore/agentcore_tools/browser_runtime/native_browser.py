@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from browser_guard import DEFAULT_REGION, GuardedBrowserSession
-from runtime_limits import LEASE_SECONDS, STARTUP_SECONDS
+from agentcore_tools.browser_runtime.browser_guard import DEFAULT_REGION, GuardedBrowserSession
+from agentcore_tools.browser_runtime.runtime_limits import LEASE_SECONDS, STARTUP_SECONDS
 
 
 class NativeBrowserSession(GuardedBrowserSession):
@@ -57,7 +57,7 @@ def open_native_browser(
     is checked for analyst-selected actions, not imposed on page subrequests.
     AWS session isolation is not a claim of per-request destination filtering.
     """
-    from research_case import _validate_input
+    from agentcore_tools.browser_runtime.input_validation import validate_input as _validate_input
 
     _validate_input(url)
     if client_factory is None:

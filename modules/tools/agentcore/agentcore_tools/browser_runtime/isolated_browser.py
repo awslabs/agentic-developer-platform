@@ -15,11 +15,10 @@ import sys
 import threading
 import time
 from concurrent.futures import Future, TimeoutError
-from pathlib import Path
 
-from case_contract import MAX_RESPONSE_BYTES, content_digest
+from agentcore_tools.browser_runtime.case_contract import MAX_RESPONSE_BYTES, content_digest
 
-from runtime_limits import STARTUP_SECONDS, ACTION_SECONDS
+from agentcore_tools.browser_runtime.runtime_limits import STARTUP_SECONDS, ACTION_SECONDS
 
 
 def stop_session(session_id, *, native=False):
@@ -28,7 +27,7 @@ def stop_session(session_id, *, native=False):
 
     config = Config(connect_timeout=2, read_timeout=3, retries={"max_attempts": 0})
     if native:
-        from native_identity import cleanup_client
+        from agentcore_tools.browser_runtime.native_identity import cleanup_client
 
         client = cleanup_client(config)
     else:
@@ -60,7 +59,7 @@ class ProcessActor:
         startup_seconds=STARTUP_SECONDS,
         action_seconds=ACTION_SECONDS,
     ):
-        from investigation_browser import LEASE_SECONDS
+        from agentcore_tools.browser_runtime.investigation_browser import LEASE_SECONDS
 
         self.payload, self.on_exit, self.stop = payload, on_exit, stop
         self.ready = Future()
@@ -78,13 +77,13 @@ class ProcessActor:
         self.failure = None
         child_env = os.environ.copy()
         if command and "--native" in command:
-            from native_identity import browser_environment
+            from agentcore_tools.browser_runtime.native_identity import browser_environment
 
             child_env = browser_environment(child_env)
             if stop is stop_session:
                 self.stop = lambda sid: stop_session(sid, native=True)
         self.process = subprocess.Popen(
-            command or [sys.executable, str(Path(__file__).resolve()), "--worker"],
+            command or [sys.executable, "-m", "agentcore_tools.browser_runtime.isolated_browser", "--worker"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             env=child_env,
@@ -102,7 +101,7 @@ class ProcessActor:
         self.process.stdin.flush()
 
     def _error(self, message, code="worker_failed"):
-        from investigation_browser import InvestigationError
+        from agentcore_tools.browser_runtime.investigation_browser import InvestigationError
 
         return InvestigationError(
             message,
@@ -197,8 +196,8 @@ class ProcessActor:
 
     def _failure_error(self):
         if self.failure and self.failure.get("reason_code"):
-            from browser_guard import DestinationRefused
-            from denylist import DenylistResult
+            from agentcore_tools.browser_runtime.browser_guard import DestinationRefused
+            from agentcore_tools.browser_runtime.denylist import DenylistResult
 
             error = DestinationRefused(
                 self.payload.get("url", ""),
@@ -231,7 +230,7 @@ class ProcessActor:
         return packet
 
     def initial(self):
-        from investigation_browser import InvestigationError
+        from agentcore_tools.browser_runtime.investigation_browser import InvestigationError
 
         try:
             return self.ready.result(timeout=self.startup_seconds)
@@ -251,7 +250,7 @@ class ProcessActor:
             raise
 
     def call(self, payload):
-        from investigation_browser import InvestigationError
+        from agentcore_tools.browser_runtime.investigation_browser import InvestigationError
 
         if self.ended.is_set():
             if payload.get("action") == "close":
@@ -293,10 +292,10 @@ def worker():
     from functools import partial
     from playwright.sync_api import sync_playwright
     from bedrock_agentcore.tools.browser_client import BrowserClient
-    from browser_guard import open_guarded_browser
-    from native_browser import open_native_browser
-    from case_capture import recorded_browser
-    from investigation_browser import BrowserInvestigation
+    from agentcore_tools.browser_runtime.browser_guard import open_guarded_browser
+    from agentcore_tools.browser_runtime.native_browser import open_native_browser
+    from agentcore_tools.browser_runtime.case_capture import recorded_browser
+    from agentcore_tools.browser_runtime.investigation_browser import BrowserInvestigation
 
     protocol = sys.stdout
     sys.stdout = sys.stderr  # Libraries cannot corrupt the JSON transport.

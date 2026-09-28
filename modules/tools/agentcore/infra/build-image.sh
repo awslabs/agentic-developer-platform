@@ -19,7 +19,7 @@ build_repository=${BASH_REMATCH[3]}
 repo_root=$(cd "$(dirname "$0")/../../../.." && pwd)
 source_sha=${ADP_SOURCE_SHA:-$(git -C "$repo_root" rev-parse HEAD)}
 [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "Build source must be a reviewed full SHA" >&2; exit 2; }
-if [[ -d "$repo_root/.git" ]]; then
+if [[ -e "$repo_root/.git" ]]; then
   [[ "$(git -C "$repo_root" rev-parse HEAD)" == "$source_sha" ]] || { echo "Build source differs from checkout" >&2; exit 2; }
 fi
 image_tag="source-${source_sha}"
@@ -27,7 +27,7 @@ dockerfile=Dockerfile
 if [[ "$browser" == true ]]; then image_tag="${image_tag}-browser"; dockerfile=Dockerfile.browser; fi
 image_ref="${repo_uri}:${image_tag}"
 if [[ "$mode" == --push ]]; then
-  if [[ -d "$repo_root/.git" ]]; then
+  if [[ -e "$repo_root/.git" ]]; then
     [[ -z "$(git -C "$repo_root" status --porcelain)" ]] || { echo 'Publish requires a clean committed checkout' >&2; exit 2; }
   else
     [[ -n "${ADP_SOURCE_SHA:-}" ]] || { echo 'CodeBuild requires source-archive SHA' >&2; exit 2; }

@@ -15,7 +15,15 @@ case "$mode" in
     terraform -chdir="$infra_dir" validate
     vars_file=$(realpath "$3")
     plan_file=$(realpath -m "$4")
-    terraform -chdir="$infra_dir" plan -input=false -var-file="$vars_file" -out="$plan_file"
+    image_vars=()
+    for variable in image_uri browser_service_image; do
+      env_name="TF_VAR_$variable"
+      if [[ -n "${!env_name:-}" ]]; then
+        [[ "${!env_name}" =~ @sha256:[a-f0-9]{64}$ ]] || { echo 'Expected immutable image digest' >&2; exit 2; }
+        image_vars+=("-var=$variable=${!env_name}")
+      fi
+    done
+    terraform -chdir="$infra_dir" plan -input=false -var-file="$vars_file" "${image_vars[@]}" -out="$plan_file"
     terraform -chdir="$infra_dir" show -json "$plan_file" | jq -e '[.resource_changes[]? | select(.change.actions | index("delete"))] | length == 0' >/dev/null || { echo "Plan deletes or replaces resources; stop for a reviewed migration" >&2; exit 2; }
     ;;
   apply)

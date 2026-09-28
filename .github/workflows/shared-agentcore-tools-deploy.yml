@@ -136,6 +136,17 @@ jobs:
           [[ "$browser_ref" =~ ^${BROWSER_REPO}@sha256:[a-f0-9]{64}$ ]]
           printf 'TF_VAR_image_uri=%s\nTF_VAR_browser_service_image=%s\n' "$lambda_ref" "$browser_ref" >> "$GITHUB_ENV"
           rm -f "$record"
+      - name: Configure the existing Browser cluster when enabled
+        if: vars.ADP_TOOLS_EKS_CLUSTER_NAME != ''
+        env:
+          CLUSTER_NAME: ${{ vars.ADP_TOOLS_EKS_CLUSTER_NAME }}
+          AWS_REGION: ${{ inputs.aws_region }}
+        run: |
+          set -euo pipefail
+          config="$RUNNER_TEMP/shared-tools-kubeconfig"
+          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION" --kubeconfig "$config"
+          chmod 600 "$config"
+          printf 'KUBE_CONFIG_PATH=%s\n' "$config" >> "$GITHUB_ENV"
       - name: Plan isolated state with no deletion or replacement
         env:
           EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.expected_account_id }}
@@ -148,3 +159,6 @@ jobs:
           EXPECTED_AWS_ACCOUNT_ID: ${{ inputs.expected_account_id }}
           BACKEND: ${{ inputs.backend_config }}
         run: bash modules/tools/agentcore/infra/deploy.sh apply "$BACKEND" "$RUNNER_TEMP/shared-tools.tfplan"
+      - name: Remove temporary deployment files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/shared-tools-kubeconfig" "$RUNNER_TEMP/shared-tools.tfplan" "$RUNNER_TEMP/shared-tools-images.env"

@@ -10,8 +10,9 @@ import yaml
 
 SUPERPLANE = Path("modules/domain-apps/superplane")
 BUILD_CONFIG = {
+    "modules/tools/agentcore/Dockerfile": {"context": "."},
     "modules/agent-context/images/parser/Dockerfile": {"context": "modules/agent-context/images/ingestion"},
-    "modules/domain-apps/cyber/browser/Dockerfile": {"context": "modules/domain-apps/cyber"},
+    "modules/domain-apps/cyber/browser/Dockerfile": {"context": "."},
     "modules/domain-apps/cyber/workers/Dockerfile": {"context": "modules/domain-apps/cyber"},
     "modules/domain-apps/superplane/tests/acceptance/workloads/Dockerfile": {
         "build_arg_env": {"PYTORCH_IMAGE": "SECURITY_PYTORCH_IMAGE"},

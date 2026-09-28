@@ -83,10 +83,15 @@ confirmed AWS account and region, existing ECR repositories, repository-tracked
 configuration paths and an isolated `tools/agentcore/` S3 state key. `plan`
 builds both images in an existing Docker-capable CodeBuild project (no push)
 and produces a saved no-delete/no-replace plan. `apply` explicitly pushes source-SHA-tagged images, resolves digests and
-applies that saved no-delete/no-replace plan after environment approval. Neither
+applies that saved no-delete/no-replace plan after environment approval. Built
+image digests are passed as explicit plan arguments so tfvars cannot override
+them. Neither
 mode publishes the shared API stage or enables new routes on merge. Supply
 `ADP_DEPLOY_ROLE_ARN`, `ADP_TOOLS_BUILD_BUCKET` and
-`ADP_TOOLS_CODEBUILD_PROJECT` in the protected environment; pre-create that
+`ADP_TOOLS_CODEBUILD_PROJECT` in the protected environment. For HTTP Browser,
+also set `ADP_TOOLS_EKS_CLUSTER_NAME` to the existing cluster; the workflow
+uses a private temporary kubeconfig and its deployment role needs EKS describe
+and scoped Kubernetes access. pre-create that
 Docker-capable project with source override trust (the archived full reviewed
 SHA), scoped ECR push on the **two exact** repositories, and S3 write only to
 `codebuild/artifacts/shared-agentcore-tools/` in the build bucket. The
@@ -147,7 +152,7 @@ explicit go-ahead. Coordinate concurrent releases and lock **both** backends.
    backend. Transfer `aws_dynamodb_table.operations[0]`, and all resources
    whose basename occurs in the moved
    `modules/tools/agentcore/infra/{browser.tf,code-interpreter.tf,websearch.tf}`:
-   route resource/method/integration/permission, worker IAM inline policy
+   route resource/method/integration, worker IAM inline policy
    instances, Browser FIFO queue/DLQ/table/log/roles/Kubernetes objects,
    and any already-owned Web Search Gateway/target/connector role. For each
    *actual present instance*, record old state address, ID, and new same-name
@@ -155,7 +160,19 @@ explicit go-ahead. Coordinate concurrent releases and lock **both** backends.
    in Cyber followed by `terraform import 'ADDRESS' 'EXACT_EXISTING_ID'` in
    tools; use the per-resource Terraform provider import format (IAM policies,
    Kubernetes resources and API Gateway integrations have different IDs).
-   Never import a resource twice or recreate it as a replacement. Remove
+   Browser's existing Lambda permission transfers unchanged because its Lambda
+   name stays the same. **Do not import** `aws_lambda_permission.websearch[0]`
+   or `aws_lambda_permission.code_interpreter[0]` onto the new shared Lambda:
+   their function identity changes and Terraform would replace them. Record
+   and detach those two old permission records from the Cyber state; retain
+   the scoped AWS permissions on the old Lambda for rollback. The tools state
+   creates fresh permissions on the new Lambda. Likewise detach, rather than
+   transfer, `aws_iam_role_policy.websearch_gateway[0]` and
+   `aws_iam_role_policy.code_interpreter_provider[0]` attached to the old Cyber
+   role; retain them for rollback and let tools create policies on its new role.
+   These detached legacy permissions must be inventoried for explicit removal
+   after successful rollout and the rollback window, never silently deleted.
+   Never import a resource twice or recreate a transferred resource as a replacement. Remove
    orphaned old provider inline-policy addresses from Cyber state only after
    retaining their IDs; the new **shared** Lambda role/policies attach to the
    new role (not the Cyber role). Review old policy retirement separately.

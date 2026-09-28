@@ -24,7 +24,7 @@ class WebSearch:
             or task.get("generation") != identity.generation
         ):
             raise HTTPException(403, "Task ownership refused")
-        if task.get("state") != "running" or time.time() >= datetime.fromisoformat(
+        if task.get("cyber_closed_attempt") == identity.runtime_attempt_id or task.get("state") != "running" or time.time() >= datetime.fromisoformat(
             task["deadline_at"].replace("Z", "+00:00")
         ).timestamp():
             raise HTTPException(409, "Task no longer admits execution")

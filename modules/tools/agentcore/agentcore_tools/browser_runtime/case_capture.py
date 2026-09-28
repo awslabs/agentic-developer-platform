@@ -8,8 +8,8 @@ import os
 from importlib.metadata import version
 from urllib.parse import urljoin
 
-from browser_guard import DEFAULT_REGION, DestinationRefused, open_guarded_browser
-from case_contract import (
+from agentcore_tools.browser_runtime.browser_guard import DEFAULT_REGION, DestinationRefused, open_guarded_browser
+from agentcore_tools.browser_runtime.case_contract import (
     COLLECTOR_VERSION,
     SCHEMA_VERSION,
     content_digest,
@@ -18,8 +18,8 @@ from case_contract import (
     sanitize,
     utcnow,
 )
-from denylist import DenylistResult
-from evidence_items import build_evidence_items, inventory_digest
+from agentcore_tools.browser_runtime.denylist import DenylistResult
+from agentcore_tools.browser_runtime.evidence_items import build_evidence_items, inventory_digest
 
 MAX_EVENTS = 200
 PROFILES = {
@@ -150,7 +150,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
         if os.environ.get("URL_ANALYSIS_BROWSER_MODE", "native") == "broker":
             opener = open_guarded_browser
         else:
-            from native_browser import open_native_browser
+            from agentcore_tools.browser_runtime.native_browser import open_native_browser
 
             opener = open_native_browser
     native = (
@@ -342,7 +342,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
             o["errors"].append(f"dom_capture:{type(exc).__name__}")
         checkpoint(o)
         if request.get("_screenshots", True) or action == "screenshot":
-            from runtime_limits import SCREENSHOT_SECONDS
+            from agentcore_tools.browser_runtime.runtime_limits import SCREENSHOT_SECONDS
 
             try:
                 png = session.screenshot(
