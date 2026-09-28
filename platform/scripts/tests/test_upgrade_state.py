@@ -21,6 +21,45 @@ def resource(kind, name, attributes, module=""):
 
 
 class PreservationTests(unittest.TestCase):
+    def test_promoted_gateway_layers_keep_immutable_packages_and_retention(self):
+        digest = "a" * 64
+        layers = {"resources": [
+            resource("aws_lambda_layer_version", "pyjwt", {
+                "s3_bucket": "adp-terraform-state-123456789012",
+                "s3_key": f"adp-releases/sha256/{digest}/pyjwt-py313.zip",
+                "layer_name": "bedrockgw-dev-pyjwt-py313", "skip_destroy": True,
+            }, "module.lambda_authorizer[0]"),
+            resource("aws_lambda_layer_version", "psycopg2", {
+                "s3_bucket": "adp-terraform-state-123456789012",
+                "s3_key": f"adp-releases/sha256/{digest}/psycopg2-py312.zip",
+                "layer_name": "bedrockgw-dev-psycopg2-py312", "skip_destroy": True,
+            }, "module.budget_lambda[0]"),
+        ]}
+        self.assertEqual(state.gateway_layer_settings(layers, "123456789012", "dev"), {
+            "pyjwt_layer_s3_key": f"adp-releases/sha256/{digest}/pyjwt-py313.zip",
+            "pyjwt_layer_skip_destroy": True,
+            "psycopg2_layer_s3_key": f"adp-releases/sha256/{digest}/psycopg2-py312.zip",
+            "psycopg2_layer_skip_destroy": True,
+        })
+        self.assertEqual(state.gateway_layer_settings({}, "123456789012", "dev"), {})
+
+    def test_gateway_layer_preservation_rejects_foreign_or_unknown_artifacts(self):
+        layer = resource("aws_lambda_layer_version", "pyjwt", {
+            "s3_bucket": "adp-terraform-state-123456789012",
+            "s3_key": "lambda-layers/pyjwt-py313.zip",
+            "layer_name": "bedrockgw-dev-pyjwt-py313", "skip_destroy": False,
+        }, "module.lambda_authorizer[0]")
+        self.assertEqual(state.gateway_layer_settings({"resources": [layer]}, "123456789012", "dev"), {
+            "pyjwt_layer_s3_key": "lambda-layers/pyjwt-py313.zip", "pyjwt_layer_skip_destroy": False,
+        })
+        for field, value in (("s3_bucket", "foreign-bucket"), ("s3_key", "other.zip"),
+                             ("layer_name", "foreign-layer"), ("skip_destroy", "false")):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(layer)
+                bad["instances"][0]["attributes"][field] = value
+                with self.assertRaisesRegex(ValueError, "Cannot preserve installed pyjwt layer"):
+                    state.gateway_layer_settings({"resources": [bad]}, "123456789012", "dev")
+
     def test_preserves_admins_and_cidrs_without_promoting_other_principals(self):
         old = {"resources": [resource("aws_eks_access_entry", "admins", {"principal_arn": "admin"}, "module.eks"),
                              resource("aws_eks_access_entry", "viewer", {"principal_arn": "viewer"}, "module.eks")]}
