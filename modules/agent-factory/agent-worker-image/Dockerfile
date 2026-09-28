@@ -352,6 +352,7 @@ COPY --from=codex-harness-builder --chown=agent:agent /build/dist/ /app/codex-ha
 COPY --from=codex-harness-builder --chown=agent:agent /build/package.json /app/codex-harness/package.json
 COPY --from=codex-harness-builder --chown=agent:agent /build/node_modules/ /app/codex-harness/node_modules/
 COPY --chown=agent:agent modules/agent-factory/rules/ /app/codex-harness/rules/
+COPY --chown=agent:agent modules/agent-factory/codex-harness/scripts/report-probe* /app/codex-harness/scripts/
 COPY --from=task-investigator-builder --chown=agent:agent /build/dist/ /app/task-agents/investigator/dist/
 COPY --from=task-investigator-builder --chown=agent:agent /build/package.json /app/task-agents/investigator/package.json
 COPY --from=task-cyber-builder --chown=agent:agent /build/dist/ /app/task-agents/cyber/dist/

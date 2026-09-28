@@ -5,6 +5,9 @@ jest.mock('./native-probe-manifest.json', () => ({ sdk: '0.155.1', personas: {
   'agent-codex-developer': { 'openai.gpt-6-sol': require('node:crypto').createHash('sha256').update('{}').digest('hex') },
   'agent-codex-reviewer': { 'openai.gpt-6-sol': require('node:crypto').createHash('sha256').update('{}').digest('hex') },
 } }));
+jest.mock('./report-probe-manifest.json', () => ({ sdk: '0.155.1', personas: {
+  'agent-codex-architect': { 'openai.gpt-6-sol': require('node:crypto').createHash('sha256').update('{}').digest('hex') },
+} }));
 const digest = createHash('sha256').update('{}').digest('hex');
 const response = (text: string) => ({ object: 'response', id: 'resp_test', status: 'completed', output: [
   { type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text }] },
@@ -64,4 +67,11 @@ it('requires reviewer structured output rather than developer text', () => {
   expect(validNativeResponse(response(JSON.stringify(verdict)), 'agent-codex-reviewer')).toBe(true);
   expect(validNativeResponse(response(JSON.stringify({ ...verdict, findings: [{}] })), 'agent-codex-reviewer')).toBe(false);
   expect(validNativeResponse(response(JSON.stringify({ ...verdict, summary: ['OK'] })), 'agent-codex-reviewer')).toBe(false);
+});
+
+it('qualifies report SDK profiles through their own exact capture', async () => {
+  const { gateway, capture, invoke } = fixture();
+  await runNativeProbe('agent-codex-architect', gateway, capture, invoke);
+  expect(capture).toHaveBeenCalledWith('agent-codex-architect', 'openai.gpt-6-sol');
+  expect(gateway.complete.mock.calls[0][2]).toMatchObject({ outcome: 'proven', provider_request_id: 'provider-id' });
 });

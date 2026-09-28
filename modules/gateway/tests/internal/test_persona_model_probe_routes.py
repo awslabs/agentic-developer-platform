@@ -440,7 +440,8 @@ async def test_other_internal_irsa_principal_cannot_release_probe_credentials(pr
 
 
 @pytest.mark.asyncio
-async def test_dedicated_probe_irsa_is_the_only_accepted_principal():
+@pytest.mark.parametrize("display_name", ["persona-model-probe", "renamed-probe"])
+async def test_dedicated_probe_irsa_is_the_only_accepted_principal(display_name):
     request = Request(
         {
             "type": "http",
@@ -455,11 +456,16 @@ async def test_dedicated_probe_irsa_is_the_only_accepted_principal():
     )
 
     async def _verified_as_probe(request, **_kwargs):
-        request.state.token_context = SimpleNamespace(
-            user_id="persona-model-probe",
-            agent_registry_id="persona-model-probe",
-            org_id="__platform__",
-            scope="internal",
+        from src.auth.agent_registry import agent_entry_to_token_context
+
+        request.state.token_context = agent_entry_to_token_context(
+            {
+                "agent_id": "persona-model-probe",
+                "agent_name": display_name,
+                "org_id": "__platform__",
+                "team_id": "__agents__",
+                "scope": "internal",
+            }
         )
 
     with patch(
@@ -498,7 +504,8 @@ async def test_probe_name_lookalike_cannot_release_credentials(agent_registry_id
 
     async def _verified_as_lookalike(request, **_kwargs):
         request.state.token_context = SimpleNamespace(
-            user_id="persona-model-probe",
+            user_id=f"iam-agent:{agent_registry_id}",
+            auth_source="iam",
             agent_registry_id=agent_registry_id,
             org_id=org_id,
             scope=scope,
@@ -677,7 +684,17 @@ async def test_codex_task_probe_reserves_only_codex_model_and_exact_profile(db_s
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("persona", ["agent-codex-developer", "agent-codex-reviewer"])
+@pytest.mark.parametrize(
+    "persona",
+    [
+        "agent-codex-developer",
+        "agent-codex-reviewer",
+        "agent-codex-architect",
+        "agent-codex-product",
+        "agent-codex-pm",
+        "agent-codex-intent-refinement",
+    ],
+)
 async def test_native_claim_is_separate_from_task_registration(db_session, monkeypatch, persona):
     from src.admin.persona_models.native_probe_contract import NATIVE_PROBE_REVISION, native_request_shape
     from src.tasks.personas import TASK_PERSONAS

@@ -115,12 +115,11 @@ async def verify_model_probe_irsa(
     context = getattr(request.state, "token_context", None)
     if (
         context is None
-        # The IAM adapter's compatibility ``user_id`` is Agent Registry
-        # ``agent_name``: mutable and non-unique.  Bind this credential-bearing
-        # route to the immutable seeded primary key as well as its fixed
-        # platform metadata so a tenant-created lookalike name fails closed.
+        # Bind both the canonical IAM principal and immutable registry key.
+        # Display names are mutable and never identify the credential holder.
         or getattr(context, "agent_registry_id", "") != PROBE_WORKER_ID
-        or context.user_id != PROBE_WORKER_ID
+        or context.user_id != f"iam-agent:{PROBE_WORKER_ID}"
+        or context.auth_source != "iam"
         or context.org_id != "__platform__"
         or context.scope != "internal"
     ):

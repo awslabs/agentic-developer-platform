@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "sdk": "0.155.1",
+  "normalization": "codex-report-probe-v1",
+  "personas": {
+    "agent-codex-architect": {
+      "openai.gpt-6-astra": "53843283d6f30c7d7233d433fafddaa1d4dd770bfed03211626aa1dbabf51374",
+      "openai.gpt-6-sol": "38c11b5478d4e44229390e543430112a0325996427e27dd4abe7c4e003706e97",
+      "openai.gpt-6-luna": "e485862ac65a9ba8c0ac48e842227a4f284dbba10edc73c8afc4fc237b410292"
+    },
+    "agent-codex-product": {
+      "openai.gpt-6-astra": "b50d03ba1b82b83a29e90624a37ac95824b4f9462372d9b8aebb1f6a518a2c61",
+      "openai.gpt-6-sol": "6aaea2c242c79f2aba666bc324df9269a84e053948303ee31bf5d77b5214fd5c",
+      "openai.gpt-6-luna": "19bea653df6b3cb9e4563b7b06ab03a90ea119b342e47bca6b133ee1285a603b"
+    },
+    "agent-codex-pm": {
+      "openai.gpt-6-astra": "3566c94e5e010ec1acffd66f49301cd62736b895b7d21c310174df6cb64b8e55",
+      "openai.gpt-6-sol": "92525e5ca4f846459fc9bd079420e9ac3dba757836e0e68a864a02eb0a6c7a01",
+      "openai.gpt-6-luna": "aa24e4865af7bec1cc55d89620235fea618663c80792c717d7c2e1e54e165593"
+    },
+    "agent-codex-intent-refinement": {
+      "openai.gpt-6-astra": "63291c6238340c72b5e4612d1d8189e825a6b6fba4ef408d79d97b9c214900f0",
+      "openai.gpt-6-sol": "87fc2f77695c59d6922f4a55ad1cc1de1d9fad2a8d191c2d82c5d4ee3c18f3c3",
+      "openai.gpt-6-luna": "abab6a91d1dd97037203b4086e1f7e95d527d91b32c6a270f2bdbc937232479f"
+    }
+  }
+}

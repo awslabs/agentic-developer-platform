@@ -5,12 +5,14 @@ import { createHash } from 'node:crypto';
 import { ProbeGateway, SigV4ProbeGateway, ProbeCompletion, ProbeStart } from './gateway-client';
 import { invokeTaskResponses, validResponsesProbe } from './task-responses';
 import manifest from './native-probe-manifest.json';
+import reports from './report-probe-manifest.json';
 
 const execute = promisify(execFile);
 type Capture = (persona: string, model: string) => Promise<{ body: string; digest: string }>;
 type Invoke = (start: ProbeStart, body: string, timeout: number) => ReturnType<typeof invokeTaskResponses>;
 const capture: Capture = async (persona, model) => {
-  const result = await execute(process.execPath, ['/app/codex-reviewer/scripts/native-probe-cli.mjs', persona, model], {
+  const cli = Object.hasOwn(reports.personas, persona) ? '/app/codex-harness/scripts/report-probe-cli.mjs' : '/app/codex-reviewer/scripts/native-probe-cli.mjs';
+  const result = await execute(process.execPath, [cli, persona, model], {
     timeout: 30000, maxBuffer: 131072,
     // The child needs local executable paths only; it receives no worker credentials.
     env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, TZ: 'UTC' },
@@ -19,7 +21,7 @@ const capture: Capture = async (persona, model) => {
 };
 
 export function validNativeResponse(response: any, persona: string): boolean {
-  if (persona === 'agent-codex-developer') return validResponsesProbe(response, false);
+  if (persona === 'agent-codex-developer' || Object.hasOwn(reports.personas, persona)) return validResponsesProbe(response, false);
   if (!response || response.object !== 'response' || response.status !== 'completed' || typeof response.id !== 'string' || !response.id ||
       response.error != null || response.incomplete_details != null || !Array.isArray(response.output)) return false;
   const output = response.output.filter((item: any) => item?.type !== 'reasoning');
@@ -36,7 +38,7 @@ export function validNativeResponse(response: any, persona: string): boolean {
 
 export async function runNativeProbe(persona: string, gateway: ProbeGateway = new SigV4ProbeGateway(),
   collect: Capture = capture, invoke: Invoke = invokeTaskResponses) {
-  const profiles = manifest.personas as Record<string, Record<string, string>>;
+  const profiles = { ...manifest.personas, ...reports.personas } as Record<string, Record<string, string>>;
   if (!Object.hasOwn(profiles, persona)) throw new Error('Unknown native probe persona');
   const claim = await gateway.claim('scheduled', undefined, persona);
   if (!claim.claimed) return claim;
