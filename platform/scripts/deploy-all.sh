@@ -1228,9 +1228,16 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
     --expected-image "$PRICING_RELEASE_IMAGE" \
     || fail "Gateway image is deployed but pricing migrations or activation are incomplete"
+  PRICING_FINALIZE_ARGS=()
+  case "${ADP_PRICING_ALLOW_PARTIAL_REFRESH:-false}" in
+    true) PRICING_FINALIZE_ARGS+=(--allow-partial-refresh) ;;
+    false) ;;
+    *) fail "ADP_PRICING_ALLOW_PARTIAL_REFRESH must be true or false" ;;
+  esac
   python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" finalize \
     --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
     --expected-image "$PRICING_RELEASE_IMAGE" \
+    ${PRICING_FINALIZE_ARGS[@]+"${PRICING_FINALIZE_ARGS[@]}"} \
     || fail "Pricing refresh verification failed; its schedule remains disabled"
   # Recheck both consumers before declaring this release complete.
   python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \

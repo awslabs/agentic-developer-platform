@@ -30,6 +30,12 @@ python3 modules/gateway/scripts/pricing-rollout.py finalize \
   --allow-partial-refresh
 ```
 
+For a full `deploy-all.sh --update` retry after reviewing the retained model
+list, fresh coverage, and source failures, set
+`ADP_PRICING_ALLOW_PARTIAL_REFRESH=true`. The default remains strict. The
+deploy script passes this option only to pricing finalization; all of the
+checks below still run before the schedule can be enabled.
+
 The recovery option requires matching Lambda source, ready gateway replicas,
 validated database coverage/content hash, a newly advanced generation/pointer,
 working failure queues and alarm routes, nonzero fresh prices and no failed
