@@ -1104,13 +1104,14 @@ async def _process_one(
         report.bump(initial.org_id, "blocked")
         return
 
-    # The runner ceiling applies even when a flow has a larger approved retry
-    # allowance. Reconciliation above can still record work already completed.
+    # Review dispatches use the accepted stage allowance verified above. A
+    # second runner ceiling must not cancel an explicit owner retry supplement.
+    # Other effect adapters retain their existing runner ceiling.
     async with factory() as session:
         used = await stage_attempts(
             session, org_id=initial.org_id, node_id=initial.node_id, action=effect.action, exclude_operation_key=effect.intent.operation_key
         )
-    if used >= config.max_attempts:
+    if used >= config.max_attempts and effect.intent.kind != "review_cycle_dispatch":
         await _notify_block(
             factory,
             record=initial,

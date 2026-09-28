@@ -236,7 +236,7 @@ async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
     await engine.dispose()
 
 
-async def tick(ctx, *, checkpoint=None):
+async def tick(ctx, *, checkpoint=None, runner_ceiling=8):
     async with ctx.factory() as db:
         loaded = await load_execution(db, identity=ctx.identity)
         loaded_record = loaded.record
@@ -252,7 +252,7 @@ async def tick(ctx, *, checkpoint=None):
     return await run_execution_runner(
         ctx.factory,
         handlers=dict.fromkeys(PHASES, handler),
-        config=RunnerConfig(enabled=True, max_attempts=8, io_timeout_seconds=10),
+        config=RunnerConfig(enabled=True, max_attempts=runner_ceiling, io_timeout_seconds=10),
         notifier=AsyncMock(return_value="test-notice"),
         checkpoint=checkpoint,
     )
@@ -778,7 +778,9 @@ async def test_failed_reviewer_retries_retained_pr_with_remaining_allowance(cycl
     raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{failed_run}")
     raw.update(status={"S": "completed"}, terminal_outcome={"S": "failed"}, bootstrap_authority_issued_at={"S": "2026-09-20T00:00:00Z"})
     cycle.store.client.put_item(TableName=cycle.store.table, Item=raw)
-    result = await tick(cycle)
+    # The accepted policy controls review retries even when the generic runner
+    # default is lower; exhaustion of that policy must still refuse dispatch.
+    result = await tick(cycle, runner_ceiling=1)
     execution, claim, node, actions = await state(cycle)
     assert node.attempts == 1 and claim.generation == 5
     assert len(actions) == allowance
