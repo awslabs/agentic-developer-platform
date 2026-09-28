@@ -179,7 +179,8 @@ async function runEngineReviewPass(
   const issue = await controller.github.getIssue(envelope.issue_number);
   const persona = await readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8");
   const story = JSON.stringify({ issue: { number: envelope.issue_number, title: issue.title, body: issue.body },
-    pullRequest: { title: initialPr.title, body: initialPr.body }, priorFindings: cycle.findings });
+    pullRequest: { title: initialPr.title, body: initialPr.body }, acceptedScope: cycle.accepted_scope,
+    priorFindings: cycle.findings });
   const recoveryContext = cycle.recovery
     ? "This is stalled-story recovery. The prior worker has exited. Preserve its committed work; do not restart from main or treat a checkpoint/PR as completed implementation. Read the current issue including owner clarifications. Identify every unfinished acceptance criterion, repair within the assigned scope when authorized, and revalidate the final changes. An unresolved product/contract clarification or unavailable required evidence is a blocker, not permission to guess or report success."
     : "";

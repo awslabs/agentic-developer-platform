@@ -338,6 +338,10 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     assert first["model_resolved"] == "openai.gpt-6-sol"
     assert ctx.launch.await_args.kwargs == {"org_id": ORG, "user_id": "human", "persona": "agent-codex-reviewer"}
     assert first["review_expect"]["author_run_id"] == ctx.root
+    assert first["review_cycle_input"]["allow_story_repairs"] is True
+    assert first["review_expect"]["allow_story_repairs"] is True
+    protected = ctx.store._read(f"TENANT#{ORG}", f"EXEC#{first['message_id']}")
+    assert protected["orchestration_review_repairs"] == {"BOOL": True}
     await review(ctx, findings=[{"finding_id": "F1", "summary": "Repair the failing boundary", "evidence_refs": []}])
     result = await tick(ctx)
     assert result.effects_succeeded == 1, result
@@ -371,6 +375,39 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
         binding = await db.get(OrchestrationPullRequestBinding, ctx.binding.id)
         assert binding.head_sha == ctx.head and binding.revision == 2
         assert binding.run_id == ctx.root and binding.accepted_scope == ctx.binding.accepted_scope
+
+
+async def test_review_repairs_current_head_and_advances_without_another_reviewer(cycle):
+    ctx = cycle
+    result = await tick(ctx)
+    assert result.effects_succeeded == 1
+    assigned = ctx.calls[-1]
+    assert assigned["review_expect"]["allow_story_repairs"] is True
+    ctx.head = "b" * 40
+    await review(ctx, approve=True)
+    result = await tick(ctx)
+    execution, _, node, _ = await state(ctx)
+    assert execution.phase == "merge_ready", result
+    assert len(ctx.calls) == 1
+    async with ctx.factory() as db:
+        binding = await db.get(OrchestrationPullRequestBinding, ctx.binding.id)
+        assert binding.head_sha == ctx.head
+        assert await current_author_run(db, node=node, default=ctx.root) == ctx.root
+
+
+async def test_review_only_policy_does_not_gain_branch_write_access(cycle):
+    async with cycle.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, cycle.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["allowed_actions"].remove("repair")
+        plan.plan_document = document
+        await db.commit()
+    assert (await tick(cycle)).effects_succeeded == 1
+    assigned = cycle.calls[-1]
+    assert assigned["review_cycle_input"]["allow_story_repairs"] is False
+    assert assigned["review_expect"]["allow_story_repairs"] is False
+    raw = cycle.store._read(f"TENANT#{ORG}", f"EXEC#{assigned['message_id']}")
+    assert "orchestration_review_repairs" not in raw
 
 
 @pytest.mark.parametrize("gate", ["failed", "halted", "rejected", "awaiting_gate"])

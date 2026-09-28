@@ -116,6 +116,8 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
         if action == Action.REPAIR.value and persona in {"developer", "agent-codex-reviewer"}:
             return Action.REPAIR
         if action == Action.REVIEW.value and persona in {"reviewer", "agent-codex-reviewer"}:
+            if persona == "agent-codex-reviewer" and execution.get("orchestration_review_repairs") == {"BOOL": True}:
+                return Action.REPAIR
             return Action.REVIEW
         return None
     if execution.get("wave_coordinator") == {"BOOL": True} and execution.get("coordinator_flow_id", {}).get("S"):
