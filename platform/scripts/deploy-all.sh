@@ -1014,12 +1014,13 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     echo "ERROR: API Gateway header trust is enabled but its provenance secret is unavailable" >&2
     exit 1
   fi
-  kubectl create secret generic bedrockgateway-secrets \
+  SECRET_APPLY_RESULT=$(kubectl create secret generic bedrockgateway-secrets \
     --from-literal=token-secret-key="$TOKEN_SECRET" \
     --from-literal=internal-api-key="$INTERNAL_API_KEY" \
     --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
     --from-literal=magic-link-secret="$MAGIC_LINK_SECRET" \
-    -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -
+    -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -)
+  echo "$SECRET_APPLY_RESULT"
   COGNITO_CLI_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
   COGNITO_AGENT_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-agent-client-id" "")
   COGNITO_GITLAB_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gitlab/oidc-client-id" "")
@@ -1081,7 +1082,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   AGENT_TASK_SOURCE_EKS_CLUSTER=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-eks-cluster" "")
   AGENT_TASK_SOURCE_ISOLATION_CONFIRMED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-isolation-confirmed" "false")
 
-  sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
+  CONFIGMAP_APPLY_RESULT=$(sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
       -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
       -e "s|__CYBER_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
       -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -1146,7 +1147,8 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
       -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
       -e "s|__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__|${AGENT_TASK_SOURCE_ISOLATION_CONFIRMED}|g" \
-      k8s/configmap.yaml | kubectl apply -f -
+      k8s/configmap.yaml | kubectl apply -f -)
+  echo "$CONFIGMAP_APPLY_RESULT"
   # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
   sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
       k8s/serviceaccount.yaml | kubectl apply -f -
@@ -1169,26 +1171,32 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   FEATURE_AGENT_CONTROL_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
   FEATURE_NEW_UI_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
   FEATURE_AGENT_MODELS_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-models" "$PERSONA_MODEL_MAPPING_ENABLED")
-  sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+  DEPLOYMENT_APPLY_RESULT=$(sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
       -e "s|__FEATURE_AGENT_EXPLANATIONS_ENABLED__|${FEATURE_AGENT_EXPLANATIONS_ENABLED}|g" \
       -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
       -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
       -e "s|__FEATURE_AGENT_MODELS_ENABLED__|${FEATURE_AGENT_MODELS_ENABLED}|g" \
       -e "s|REPLACE_WITH_GATEWAY_IMAGE|${GATEWAY_IMAGE}|g" \
-      k8s/deployment.yaml | kubectl apply -f - -n adp-gateway
+      k8s/deployment.yaml | kubectl apply -f - -n adp-gateway)
+  echo "$DEPLOYMENT_APPLY_RESULT"
 
   if [ "$UPDATE_MODE" = true ]; then
-    # Update mode: SHA-tagged image + mandatory rollout + health check (§2, §8)
+    # Applying a changed pod template already starts a rollout. Restart only
+    # when a Secret/ConfigMap changed without a pod-template update; restarting
+    # an unchanged deployment on every retry can race EKS node provisioning.
     CURRENT_IMAGE=$(kubectl get deployment/bedrockgateway -n adp-gateway \
       -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
-    if [ "$CURRENT_IMAGE" = "${GATEWAY_IMAGE}" ]; then
-      echo "Image tag unchanged. Forcing rollout restart..."
-      kubectl rollout restart deployment/bedrockgateway -n adp-gateway
-    else
+    if [ "$CURRENT_IMAGE" != "${GATEWAY_IMAGE}" ]; then
       kubectl set image deployment/bedrockgateway \
         bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
+    elif { [[ "$SECRET_APPLY_RESULT" == *configured* ]] || [[ "$CONFIGMAP_APPLY_RESULT" == *configured* ]]; } \
+         && [[ "$DEPLOYMENT_APPLY_RESULT" == *unchanged* ]]; then
+      echo "Secret or ConfigMap changed. Restarting gateway to load it..."
+      kubectl rollout restart deployment/bedrockgateway -n adp-gateway
+    else
+      echo "Gateway pod template already matches the release; checking rollout..."
     fi
-    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s \
+    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=600s \
       || fail "Gateway rollout failed. Check: kubectl describe deployment/bedrockgateway -n adp-gateway"
 
     # Post-rollout health check (§2)

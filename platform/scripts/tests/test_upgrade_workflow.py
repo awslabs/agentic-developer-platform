@@ -15,6 +15,34 @@ spec.loader.exec_module(network)
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_gateway_retry_does_not_restart_unchanged_pods(self):
+        source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
+        start = source.index('  if [ "$UPDATE_MODE" = true ]; then', source.index('DEPLOYMENT_APPLY_RESULT='))
+        block = source[start:source.index('    # Post-rollout health check', start)] + '  fi\n'
+        stub = '''set -euo pipefail
+fail() { echo "$1" >&2; exit 1; }
+kubectl() {
+  case "$1 $2" in
+    'get deployment/bedrockgateway') printf '%s' "$GATEWAY_IMAGE" ;;
+    'rollout restart') echo restarted ;;
+    'rollout status') echo ready ;;
+    'set image') echo set-image ;;
+  esac
+}
+'''
+        for secret, configmap, deployment, restart in (
+                ('unchanged', 'unchanged', 'unchanged', False),
+                ('unchanged', 'configured', 'unchanged', True),
+                ('configured', 'unchanged', 'configured', False)):
+            with self.subTest(secret=secret, configmap=configmap, deployment=deployment):
+                env = dict(os.environ, UPDATE_MODE='true', GATEWAY_IMAGE='target-image',
+                           SECRET_APPLY_RESULT=secret, CONFIGMAP_APPLY_RESULT=configmap,
+                           DEPLOYMENT_APPLY_RESULT=deployment)
+                result = subprocess.run(['bash', '-c', stub + block], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual('restarted' in result.stdout, restart)
+                self.assertIn('ready', result.stdout)
+
     def test_upgrade_tfvars_reject_foreign_account_before_plan(self):
         helper = ROOT / "platform/scripts/terraform-update.sh"
         with tempfile.TemporaryDirectory() as tmp:
