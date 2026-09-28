@@ -67,7 +67,7 @@ COPY verify.py tarfile_regression.py verify_crypto.py /opt/adp-security/high-dep
 RUN python /opt/adp-security/high-dependencies/verify.py \
     && python /opt/adp-security/high-dependencies/verify_crypto.py > /opt/adp-security/high-dependencies/crypto-acceptance.json
 
-FROM eclipse-temurin:17-jdk@sha256:b64592d40959b4d13b218f6b06b9ab219ff8aa3dad61efd3b5f519ba4d72ef92 AS java-test
+FROM public.ecr.aws/docker/library/eclipse-temurin:17-jdk@sha256:b64592d40959b4d13b218f6b06b9ab219ff8aa3dad61efd3b5f519ba4d72ef92 AS java-test
 COPY --from=patched-runtime /usr/local/lib/python3.10/site-packages/ray/jars/ray_dist.jar /test/ray.jar
 COPY --from=vastai-builder /usr/local/lib/python3.10/site-packages/ray/jars/ray_dist.jar /test/baseline.jar
 COPY HttpCoreRegression.java /test/

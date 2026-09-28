@@ -117,7 +117,7 @@ def test_whole_original_join_and_frozen_source(case, tmp_path, capsys):
     )
     revision = git("rev-parse", "HEAD")
     candidate = documents[record["file"]]["content_sha256"]
-    digest = hashlib.sha1(candidate.encode()).hexdigest()
+    digest = hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest()
     line = next(i for i, s in enumerate(text.splitlines(), 1) if candidate in s)
     record.update(
         selector="detect-secrets|" + record["file"] + "|ri=0",

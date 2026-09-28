@@ -11,6 +11,18 @@ ROOT_DIR="${1:-.}"
 OUTPUT="${2:-/tmp/adp-source.zip}"
 
 cd "$ROOT_DIR"
+# Repository scans discover targets throughout the committed tree, including
+# historical recipes under docs/. Archive that exact tree, not deployment roots
+# or untracked/local outputs, so discovery and CodeBuild receive the same inputs.
+if [[ "${3:-}" == "--security-scan" ]]; then
+  git archive --format=zip --output="$OUTPUT" HEAD
+  echo "$OUTPUT"
+  exit 0
+fi
+if [[ -n "${3:-}" ]]; then
+  echo "Unknown source archive mode" >&2
+  exit 2
+fi
 # Include codebuild/ when present so checked-in buildspecs reach CodeBuild.
 INCLUDE_DIRS=(platform/ modules/ environments/ libs/)
 [ -d codebuild ] && INCLUDE_DIRS+=(codebuild/)

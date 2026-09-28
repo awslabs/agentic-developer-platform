@@ -466,7 +466,7 @@ jobs:
     runs-on: arc-runner-org
     environment: adp-scan-dev
     needs: [context, discover-dockerfiles]
-    timeout-minutes: 105
+    timeout-minutes: 165
     permissions:
       contents: read
       id-token: write
@@ -844,7 +844,7 @@ jobs:
     runs-on: arc-runner-org
     environment: adp-scan-dev
     needs: [context, discover-dockerfiles]
-    timeout-minutes: 105
+    timeout-minutes: 165
     permissions:
       contents: read
       id-token: write

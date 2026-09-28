@@ -76,7 +76,7 @@ def verify(source, scan_path, audit_path, receipt_path):
     candidates = {}
     for group in audit:
         candidate = group["secrets"]
-        digest = hashlib.sha1(candidate.encode()).hexdigest()
+        digest = hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest()
         for line in group["lines"]:
             candidates[group["filename"], int(line), digest] = candidate
     blobs = {}
@@ -99,7 +99,7 @@ def verify(source, scan_path, audit_path, receipt_path):
         require(record["git_object_type"] == "commit", "Only source commits reviewed")
         body = git(source, "cat-file", "commit", candidate)
         actual = hashlib.sha1(
-            b"commit " + str(len(body)).encode() + b"\0" + body
+            b"commit " + str(len(body)).encode() + b"\0" + body, usedforsecurity=False
         ).hexdigest()
         require(
             actual == candidate, "Git commit bytes do not reproduce object identifier"

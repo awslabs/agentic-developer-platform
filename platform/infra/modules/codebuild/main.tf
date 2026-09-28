@@ -100,13 +100,14 @@ locals {
     }
     "grype-scan" = {
       buildspec      = "codebuild/bs-grype-scan.yml"
-      build_timeout  = 90
+      build_timeout  = 150
       scan_upload    = true
       privileged     = true
       privileged_why = "scan_security_images.py builds/pulls each scan target with docker before grype reads it"
     }
     "syft-scan" = {
       buildspec      = "codebuild/bs-syft-scan.yml"
+      build_timeout  = 150
       scan_upload    = true
       privileged     = true
       privileged_why = "scan_security_images.py builds/pulls each scan target with docker before syft reads it"

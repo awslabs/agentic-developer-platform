@@ -1,5 +1,6 @@
 """Repository coding cannot turn caller snapshots into unchecked authority."""
 
+import base64
 import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -48,7 +49,8 @@ def test_snapshot_exact_repo_scope_path_and_blob():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("foreign", [False, True])
-async def test_verify_repository_ownership_and_immutable_files(monkeypatch, foreign):
+@pytest.mark.parametrize("content_case", ["valid", "different", "missing", "invalid_base64", "wrong_encoding"])
+async def test_verify_repository_ownership_and_immutable_files(monkeypatch, foreign, content_case):
     value = snapshot()
     monkeypatch.setattr(repo.github, "resolve_installation_for_repo", AsyncMock(return_value=123))
     monkeypatch.setattr(repo.github, "verify_installation_ownership", AsyncMock(return_value=True))
@@ -67,12 +69,19 @@ async def test_verify_repository_ownership_and_immutable_files(monkeypatch, fore
         elif "/contents/" in path:
             assert request.url.params["ref"] == value["commit_sha"]
             body = {"type": "file", "path": "cli/main.py", "sha": "0" * 40 if foreign else value["files"][0]["blob_sha"]}
+            if content_case != "missing":
+                content = "different bytes" if content_case == "different" else value["files"][0]["content"]
+                body.update(encoding="base64", content=base64.b64encode(content.encode()).decode() + "\n")
+            if content_case == "invalid_base64":
+                body["content"] = "!invalid!"
+            if content_case == "wrong_encoding":
+                body["encoding"] = "none"
         else:
             body = {"id": 42, "full_name": "owner/repo"}
         return httpx.Response(200, json=body)
 
     async with httpx.AsyncClient(base_url="https://api.github.com", transport=httpx.MockTransport(respond)) as client:
-        if foreign:
+        if foreign or content_case != "valid":
             with pytest.raises(errors.TaskApiError):
                 await repo.verify_snapshot(value, caller=SimpleNamespace(tenant_id="tenant"), db=object(), client=client)
         else:

@@ -15,7 +15,8 @@
 # We deliberately do NOT copy zoekt since the parser doesn't need it.
 
 # Stage 2: SCIP toolchain
-FROM node:22.23.0-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS node-release
+FROM 879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:f5928de2bc4f007f0e7b7becf502d2f2b750542d08fb3ad5577411b9ad6cf8e2 AS high-security-tools
+FROM node:22.23.3-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS node-release
 FROM python:3.13-slim AS parser
 
 # Install system dependencies for SCIP indexers
@@ -36,7 +37,7 @@ RUN test ! -e /usr/bin/node && ln -s /usr/local/bin/node /usr/bin/node \
     && rm /tmp/npm.tgz \
     && ln -s /usr/lib/node_modules/npm/bin/npm-cli.js /usr/bin/npm \
     && ln -s /usr/lib/node_modules/npm/bin/npx-cli.js /usr/bin/npx \
-    && test "$(node --version)" = v22.23.0 \
+    && test "$(node --version)" = v22.23.3 \
     && test "$(npm --version)" = 11.20.0
 
 # Install SCIP indexers via npm
@@ -45,12 +46,16 @@ RUN npm install -g --prefix /usr \
         @sourcegraph/scip-typescript@0.4.0 \
     && npm cache clean --force
 
+# SCIP Python embeds a native TypeScript compiler; retain ingestion's tested
+# compiler build with fixed x/text rather than npm's affected bundled binary.
+COPY --from=high-security-tools /bin/tsc /usr/lib/node_modules/@sourcegraph/scip-python/node_modules/@typescript/typescript-linux-x64/lib/tsc
+
 # Install Go 1.26.8 and scip-go (#6122)
 RUN curl -fsSL https://go.dev/dl/go1.26.8.linux-amd64.tar.gz \
     | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"
-RUN GOBIN=/usr/local/bin go install github.com/scip-code/scip-go/cmd/scip-go@v0.2.7 \
-    && rm -rf /root/go
+# Use the same reviewed scip-go build as ingestion.
+COPY --from=high-security-tools /bin/scip-go /usr/local/bin/scip-go
 
 # Install Python dependencies — ONLY what the parser needs (#6122: pinned)
 RUN pip install --no-cache-dir \

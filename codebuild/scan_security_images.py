@@ -63,6 +63,22 @@ def authenticate_registry(image):
     )
 
 
+def authenticate_dockerfile(path):
+    """Log in for literal private FROM/COPY/ARG references as well as build args."""
+    # Match only AWS registry hostnames; no credential is sent to arbitrary hosts.
+    # Docker expands supplied build args separately (authenticated by scan()).
+    source = "\n".join(
+        line for line in path.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    registries = set(re.findall(
+        r"(?<![A-Za-z0-9.-])([0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?)/",
+        source,
+    ))
+    for registry in sorted(registries):
+        authenticate_registry(registry + "/")
+
+
 def scanner_metadata(descriptor_path, output):
     """Publish only matching policy and DB provenance, never registry configuration."""
     document = json.loads(descriptor_path.read_text())
@@ -175,6 +191,7 @@ def scan(target, tool, output, root):
         for value in build_args.values():
             authenticate_registry(value)
         prepare(target, root)
+        authenticate_dockerfile(root / target["dockerfile"])
         options = [
             item
             for name, value in sorted(build_args.items())
@@ -194,7 +211,9 @@ def scan(target, tool, output, root):
                 image,
                 target["context"],
             ],
-            timeout=600,
+            # Cold runner images compile Terraform and Kaniko from source.
+            # Keep a finite per-build bound inside the 150-minute project cap.
+            timeout=1800,
             cwd=root,
         )
     else:

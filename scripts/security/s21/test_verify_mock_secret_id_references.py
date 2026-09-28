@@ -119,7 +119,7 @@ def test_exact_line_and_complete_candidate_required():
 
 @pytest.fixture
 def private_fixture(tmp_path, monkeypatch):
-    digest = hashlib.sha1(REFERENCE.encode()).hexdigest()
+    digest = hashlib.sha1(REFERENCE.encode(), usedforsecurity=False).hexdigest()
     record = dict(
         RECORD,
         file=verifier.TEST_FILE,

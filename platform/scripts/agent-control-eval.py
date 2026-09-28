@@ -8523,7 +8523,7 @@ class Driver:
         if not isinstance(blob, dict) or blob.get("path") != path or blob.get("ref") != merge_sha:
             raise AssertionError("file readback must use the PR merge revision and target path")
         content = after.encode('utf-8')
-        blob_sha = hashlib.sha1(b'blob ' + str(len(content)).encode('ascii') + b'\0' + content).hexdigest()
+        blob_sha = hashlib.sha1(b'blob ' + str(len(content)).encode('ascii') + b'\0' + content, usedforsecurity=False).hexdigest()
         if blob.get("content") != after or blob.get("sha") != blob_sha:
             raise AssertionError("merged file content or Git blob digest differs from the expected artifact")
         checks = record.get("target_test_runs")

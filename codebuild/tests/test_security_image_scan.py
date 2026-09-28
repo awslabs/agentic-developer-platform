@@ -116,6 +116,10 @@ def test_inventory_covers_all_source_components_and_pinned_runtime(source):
 def test_all_scope_inventory_uses_production_contexts_and_preparation():
     targets = {target["dockerfile"]: target for target in discover(ROOT)}
     expected = {
+        "modules/domain-apps/cyber/tools/Dockerfile": (
+            ".", {"modules/tools/adp_tools", "modules/domain-apps/cyber/tools/cyber_tools",
+                  "modules/domain-apps/cyber/agent/skills/url-analysis"},
+        ),
         "modules/agent-context/images/context-mcp/Dockerfile": (
             "modules/agent-context/images/context-mcp",
             {"door/", "personal_context/", "security-stdlib/"},
@@ -483,6 +487,8 @@ def test_public_registry_does_not_request_ecr_credentials(monkeypatch):
      ["isolated_parser.py", "parser_manifest.py", "scip_indexer.py", "scip_proto", "lang_go.py"]),
     ("modules/domain-apps/cyber/browser/Dockerfile", ".",
      ["modules/domain-apps/cyber/browser/requirements.txt", "modules/domain-apps/cyber/agent/skills/url-analysis", "modules/tools/agentcore/agentcore_tools"]),
+    ("modules/tools/validation/Dockerfile", ".",
+     ["modules/tools/adp_tools", "modules/tools/validation/validation_tools", "modules/agent-factory/agent-worker-image/lib/codex_validation.py"]),
     ("modules/tools/agentcore/Dockerfile", ".",
      ["modules/tools/adp_tools", "modules/tools/agentcore/agentcore_tools"]),
     ("modules/domain-apps/cyber/workers/Dockerfile", "modules/domain-apps/cyber",
@@ -495,6 +501,7 @@ def test_new_image_contexts_contain_actual_copy_inputs(dockerfile, context, inpu
 
 
 @pytest.mark.parametrize("dockerfile,arg,variable", [
+    ("modules/agent-factory/codex-harness/test/fixtures/detached-checks/Dockerfile", "BASE_IMAGE", "SECURITY_EXECUTOR_PYTHON_IMAGE"),
     ("modules/domain-apps/superplane/tests/acceptance/workloads/Dockerfile", "PYTORCH_IMAGE", "SECURITY_PYTORCH_IMAGE"),
     ("platform/automation-infra/Dockerfile", "RUNNER_IMAGE", "SECURITY_RUNNER_IMAGE"),
 ])
@@ -559,3 +566,87 @@ def test_metadata_missing_required_provenance_fails(tmp_path, missing):
     path.write_text(json.dumps(document))
     with pytest.raises(ValueError, match="descriptor"):
         runner.scanner_metadata(path, tmp_path / "metadata.json")
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_literal_private_dockerfile_bases_authenticated_before_build(tmp_path, monkeypatch, failure):
+    registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+    (tmp_path / "Dockerfile").write_text(
+        f"FROM {registry}/base@sha256:" + "a" * 64 + " AS base\n"
+        f"COPY --from={registry}/payload@sha256:" + "b" * 64 + " /src /dst\n"
+    )
+    calls = []
+
+    def login(image):
+        calls.append(("login", image))
+        if failure:
+            raise subprocess.CalledProcessError(1, ["docker", "login"])
+
+    def execute(args, **kwargs):
+        assert args[:2] == ["docker", "build"]
+        calls.append(("build", None))
+        raise RuntimeError("authenticated build reached")
+
+    monkeypatch.setattr(runner, "authenticate_registry", login)
+    monkeypatch.setattr(runner, "command", execute)
+    target = {"name": "private", "image": "-", "dockerfile": "Dockerfile", "context": "."}
+    with pytest.raises(subprocess.CalledProcessError if failure else RuntimeError):
+        runner.scan(target, "grype", tmp_path / "scan.sarif", tmp_path)
+    assert calls == [("login", registry + "/")] + ([] if failure else [("build", None)])
+
+
+def test_public_dockerfile_and_comments_do_not_request_private_credentials(tmp_path, monkeypatch):
+    path = tmp_path / "Dockerfile"
+    path.write_text("FROM public.ecr.aws/docker/library/python:3.13\n"
+                    "# FROM 123456789012.dkr.ecr.us-east-1.amazonaws.com/unused\n")
+    monkeypatch.setattr(runner, "authenticate_registry", lambda *_: pytest.fail("unexpected login"))
+    runner.authenticate_dockerfile(path)
+
+
+
+def test_scan_archive_preserves_committed_targets_outside_deployment_roots(tmp_path):
+    import zipfile
+
+    repo = tmp_path / "source"
+    recipe = repo / "docs/security/evidence/Dockerfile"
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text("FROM scratch\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], check=True)
+    # The scan source must stay bound to the verified commit, excluding local
+    # changes and files created after checkout.
+    recipe.write_text("FROM unreviewed:latest\n")
+    (repo / "local-output").write_text("not source")
+    archive = tmp_path / "source.zip"
+    subprocess.run(["bash", str(ROOT / "platform/scripts/zip-source.sh"),
+                    str(repo), str(archive), "--security-scan"], check=True)
+    with zipfile.ZipFile(archive) as source:
+        assert source.read("docs/security/evidence/Dockerfile") == b"FROM scratch\n"
+        assert "local-output" not in source.namelist()
+
+
+@pytest.mark.parametrize("project,mode", [
+    ("adp-dev-grype-scan", ["--security-scan"]),
+    ("adp-dev-syft-scan", ["--security-scan"]),
+    ("adp-dev-gateway-build", []),
+])
+def test_codebuild_action_selects_full_scan_archive_only_for_scanners(tmp_path, project, mode):
+    import os
+
+    action = yaml.safe_load((ROOT / ".github/actions/codebuild-run/action.yml").read_text())
+    upload = next(step for step in action["runs"]["steps"] if step.get("id") == "upload")
+    lines = upload["run"].splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("ARCHIVE_ARGS="))
+    end = next(i for i in range(start, len(lines)) if lines[i].startswith('bash "${GITHUB_WORKSPACE}/platform/scripts/zip-source.sh"'))
+    workspace = tmp_path / "workspace with spaces"
+    script = workspace / "platform/scripts/zip-source.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text('printf \'%s\\n\' "$@" > "$CAPTURE"\n')
+    capture = tmp_path / "arguments"
+    archive = tmp_path / "archive with spaces.zip"
+    subprocess.run(["bash", "-c", "\n".join(lines[start:end + 1])], check=True,
+                   env={**os.environ, "PROJECT_NAME": project, "GITHUB_WORKSPACE": str(workspace),
+                        "ARCHIVE": str(archive), "CAPTURE": str(capture)})
+    assert capture.read_text().splitlines() == [str(workspace), str(archive), *mode]

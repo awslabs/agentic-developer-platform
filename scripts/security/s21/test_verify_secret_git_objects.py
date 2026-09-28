@@ -55,7 +55,7 @@ def case(tmp_path):
         "Synthetic receipt",
     )
     revision = git("rev-parse", "HEAD")
-    digest = hashlib.sha1(candidate.encode()).hexdigest()
+    digest = hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest()
     scan = {
         "results": {
             "receipt.json": [
@@ -152,7 +152,7 @@ def test_inexact_original_or_context_fails(case, mutation):
 def test_nonexistent_object_fails_without_using_source_as_substitute(case):
     _, scan, audit, receipt, _, run = case
     candidate = "f" * 40
-    digest = hashlib.sha1(candidate.encode()).hexdigest()
+    digest = hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest()
     scan["results"]["receipt.json"][0]["hashed_secret"] = digest
     audit["results"][0]["secrets"] = candidate
     receipt["verified_records"][0]["candidate_hash_prefix"] = digest[:16]

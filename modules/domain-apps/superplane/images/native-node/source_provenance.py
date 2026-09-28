@@ -44,7 +44,7 @@ def measure(root, name):
     else:
         raise image.ImageRefused("special source file")
     sha = hashlib.sha256()
-    blob = hashlib.sha1(b"blob " + str(size).encode() + b"\0")
+    blob = hashlib.sha1(b"blob " + str(size).encode() + b"\0", usedforsecurity=False)
     if payload is not None:
         sha.update(payload)
         blob.update(payload)
@@ -78,7 +78,8 @@ def tree_id(files):
                 mode.encode() + b" " + os.fsencode(name) + b"\0" + bytes.fromhex(oid)
             )
         return hashlib.sha1(
-            b"tree " + str(len(payload)).encode() + b"\0" + payload
+            b"tree " + str(len(payload)).encode() + b"\0" + payload,
+            usedforsecurity=False,
         ).hexdigest()
 
     return encode(tree)

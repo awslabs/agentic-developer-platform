@@ -47,7 +47,7 @@ def fixture(
     ).strip()
     document = tmp_path / "public.html"
     document.write_text(f"<p>Example: <code>{document_value or candidate}</code></p>")
-    hashed = hashlib.sha1(candidate.encode()).hexdigest()
+    hashed = hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest()
     scan = tmp_path / "scan.json"
     scan.write_text(
         json.dumps(

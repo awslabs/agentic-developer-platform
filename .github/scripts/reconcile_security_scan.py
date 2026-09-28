@@ -60,8 +60,14 @@ def only_files(directory: Path, pattern: str) -> set[str]:
 
 
 def validate_findings(root: Path, expected_images: set[str]):
+    # Pinned Checkov emits results_sarif.sarif inside its output directory;
+    # the publisher flattens that directory. Also accept the historical name,
+    # but never choose between competing reports or silently skip an extra one.
+    checkov_files = only_files(root / "checkov", "*.sarif")
+    if len(checkov_files) != 1 or not checkov_files <= {"checkov-results.sarif", "results_sarif.sarif"}:
+        raise ValueError("Checkov must supply exactly one recognized SARIF report")
+    require_sarif(root / "checkov" / next(iter(checkov_files)))
     sarif_reports = {
-        "checkov": "checkov-results.sarif",
         "semgrep": "semgrep-results.sarif",
         "bandit": "bandit-results.sarif",
     }
@@ -152,13 +158,51 @@ def observed_results(evidence_root: Path, provenance_output: Path, source_revisi
         for tool, digest in digests.items():
             path = evidence_root / tool / "provenance" / f"{name}.json"
             provenance = load_json(path)
-            if provenance != {
-                "artifact_sha256": coverage[tool][name].get("artifact_sha256"),
+            item = coverage[tool][name]
+            expected = {
+                "artifact_sha256": item.get("artifact_sha256"),
                 "digest": digest,
                 "name": name,
                 "source_revision": source_revision,
                 "tool": tool,
-            } or not re.fullmatch(r"[0-9a-f]{64}", provenance["artifact_sha256"] or ""):
+            }
+            evidence_suffixes = {
+                "raw_artifact_sha256": ".raw.sarif",
+                "suppression_summary_sha256": ".suppression-summary.json",
+                "scanner_metadata_sha256": ".scanner-metadata.json",
+            }
+            extended = {"build_args", *evidence_suffixes}
+            if not isinstance(provenance, dict):
+                raise ValueError(f"invalid {tool} provenance for {name}")
+            # Preserve legacy receipts, but require the complete extended schema
+            # whenever either coverage or provenance claims the newer evidence.
+            if extended.intersection(provenance) or extended.intersection(item):
+                build_args = item.get("build_args")
+                if not isinstance(build_args, dict) or any(
+                    not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key)
+                    or not isinstance(value, str)
+                    or not re.fullmatch(r"[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}", value)
+                    or value.endswith("sha256:" + "0" * 64)
+                    for key, value in build_args.items()
+                ):
+                    raise ValueError(f"invalid {tool} build inputs for {name}")
+                expected["build_args"] = build_args
+                for field, suffix in evidence_suffixes.items():
+                    checksum = item.get(field)
+                    expected[field] = checksum
+                    if tool == "syft":
+                        if checksum is not None:
+                            raise ValueError(f"unexpected Syft {field} for {name}")
+                        continue
+                    artifact_path = evidence_root / tool / "artifacts" / f"{name}{suffix}"
+                    if (
+                        not isinstance(checksum, str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+                        or not artifact_path.is_file()
+                        or hashlib.sha256(artifact_path.read_bytes()).hexdigest() != checksum
+                    ):
+                        raise ValueError(f"invalid {tool} {field} evidence for {name}")
+            if provenance != expected or not re.fullmatch(r"[0-9a-f]{64}", str(provenance.get("artifact_sha256", ""))):
                 raise ValueError(f"invalid {tool} provenance for {name}")
             suffix = ".sarif" if tool == "grype" else ".cdx.json"
             artifact = evidence_root / tool / "artifacts" / f"{name}{suffix}"

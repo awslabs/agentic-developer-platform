@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM public.ecr.aws/docker/library/python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
 RUN groupadd -g 1001 agent && useradd -u 1001 -g agent -m agent
 WORKDIR /app
 COPY modules/domain-apps/cyber/browser/requirements.txt /tmp/requirements.txt

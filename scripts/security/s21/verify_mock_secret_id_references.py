@@ -308,7 +308,7 @@ def verify(source, scan_path, audit_path, receipt_path):
     audit = json.loads(audit_path.read_text())["results"]
     candidates = {}
     for group in audit:
-        digest = hashlib.sha1(group["secrets"].encode()).hexdigest()
+        digest = hashlib.sha1(group["secrets"].encode(), usedforsecurity=False).hexdigest()
         for line in group["lines"]:
             candidates[group["filename"], int(line), digest] = group["secrets"]
     fixture = git(source, "show", revision + ":" + TEST_FILE)

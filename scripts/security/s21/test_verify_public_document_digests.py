@@ -133,7 +133,7 @@ def test_verifier_requires_full_original_join_and_index(public_document, monkeyp
     artifacts.mkdir()
     (directory / descriptor["file"]).rename(artifacts / descriptor["file"])
     candidate = hashlib.sha256(content).hexdigest()
-    digest = hashlib.sha1(candidate.encode()).hexdigest()
+    digest = hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest()
     text = json.dumps({"url": URL, "sha256": candidate}, indent=2)
     revision = "1" * 40
 

@@ -735,3 +735,63 @@ def test_s21_handoff_binds_dispatch_ref_and_selects_run_by_correlation():
         '.correlation == $correlation',
     ):
         assert binding in instructions
+
+
+def test_checkov_current_publisher_filename_is_accepted(tmp_path):
+    valid_findings_tree(tmp_path)
+    (tmp_path / "checkov/checkov-results.sarif").rename(tmp_path / "checkov/results_sarif.sarif")
+    reconcile.validate_findings(tmp_path, {"image"})
+
+
+def test_competing_checkov_reports_are_rejected(tmp_path):
+    valid_findings_tree(tmp_path)
+    write_json(tmp_path / "checkov/results_sarif.sarif", {"version": "2.1.0", "runs": [{"results": []}]})
+    with pytest.raises(ValueError, match="exactly one"):
+        reconcile.validate_findings(tmp_path, {"image"})
+
+
+@pytest.mark.parametrize("tamper", [None, "raw", "summary", "metadata", "build_args", "extra", "strip"])
+def test_extended_scanner_provenance_checks_all_evidence(tmp_path, tamper):
+    revision = "a" * 40
+    suffixes = {
+        "raw_artifact_sha256": ".raw.sarif",
+        "suppression_summary_sha256": ".suppression-summary.json",
+        "scanner_metadata_sha256": ".scanner-metadata.json",
+    }
+    for tool in ("grype", "syft"):
+        write_image_evidence(tmp_path, tool, revision, "sha256:" + "b" * 64)
+        path = tmp_path / tool / "provenance/image.json"
+        provenance = json.loads(path.read_text())
+        coverage_path = tmp_path / tool / "coverage.json"
+        coverage = json.loads(coverage_path.read_text())
+        extras = {"build_args": {"PYTHON_IMAGE": "python@sha256:" + "c" * 64}}
+        for field, suffix in suffixes.items():
+            extras[field] = None
+            if tool == "grype":
+                artifact = tmp_path / tool / "artifacts" / ("image" + suffix)
+                write_json(artifact, {"synthetic": suffix})
+                extras[field] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        provenance.update(extras)
+        coverage["targets"][0].update(extras)
+        write_json(path, provenance)
+        write_json(coverage_path, coverage)
+    path = tmp_path / "grype/provenance/image.json"
+    provenance = json.loads(path.read_text())
+    if tamper in ("raw", "summary", "metadata"):
+        suffix = {"raw": ".raw.sarif", "summary": ".suppression-summary.json", "metadata": ".scanner-metadata.json"}[tamper]
+        (tmp_path / "grype/artifacts" / ("image" + suffix)).write_text("tampered")
+    elif tamper == "build_args":
+        provenance["build_args"] = {"PYTHON_IMAGE": "python@sha256:" + "d" * 64}
+    elif tamper == "extra":
+        provenance["unexpected"] = True
+    elif tamper == "strip":
+        for key in ("build_args", *suffixes):
+            del provenance[key]
+    write_json(path, provenance)
+    if tamper:
+        with pytest.raises(ValueError):
+            reconcile.observed_results(tmp_path, tmp_path / "out", revision, {"image"}, True)
+    else:
+        result = reconcile.observed_results(tmp_path, tmp_path / "out", revision, {"image"}, True)
+        assert result["coverage_complete"] is True
+        assert json.loads((tmp_path / "out/grype-image.json").read_text()) == provenance

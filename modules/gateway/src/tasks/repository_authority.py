@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -77,7 +79,9 @@ def validate_snapshot(value, scopes):
         if not any(item["path"] == prefix or item["path"].startswith(prefix.rstrip("/") + "/") for prefix in prefixes):
             raise errors.disallowed_scope("Coding snapshot file is outside the enrolled paths.")
         raw = item["content"].encode("utf-8")
-        digest = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        # Git object IDs are a compatibility check; verify_snapshot compares
+        # the actual bytes fetched from the authenticated repository API.
+        digest = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False).hexdigest()
         if item["blob_sha"] != digest:
             raise errors.invalid_request("Coding snapshot file does not match its immutable blob.")
         seen.add(item["path"])
@@ -129,6 +133,17 @@ async def verify_snapshot(value, *, caller, db, client=None):
             metadata = await read(base + "/contents/" + quote(item["path"], safe="/") + "?ref=" + value["commit_sha"])
             if metadata.get("type") != "file" or metadata.get("sha") != item["blob_sha"] or metadata.get("path") != item["path"]:
                 raise errors.invalid_request("Repository file changed or is not the requested immutable blob.")
+            # SHA-1 alone is not a collision-resistant content binding. Compare
+            # the authenticated API payload, even when the Git object ID matches.
+            encoded = metadata.get("content")
+            if metadata.get("encoding") != "base64" or not isinstance(encoded, str):
+                raise errors.prerequisite_unavailable("Repository file content is unavailable.")
+            try:
+                actual = base64.b64decode("".join(encoded.split()), validate=True)
+            except (ValueError, binascii.Error):
+                raise errors.invalid_request("Repository file content is malformed.") from None
+            if actual != item["content"].encode("utf-8"):
+                raise errors.invalid_request("Repository file content does not match the submitted snapshot.")
     finally:
         if owned:
             await client.aclose()

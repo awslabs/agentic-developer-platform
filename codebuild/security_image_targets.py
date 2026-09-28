@@ -10,8 +10,15 @@ import yaml
 
 SUPERPLANE = Path("modules/domain-apps/superplane")
 BUILD_CONFIG = {
+    # This detached-check fixture requires only POSIX sh/coreutils. Reuse the
+    # reviewed scan Python base rather than leaving its required ARG empty.
+    "modules/agent-factory/codex-harness/test/fixtures/detached-checks/Dockerfile": {
+        "build_arg_env": {"BASE_IMAGE": "SECURITY_EXECUTOR_PYTHON_IMAGE"},
+    },
     "modules/tools/agentcore/Dockerfile": {"context": "."},
+    "modules/tools/validation/Dockerfile": {"context": "."},
     "modules/agent-context/images/parser/Dockerfile": {"context": "modules/agent-context/images/ingestion"},
+    "modules/domain-apps/cyber/tools/Dockerfile": {"context": "."},
     "modules/domain-apps/cyber/browser/Dockerfile": {"context": "."},
     "modules/domain-apps/cyber/workers/Dockerfile": {"context": "modules/domain-apps/cyber"},
     "modules/domain-apps/superplane/tests/acceptance/workloads/Dockerfile": {

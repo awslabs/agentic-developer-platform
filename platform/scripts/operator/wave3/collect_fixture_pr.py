@@ -45,7 +45,7 @@ def file_observation(repo, path, revision, fetch=gh_json):
     if raw.get('type') != 'file' or raw.get('path') != path or raw.get('encoding') != 'base64':
         raise ValueError('GitHub did not return the requested file')
     content = base64.b64decode(''.join(raw['content'].split()), validate=True)
-    digest = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\0' + content).hexdigest()
+    digest = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\0' + content, usedforsecurity=False).hexdigest()
     if raw.get('sha') != digest:
         raise ValueError('GitHub file bytes do not match their blob digest')
     return dict(repository=repo, path=path, ref=revision, sha=digest, content=content.decode('utf-8'), observed_at=now())

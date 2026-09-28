@@ -46,7 +46,7 @@ def fixture(tmp_path):
     artifact.write_text("changed artifact in frozen source")
     (source / "manifest.json").write_text(json.dumps({"sha256": candidate}))
     frozen = commit("frozen fixture")
-    candidate_hash = hashlib.sha1(candidate.encode()).hexdigest()
+    candidate_hash = hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest()
     scan = tmp_path / "scan.json"
     scan.write_text(
         json.dumps(

@@ -160,7 +160,7 @@ def verify(source, scan_path, audit_path, receipt_path):
     audited = {}
     for group in audit:
         candidate = group["secrets"]
-        candidate_sha1 = hashlib.sha1(candidate.encode()).hexdigest()
+        candidate_sha1 = hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest()
         for line in group["lines"]:
             audited[(group["filename"], int(line), candidate_sha1)] = candidate
     records = receipt["verified_records"]
@@ -199,7 +199,7 @@ def verify(source, scan_path, audit_path, receipt_path):
         assert len(originals) == 1, "Ambiguous original scan selector"
         original = originals[0]
         candidate = audited[(record["file"], record["line"], original["hashed_secret"])]
-        assert hashlib.sha1(candidate.encode()).hexdigest() == original["hashed_secret"]
+        assert hashlib.sha1(candidate.encode(), usedforsecurity=False).hexdigest() == original["hashed_secret"]
         lines = frozen_bytes(record["file"]).decode().splitlines()
         assert candidate in lines[record["line"] - 1], (
             "Candidate missing at exact frozen line"

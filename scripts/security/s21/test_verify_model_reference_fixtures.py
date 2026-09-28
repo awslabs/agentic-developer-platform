@@ -112,7 +112,7 @@ def test_exact_original_scan_and_full_audit_join(consumers, tmp_path, monkeypatc
         file="fixture.py",
         selector="detect-secrets|fixture.py|ri=0",
         detector="Secret Keyword",
-        candidate_hash_prefix=hashlib.sha1(REFERENCE.encode()).hexdigest()[:16],
+        candidate_hash_prefix=hashlib.sha1(REFERENCE.encode(), usedforsecurity=False).hexdigest()[:16],
     )
     consumers["fixture.py"] = SOURCE
 
@@ -123,7 +123,7 @@ def test_exact_original_scan_and_full_audit_join(consumers, tmp_path, monkeypatc
         return consumers[path].encode()
 
     monkeypatch.setattr(verifier, "git", frozen_git)
-    digest = hashlib.sha1(REFERENCE.encode()).hexdigest()
+    digest = hashlib.sha1(REFERENCE.encode(), usedforsecurity=False).hexdigest()
     scan = {
         "results": {
             "fixture.py": [

@@ -92,8 +92,11 @@ runs:
         export SOURCE_KEY SOURCE_REVISION
         ARCHIVE="${RUNNER_TEMP}/adp-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
 
-        bash "${GITHUB_WORKSPACE}/platform/scripts/zip-source.sh" \
-          "${GITHUB_WORKSPACE}" "$ARCHIVE"
+        ARCHIVE_ARGS=("${GITHUB_WORKSPACE}" "$ARCHIVE")
+        case "$PROJECT_NAME" in
+          adp-*-grype-scan|adp-*-syft-scan) ARCHIVE_ARGS+=(--security-scan) ;;
+        esac
+        bash "${GITHUB_WORKSPACE}/platform/scripts/zip-source.sh" "${ARCHIVE_ARGS[@]}"
 
         aws s3 cp "$ARCHIVE" \
           "s3://${STATE_BUCKET}/${SOURCE_KEY}" \
