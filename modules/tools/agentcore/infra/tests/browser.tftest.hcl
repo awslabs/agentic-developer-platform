@@ -61,6 +61,10 @@ run "browser_route_worker_and_consumer_are_scoped" {
     error_message = "Only one browser process may own interactive sessions."
   }
   assert {
+    condition     = anytrue([for env in kubernetes_deployment.browser[0].spec[0].template[0].spec[0].container[0].env : env.name == "AWS_DEFAULT_REGION" && env.value == "us-east-1"])
+    error_message = "Boto3 needs AWS_DEFAULT_REGION outside the Lambda runtime."
+  }
+  assert {
     condition     = aws_lambda_function.browser[0].environment[0].variables["ADP_TASK_BROWSER_HTTP_ENABLED"] == "false"
     error_message = "Provisioning the route must not admit paid Browser starts."
   }
