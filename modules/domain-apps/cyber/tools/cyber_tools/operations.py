@@ -8,7 +8,6 @@ CAPE credentials or S3 download capabilities.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import os
 import re
@@ -17,9 +16,7 @@ from urllib.parse import urlsplit
 
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field
 
-from adp_tools.contracts import TaskAttemptBody
 from adp_tools.storage import (
     base_item,
     payload_digest,
@@ -28,6 +25,8 @@ from adp_tools.storage import (
     serialize as _serialize,
 )
 from cyber_tools.backends import CyberBackends
+from agentcore_tools.contracts import CyberBody as CyberBody
+from agentcore_tools.url_contract import checked_url
 
 OPERATIONS = {
     "triage",
@@ -45,20 +44,9 @@ TERMINAL = {"completed", "failed", "cancelled", "not_started"}
 MAX_RESULT = 24000
 
 
-class CyberBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    schema_version: str = Field(pattern=r"^1\.0$")
-    attempt: TaskAttemptBody
-    operation_id: str = Field(
-        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-    )
-    operation: str
-    payload: dict
-
-
 def validate_payload(operation, payload):
     if operation == "search":
-        from cyber_tools.websearch import SearchInput
+        from agentcore_tools.websearch import SearchInput
         SearchInput.model_validate(payload)
         return
     if operation.startswith(("common_crawl_", "browser_")):
@@ -127,29 +115,6 @@ def owned_sample(uri, *, bucket, tenant, principal):
     ):
         raise HTTPException(403, "Cyber sample ownership refused")
     return "/".join(parts)
-
-
-def checked_url(url):
-    parsed = urlsplit(url)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.fragment
-    ):
-        raise HTTPException(422, "Invalid analysis URL")
-    hostname = parsed.hostname.lower()
-    if hostname == "localhost" or hostname.endswith(
-        (".localhost", ".internal", ".local")
-    ):
-        raise HTTPException(403, "Analysis destination refused")
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        return  # The guarded browser backend must also validate DNS and redirects.
-    if not address.is_global:
-        raise HTTPException(403, "Analysis destination refused")
 
 
 class CyberOperations:
@@ -651,7 +616,7 @@ class CyberOperations:
         elif operation == "result":
             result = self.backend.result(job)
         elif operation == "search":
-            from cyber_tools.websearch import search
+            from agentcore_tools.websearch import search
             def authorize_search():
                 self.task(identity)
                 if self.revalidate is not None and self.revalidate() != identity:

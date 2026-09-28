@@ -359,6 +359,7 @@ COPY --from=task-cyber-builder --chown=agent:agent /skills/ /app/task-agents/cyb
 
 # Trusted local tool adapters; source and execution stay outside the SDK process.
 COPY --chown=agent:agent modules/tools/adp_tools/ /app/adp_tools/
+COPY --chown=agent:agent modules/tools/agentcore/agentcore_tools/ /app/agentcore_tools/
 COPY --chown=agent:agent modules/domain-apps/cyber/tools/cyber_tools/ /app/cyber_tools/
 
 # Copy staged personas and skills

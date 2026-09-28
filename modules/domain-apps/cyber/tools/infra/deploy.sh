@@ -16,11 +16,13 @@ case "$mode" in
     vars_file=$(realpath "$3")
     plan_file=$(realpath -m "$4")
     terraform -chdir="$infra_dir" plan -input=false -var-file="$vars_file" -out="$plan_file"
+    terraform -chdir="$infra_dir" show -json "$plan_file" | jq -e '[.resource_changes[]? | select(.change.actions | index("delete"))] | length == 0' >/dev/null || { echo "Cyber plan deletes or replaces resources; stop for a reviewed migration" >&2; exit 2; }
     ;;
   apply)
     [[ $# -eq 3 && -f "$3" ]] || exit 2
     terraform -chdir="$infra_dir" init -input=false -backend-config="$backend_config"
     plan_file=$(realpath "$3")
+    terraform -chdir="$infra_dir" show -json "$plan_file" | jq -e '[.resource_changes[]? | select(.change.actions | index("delete"))] | length == 0' >/dev/null || { echo "Cyber plan deletes or replaces resources; stop for a reviewed migration" >&2; exit 2; }
     terraform -chdir="$infra_dir" apply -input=false "$plan_file"
     terraform -chdir="$infra_dir" output
     echo 'Infrastructure applied. Shared API owner must deploy the reviewed API configuration before this route is live.'
