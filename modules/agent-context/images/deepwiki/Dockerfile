@@ -109,6 +109,11 @@ COPY --from=curl-security /out/libcurl3t64-gnutls_8.22.0-0+adp1_amd64.deb /tmp/a
 RUN dpkg -i /tmp/adp-curl/*.deb && ldconfig && rm -rf /tmp/adp-curl
 COPY --from=curl-security /licenses/ /opt/adp-curl-security/
 
+# DeepWiki runs /opt/venv on /usr/local Python 3.11. Debian's unused
+# Python 3.13 interpreter is a separate vulnerable installation.
+COPY security/remove-unused-system-python.py /opt/deepwiki-security/remove-unused-system-python.py
+RUN python /opt/deepwiki-security/remove-unused-system-python.py
+
 # Override default config with our LiteLLM-proxy-aware configs
 # These point the "openai" provider at our LiteLLM proxy which routes to Bedrock
 COPY config/generator.json /app/api/config/generator.json

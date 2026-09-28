@@ -60,6 +60,14 @@ on:
         description: 'Ingestion full source SHA or sha256 digest (default: latest published digest)'
         required: false
         default: ''
+      deepwiki_only:
+        description: 'Promote only DeepWiki image, preserving all live service configuration'
+        type: boolean
+        default: false
+      deepwiki_expected_image:
+        description: 'Required for deepwiki_only: exact current full DeepWiki digest reference'
+        type: string
+        default: ''
       deepwiki_image_tag:
         description: 'DeepWiki source tag or sha256 digest (default: latest runtime digest)'
         required: false
@@ -80,7 +88,7 @@ jobs:
     environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
     timeout-minutes: 30
     # Manual dispatch always runs; auto (workflow_run) only on a successful build.
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    if: github.ref == 'refs/heads/main' && inputs.deepwiki_only != true && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
 
     permissions:
       contents: read
@@ -598,3 +606,53 @@ jobs:
             kubectl get pods -n ${{ env.NAMESPACE }} -o jsonpath='{range .items[*]}{.metadata.name}: {.spec.containers[0].image}{"\n"}{end}' 2>/dev/null || echo "Unable to query"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  promote-deepwiki:
+    name: Promote DeepWiki image only
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.deepwiki_only == true
+    runs-on: arc-runner-org
+    environment: adp-context-deploy-${{ inputs.environment || 'dev' }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+        with:
+          account_id: ${{ inputs.customer_account_id }}
+          environment: ${{ inputs.environment }}
+          customer_account_id: ${{ inputs.customer_account_id }}
+          customer_aws_label: ${{ inputs.customer_aws_label }}
+          customer_user_id: ${{ inputs.customer_user_id }}
+      - name: Promote verified DeepWiki image
+        env:
+          ADP_INPUT_DEEPWIKI_IMAGE_TAG: ${{ inputs.deepwiki_image_tag }}
+          DEEPWIKI_EXPECTED_IMAGE: ${{ inputs.deepwiki_expected_image }}
+        run: |
+          set -euo pipefail
+          test "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT_ID"
+          [[ "$ADP_INPUT_DEEPWIKI_IMAGE_TAG" =~ ^sha256:[0-9a-f]{64}$ ]]
+          export ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION"
+          DEEPWIKI_IMAGE=$(bash modules/agent-context/scripts/resolve-deepwiki-image.sh "$ADP_INPUT_DEEPWIKI_IMAGE_TAG")
+          export DEEPWIKI_IMAGE
+          python3 modules/agent-context/scripts/promote-deepwiki-image.py
+      - name: Retain promotion receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: deepwiki-promotion-receipt
+          path: deepwiki-promotion-receipt.json
+          if-no-files-found: error
