@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = ROOT / 'modules/tools/agentcore/infra/deploy.sh'
 
 
+@pytest.mark.parametrize('plan_target', ['confirmed', 'other_account', 'other_region', 'missing'])
 @pytest.mark.parametrize('actions,allowed', [(['no-op'], True), (['update'], True), (['delete'], False), (['delete', 'create'], False)])
-def test_saved_plan_guard_and_built_images_override_tfvars(tmp_path, actions, allowed):
+def test_saved_plan_guard_and_built_images_override_tfvars(tmp_path, actions, allowed, plan_target):
     account = '123456789012'
     image = account + '.dkr.ecr.us-east-1.amazonaws.com/tools@sha256:' + 'a' * 64
     bin_dir = tmp_path / 'bin'
@@ -31,14 +32,19 @@ if 'show' in sys.argv: print(os.environ['PLAN_JSON'])
     saved = tmp_path / 'saved.plan'
     saved.touch()
     calls = tmp_path / 'calls'
+    variables = {
+        'aws_account_id': {'value': '999999999999' if plan_target == 'other_account' else account},
+        'aws_region': {'value': 'eu-west-1' if plan_target == 'other_region' else 'us-east-1'},
+    } if plan_target != 'missing' else {}
     env = {**os.environ, 'PATH': str(bin_dir)+':'+os.environ['PATH'], 'EXPECTED_AWS_ACCOUNT_ID': account,
            'AWS_REGION': 'us-east-1', 'TF_VAR_image_uri': image, 'TF_VAR_browser_service_image': image, 'CALLS': str(calls),
-           'PLAN_JSON': json.dumps({'resource_changes': [{'change': {'actions': actions}}]})}
+           'PLAN_JSON': json.dumps({'variables': variables, 'resource_changes': [{'change': {'actions': actions}}]})}
     result = subprocess.run(['bash', str(SCRIPT), 'plan', str(backend), str(tfvars), str(saved)], env=env, capture_output=True)
     assert (result.returncode == 0) == allowed
     plan = next(json.loads(line) for line in calls.read_text().splitlines() if '"plan"' in line)
     assert '-var=aws_account_id='+account in plan and '-var=aws_region=us-east-1' in plan
     assert plan.index('-var=image_uri='+image) > plan.index('-var-file='+str(tfvars))
+    allowed = allowed and plan_target == 'confirmed'
     result = subprocess.run(['bash', str(SCRIPT), 'apply', str(backend), str(saved)], env=env, capture_output=True)
     assert (result.returncode == 0) == allowed
     applied = any('apply' in json.loads(line) for line in calls.read_text().splitlines())

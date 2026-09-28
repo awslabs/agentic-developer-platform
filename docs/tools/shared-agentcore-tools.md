@@ -85,7 +85,9 @@ builds both images in an existing Docker-capable CodeBuild project (no push)
 and produces a saved no-delete/no-replace plan. `apply` explicitly pushes source-SHA-tagged images, resolves digests and
 applies that saved no-delete/no-replace plan after environment approval. Built
 image digests and the confirmed account/region are passed as explicit plan
-arguments so tfvars cannot override them. Local use of `deploy.sh` requires
+arguments so tfvars cannot override them. Applying a saved plan also verifies
+its recorded account and region against the confirmed target; mismatched or
+missing target metadata is refused before apply. Local use of `deploy.sh` requires
 `EXPECTED_AWS_ACCOUNT_ID` and `AWS_REGION`. Neither
 mode publishes the shared API stage or enables new routes on merge. Supply
 `ADP_DEPLOY_ROLE_ARN`, `ADP_TOOLS_BUILD_BUCKET` and
