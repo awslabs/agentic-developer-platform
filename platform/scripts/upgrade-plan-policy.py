@@ -17,14 +17,13 @@ def routine(resource, module, account):
     order = change["actions"]
     address = resource["address"]
     if module == "platform" and address == "null_resource.aggressive_packer_nodepool":
-        # The marker now uses create_before_destroy. Terraform therefore skips
-        # its destroy provisioner on replacement and keeps the live NodePool
-        # while the new manifest is applied. Never allow the old delete-first
-        # plan, which removes the NodePool before recreating it.
+        # This marker has no destroy provisioner. Its delete-first replacement
+        # only retires Terraform state; the create step reapplies the manifest.
+        # Keep this exception tied to the exact marker and target cluster.
         old, new = before.get("triggers", {}), after.get("triggers", {})
         keys = {"manifest_sha", "cluster_name", "cluster_region"}
         return (resource.get("type") == "null_resource"
-                and order == ["create", "delete"]
+                and order == ["delete", "create"]
                 and set(old) == set(new) == keys
                 and old["cluster_name"] == new["cluster_name"]
                 and old["cluster_region"] == new["cluster_region"]
