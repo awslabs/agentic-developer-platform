@@ -56,3 +56,49 @@ the correction table and its audit records.
 
 Verify the report's credits against before/after Cloud Agents and invocation
 totals. Requests without durable evidence remain explicitly unresolved.
+
+### Operators with separate S3 read access
+
+The serving gateway may intentionally have write-only chat-log access. Do not
+add read permissions to that role for this repair. If the initial dry-run
+reports S3 `ClientError`, an operator with existing read access can export only
+pricing and attribution evidence:
+
+```sh
+python modules/gateway/scripts/gpt6-receipt-export.py export \
+  preview.json arguments.json receipts.json.gz
+```
+
+`arguments.json` is the same CLI argument array used for the dry-run. The
+operator must have the active ADP CLI session for the target organization and
+AWS credentials for the target account. The export checks both identities,
+reads only inaccessible request IDs, removes conversation contents, and records
+source ETags/version IDs. Review its failure count and save the printed SHA-256.
+
+Mount the gzip and helper in a private, immutable maintenance ConfigMap. Run
+with the deployed correction image and existing gateway database identity:
+
+```sh
+python /repair/gpt6-receipt-export.py run \
+  /receipts/receipts.json.gz EXPECTED_SHA256 /repair/arguments.json
+```
+
+Use server-side ConfigMap creation/application to avoid duplicating the export
+in a last-applied annotation. No operator credentials or presigned URLs belong
+in the Job. The adapter changes only the repair's receipt reader; account,
+SQL, pricing-decision and allocation checks still run. Review the resulting
+plan before creating a separate apply Job with its exact hash. Retain reports
+and remove temporary Jobs/ConfigMaps after verification. Missing objects remain
+skipped and must never be replaced with inferred evidence.
+
+### Request lookup index
+
+Migration 080 creates `ix_usage_org_request` concurrently, with bounded lock
+and statement timeouts and retry handling for an invalid interrupted index.
+Apply it before the historical repair: without it, each request lookup scans
+the organization's usage rows. An operator may run the migration's `upgrade`
+through Alembic Operations in a pinned maintenance Job before the regular
+release; the regular migration recognizes the valid index. Never stamp the
+revision manually. Protect temporary repair Jobs against voluntary node
+consolidation with `karpenter.sh/do-not-disrupt: "true"` and remove them after
+verification.

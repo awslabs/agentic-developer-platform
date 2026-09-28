@@ -86,6 +86,13 @@ class UsageLog(Base, TenantMixin):
 
     __table_args__ = (
         Index(
+            "ix_usage_org_request",
+            "org_id",
+            "request_id",
+            postgresql_where=text("request_id IS NOT NULL"),
+            sqlite_where=text("request_id IS NOT NULL"),
+        ),
+        Index(
             "ix_usage_persona_owner",
             "org_id",
             "preference_owner_kind",
