@@ -116,8 +116,6 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
         if action == Action.REPAIR.value and persona in {"developer", "agent-codex-reviewer"}:
             return Action.REPAIR
         if action == Action.REVIEW.value and persona in {"reviewer", "agent-codex-reviewer"}:
-            if persona == "agent-codex-reviewer" and execution.get("orchestration_review_repairs") == {"BOOL": True}:
-                return Action.REPAIR
             return Action.REVIEW
         return None
     if execution.get("wave_coordinator") == {"BOOL": True} and execution.get("coordinator_flow_id", {}).get("S"):
@@ -243,7 +241,14 @@ async def authorize_worker_credential(
     repo = execution.get("repo", {}).get("S")
     repository_id = execution.get("provider_repository_id", {}).get("N", "")
     scope = CredentialScope.UNSCOPABLE
-    permissions = policy_github_permissions(policy, action)
+    review_repairs = (
+        action is Action.REVIEW
+        and execution.get("persona") == {"S": "agent-codex-reviewer"}
+        and execution.get("orchestration_continuation_receipt")
+        and execution.get("orchestration_review_repairs") == {"BOOL": True}
+        and broker_path == "/internal/v1/github-installation-token"
+    )
+    permissions = policy_github_permissions(policy, Action.REPAIR if review_repairs else action)
     not_after = min(policy.expires_at, started + timedelta(seconds=policy.limits.max_wall_clock_seconds))
     if grant.expires_at is not None:
         not_after = min(not_after, grant.expires_at)
@@ -361,6 +366,16 @@ async def authorize_worker_credential(
         ),
         accepted_version,
     )
+    if decision.permitted and review_repairs:
+        # Repair adds a capability while retaining the independent review identity.
+        repair_decision = authorize_action(
+            context,
+            Action.REPAIR,
+            ResourceRef(repository_id=repo, org_id=grant.tenant_id, node_address=graph_address(node, flow_slug=flow.slug)),
+            accepted_version,
+        )
+        if not repair_decision.permitted:
+            return repair_decision
     if decision.permitted and scope is CredentialScope.USER_GRANTED:
         return WorkerCredentialDecision(
             permitted=True,
