@@ -44,8 +44,10 @@ resource "aws_ecr_repository" "agent_context_images" {
 }
 
 # -----------------------------------------------------------------------------
-# ECR Lifecycle Policies (match cyber-worker pattern: 7-day untagged expiry,
-# keep last 10 tagged)
+# ECR Lifecycle Policies
+# DeepWiki also stores digest-pinned build inputs: preserve tagged manifests so
+# a runtime publication cannot expire the curl packages required by its Dockerfile.
+# Other repositories retain their existing last-10 policy.
 # -----------------------------------------------------------------------------
 
 resource "aws_ecr_lifecycle_policy" "agent_context_images" {
@@ -53,7 +55,7 @@ resource "aws_ecr_lifecycle_policy" "agent_context_images" {
   repository = each.value.name
 
   policy = jsonencode({
-    rules = [
+    rules = concat([
       {
         rulePriority = 1
         description  = "Expire untagged images older than 7 days"
@@ -64,7 +66,8 @@ resource "aws_ecr_lifecycle_policy" "agent_context_images" {
           countNumber = 7
         }
         action = { type = "expire" }
-      },
+      }
+      ], each.key == "deepwiki" ? [] : [
       {
         rulePriority = 2
         description  = "Keep last 10 tagged images"
@@ -75,7 +78,7 @@ resource "aws_ecr_lifecycle_policy" "agent_context_images" {
         }
         action = { type = "expire" }
       }
-    ]
+    ])
   })
 }
 
