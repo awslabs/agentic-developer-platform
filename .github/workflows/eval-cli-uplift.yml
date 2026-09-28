@@ -286,7 +286,7 @@ jobs:
       # refuses a credential-shaped key structurally. Because it is layered under
       # the overlay, setting the real variables later silently takes precedence —
       # this needs no revert to hand control back.
-      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.dev.json
+      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json
 
     steps:
       - name: Refuse an untrusted ref
@@ -433,7 +433,7 @@ jobs:
         run: |
           set -euo pipefail
           ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
-          EXPECTED="$(python -c 'import json; print(json.load(open("tests/e2e/cli_uplift/config.example.json"))["platform_account"])')"
+          EXPECTED="$(python -c 'import os; from tests.e2e.cli_uplift import config; print(config.from_environment(os.environ)["platform_account"])')"
           echo "Actions role account: $ACCOUNT"
           if [ "$ACCOUNT" != "$EXPECTED" ]; then
             echo "::error::Role resolved to $ACCOUNT, not the approved platform account $EXPECTED."
@@ -611,7 +611,7 @@ jobs:
       # refuses a credential-shaped key structurally. Because it is layered under
       # the overlay, setting the real variables later silently takes precedence —
       # this needs no revert to hand control back.
-      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.dev.json
+      CLI_UPLIFT_EVAL_BINDINGS: tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json
     steps:
       - name: Refuse an untrusted ref
         # Identical to the evaluate job's gate, and deliberately BEFORE checkout:
@@ -680,7 +680,7 @@ jobs:
         run: |
           set -euo pipefail
           ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
-          EXPECTED="$(python -c 'import json; print(json.load(open("tests/e2e/cli_uplift/config.example.json"))["platform_account"])')"
+          EXPECTED="$(python -c 'import os; from tests.e2e.cli_uplift import config; print(config.from_environment(os.environ)["platform_account"])')"
           echo "Recovery role account: $ACCOUNT"
           if [ "$ACCOUNT" != "$EXPECTED" ]; then
             echo "::error::Recovery role resolved to $ACCOUNT, not the approved platform account $EXPECTED."

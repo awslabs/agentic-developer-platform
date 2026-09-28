@@ -9577,8 +9577,13 @@ def test_ci_points_both_jobs_at_the_same_reviewed_bindings_file():
         document["jobs"][job]["env"]["CLI_UPLIFT_EVAL_BINDINGS"]
         for job in ("evaluate", "recover")
     }
-    assert paths == {"tests/e2e/cli_uplift/bindings.dev.json"}
-    assert pathlib.Path(paths.pop()).is_file()
+    assert paths == {
+        "tests/e2e/cli_uplift/bindings.${{ inputs.environment || 'dev' }}.json"
+    }
+    for environment in ("dev", "pre-production"):
+        assert pathlib.Path(
+            f"tests/e2e/cli_uplift/bindings.{environment}.json"
+        ).is_file()
 
 
 def test_ci_fetches_release_history_and_defaults_to_login_checkpoint():
@@ -14041,3 +14046,26 @@ def test_artifact_download_persistent_failure_stays_failed(
     assert len(attempts) == expected_attempts
     assert delays == ([1, 2] if expected_attempts == 3 else [])
     assert "private provider body" not in str(error.value)
+
+
+def test_preproduction_bindings_keep_evaluation_and_cleanup_in_target_account():
+    cfg = config.from_environment(
+        {
+            "CLI_UPLIFT_EVAL_BINDINGS": "tests/e2e/cli_uplift/bindings.pre-production.json",
+            "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "a" * 40,
+        }
+    )
+    assert cfg["platform_account"] == "615296308642"
+    assert cfg["gateway_url"] == "https://dw4gomrsecmzn.cloudfront.net/api"
+    assert cfg["state_bucket"].endswith(cfg["platform_account"])
+    assert cfg["cognito_user_pool_id"] == "us-east-1_PpSUITvxb"
+    document, _ = workflow()
+    for job in ("evaluate", "recover"):
+        guard = next(
+            step
+            for step in document["jobs"][job]["steps"]
+            if step.get("name")
+            == "Assert the role resolved to the approved platform account"
+        )
+        assert 'config.from_environment(os.environ)["platform_account"]' in guard["run"]
+        assert "config.example.json" not in guard["run"]

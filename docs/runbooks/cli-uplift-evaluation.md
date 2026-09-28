@@ -488,3 +488,26 @@ A missing/foreign invocation fails through the existing gateway authorization;
 there is no fallback to broad usage. Omit the field to retain ordinary own-usage
 coverage. The fixture dispatches no Task or inference. Empty or incomplete
 pages still cannot establish complete run accounting.
+
+### Pre-production target
+
+The disposable-EC2 workflow selects `bindings.<environment>.json` for both
+execution and recovery. Dispatch with `environment=pre-production` to use AWS
+account `615296308642`; the platform's Terraform environment within that account
+is still `dev`. Account guards resolve the selected bindings rather than the
+example development account. An environment without a binding file fails before
+EC2 launch or cleanup.
+
+`bindings.pre-production.json` names the existing gateway, Cognito test-admin
+fixture and private subnet, plus the dedicated regression bucket, instance
+profile and security group. The protected GitHub environment admits `main` only
+and supplies `AWS_CLI_UPLIFT_EVAL_ROLE_ARN`. Its OIDC trust is restricted to
+`repo:aws-e/adp:environment:pre-production`. The instance has SSM, bundle reads
+and access to that one fixture; the orchestrator can launch and terminate only
+tagged evaluation instances. No additional optional product modules are enabled.
+
+After deployment and revision verification, use the existing workflow with
+`environment=pre-production`, `expected_revision=<full deployed SHA>` and
+`suites=nightly`. Missing optional fixtures remain visible as blocked cases;
+`login` is available as the existing narrower diagnostic. Infrastructure setup
+and offline guard success do not establish a live regression pass.

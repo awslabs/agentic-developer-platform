@@ -1,0 +1,13 @@
+{
+  "_comment": "Pre-production regression identifiers. AWS profile adp-pre-prod; platform environment is dev. No credentials are stored here.",
+  "platform_account": "615296308642",
+  "gateway_url": "https://dw4gomrsecmzn.cloudfront.net/api",
+  "gateway_deployment": "dev",
+  "vpc_id": "vpc-070a1835758acbba4",
+  "private_subnet_id": "subnet-0831064956bba38e2",
+  "cognito_user_pool_id": "us-east-1_PpSUITvxb",
+  "state_bucket": "adp-cli-uplift-eval-state-615296308642",
+  "instance_profile": "adp-cli-uplift-eval-instance",
+  "instance_security_group_id": "sg-012aecd6bb7c305d0",
+  "credential_secret_name": "adp/dev/gateway/test-admin-credentials"
+}
