@@ -107,6 +107,11 @@ output "gateway_service_irsa_role_name" {
   value       = module.eks.gateway_service_irsa_role_name
 }
 
+output "codebuild_boundary_arn" {
+  description = "Shared build permissions boundary used by app-owned image jobs"
+  value       = module.codebuild.codebuild_boundary_arn
+}
+
 # ---------------------------------------------------------------------------
 # CodeBuild outputs
 # ---------------------------------------------------------------------------

@@ -108,8 +108,7 @@ while [ "$#" -gt 0 ]; do
       echo "  --skip-webhook-ingress Skip webhook-ingress stack"
       echo "  --skip-agent-context   Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
       echo "  --skip-superplane      Skip superplane even if SUPERPLANE_ENABLED=true"
-      echo "  ADP_ENABLED_DOMAIN_APPS=cyber,superplane selects optional image build jobs"
-      echo "  ADP_ENABLED_DOMAIN_APPS=none removes previously installed domain build jobs"
+      echo "  Domain image build jobs are installed from their own module Terraform roots"
       echo ""
       echo "Build:"
       echo "  --local                Use local Docker for image builds (instead of CodeBuild)"
@@ -126,6 +125,10 @@ step() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}\n"; }
 ok()   { echo -e "${GREEN}✓ $1${NC}"; }
 warn() { echo -e "${YELLOW}⚠ $1${NC}"; }
 fail() { echo -e "${RED}✗ $1${NC}"; exit 1; }
+
+if [ "${ADP_ENABLED_DOMAIN_APPS+x}" = x ]; then
+  fail "ADP_ENABLED_DOMAIN_APPS is retired; deploy optional build jobs from their domain modules"
+fi
 
 # =============================================================================
 # Mutual exclusion checks
@@ -745,32 +748,15 @@ step "Step 2/12: Deploy shared platform (VPC, EKS, ECR, IAM)"
 # Platform infra runs directly (Terraform + kubectl) — no CodeBuild needed.
 cd "$ROOT_DIR/platform/infra"
 terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false -reconfigure
-# Domain build projects are retained for existing installations but never added
-# to a fresh base deployment. An explicit list overrides retention for migration
-# or app installation; the saved-plan destroy gate still reviews any removals.
-if [ "$UPDATE_MODE" = true ]; then
-  DOMAIN_BUILD_STATE=$(terraform state list) || fail "Cannot inspect existing domain build ownership"
-else
-  DOMAIN_BUILD_STATE=""
-fi
-DOMAIN_BUILD_APPS_JSON=$(printf '%s\n' "$DOMAIN_BUILD_STATE" | python3 "$SCRIPT_DIR/resolve-domain-builds.py" \
-  --manifest-root "$ROOT_DIR/modules/domain-apps" \
-  --explicit "${ADP_ENABLED_DOMAIN_APPS:-}" \
-  --explicit-set "${ADP_ENABLED_DOMAIN_APPS+x}" \
-  --superplane-enabled "$SUPERPLANE_ENABLED" \
-  --superplane-only "$SUPERPLANE_ONLY" \
-  --skip-superplane "$SKIP_SUPERPLANE") || fail "Invalid domain build selection"
-PLATFORM_DOMAIN_ARGS=(-var="enabled_domain_apps=${DOMAIN_BUILD_APPS_JSON}")
-ok "Domain build projects selected: $DOMAIN_BUILD_APPS_JSON"
 if [ "$UPDATE_MODE" = true ]; then
   PLATFORM_FIRST_ARGS=()
   if [ "$NETWORK_WAS_ENABLED" = false ]; then
     PLATFORM_FIRST_ARGS+=(-var enable_network_policy_controller=false)
     ok "Deferring network-policy activation until webhook egress policies are installed"
   fi
-  terraform_update_apply "platform" "../../environments/$ENVIRONMENT/platform.tfvars" ${PLATFORM_FIRST_ARGS[@]+"${PLATFORM_FIRST_ARGS[@]}"} "${PLATFORM_DOMAIN_ARGS[@]}"
+  terraform_update_apply "platform" "../../environments/$ENVIRONMENT/platform.tfvars" ${PLATFORM_FIRST_ARGS[@]+"${PLATFORM_FIRST_ARGS[@]}"}
 else
-  terraform apply -var-file="../../environments/$ENVIRONMENT/platform.tfvars" "${PLATFORM_DOMAIN_ARGS[@]}" -auto-approve
+  terraform apply -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve
   ok "Platform deployed"
 fi
 
@@ -1680,7 +1666,7 @@ if [ "$UPDATE_MODE" = true ]; then
   step "Finalize network-policy enforcement"
   python3 "$SCRIPT_DIR/upgrade-network.py" audit
   cd "$ROOT_DIR/platform/infra"
-  terraform_update_apply platform "../../environments/$ENVIRONMENT/platform.tfvars" "${PLATFORM_DOMAIN_ARGS[@]}"
+  terraform_update_apply platform "../../environments/$ENVIRONMENT/platform.tfvars"
   if [ "$DEPLOY_GATEWAY" = true ]; then
     step "Reconcile gateway after ALB/controller changes"
     cd "$ROOT_DIR/modules/gateway/infra"

@@ -112,11 +112,11 @@ It does not install domain apps. Superplane is a separate optional phase
 (`SUPERPLANE_ENABLED=true` or `--superplane-only`); cyber's sandbox is deployed
 through `modules/domain-apps/cyber/scripts/deploy.sh`. A hosted cyber worker
 integration requires an explicit `domain_app_settings.cyber` overlay. Their
-image build jobs are selected separately through
-`ADP_ENABLED_DOMAIN_APPS=cyber,superplane`; a fresh basic deployment selects none.
-During `--update`, previously installed domain build jobs are retained unless
-the operator explicitly selects `ADP_ENABLED_DOMAIN_APPS=none`. Any resulting
-deletes still pass through the saved-plan destroy gate.
+image build jobs are created by each domain app's own Terraform root. A basic
+platform deployment does not create them. Upgrading an older installation whose
+domain image jobs still live in platform state will show those jobs as removals;
+review that saved plan and migrate installed apps to their own state before
+applying. `ADP_ENABLED_DOMAIN_APPS` is retired.
 
 If you just want to see the platform work with the least setup,
 **`--gateway-only`** is simplest — no GitHub involvement at all.

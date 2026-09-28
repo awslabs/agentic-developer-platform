@@ -37,6 +37,9 @@
 # take an RDS instance into its state (caught there).
 
 mock_provider "aws" {
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock-build" }
+  }
   mock_data "aws_iam_policy_document" {
     defaults = {
       json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
@@ -67,12 +70,21 @@ override_data {
       eks_oidc_provider_arn          = "arn:aws:iam::111122223333:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
       eks_oidc_issuer                = "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
       gateway_service_irsa_role_name = "adp-dev-role-gateway-service"
+      codebuild_boundary_arn         = "arn:aws:iam::111122223333:policy/adp-dev-codebuild-boundary"
+      security_scans_bucket_name     = "adp-dev-security-scans"
     }
   }
 }
 
 run "gateway_route_grant_is_owned_by_superplane" {
   command = plan
+
+  assert {
+    condition = toset(keys(module.image_builds.project_names)) == toset([
+      "superplane-api", "superplane-controller", "superplane-monitor", "superplane-executor"
+    ])
+    error_message = "The Superplane root must own exactly its four declared image build jobs."
+  }
 
   assert {
     condition     = aws_iam_role_policy.gateway_route_read.role == "adp-dev-role-gateway-service"

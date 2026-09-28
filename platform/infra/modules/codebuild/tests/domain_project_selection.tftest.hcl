@@ -30,18 +30,3 @@ run "base_platform_excludes_domain_builds" {
     error_message = "A base platform must not create cyber or Superplane build projects or roles."
   }
 }
-
-run "domain_builds_require_explicit_app_selection" {
-  command = plan
-  variables {
-    enabled_domain_apps = ["cyber", "superplane"]
-  }
-  assert {
-    condition = (
-      contains(keys(aws_codebuild_project.main), "cyber-browser") &&
-      contains(keys(aws_codebuild_project.main), "cyber-worker") &&
-      contains(keys(aws_codebuild_project.main), "superplane-executor")
-    )
-    error_message = "Selected domain apps must install their own declared build projects."
-  }
-}

@@ -114,12 +114,7 @@ locals {
     }
   }
 
-  # Domain app build declarations live with their apps. The base platform never
-  # installs them; an operator enables each app explicitly during its deployment.
-  projects = merge(local.core_projects, [for manifest in sort(tolist(fileset("${path.module}/../../../../modules/domain-apps", "*/codebuild/projects.json"))) :
-    jsondecode(file("${path.module}/../../../../modules/domain-apps/${manifest}"))
-    if contains(var.enabled_domain_apps, split("/", manifest)[0])
-  ]...)
+  projects = local.core_projects
 
   agent_context_images = toset([
     "ingestion",

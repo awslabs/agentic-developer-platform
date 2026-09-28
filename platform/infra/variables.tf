@@ -145,12 +145,6 @@ variable "ecr_repositories" {
   ]
 }
 
-variable "enabled_domain_apps" {
-  description = "Optional domain apps whose image build projects are installed alongside the shared CodeBuild factory."
-  type        = set(string)
-  default     = []
-}
-
 variable "retained_upgrade_kms_key_ids" {
   description = "Keys retained in Terraform state after recovery from an interrupted ownership migration"
   type        = set(string)

@@ -29,5 +29,8 @@ def test_each_superplane_build_has_its_own_spec_and_repository(name: str) -> Non
 
 def test_superplane_projects_are_selected_only_from_app_manifest() -> None:
     codebuild = (ROOT / "platform/infra/modules/codebuild/main.tf").read_text()
+    app_root = (ROOT / "modules/domain-apps/superplane/infra/control-plane/main.tf").read_text()
     assert '"superplane-api" = {' not in codebuild
-    assert 'if contains(var.enabled_domain_apps, split("/", manifest)[0])' in codebuild
+    assert "modules/domain-apps" not in codebuild
+    assert 'module "image_builds"' in app_root
+    assert 'codebuild/projects.json' in app_root
