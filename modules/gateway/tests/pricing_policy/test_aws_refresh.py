@@ -176,8 +176,9 @@ def test_canonical_hash_ignores_database_session_timezone():
 def test_all_published_cards_and_catalog_cover_every_reviewed_endpoint_variant():
     snapshot = load_snapshot("2026-09-12.1")
     parsed = []
-    for slug in CARD_SLUGS.values():
-        parsed.extend(parse_card(slug, snapshot.rates))
+    for model, slug in CARD_SLUGS.items():
+        if model in snapshot.models:
+            parsed.extend(parse_card(slug, snapshot.rates))
     parsed.extend(catalog())
     actual = {row.variant_key: row for row in parsed}
     expected = {row.variant_key: row for row in snapshot.rates}

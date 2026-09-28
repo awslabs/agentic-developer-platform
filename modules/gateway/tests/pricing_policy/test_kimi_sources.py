@@ -42,7 +42,7 @@ def test_kimi_source_change_refuses_publication(old, new):
 
 def test_old_snapshot_is_preserved():
     old = load_snapshot("2026-09-24.1")
-    new = load_snapshot()
+    new = load_snapshot("2026-09-24.2")
     assert set(old.rates) <= set(new.rates)
     assert len(new.required_variants - old.required_variants) == 111
 

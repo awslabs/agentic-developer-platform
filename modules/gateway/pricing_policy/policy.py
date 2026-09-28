@@ -43,7 +43,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 #: The snapshot new code bootstraps from and the migration seed is frozen against.
-CURRENT_SNAPSHOT_VERSION = "2026-09-24.2"
+CURRENT_SNAPSHOT_VERSION = "2026-09-28.1"
 
 #: The snapshot used to price a legacy OpenAI settlement event that carries no
 #: durable pricing decision. Pinned SEPARATELY from CURRENT_SNAPSHOT_VERSION and

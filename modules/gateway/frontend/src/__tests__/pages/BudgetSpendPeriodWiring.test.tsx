@@ -1,6 +1,6 @@
 /** Real HTTP contracts remain important for the additional daily/weekly restrictions. */
 import { expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -33,4 +33,32 @@ it('refuses a wrong-period budget or runs response', async () => {
     http.get('*/me/budget/runs', () => HttpResponse.json(mockBudgetRunsFor('monthly'))));
   await expect(getMyBudget('daily')).rejects.toThrow();
   await expect(getMyBudgetRuns({ period: 'weekly' })).rejects.toThrow();
+});
+
+it('shows new cloud agent spend while the monthly page stays open', async () => {
+  let cloud = '100.00';
+  let budgetReads = 0;
+  server.use(
+    http.get('*/me/budget/monthly-spend', () => HttpResponse.json({ ...mockMonthlySpend, totals: {
+      direct_usd: '20.00', cloud_usd: cloud, total_usd: String(20 + Number(cloud)),
+    } })),
+    http.get('*/me/bedrock-routing/selection', () => HttpResponse.json({ effective: { rung: 'platform', account_id: null } })),
+    http.get('*/me/budget/person-cap', () => HttpResponse.json(mockPersonCapFor('monthly'))),
+    http.get('*/me/budget', () => { budgetReads++; return HttpResponse.json(mockBudgetEnvelopeFor('monthly')); }),
+  );
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(<QueryClientProvider client={client}><MonthlySpendView /></QueryClientProvider>);
+  try {
+    await screen.findByText('$120.00 spent');
+    await waitFor(() => expect(budgetReads).toBe(1));
+    cloud = '125.00';
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await screen.findByText('$145.00 spent');
+    expect(budgetReads).toBe(2);
+  } finally {
+    view.unmount();
+    client.clear();
+    vi.useRealTimers();
+  }
 });

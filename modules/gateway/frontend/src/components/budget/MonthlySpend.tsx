@@ -41,9 +41,9 @@ function AdditionalPeriodLimits({ period }: { period: BudgetPeriodType }) {
 }
 
 export function MonthlySpendView() {
-  const spend = useQuery({ queryKey: ['monthlySpend'], queryFn: getMonthlySpend });
+  const spend = useQuery({ queryKey: ['monthlySpend'], queryFn: getMonthlySpend, refetchInterval: 30_000 });
   const cap = usePersonCap('monthly');
-  const envelope = useQuery({ queryKey: ['myBudget', 'monthly'], queryFn: () => getMyBudget('monthly') });
+  const envelope = useQuery({ queryKey: ['myBudget', 'monthly'], queryFn: () => getMyBudget('monthly'), refetchInterval: 30_000 });
   const [restrictionsOpen, setRestrictionsOpen] = useState(false);
   const total = parseWireMoney(spend.data?.totals.total_usd);
   const budget = parseWireMoney(cap.data?.cap_usd);

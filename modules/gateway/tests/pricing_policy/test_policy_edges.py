@@ -864,10 +864,10 @@ def test_curated_table_has_no_openai_entries(snapshot):
 # ---------------------------------------------------------------------------
 
 
-def test_snapshot_covers_all_twelve_models_and_required_variants(snapshot):
-    assert len([model for model in snapshot.models if is_openai_model(model)]) == 12
+def test_snapshot_covers_all_fourteen_openai_models_and_required_variants(snapshot):
+    assert len([model for model in snapshot.models if is_openai_model(model)]) == 14
     assert len([model for model in snapshot.models if model.startswith("anthropic.")]) == 19
-    assert len(snapshot.rates) == len(snapshot.required_variants) == 1500
+    assert len(snapshot.rates) == len(snapshot.required_variants) == 1652
     present = {r.variant_key for r in snapshot.rates}
     assert present == set(snapshot.required_variants)
 
