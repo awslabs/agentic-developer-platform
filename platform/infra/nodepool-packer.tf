@@ -93,6 +93,13 @@ resource "null_resource" "aggressive_packer_nodepool" {
     cluster_region = var.aws_region
   }
 
+  # A manifest change must apply the new NodePool before retiring the old
+  # Terraform marker. Delete-first replacement runs the destroy provisioner
+  # and briefly removes the live NodePool during an ordinary upgrade.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   provisioner "local-exec" {
     environment = {
       KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
@@ -109,7 +116,7 @@ EOF
   # Best-effort destroy — remove the NodePool so its nodes fall back to
   # general-purpose rather than being orphaned.
   provisioner "local-exec" {
-    when       = destroy
+    when = destroy
     environment = {
       KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
     }
