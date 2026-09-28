@@ -86,6 +86,10 @@ class CatalogueError(Exception):
         super().__init__(message)
 
 
+class ProbeContractUnavailableError(RuntimeError):
+    """The catalogue model has no reviewed SDK request-shape contract."""
+
+
 def compute_request_shape_sha256(model_id: str, persona_key: str | None = None) -> str:
     """Return the checked-in SDK-generated request-shape digest for a model.
 
@@ -99,7 +103,7 @@ def compute_request_shape_sha256(model_id: str, persona_key: str | None = None) 
 
     digest = expected_request_shape(model_id)
     if digest is None:
-        raise RuntimeError(f"No SDK-generated request shape for catalogue model {model_id}")
+        raise ProbeContractUnavailableError(f"No SDK-generated request shape for catalogue model {model_id}")
     return digest
 
 

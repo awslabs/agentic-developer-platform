@@ -23,7 +23,7 @@ from src.shared.models.persona_models import PersonaModelPolicySetting
 from src.shared.schemas.auth import TokenContext
 
 from .catalogue import catalogue_lookup, compatibility_class_harness_contract_revision
-from .catalogue_service import compute_request_shape_sha256
+from .catalogue_service import ProbeContractUnavailableError, compute_request_shape_sha256
 from .operation_receipts import begin_operation, finish_operation
 from .posture_service import PLATFORM_AUDIT_ORG, PostureMutationError, get_posture_setting, resolve_posture_actor_id
 
@@ -182,7 +182,10 @@ async def _promotion_evidence(db, compatibility_class: str, canonical_model_id: 
     )
     if destination is None:
         raise refused("platform_destination_unavailable")
-    shape = compute_request_shape_sha256(model.canonical_model_id)
+    try:
+        shape = compute_request_shape_sha256(model.canonical_model_id)
+    except ProbeContractUnavailableError as exc:
+        raise refused("probe_contract_unavailable") from exc
     evidence = await db.scalar(
         select(ModelInvocabilityEvidence)
         .where(

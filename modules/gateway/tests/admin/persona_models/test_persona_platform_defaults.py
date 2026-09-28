@@ -149,3 +149,19 @@ async def test_list_and_unknown_persona(session, prepared):
         assert any(row["persona_key"] == "developer" for row in response.json()["entries"])
         response = await http.put("/admin/persona-defaults/invented", json=BODY)
         assert response.status_code == 422
+
+
+async def test_codex_missing_contract_is_audited_refusal(session, prepared):
+    async with client(session) as http:
+        response = await http.put(
+            "/admin/persona-defaults/agent-codex-developer",
+            json={
+                **BODY,
+                "canonical_model_id": "openai.gpt-6-sol",
+            },
+        )
+    assert response.status_code == 422
+    assert response.json()["detail"]["reason"] == "probe_contract_unavailable"
+    assert await session.get(PersonaPlatformDefault, "agent-codex-developer") is None
+    audit = await session.scalar(select(AuditLog).where(AuditLog.event_type == "persona_platform_default_rejected"))
+    assert audit.details["reason"] == "probe_contract_unavailable"
