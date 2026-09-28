@@ -339,6 +339,15 @@ before/after values:
 - The webhook ScaledJob, warm-pool and image-prepull manifest wrappers when
   namespace, cluster and region stay unchanged. ScaledJob replacement orphans
   existing Jobs, and gradual rollout retains running work.
+- The webhook worker gateway rollout marker when protected authority stays
+  disabled, its script stays unchanged, the cluster matches the environment,
+  and only the configuration digest changes. The marker has no destroy
+  provisioner.
+- The webhook, GitHub App ID/key, marker-signing and GitLab placeholder secret
+  versions when Terraform relinquishes version ownership with `forget`, the
+  secret containers remain managed with the same identity and KMS key, and
+  only recovery-window or tag metadata changes. Setup/rotation retains the
+  actual versions and values.
 
 This is an explicit address-and-value policy, not an exemption for every
 `null_resource` or every create-before-destroy change. Stateful replacements and
