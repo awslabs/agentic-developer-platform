@@ -11,6 +11,10 @@ if [ $# -lt 1 ]; then
 fi
 
 REPO_NAME=$1
+[[ "$REPO_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,45}$ ]] || {
+    echo "Invalid repository name for runner identity" >&2
+    exit 1
+}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 # Lowercase and replace underscores for Kubernetes resources
@@ -93,135 +97,21 @@ fi
 # Step 3: Create/update IAM policy for this repo
 echo "Step 3: Creating IAM policy..."
 
-# Base policy - can be customized per repo
-RUNNER_POLICY=$(cat <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "BedrockAccess",
-      "Effect": "Allow",
-      "Action": [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream"
-      ],
-      "Resource": [
-        "arn:aws:bedrock:*::foundation-model/anthropic.*",
-        "arn:aws:bedrock:*:${AWS_ACCOUNT_ID}:inference-profile/*"
-      ]
-    },
-    {
-      "Sid": "SecretsManagerAccess",
-      "Effect": "Allow",
-      "Action": [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
-      ],
-      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:github-*"
-    },
-    {
-      "Sid": "S3Access",
-      "Effect": "Allow",
-      "Action": ["s3:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "EC2Access",
-      "Effect": "Allow",
-      "Action": ["ec2:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "LambdaAccess",
-      "Effect": "Allow",
-      "Action": ["lambda:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "DynamoDBAccess",
-      "Effect": "Allow",
-      "Action": ["dynamodb:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "CloudFormationAccess",
-      "Effect": "Allow",
-      "Action": ["cloudformation:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "CloudWatchAccess",
-      "Effect": "Allow",
-      "Action": ["cloudwatch:*", "logs:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "IAMPassRole",
-      "Effect": "Allow",
-      "Action": [
-        "iam:CreateRole",
-        "iam:CreatePolicy",
-        "iam:AttachRolePolicy",
-        "iam:PutRolePolicy",
-        "iam:PassRole",
-        "iam:TagRole",
-        "iam:TagPolicy",
-        "iam:CreateServiceLinkedRole",
-        "iam:GetRole",
-        "iam:GetPolicy",
-        "iam:GetRolePolicy",
-        "iam:ListRoles",
-        "iam:ListPolicies",
-        "iam:ListRolePolicies",
-        "iam:ListAttachedRolePolicies",
-        "iam:DeleteRole",
-        "iam:DeleteRolePolicy",
-        "iam:DetachRolePolicy"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "STSAccess",
-      "Effect": "Allow",
-      "Action": [
-        "sts:AssumeRole",
-        "sts:GetCallerIdentity"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "AdditionalServices",
-      "Effect": "Allow",
-      "Action": [
-        "rds:*",
-        "ecs:*",
-        "ecr:*",
-        "elasticloadbalancing:*",
-        "autoscaling:*",
-        "sns:*",
-        "sqs:*",
-        "apigateway:*",
-        "route53:*",
-        "cloudfront:*",
-        "acm:*",
-        "ssm:*",
-        "events:*",
-        "stepfunctions:*",
-        "cognito-idp:*",
-        "elasticache:*",
-        "eks:DescribeCluster",
-        "eks:ListClusters",
-        "sagemaker:*",
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:GenerateDataKey*"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-EOF
-)
+# Reuse the actual Terraform runtime inventory and the same boundary. Publishing
+# builds and infrastructure operations use protected GitHub OIDC identities.
+# Only transport secrets registered for this repository survive the filter.
+RUNNER_POLICY=$(terraform output -json runner_runtime_policy | jq --arg repo "$REPO_NAME_LOWER" '
+  .Statement |= map(
+    if .Sid == "LegacyEngineTransport" then
+      .Resource |= map(select(contains(":secret:github-runner/" + $repo + "/"))) |
+      select(.Resource | length > 0)
+    else . end
+  )')
+
+# Existing onboarded roles also need the reviewed boundary on an authorized
+# rerun. Merely updating an inline policy would leave an old role unbounded.
+aws iam put-role-permissions-boundary \
+    --role-name "$ROLE_NAME" --permissions-boundary "$BOUNDARY_ARN"
 
 # Put inline policy on the role
 aws iam put-role-policy \
@@ -285,30 +175,39 @@ echo "IAM Role: $ROLE_ARN"
 echo "Policy: $POLICY_NAME"
 echo ""
 echo "Update your workflow to use:"
-echo "  runs-on: arc-runner-${REPO_NAME_LOWER}"
+echo "  runs-on: arc-runner-org"
 echo ""
 echo "=========================================="
 echo "📝 CUSTOMIZING PERMISSIONS"
 echo "=========================================="
 echo ""
-echo "The IAM role has broad default permissions. To customize for your project:"
+echo "The role starts with a least-privilege policy (A18, #5674): Bedrock invoke,"
+echo "and resources named for THIS repository only — no service wildcards, no"
+echo "ability to create or assume roles."
 echo ""
 echo "1. View current policy:"
 echo "   aws iam get-role-policy --role-name $ROLE_NAME --policy-name $POLICY_NAME"
 echo ""
-echo "2. Update policy (edit and apply):"
+echo "2. Add the specific resources your jobs need (edit and apply):"
 echo "   aws iam put-role-policy \\"
 echo "     --role-name $ROLE_NAME \\"
 echo "     --policy-name $POLICY_NAME \\"
 echo "     --policy-document file://my-custom-policy.json"
 echo ""
-echo "3. Common customizations:"
-echo "   - Restrict S3 to specific buckets: s3:*  →  specific bucket ARNs"
-echo "   - Remove unused services (RDS, SageMaker, etc.)"
-echo "   - Add project-specific resources"
+echo "3. Extend by naming concrete ARNs — a specific bucket, table or queue."
+echo "   Do NOT add a service wildcard (s3:*, ec2:*) on Resource \"*\": in a"
+echo "   shared account that reaches every other repository's data."
 echo ""
-echo "4. The permissions boundary prevents dangerous actions like:"
-echo "   - Creating IAM users"
-echo "   - Modifying billing/organizations"
-echo "   - Deleting the boundary itself"
+echo "4. The permissions boundary will refuse these regardless of what you put"
+echo "   in the policy above, so do not spend time on them:"
+echo "   - Creating or attaching roles/policies, PutRolePolicy, PassRole"
+echo "     (a runner able to do this can grant itself administrator access)"
+echo "   - sts:AssumeRole (becoming another identity, e.g. one that can read"
+echo "     another tenant's secrets)"
+echo "   - Reading secrets outside this repository's own paths"
+echo "   - Creating IAM users, or modifying billing/organizations"
+echo ""
+echo "If a job genuinely needs one of the above, that is a review conversation,"
+echo "not a policy edit — the boundary is the control that makes one"
+echo "compromised repository stay one compromised repository."
 echo ""

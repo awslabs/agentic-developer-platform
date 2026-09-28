@@ -1,0 +1,37 @@
+{
+  "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9e6dd602c215e93c5e3cd489d4dbbd070d69ac7944caee65b0e46965bc49b881",
+  "build_only": true,
+  "deployed": false,
+  "metadata": {
+    "python_version": "3.14.7",
+    "expat_version": "2.8.5",
+    "linkage": "static",
+    "adp_source_commit": "c3b0b491222108d512a81b9247318503c184abe2",
+    "expat_source_sha256": "fd022c541a189bd5bee042a22188351b31e39b9389c2525fa98c28bd05c9ef21",
+    "python_source_sha256": "3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81",
+    "static_library_sha256": "4e3a9d01f722b4ff1e796017845fcb503a3ca9bb4623123c1354e862bd326b21",
+    "modules": [
+      {
+        "file": "pyexpat.cpython-314-x86_64-linux-gnu.so",
+        "sha256": "132759ee340c1ddf9090a0525f86579b7e6e27f2bf299e294f0c9e9efb1903d5"
+      },
+      {
+        "file": "_elementtree.cpython-314-x86_64-linux-gnu.so",
+        "sha256": "b82f57beeffda68e49805610177c9549e94abd34249f49b914bedcd5982f6734"
+      }
+    ],
+    "bounded_xml_acceptance": "passed"
+  },
+  "paths": {
+    "modules": "/modules",
+    "licenses": "/licenses",
+    "metadata": "/manifest.json"
+  },
+  "awscli_ubuntu_acceptance": {
+    "expat": "2.8.5",
+    "awscli_valid_xml": "passed",
+    "awscli_malformed_xml_rejected": "passed",
+    "network": "local HTTP fixture only",
+    "maximum_fixture_bytes": 256
+  }
+}

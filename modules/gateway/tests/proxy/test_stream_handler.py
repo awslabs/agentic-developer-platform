@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from src.proxy.stream_handler import StreamHandler, StreamingError
+from src.proxy.stream_handler import StreamHandler, StreamingError, merge_with_keepalive
 
 
 class TestStreamHandler:
@@ -288,20 +288,211 @@ class TestStreamHandlerErrorHandling:
         assert len(chunks) > 0
 
 
-class TestKeepAliveGenerator:
-    """Test keep-alive generator functionality."""
-
-    @pytest.fixture
-    def stream_handler(self) -> StreamHandler:
-        """Create stream handler instance."""
-        return StreamHandler()
+class TestMergeWithKeepalive:
+    """Tests for merge_with_keepalive (CloudFront idle-timeout fix)."""
 
     @pytest.mark.asyncio
-    async def test_keep_alive_format(self, stream_handler: StreamHandler) -> None:
-        """Test keep-alive message format."""
-        gen = stream_handler.keep_alive_generator(interval_seconds=0.1)
+    async def test_fast_stream_gets_no_keepalive(self) -> None:
+        """A stream that never stalls passes through untouched (no keepalives)."""
 
-        # Get first keep-alive message
-        message = await asyncio.wait_for(gen.__anext__(), timeout=0.5)
+        async def source() -> AsyncIterator[bytes]:
+            for i in range(3):
+                yield f"data: {i}\n\n".encode()
 
-        assert message == b": keep-alive\n\n"
+        chunks = [c async for c in merge_with_keepalive(source(), interval_seconds=5.0)]
+
+        assert chunks == [b"data: 0\n\n", b"data: 1\n\n", b"data: 2\n\n"]
+
+    @pytest.mark.asyncio
+    async def test_silent_gap_injects_keepalive(self) -> None:
+        """A gap longer than the interval yields a keepalive before the real chunk.
+
+        Proves the connection is kept warm during a model "thinking" pause, which
+        is exactly what stops CloudFront's ~60s idle timeout from cutting the stream.
+        """
+
+        async def source() -> AsyncIterator[bytes]:
+            yield b"data: first\n\n"
+            await asyncio.sleep(0.25)  # gap > interval below
+            yield b"data: second\n\n"
+
+        chunks = [c async for c in merge_with_keepalive(source(), interval_seconds=0.05)]
+
+        assert chunks[0] == b"data: first\n\n"
+        assert chunks[-1] == b"data: second\n\n"
+        # At least one keepalive was injected during the 0.25s gap.
+        assert b": keep-alive\n\n" in chunks
+        # Keepalives are only ever injected BETWEEN real chunks, never spliced
+        # into one — so the real payload chunks arrive intact and in order.
+        assert [c for c in chunks if c != b": keep-alive\n\n"] == [
+            b"data: first\n\n",
+            b"data: second\n\n",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_keepalive_format(self) -> None:
+        """The keepalive is a spec-compliant SSE comment line (ignored by parsers)."""
+
+        async def source() -> AsyncIterator[bytes]:
+            await asyncio.sleep(0.1)
+            yield b"data: x\n\n"
+
+        chunks = [c async for c in merge_with_keepalive(source(), interval_seconds=0.02)]
+
+        assert b": keep-alive\n\n" in chunks
+        assert all(c.startswith(b":") for c in chunks if c != b"data: x\n\n")
+
+    @pytest.mark.asyncio
+    async def test_custom_keepalive_used(self) -> None:
+        """A caller-supplied keepalive (e.g. a binary ping frame) is what gets injected.
+
+        The Bedrock-native binary path passes a ``ping`` chunk frame instead of an
+        SSE comment, because the eventstream codec drops SSE comments. This proves
+        the injected bytes are exactly what the caller asked for.
+        """
+        ping = b"\x00\x00PING-FRAME"
+
+        async def source() -> AsyncIterator[bytes]:
+            await asyncio.sleep(0.1)
+            yield b"real-frame"
+
+        chunks = [c async for c in merge_with_keepalive(source(), interval_seconds=0.02, keepalive=ping)]
+
+        assert ping in chunks
+        assert b": keep-alive\n\n" not in chunks
+        assert chunks[-1] == b"real-frame"
+
+    @pytest.mark.asyncio
+    async def test_upstream_exception_propagates(self) -> None:
+        """An error from the source is not swallowed — it surfaces to the client."""
+
+        async def source() -> AsyncIterator[bytes]:
+            yield b"data: ok\n\n"
+            raise ValueError("boom")
+
+        seen: list[bytes] = []
+        with pytest.raises(ValueError, match="boom"):
+            async for chunk in merge_with_keepalive(source(), interval_seconds=5.0):
+                seen.append(chunk)
+
+        assert seen == [b"data: ok\n\n"]
+
+    @pytest.mark.asyncio
+    async def test_close_releases_source(self) -> None:
+        """When the consumer stops early, the upstream stream is closed, not leaked.
+
+        Mirrors a client (CloudFront) disconnect: closing the wrapper must tear
+        down the underlying Bedrock stream so it does not hang around consuming a
+        pool client / socket.
+        """
+        closed = asyncio.Event()
+
+        async def source() -> AsyncIterator[bytes]:
+            try:
+                yield b"data: one\n\n"
+                await asyncio.sleep(10)  # would block; consumer bails before this
+                yield b"data: never\n\n"
+            finally:
+                closed.set()
+
+        agen = merge_with_keepalive(source(), interval_seconds=5.0)
+        first = await agen.__anext__()
+        assert first == b"data: one\n\n"
+        # Consumer disconnects: closing the wrapper must close the source too.
+        await agen.aclose()
+        assert closed.is_set()
+
+
+class TestEventstreamKeepalive:
+    """The binary-path keepalive must be a valid, decodable Bedrock ping chunk."""
+
+    def test_eventstream_keepalive_decodes_to_ping(self) -> None:
+        """EVENTSTREAM_KEEPALIVE is a well-formed chunk frame carrying a ping event.
+
+        If this frame were malformed, a Bedrock-native client (claude-cli) would
+        fail to decode the stream and silently retry non-streaming — the exact
+        double-billing failure the eventstream codec exists to prevent.
+        """
+        import base64 as _b64
+        import json as _json
+
+        from src.proxy.eventstream_codec import EVENTSTREAM_KEEPALIVE
+
+        # Frame layout: [4B total_len][4B headers_len][4B prelude_crc][headers][payload][4B msg_crc]
+        total_len = int.from_bytes(EVENTSTREAM_KEEPALIVE[0:4], "big")
+        headers_len = int.from_bytes(EVENTSTREAM_KEEPALIVE[4:8], "big")
+        assert total_len == len(EVENTSTREAM_KEEPALIVE)
+
+        payload_start = 12 + headers_len
+        payload = EVENTSTREAM_KEEPALIVE[payload_start : total_len - 4]
+        envelope = _json.loads(payload)
+        event = _json.loads(_b64.b64decode(envelope["bytes"]))
+        assert event == {"type": "ping"}
+
+
+class TestKeepaliveRecordBoundaries:
+    async def test_upstream_timeout_is_not_a_keepalive_timer(self):
+        async def source():
+            yield b"data: {}\n\n"
+            raise TimeoutError("upstream timeout")
+
+        count = 0
+        with pytest.raises(TimeoutError, match="upstream timeout"):
+            async for _ in merge_with_keepalive(source(), interval_seconds=1):
+                count += 1
+                # The broken implementation spins without yielding to the event
+                # loop, so an outer asyncio.wait_for cannot bound this test.
+                assert count < 10, "upstream TimeoutError was converted into an endless keepalive flood"
+        assert count == 1
+
+    @pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+    async def test_split_record_and_split_delimiter_are_preserved(self, newline):
+        event = b'data: {"type":"response.completed","response":{"usage":{}}}' + newline * 2
+        end = b"data: {}" + newline * 2
+
+        async def source():
+            yield event[:30]  # incomplete JSON
+            await asyncio.sleep(0.04)
+            yield event[30:-1]  # delimiter split across chunks
+            yield event[-1:]
+            await asyncio.sleep(0.04)
+            yield end
+
+        received = []
+        accumulated = b""
+        async for chunk in merge_with_keepalive(source(), interval_seconds=0.005):
+            received.append(chunk)
+            if chunk == b": keep-alive\n\n":
+                assert accumulated == event
+            else:
+                accumulated += chunk
+        assert accumulated == event + end
+        assert b": keep-alive\n\n" in received  # resumes after the split delimiter
+
+    async def test_binary_frames_get_keepalive_between_frames(self):
+        from src.proxy.eventstream_codec import EVENTSTREAM_KEEPALIVE
+
+        async def source():
+            yield b"whole-frame-one"
+            await asyncio.sleep(0.04)
+            yield b"whole-frame-two"
+
+        chunks = [c async for c in merge_with_keepalive(source(), interval_seconds=0.005, keepalive=EVENTSTREAM_KEEPALIVE, record_aligned=True)]
+        assert chunks[0] == b"whole-frame-one"
+        assert EVENTSTREAM_KEEPALIVE in chunks[1:-1]
+        assert chunks[-1] == b"whole-frame-two"
+
+    async def test_cancellation_while_upstream_is_pending_closes_source(self):
+        closed = asyncio.Event()
+
+        async def source():
+            try:
+                await asyncio.sleep(10)
+                yield b"data: never\n\n"
+            finally:
+                closed.set()
+
+        wrapped = merge_with_keepalive(source(), interval_seconds=0.005)
+        assert await anext(wrapped) == b": keep-alive\n\n"
+        await wrapped.aclose()
+        assert closed.is_set()

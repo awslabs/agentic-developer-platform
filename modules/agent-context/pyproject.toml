@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "E2E test suite for the Agent Context Intelligence Platform"
 requires-python = ">=3.11"
 dependencies = [
+    "anyio>=4.14.2,<5",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "httpx>=0.27",
@@ -35,6 +36,7 @@ markers = [
     "graphrag: requires Neptune+OpenSearch; skipped unless GRAPHRAG_ENABLED=true",
     "workflow: triggers a real GitHub Actions workflow via gh; live only",
     "kubectl: shells out to kubectl; fails fast if not available",
+    "door_auth: exercises Door shared-secret auth; opts out of the conftest fixture that disables it",
 ]
 # Default: run only unit tests (skip live_only, graphrag, workflow)
 addopts = "-m 'not live_only and not graphrag and not workflow'"

@@ -1,0 +1,50 @@
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+exporters:
+  awsxray:
+    region: us-east-1
+  awsemf:
+    region: us-east-1
+    namespace: ADP/AgentTelemetry
+    log_group_name: /adp/security-fixture/otel/metrics
+    dimension_rollup_option: NoDimensionRollup
+  awscloudwatchlogs:
+    region: us-east-1
+    log_group_name: /adp/security-fixture/otel/logs
+    log_stream_name: otel-agent-logs
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [awsxray]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [awsemf]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [awscloudwatchlogs]

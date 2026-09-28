@@ -1,0 +1,72 @@
+version: 1
+# Native Auto Mode DNS is discovered automatically during preflight.
+# All values are explicit — nothing is inferred from the AWS environment.
+# Replace every null (and the placeholders in comments) with values specific
+# to your ADP deployment.  Do not commit a filled-in copy; keep credentials
+# in Secrets Manager only.
+
+# --- Management cluster (required for all modes) ---
+environment: dev                    # Must match the ADP environment label
+account_id: null                    # 12-digit AWS account ID, e.g. '123456789012'
+region: null                        # e.g. 'us-east-1'
+cluster: null                       # ADP management EKS cluster name
+namespace: superplane               # Domain namespace on the management cluster
+gateway_namespace: adp-gateway      # Verify against existing Gateway deployment
+image_execution: cluster           # Or docker for a locally reachable database
+skypilot_namespace: skypilot        # SkyPilot namespace (must differ from namespace)
+origin: null                        # ADP CloudFront origin, e.g. 'https://d1example.cloudfront.net'
+org_id: null                        # Domain org UUID (immutable after first install)
+adp_org_id: null                    # ADP organization name, e.g. 'aws-e'
+auth:
+  issuer: null                      # e.g. 'https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXX'
+  client_ids: []                    # ADP Cognito client IDs
+database:
+  identifier: null                  # RDS instance identifier
+  database: null                    # Database name within the instance
+  schema: superplane                # Domain API schema (isolated, never 'public')
+  skypilot_schema: skypilot         # SkyPilot schema (must differ from schema)
+  backup_id: null                   # RDS snapshot ID to verify before migration
+  migration_owner: null             # Named person responsible for migration
+  backup_owner: null                # Named person responsible for backup policy
+  restore_owner: null               # Named person responsible for restore testing
+secrets:
+  database: null                    # e.g. 'adp/dev/superplane/database'
+  observation: null                 # e.g. 'adp/dev/superplane/observation'
+  # workspace_access is required for full installation but must be omitted
+  # when using control_plane_only: true (see below).
+  workspace_access: null            # Read-only manager credential, e.g. 'adp/dev/superplane/workspace-access'
+execution:                         # Required for full mode; omit for idle control-plane-only
+  authority_endpoint: null         # Existing HTTPS Gateway authority origin
+  role_arn: null                   # Existing trusted executor role
+  provider_role_arn: null          # Existing SkyPilot backend role matching admitted vault role
+  run_projection_secret: null      # Actual ADP-owned run projection; no copied pod tokens
+  database_secret: null            # Restricted domain/execution DSN projection
+  workspace_credentials_secret: null # Separate mutation credential; never mounted in Go
+controller_profiles: null          # Required for full mode: explicit version-1 API profile policy (README)
+                                   # Pins serving image/model/capacity and names an existing workspace auth Secret.
+                                   # Never put the token value or AWS credentials in this document.
+timeout_seconds: 900
+# Set only after verifying the selected cluster's actual enforcement and handover.
+network_policy_enforced: false
+
+# --- Workspace fields (required for full installation; deferred for control-plane-only) ---
+# Leave these null when using control_plane_only: true.  Supply them only once
+# the workspace cluster exists and its credentials are ready.
+workspace_cluster: null             # Workspace EKS cluster name (1–100 chars)
+workspace_namespace: null           # Namespace on the workspace cluster
+workspace_id: null                  # Workspace UUID (immutable)
+cluster_id: null                    # Cluster registration UUID (immutable)
+controller_ownership: null          # Set to 'single-workspace-controller' after handover
+
+# --- Control-plane-only mode ---
+# Set to true to install the management surface before any workspace is registered.
+# When true: workspace_cluster, workspace_namespace, workspace_id, cluster_id,
+# controller_ownership, and workspace_access are not required.
+# Workspace activation follows in a separate, explicit step.
+control_plane_only: false
+
+# Optional separate privileged member credential reconciler. See
+# ../workspace_provisioning/credential_controller/README.md for installed authority
+# document fields, required pre-existing cloud identities and DB role separation.
+# Omit/null unless those exact prerequisites are reviewed and available.
+credential_controller: null

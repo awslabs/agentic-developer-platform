@@ -11,6 +11,8 @@
  * doesn't need to change except for the import.
  */
 
+import { deploymentSetting } from '@/config/runtime';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getIdToken, isTokenExpired, refreshToken as refreshTokenService } from '@/services/auth';
 import type {
@@ -29,14 +31,13 @@ import {
   type SessionMeta,
   type ToolCallInfo,
 } from '@/types/ag-ui-events';
+import { applyPatches } from '@/utils/jsonPatch';
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const WS_BASE_URL =
-  import.meta.env.VITE_AGENT_WS_URL ||
-  'wss://8ea7pg40b7.execute-api.us-east-1.amazonaws.com/v1';
+const CHAT_UNCONFIGURED = 'Agent chat is not configured for this deployment.';
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const INITIAL_BACKOFF_MS = 1_000;
@@ -79,7 +80,28 @@ export interface UseAgUiEventsOptions {
 }
 
 export interface UseAgUiEventsReturn extends AgentChatState {
-  sendMessage: (text: string, attachments?: string[]) => void;
+  /**
+   * True when the server refused this conversation's identifier (#5615).
+   *
+   * The ordinary cause is benign and expected: the sessions table expires rows
+   * after 24h, and this browser keeps the identifier in localStorage
+   * indefinitely, so an owner returning the next day names a conversation the
+   * server no longer has. The refusal is deliberately the same non-answer given
+   * for somebody else's conversation, so this flag must not be read as "it was
+   * mine and it expired" — only as "this identifier can no longer be used".
+   *
+   * Before this existed, the refusal was the Lambda's return value only, which
+   * API Gateway discards for WebSocket routes: the browser was told nothing and
+   * retried the same dead identifier forever, showing a permanent spinner.
+   */
+  sessionExpired: boolean;
+  /**
+   * Send a user message. `persona` (#4208) pins the agent persona for the turn,
+   * bypassing the server-side classifier — used by the intent-intake flow. The
+   * ingest Lambda validates it against an allowlist and rejects anything else,
+   * so an unrecognised value fails the send rather than silently downgrading.
+   */
+  sendMessage: (text: string, attachments?: string[], persona?: string) => void;
   /** Active tool calls for the current turn. */
   activeToolCalls: ToolCallInfo[];
   /** WebSocket ref exposed for upload-token/upload-complete actions. Stage C (#186). */
@@ -97,6 +119,7 @@ export function useAgUiEvents({
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [isAwaitingReply, setIsAwaitingReply] = useState(false);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [sessionMeta, setSessionMeta] = useState<SessionMeta | undefined>();
   const [activeToolCalls, setActiveToolCalls] = useState<ToolCallInfo[]>([]);
 
@@ -134,6 +157,13 @@ export function useAgUiEvents({
       sessionIdRef.current = conversation.id;
     }
   }, [conversation]);
+
+  // A refusal belongs to the identifier that was refused, so switching or
+  // starting a conversation clears it (#5615). Keyed on the id rather than the
+  // object so an unrelated message update does not re-enable a dead send box.
+  useEffect(() => {
+    setSessionExpired(false);
+  }, [conversation?.id]);
 
   // ------------------------------------------------------------------
   // Message mutation helper
@@ -399,20 +429,20 @@ export function useAgUiEvents({
 
   const handleStateDelta = useCallback(
     (event: AgUiEvent & { event_type: typeof AgUiEventType.STATE_DELTA }) => {
-      // Apply JSON Patch operations to session meta
-      setSessionMeta(prev => {
-        const meta = { ...prev } as Record<string, unknown>;
-        for (const op of event.delta) {
-          // Simple path parsing: /tokens, /turnCount, /heartbeat
-          const key = op.path.replace(/^\//, '');
-          if (op.op === 'replace' || op.op === 'add') {
-            meta[key] = op.value;
-          } else if (op.op === 'remove') {
-            delete meta[key];
-          }
-        }
-        return meta as SessionMeta;
-      });
+      // Apply JSON Patch operations to session meta.
+      //
+      // Issue #4208: pointers are resolved properly (nested paths included)
+      // instead of being flattened to a single top-level key. The old
+      // `path.replace(/^\//,'')` turned `/draft/intent` into a literal key
+      // named "draft/intent", so nested patches were silently dropped and the
+      // panel just never updated.
+      setSessionMeta(
+        prev =>
+          applyPatches(
+            { ...(prev ?? {}) } as Record<string, unknown>,
+            event.delta,
+          ) as SessionMeta,
+      );
 
       // If it's a heartbeat, keep the typing indicator alive
       const isHeartbeat = event.delta.some(op => op.path === '/heartbeat');
@@ -741,6 +771,20 @@ export function useAgUiEvents({
   const connect = useCallback(async () => {
     if (!sessionIdRef.current) return;
 
+    // Gateway-only deployments have no chat endpoint. Never send their login
+    // token to another deployment's historical default endpoint.
+    const wsBaseUrl = deploymentSetting('VITE_AGENT_WS_URL')?.trim();
+    if (!wsBaseUrl) {
+      setConnectionStatus('disconnected');
+      updateMessages((msgs) => msgs.some((message) => message.content === CHAT_UNCONFIGURED)
+        ? msgs
+        : [...msgs, {
+          id: generateId(), role: 'system', content: CHAT_UNCONFIGURED,
+          status: 'error', timestamp: Date.now(),
+        }]);
+      return;
+    }
+
     const token = await getValidIdToken();
     if (!token) {
       setConnectionStatus('disconnected');
@@ -750,7 +794,7 @@ export function useAgUiEvents({
     setConnectionStatus('connecting');
     intentionalCloseRef.current = false;
 
-    const url = `${WS_BASE_URL}?token=${encodeURIComponent(token)}`;
+    const url = `${wsBaseUrl}?token=${encodeURIComponent(token)}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
@@ -763,6 +807,32 @@ export function useAgUiEvents({
     ws.onmessage = (event) => {
       try {
         const frame = JSON.parse(event.data) as WsFrame;
+
+        // #5615: the ingress refused this conversation's identifier. Stop
+        // waiting for a reply that is never coming and tell the user, rather
+        // than spinning forever — this frame exists because a WebSocket
+        // integration discards the Lambda's HTTP-shaped response.
+        //
+        // The refusal is terminal for this identifier, so there is nothing to
+        // retry: the next message must go to a NEW server-issued one. The page
+        // offers that; we do not silently create it here, because silently
+        // moving a user's typing into a different conversation than the one on
+        // screen is its own bug.
+        if ((frame as { type?: string }).type === 'session_invalid') {
+          setIsAwaitingReply(false);
+          setSessionExpired(true);
+          const notice = (frame as { content?: string }).content
+            || 'That conversation is no longer available. Start a new one to continue.';
+          updateMessages((msgs) =>
+            msgs.some((m) => m.role === 'system' && m.content === notice)
+              ? msgs
+              : [...msgs, {
+                id: generateId(), role: 'system' as const, content: notice,
+                status: 'error' as const, timestamp: Date.now(),
+              }],
+          );
+          return;
+        }
 
         // AG-UI event path
         if (frame.type === 'ag_ui') {
@@ -810,7 +880,7 @@ export function useAgUiEvents({
 
       scheduleReconnect();
     };
-  }, [getValidIdToken, dispatchAgUiEvent, handleLegacyNotification, handleLegacyProgress, handleLegacyResponse]);
+  }, [getValidIdToken, dispatchAgUiEvent, handleLegacyNotification, handleLegacyProgress, handleLegacyResponse, updateMessages]);
 
   const scheduleReconnect = useCallback(() => {
     const attempt = reconnectAttemptRef.current;
@@ -861,9 +931,13 @@ export function useAgUiEvents({
   // ------------------------------------------------------------------
 
   const sendMessage = useCallback(
-    (text: string, attachments?: string[]) => {
+    (text: string, attachments?: string[], persona?: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
       if (!sessionIdRef.current) return;
+      // #5615: the server has already refused this identifier. Re-sending it
+      // would be refused identically and would restart the spinner, so the send
+      // is dropped until the page moves to a new conversation.
+      if (sessionExpired) return;
 
       const userMsg: ChatMessage = {
         id: generateId(),
@@ -887,15 +961,24 @@ export function useAgUiEvents({
       if (attachments && attachments.length > 0) {
         payload.attachments = attachments;
       }
+      // #4208: pin the persona for this turn (e.g. 'intent-refinement'), skipping
+      // the server-side classifier. Ingest validates it against an allowlist and
+      // returns 400 for anything else — it never silently downgrades, so a typo
+      // here surfaces as a failed send rather than a conversation on the wrong
+      // persona.
+      if (persona) {
+        payload.persona = persona;
+      }
       wsRef.current.send(JSON.stringify(payload));
     },
-    [updateMessages],
+    [updateMessages, sessionExpired],
   );
 
   return {
     connectionStatus,
     isAwaitingReply,
     reconnectAttempt,
+    sessionExpired,
     sessionMeta,
     sendMessage,
     activeToolCalls,

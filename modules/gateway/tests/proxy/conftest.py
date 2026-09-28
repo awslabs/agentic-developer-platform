@@ -4,13 +4,15 @@ import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
+from src.proxy.bedrock_enforcement import RoutingDecision
+from src.proxy.bedrock_routing import BedrockTarget
 from src.proxy.format_translator import FormatTranslator
 from src.proxy.model_resolver import ModelResolver
 from src.proxy.routes import router, set_model_resolver, set_proxy_service
@@ -192,11 +194,17 @@ class MockPoolService(IPoolService):
         self._client = client or MockBedrockClient()
         self._error = error
         self.get_client_calls = 0
+        # Every `credentials` argument the proxy passed, in call order. Issue #4744:
+        # the assertion that matters for routing is not "a client was returned" but
+        # "the client was built with the destination's credentials", so the mock has
+        # to record them rather than merely tolerate the argument.
+        self.get_client_credentials: list[Any] = []
         self.report_error_calls: list[str] = []
 
-    async def get_client(self) -> Any:
-        """Return mock Bedrock client."""
+    async def get_client(self, credentials: Any | None = None) -> Any:
+        """Return mock Bedrock client, recording what it was asked to sign with."""
         self.get_client_calls += 1
+        self.get_client_credentials.append(credentials)
         if self._error:
             raise self._error
         return self._client
@@ -265,7 +273,25 @@ def stream_handler() -> StreamHandler:
 
 
 @pytest.fixture
-def proxy_service(mock_pool_service: MockPoolService) -> ProxyService:
+def unmapped_routing(monkeypatch):
+    """Ordinary proxy unit tests have no routing database or saved mappings.
+
+    Routing integration tests supply their own real database and signer fixtures.
+    Keep this opt-in so they exercise the production decision without this stub.
+    """
+    decision = RoutingDecision(target=BedrockTarget(account_id=None, rung="platform"))
+    monkeypatch.setattr("src.proxy.service.resolve_routing_decision", AsyncMock(return_value=decision))
+
+
+@pytest.fixture
+def unmapped_mantle_routing(monkeypatch):
+    """Transport/pricing unit tests explicitly use the platform route."""
+    decision = RoutingDecision(target=BedrockTarget(account_id=None, rung="platform"))
+    monkeypatch.setattr("src.proxy.mantle_service.resolve_routing_decision", AsyncMock(return_value=decision))
+
+
+@pytest.fixture
+def proxy_service(mock_pool_service: MockPoolService, unmapped_routing) -> ProxyService:
     """Create a proxy service with mocked dependencies."""
     return ProxyService(pool_service=mock_pool_service)
 

@@ -46,6 +46,7 @@ describe('GitLabClient', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://gitlab.example.com/api/v4/projects/42/issues/7/notes',
         {
+          redirect: 'error',
           method: 'POST',
           headers: {
             'PRIVATE-TOKEN': 'glpat-test-token',
@@ -90,6 +91,7 @@ describe('GitLabClient', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://gitlab.example.com/api/v4/projects/42/repository/branches',
         {
+          redirect: 'error',
           method: 'POST',
           headers: {
             'PRIVATE-TOKEN': 'glpat-test-token',
@@ -140,6 +142,7 @@ describe('GitLabClient', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://gitlab.example.com/api/v4/projects/42/merge_requests',
         {
+          redirect: 'error',
           method: 'POST',
           headers: {
             'PRIVATE-TOKEN': 'glpat-test-token',
@@ -216,6 +219,7 @@ describe('GitLabClient', () => {
       expect(mockFetch).toHaveBeenCalledWith(
         'https://gitlab.example.com/api/v4/projects/42/repository/files/README.md?ref=main',
         {
+          redirect: 'error',
           method: 'GET',
           headers: {
             'PRIVATE-TOKEN': 'glpat-test-token',

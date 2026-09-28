@@ -13,7 +13,7 @@ import {
   DeleteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
-import { MemoryProvider, MemoryRecord, MemoryQuery, MemoryCapabilities, MemoryScope } from './types';
+import { MemoryProvider, MemoryRecord, MemoryQuery, MemoryCapabilities, MemoryScope, MemoryToolScope } from './types';
 import { AgentTool } from '../context/types';
 import { createMemoryTools } from './tools';
 import * as crypto from 'crypto';
@@ -179,8 +179,8 @@ export class DynamoMemoryProvider implements MemoryProvider {
     }
   }
 
-  tools(): AgentTool[] {
-    return createMemoryTools(this);
+  tools(scope?: MemoryToolScope): AgentTool[] {
+    return createMemoryTools(this, scope ?? {});
   }
 
   capabilities(): MemoryCapabilities {

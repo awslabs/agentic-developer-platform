@@ -1,0 +1,24 @@
+[
+  {
+    "mode": "success",
+    "uid": 10001,
+    "gid": 10001,
+    "assertions": "passed",
+    "cloud_and_model_transports": "mocked; packaged orchestration runs unchanged",
+    "network": "none",
+    "root_fs": "read-only",
+    "BG_CONFIG_DIR": "isolated",
+    "image": "security27/chat-agent:fixed"
+  },
+  {
+    "mode": "failure",
+    "uid": 10001,
+    "gid": 10001,
+    "assertions": "passed",
+    "cloud_and_model_transports": "mocked; packaged orchestration runs unchanged",
+    "network": "none",
+    "root_fs": "read-only",
+    "BG_CONFIG_DIR": "isolated",
+    "image": "security27/chat-agent:fixed"
+  }
+]

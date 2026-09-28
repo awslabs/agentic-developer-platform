@@ -27,6 +27,11 @@ from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.schemas.auth import TokenContext
 
 from .auth_service import AuthService
+from .caller_provenance import (
+    CALLER_IDENTITY_HEADER,
+    has_caller_identity_assertion,
+    verified_caller_identity,
+)
 from .cognito_jwt import CognitoJWTValidator, CognitoTokenClaims
 from .exceptions import TokenValidationError
 
@@ -224,6 +229,9 @@ def require_organization_access(required_org_id: str, token_context: TokenContex
     Raises:
         HTTPException: If user lacks access to the organization
     """
+    # Issue #4132: authorization compares the AUTHENTICATED org_id. Never
+    # attributed_org_id — that field is caller-influenced (X-Agent-OrgId) and
+    # reading it here would let a header buy access to another tenant.
     if token_context.org_id != required_org_id:
         logger.warning(
             f"Organization access denied: user {token_context.user_id} in org {token_context.org_id} tried to access org {required_org_id}"
@@ -304,24 +312,37 @@ AGENT_PATH_PREFIX = "/agent"
 # remaining X-Agent-* header with any authority is X-Agent-OrgId, and it is
 # honored solely as a tenant-attribution override for callers already
 # authenticated via (1) whose registry entry has scope == "internal" (#747).
+# Issue #4132 narrowed that authority further: it now writes only
+# TokenContext.attributed_org_id, never the authenticated org_id.
 API_GATEWAY_HEADER_ORG_ID = "X-Agent-OrgId"
 
 # =============================================================================
 # Issue #260: AWS_IAM Auth Headers from API Gateway
 # =============================================================================
-# When API Gateway uses AWS_IAM authorization type, it populates these headers
-# with the IAM identity of the caller. We use these to look up the agent in
-# DynamoDB instead of relying on the Lambda authorizer.
+# When API Gateway uses AWS_IAM authorization type on the /agent and /internal
+# routes, it maps $context.identity.userArn — taken from the verified SigV4
+# signature — into X-Caller-Identity. That mapping is the only reason the header
+# means anything, so it is the only identity header this service reads.
+#
+# Canonical name lives in caller_provenance; re-exported here because tests and
+# sibling modules import it from this module.
+API_GATEWAY_HEADER_CALLER_IDENTITY = CALLER_IDENTITY_HEADER
 
-# API Gateway context headers for IAM identity
-# The exact header name depends on API Gateway configuration
-# Common formats:
-# - X-Amzn-Iam-User-Arn: The IAM user/role ARN
-# - X-Amzn-Requestcontext: JSON-encoded request context (includes identity)
+# Issue #5653 (A01): these two are NO LONGER TRUSTED — kept as named constants so
+# the regression tests can assert they are inert, and so a future reader finds this
+# note instead of reinventing them.
+#
+# No route in infra/modules/api-gateway/main.tf has ever set either one, so every
+# value they carried was client-supplied. extract_iam_identity_from_headers used to
+# fall back to them, and X-Amzn-Requestcontext was the worse of the two: it was
+# parsed as (optionally base64) JSON with userArn read out of it, letting a client
+# forge a whole "verified request context". Because they were fall-backs, blanking
+# X-Caller-Identity at the edge would NOT have closed them.
+#
+# Do not reintroduce either as an identity source without an edge mapping that
+# populates it from a verified signature.
 API_GATEWAY_HEADER_IAM_USER_ARN = "X-Amzn-Iam-User-Arn"
 API_GATEWAY_HEADER_REQUEST_CONTEXT = "X-Amzn-Requestcontext"
-# API Gateway also passes identity in the request context via integration request mapping
-API_GATEWAY_HEADER_CALLER_IDENTITY = "X-Caller-Identity"
 
 
 def extract_iam_identity_from_headers(request: Request) -> TokenContext | None:
@@ -341,50 +362,32 @@ def extract_iam_identity_from_headers(request: Request) -> TokenContext | None:
     Returns:
         TokenContext if IAM identity found and agent is registered, None otherwise
     """
-    import json
-
     headers = request.headers
 
-    # Try multiple header sources for the IAM identity
-    user_arn = None
-
-    # 1. Check X-Caller-Identity header (set via integration request mapping)
-    caller_identity = headers.get(API_GATEWAY_HEADER_CALLER_IDENTITY, "").strip()
-    if caller_identity:
-        user_arn = caller_identity
-        logger.debug(f"Found IAM identity in X-Caller-Identity: {user_arn}")
-
-    # 2. Check X-Amzn-Iam-User-Arn header
+    # Issue #5653 (A01): read the assertion through the shared provenance helper,
+    # which yields an ARN only where the edge vouches for the header.
+    #
+    # The two alternate sources this function used to accept are GONE:
+    #
+    #   X-Amzn-Iam-User-Arn     — never set by any route in
+    #                             infra/modules/api-gateway/main.tf. Nothing
+    #                             trusted ever wrote it, so every value it ever
+    #                             carried was client-supplied by definition.
+    #   X-Amzn-Requestcontext   — likewise unset by any route, and worse: it was
+    #                             parsed as (optionally base64) JSON and userArn
+    #                             taken from it, so a client could hand the gateway
+    #                             a hand-rolled "request context" naming any
+    #                             principal. Being a fall-back made it MORE
+    #                             reachable, not less: blanking X-Caller-Identity at
+    #                             the edge would have left this as an open second
+    #                             door that the edge fix does not cover.
+    #
+    # Only X-Caller-Identity remains, because it is the only one the trusted edge
+    # actually populates and therefore the only one whose provenance can be checked.
+    # Settings resolved through this module's own get_settings, so the trust
+    # decision matches the Settings object the rest of this module uses.
+    user_arn = verified_caller_identity(request, settings=get_settings())
     if not user_arn:
-        iam_user_arn = headers.get(API_GATEWAY_HEADER_IAM_USER_ARN, "").strip()
-        if iam_user_arn:
-            user_arn = iam_user_arn
-            logger.debug(f"Found IAM identity in X-Amzn-Iam-User-Arn: {user_arn}")
-
-    # 3. Check X-Amzn-Requestcontext header (JSON-encoded context)
-    if not user_arn:
-        request_context = headers.get(API_GATEWAY_HEADER_REQUEST_CONTEXT, "").strip()
-        if request_context:
-            try:
-                import base64
-
-                # Request context might be base64 encoded
-                try:
-                    decoded = base64.b64decode(request_context).decode("utf-8")
-                    context = json.loads(decoded)
-                except Exception:
-                    context = json.loads(request_context)
-
-                # Extract userArn from identity
-                identity = context.get("identity", {})
-                user_arn = identity.get("userArn", "")
-                if user_arn:
-                    logger.debug(f"Found IAM identity in X-Amzn-Requestcontext: {user_arn}")
-            except Exception as e:
-                logger.debug(f"Failed to parse X-Amzn-Requestcontext: {e}")
-
-    if not user_arn:
-        logger.debug("No IAM identity found in request headers")
         return None
 
     # Import here to avoid circular imports
@@ -414,14 +417,28 @@ def extract_iam_identity_from_headers(request: Request) -> TokenContext | None:
 
     # Issue #747: Accept X-Agent-OrgId override for internal-scope agents.
     # Internal agents (e.g. scaledjob-worker) pass the triggering tenant's
-    # org_id via this header so usage_logs attribute calls to the right tenant.
+    # org_id via this header so usage/billing attribute calls to the right tenant.
+    #
+    # INVARIANT (Issue #4132) — do not weaken:
+    #   token_context.org_id       is AUTHENTICATED-ONLY (registry entry / JWT
+    #                              claim) and is the SOLE field any
+    #                              authorization path may read.
+    #   token_context.attributed_org_id is CALLER-INFLUENCED (this header) and
+    #                              MUST NEVER gate access. It is read only by
+    #                              attribution/billing paths (usage_logs,
+    #                              budget + rate-limit denominators, chat logs).
+    # This override previously wrote org_id, which meant one caller-supplied
+    # header moved both attribution AND authorization scope to another tenant.
     if agent_entry.get("scope") == "internal":
         override_org_id = headers.get(API_GATEWAY_HEADER_ORG_ID, "").strip()
         if override_org_id:
-            token_context.org_id = override_org_id
-            logger.debug(f"Internal agent org_id overridden to: {override_org_id}")
+            token_context.attributed_org_id = override_org_id
+            logger.debug(f"Internal agent attribution overridden to: {override_org_id}")
 
-    logger.info(f"IAM auth successful: agent={agent_entry['agent_name']}, org={token_context.org_id}, team={agent_entry['team_id']}")
+    logger.info(
+        f"IAM auth successful: agent={agent_entry['agent_name']}, org={token_context.org_id}, "
+        f"attributed_org={token_context.attributed_org_id}, team={agent_entry['team_id']}"
+    )
     return token_context
 
 
@@ -469,40 +486,41 @@ class TokenContextMiddleware:
 
         # Build a minimal Request to read headers
         request = Request(scope, receive, send)
-        settings = self._get_settings()
 
-        # Issue #260: Check for IAM identity first (AWS_IAM auth via /agent/* path)
-        # This takes priority over other auth methods when IAM headers are present
-        if settings.trust_apigw_headers:
-            # Check for IAM identity headers (set by API Gateway AWS_IAM auth)
-            caller_identity = request.headers.get(API_GATEWAY_HEADER_CALLER_IDENTITY, "")
-            iam_user_arn = request.headers.get(API_GATEWAY_HEADER_IAM_USER_ARN, "")
-            if caller_identity or iam_user_arn:
-                try:
-                    from src.shared.timing import get_timings
+        # Issue #260: IAM identity via API Gateway's AWS_IAM /agent/* route.
+        #
+        # Issue #5653 (A01): gated on the shared provenance helper rather than on
+        # `trust_apigw_headers and (either raw header)`. The trust-flag check now
+        # lives inside the helper, so this middleware, get_current_user and the
+        # internal-endpoint guard cannot drift apart on what counts as trustworthy.
+        # X-Amzn-Iam-User-Arn is no longer an entry condition — nothing trusted ever
+        # set it (see the constant's note above).
+        if has_caller_identity_assertion(request):
+            try:
+                from src.shared.timing import get_timings
 
-                    timings = get_timings(request)
-                    with timings.time_segment("auth"):
-                        token_context = extract_iam_identity_from_headers(request)
-                    if token_context:
-                        scope.setdefault("state", {})["token_context"] = token_context
-                        request.state.token_context = token_context
-                        await self.app(scope, receive, send)
-                        return
-                except HTTPException:
-                    # IAM auth failed — re-raise to reject request
-                    raise
-                except Exception as e:
-                    # Check if it's an unregistered service account error
-                    from src.shared.exceptions import UnregisteredServiceAccountError
+                timings = get_timings(request)
+                with timings.time_segment("auth"):
+                    token_context = extract_iam_identity_from_headers(request)
+                if token_context:
+                    scope.setdefault("state", {})["token_context"] = token_context
+                    request.state.token_context = token_context
+                    await self.app(scope, receive, send)
+                    return
+            except HTTPException:
+                # IAM auth failed — re-raise to reject request
+                raise
+            except Exception as e:
+                # Check if it's an unregistered service account error
+                from src.shared.exceptions import UnregisteredServiceAccountError
 
-                    if isinstance(e, UnregisteredServiceAccountError):
-                        logger.warning("IAM auth failed: agent not registered")
-                        raise HTTPException(
-                            status_code=403,
-                            detail={"error": "agent_not_registered", "message": "Agent not registered. Contact your org administrator."},
-                        )
-                    logger.debug(f"IAM auth extraction failed: {e}, falling back to other auth methods")
+                if isinstance(e, UnregisteredServiceAccountError):
+                    logger.warning("IAM auth failed: agent not registered")
+                    raise HTTPException(
+                        status_code=403,
+                        detail={"error": "agent_not_registered", "message": "Agent not registered. Contact your org administrator."},
+                    )
+                logger.debug(f"IAM auth extraction failed: {e}, falling back to other auth methods")
 
         # Issue #240's X-Auth-Source / X-Agent-* branch was removed by #3985 —
         # see the header-constants block above. A request that would previously
@@ -527,8 +545,9 @@ class TokenContextMiddleware:
                 # Also set on request.state for downstream middleware
                 request.state.token_context = token_context
             except Exception:
-                # Auth failed — let the route handler deal with it
-                pass
+                # Auth failed — let the route handler deal with it.
+                # Log so operators can detect systemic failures (e.g. JWKS outage).
+                logger.warning("token_context pre-population failed")
 
         await self.app(scope, receive, send)
 
@@ -598,6 +617,9 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
         )
 
     token = authorization[7:]  # Remove "Bearer " prefix
+    from src.auth.tenant_context import apply_context, split_token
+
+    token, tenant_lease = split_token(token)
 
     # Get Cognito validator
     validator = get_cognito_validator()
@@ -612,7 +634,12 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
         claims = validator.validate_token(token)
 
         # Convert claims to TokenContext
-        return _cognito_claims_to_context(claims)
+        context = await apply_context(_cognito_claims_to_context(claims), tenant_lease)
+        if tenant_lease is None:
+            from src.admin.membership_revocation import require_not_revoked_context
+
+            await require_not_revoked_context(context)
+        return context
 
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -627,6 +654,8 @@ async def validate_cognito_jwt(authorization: str) -> TokenContext:
             detail={"error": "invalid_token", "message": "Invalid or malformed token"},
             headers={"WWW-Authenticate": "Bearer"},
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error validating Cognito token: {e}")
         raise HTTPException(
@@ -666,6 +695,7 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
         team_id=claims.team_id or "",
         department_id=claims.department_id or "",
         account_type=account_type,
+        cognito_username=claims.username or "",
         is_admin=is_admin,
         expires_at=datetime.fromtimestamp(claims.exp, UTC),
     )

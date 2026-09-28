@@ -1,0 +1,965 @@
+{
+  "metadata": {
+    "issue": 6117,
+    "parent_issue": 5599,
+    "rule": "tmp.yaml.github-actions.security.run-shell-injection.run-shell-injection",
+    "source_sha": "79b1b5cb60dc67748dbf8dc90d7758883f655406",
+    "source_ledger": "docs/security/runs/2026-09-21/triage/s20-dispositions.json",
+    "source_ledger_sha256": "42838f1a59611094a2ec6f60c4c8c87de629da170059761b2783abc4771e62e9",
+    "reconciliation_date": "2026-09-25",
+    "reconciliation_branch": "agent/issue-6117",
+    "total_selectors": 41,
+    "final_scan_sha": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+    "exact_input_manifest_commit": "74c48e78647afbe8c4eaf83ce3b01499e5cc61fe",
+    "exact_input_manifest": "docs/security/runs/2026-09-25/followon-inputs/source-followon-f-selectors.json",
+    "review_revision": "Supervisor exact-set check and source/sink review; no stale-line false-positive claims."
+  },
+  "selectors": [
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=50",
+      "file": ".github/workflows/_deploy-eks.yml",
+      "original_line": 33,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Update kubeconfig",
+          "Deploy"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=51",
+      "file": ".github/workflows/_deploy-eks.yml",
+      "original_line": 37,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Update kubeconfig",
+          "Deploy"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=78",
+      "file": ".github/workflows/agent-context-deploy.yml",
+      "original_line": 209,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Set derived variables",
+          "Configure kubectl",
+          "Verify AWS account",
+          "Create namespace",
+          "Create StorageClass (ebs-gp3)",
+          "Deploy ConfigMap",
+          "Apply RBAC (trusted deployment access to agent-context namespace)",
+          "Run DB migrations (in-cluster Job)",
+          "Create ServiceAccount (IRSA)",
+          "Deploy S3 Mountpoint storage (PV/PVC)",
+          "Deploy Zoekt (code search)",
+          "Deploy LiteLLM Proxy",
+          "Deploy DeepWiki ConfigMap",
+          "Deploy DeepWiki",
+          "Deploy Context MCP Server (Door)",
+          "Deploy Ingestion CronJob + KEDA ScaledJob",
+          "Wait for rollouts",
+          "Verify deployment",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=79",
+      "file": ".github/workflows/agent-context-deploy.yml",
+      "original_line": 445,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Set derived variables",
+          "Configure kubectl",
+          "Verify AWS account",
+          "Create namespace",
+          "Create StorageClass (ebs-gp3)",
+          "Deploy ConfigMap",
+          "Apply RBAC (trusted deployment access to agent-context namespace)",
+          "Run DB migrations (in-cluster Job)",
+          "Create ServiceAccount (IRSA)",
+          "Deploy S3 Mountpoint storage (PV/PVC)",
+          "Deploy Zoekt (code search)",
+          "Deploy LiteLLM Proxy",
+          "Deploy DeepWiki ConfigMap",
+          "Deploy DeepWiki",
+          "Deploy Context MCP Server (Door)",
+          "Deploy Ingestion CronJob + KEDA ScaledJob",
+          "Wait for rollouts",
+          "Verify deployment",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=84",
+      "file": ".github/workflows/agent-context-infra-apply.yml",
+      "original_line": 68,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "GraphRAG cost guard",
+          "Terraform Init",
+          "Terraform Plan (destroy-safety check)",
+          "Destroy-safety label gate",
+          "Terraform Apply",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=85",
+      "file": ".github/workflows/agent-context-infra-apply.yml",
+      "original_line": 114,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "GraphRAG cost guard",
+          "Terraform Init",
+          "Terraform Plan (destroy-safety check)",
+          "Destroy-safety label gate",
+          "Terraform Apply",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=86",
+      "file": ".github/workflows/agent-context-infra-destroy.yml",
+      "original_line": 49,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Delete K8s agent-context resources",
+          "Empty S3 buckets",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=88",
+      "file": ".github/workflows/agent-context-infra-destroy.yml",
+      "original_line": 91,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Delete K8s agent-context resources",
+          "Empty S3 buckets",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=93",
+      "file": ".github/workflows/agent-context-verb-ops.yml",
+      "original_line": 260,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Account guard",
+          "Configure kubectl",
+          "Door verb verification",
+          "Neptune connectivity diagnostic",
+          "Neptune backfill",
+          "Corrupt repo_id cleanup",
+          "Run QA eval"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=118",
+      "file": ".github/workflows/agent-factory-infra-destroy.yml",
+      "original_line": 49,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Delete K8s agent-factory resources",
+          "Empty S3 buckets",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=120",
+      "file": ".github/workflows/agent-factory-infra-destroy.yml",
+      "original_line": 91,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Delete K8s agent-factory resources",
+          "Empty S3 buckets",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=201",
+      "file": ".github/workflows/credential-binding-adversarial-e2e.yml",
+      "original_line": 156,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Install dependencies",
+          "Resolve infrastructure endpoints",
+          "Run adversarial E2E assertion script",
+          "Upload evidence to S3",
+          "Post job summary",
+          "File issue on failure (nightly only)"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=205",
+      "file": ".github/workflows/credential-binding-flip.yml",
+      "original_line": 82,
+      "disposition": "file-absent",
+      "rationale": "The original workflow path does not exist in the reviewed source tree; no executable workflow remains at this path.",
+      "evidence": "Exact original selector retained; current path existence check. No claim is made that a line-number match on another workflow resolves this record."
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=227",
+      "file": ".github/workflows/e2e-chat-playwright.yml",
+      "original_line": 52,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Resolve dashboard URL",
+          "Install dependencies",
+          "Run E2E chat suite"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=237",
+      "file": ".github/workflows/e2e-new-ui-playwright.yml",
+      "original_line": 82,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Resolve environment",
+          "Resolve dashboard URL",
+          "Resolve preview flag mode",
+          "Install dependencies",
+          "Run E2E new UI suite",
+          "Assert the run was not vacuous"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=238",
+      "file": ".github/workflows/e2e-new-ui-playwright.yml",
+      "original_line": 90,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Resolve environment",
+          "Resolve dashboard URL",
+          "Resolve preview flag mode",
+          "Install dependencies",
+          "Run E2E new UI suite",
+          "Assert the run was not vacuous"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=244",
+      "file": ".github/workflows/engine-bridge-smoke-seed.yml",
+      "original_line": 131,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Install psql + jq",
+          "Resolve RDS connection (IAM auth token)",
+          "Probe (read-only)",
+          "Seed operator identity in target org",
+          "Seed scratch plan bound to issue"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=254",
+      "file": ".github/workflows/eval-cli-uplift.yml",
+      "original_line": 266,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Install test dependencies",
+          "Lint and format check",
+          "Offline guards",
+          "Assert the published result schema still matches the report builder",
+          "Assert the example config carries no secrets",
+          "Refuse an untrusted ref",
+          "Fetch the pinned harness revision",
+          "Install runner dependencies",
+          "Pin the deployment for this EC2 suite",
+          "Validate execution bindings and build the run config",
+          "Fetch the expected CLI release",
+          "Require an explicit OIDC role (fail closed)",
+          "Publish when these credentials expire",
+          "Assert the role resolved to the approved platform account",
+          "Run the evaluation",
+          "Independent cleanup sweep",
+          "Assert no evaluation resources were left behind",
+          "Refuse an untrusted ref",
+          "Install runner dependencies",
+          "Require an explicit OIDC role (fail closed)",
+          "Assert the role resolved to the approved platform account",
+          "Rebuild this run's config",
+          "Terminate this run's instances and anything expired",
+          "Sweep this run's non-EC2 resources from its restored state",
+          "Report what could not be recovered automatically"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=260",
+      "file": ".github/workflows/eval-cli-uplift.yml",
+      "original_line": 605,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Install test dependencies",
+          "Lint and format check",
+          "Offline guards",
+          "Assert the published result schema still matches the report builder",
+          "Assert the example config carries no secrets",
+          "Refuse an untrusted ref",
+          "Fetch the pinned harness revision",
+          "Install runner dependencies",
+          "Pin the deployment for this EC2 suite",
+          "Validate execution bindings and build the run config",
+          "Fetch the expected CLI release",
+          "Require an explicit OIDC role (fail closed)",
+          "Publish when these credentials expire",
+          "Assert the role resolved to the approved platform account",
+          "Run the evaluation",
+          "Independent cleanup sweep",
+          "Assert no evaluation resources were left behind",
+          "Refuse an untrusted ref",
+          "Install runner dependencies",
+          "Require an explicit OIDC role (fail closed)",
+          "Assert the role resolved to the approved platform account",
+          "Rebuild this run's config",
+          "Terminate this run's instances and anything expired",
+          "Sweep this run's non-EC2 resources from its restored state",
+          "Report what could not be recovered automatically"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=279",
+      "file": ".github/workflows/gateway-deploy.yml",
+      "original_line": 258,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Guard engine delivery revisions",
+          "unnamed",
+          "Verify source belongs to reviewed main history",
+          "Record deployment workflow context",
+          "Deploy budget tracker and pricing code",
+          "Compute build vars",
+          "Export image tag",
+          "Upload CFN templates to S3",
+          "Ensure namespace and render K8s prerequisites",
+          "Migrate schema then roll out new image",
+          "Update the scheduled orchestration engine",
+          "Wire ALB to CloudFront (Section 6 \u2014 first deploy)",
+          "Trigger gateway-infra re-apply (flip enable_vpc_origin=true)",
+          "Apply internal-plane edge deny (gated)",
+          "Verify internal-plane invariant",
+          "Verify gateway and engine release parity",
+          "Record gateway-backend build evidence",
+          "Verify source belongs to reviewed main history",
+          "Record deployment workflow context",
+          "Resolve VITE_* env from SSM",
+          "Build frontend",
+          "Deploy to S3 and invalidate CloudFront",
+          "Record gateway-frontend build evidence",
+          "Verify source belongs to reviewed main history",
+          "Verify release pricing and enable the schedule"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=283",
+      "file": ".github/workflows/gateway-deploy.yml",
+      "original_line": 546,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Guard engine delivery revisions",
+          "unnamed",
+          "Verify source belongs to reviewed main history",
+          "Record deployment workflow context",
+          "Deploy budget tracker and pricing code",
+          "Compute build vars",
+          "Export image tag",
+          "Upload CFN templates to S3",
+          "Ensure namespace and render K8s prerequisites",
+          "Migrate schema then roll out new image",
+          "Update the scheduled orchestration engine",
+          "Wire ALB to CloudFront (Section 6 \u2014 first deploy)",
+          "Trigger gateway-infra re-apply (flip enable_vpc_origin=true)",
+          "Apply internal-plane edge deny (gated)",
+          "Verify internal-plane invariant",
+          "Verify gateway and engine release parity",
+          "Record gateway-backend build evidence",
+          "Verify source belongs to reviewed main history",
+          "Record deployment workflow context",
+          "Resolve VITE_* env from SSM",
+          "Build frontend",
+          "Deploy to S3 and invalidate CloudFront",
+          "Record gateway-frontend build evidence",
+          "Verify source belongs to reviewed main history",
+          "Verify release pricing and enable the schedule"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=284",
+      "file": ".github/workflows/gateway-deploy.yml",
+      "original_line": 640,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Guard engine delivery revisions",
+          "unnamed",
+          "Verify source belongs to reviewed main history",
+          "Record deployment workflow context",
+          "Deploy budget tracker and pricing code",
+          "Compute build vars",
+          "Export image tag",
+          "Upload CFN templates to S3",
+          "Ensure namespace and render K8s prerequisites",
+          "Migrate schema then roll out new image",
+          "Update the scheduled orchestration engine",
+          "Wire ALB to CloudFront (Section 6 \u2014 first deploy)",
+          "Trigger gateway-infra re-apply (flip enable_vpc_origin=true)",
+          "Apply internal-plane edge deny (gated)",
+          "Verify internal-plane invariant",
+          "Verify gateway and engine release parity",
+          "Record gateway-backend build evidence",
+          "Verify source belongs to reviewed main history",
+          "Record deployment workflow context",
+          "Resolve VITE_* env from SSM",
+          "Build frontend",
+          "Deploy to S3 and invalidate CloudFront",
+          "Record gateway-frontend build evidence",
+          "Verify source belongs to reviewed main history",
+          "Verify release pricing and enable the schedule"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=292",
+      "file": ".github/workflows/gateway-infra-apply.yml",
+      "original_line": 550,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify exact reviewed source before deployment",
+          "Install required CLI tools",
+          "Pre-create OAuth stub secret (idempotent)",
+          "Verify Terraform-managed Lambda layer CodeBuild projects",
+          "Check if PyJWT layer already in S3",
+          "Check if psycopg2 layer already in S3",
+          "Terraform Init",
+          "State fixups (import drift, clean stale jobs)",
+          "Pre-resolve ALB (no-wait)",
+          "Guard \u2014 ALB probe empty but gateway API resources already exist",
+          "Pre-resolve GitLab ALB (SSM)",
+          "Pre-resolve agent-submit queue (SSM)",
+          "Pre-resolve engine command bridge (SSM)",
+          "Terraform Plan (destroy-safety check)",
+          "Destroy-safety gate",
+          "Terraform Apply",
+          "Invalidate CloudFront /api/* on distribution change",
+          "Convergence guard (post-apply plan must be empty)",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=293",
+      "file": ".github/workflows/gateway-infra-destroy.yml",
+      "original_line": 49,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Delete Ingress and wait for ALB cleanup",
+          "Delete K8s gateway resources",
+          "Empty S3 buckets",
+          "Force-delete Secrets Manager secrets",
+          "Disable CloudFront distribution",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Clean up SSM parameters",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=295",
+      "file": ".github/workflows/gateway-infra-destroy.yml",
+      "original_line": 91,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Delete Ingress and wait for ALB cleanup",
+          "Delete K8s gateway resources",
+          "Empty S3 buckets",
+          "Force-delete Secrets Manager secrets",
+          "Disable CloudFront distribution",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Clean up SSM parameters",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=304",
+      "file": ".github/workflows/gbrain-infra-destroy.yml",
+      "original_line": 30,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Configure kubectl",
+          "Run gbrain teardown",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=306",
+      "file": ".github/workflows/gbrain-infra-destroy.yml",
+      "original_line": 83,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Configure kubectl",
+          "Run gbrain teardown",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=310",
+      "file": ".github/workflows/gitlab-infra-destroy.yml",
+      "original_line": 49,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=312",
+      "file": ".github/workflows/gitlab-infra-destroy.yml",
+      "original_line": 91,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=350",
+      "file": ".github/workflows/orchestration-live-tests.yml",
+      "original_line": 100,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Validate dispatch inputs",
+          "Install dependencies",
+          "Report the verified target account",
+          "Run qualification",
+          "Remind about leftover fixtures"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=354",
+      "file": ".github/workflows/orchestration-live-tests.yml",
+      "original_line": 173,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Validate dispatch inputs",
+          "Install dependencies",
+          "Report the verified target account",
+          "Run qualification",
+          "Remind about leftover fixtures"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=356",
+      "file": ".github/workflows/orchestration-live-tests.yml",
+      "original_line": 212,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Validate dispatch inputs",
+          "Install dependencies",
+          "Report the verified target account",
+          "Run qualification",
+          "Remind about leftover fixtures"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=363",
+      "file": ".github/workflows/platform-deploy-mgmt-infra-apply.yml",
+      "original_line": 76,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Terraform Init",
+          "Terraform Plan (destroy-safety check)",
+          "Destroy-safety gate",
+          "Terraform Apply",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=367",
+      "file": ".github/workflows/platform-infra-apply.yml",
+      "original_line": 356,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Validate apply scope",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Enable Bedrock model access",
+          "Set EKS public access CIDRs",
+          "Verify scoped target and preserve EKS public access CIDRs",
+          "Set extra cluster admin principal ARNs",
+          "Resolve additional private capacity subnets",
+          "Terraform Init",
+          "Terraform Plan (destroy-safety check)",
+          "Terraform Plan (scoped)",
+          "Verify scoped plan",
+          "Destroy-safety gate",
+          "Terraform Apply",
+          "Scoped plan-only summary",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=368",
+      "file": ".github/workflows/platform-infra-destroy.yml",
+      "original_line": 49,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Clean up K8s system namespaces",
+          "Clean up orphaned EKS resources",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Clean up retired CodeBuild projects",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=370",
+      "file": ".github/workflows/platform-infra-destroy.yml",
+      "original_line": 91,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Clean up K8s system namespaces",
+          "Clean up orphaned EKS resources",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Clean up retired CodeBuild projects",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=422",
+      "file": ".github/workflows/seed-hosted-tenant.yml",
+      "original_line": 52,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Install psql + jq",
+          "Validate inputs",
+          "Build seed SQL",
+          "Resolve RDS connection (IAM auth token)",
+          "Execute seed",
+          "Dry-run notice"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=423",
+      "file": ".github/workflows/seed-hosted-tenant.yml",
+      "original_line": 64,
+      "disposition": "fixed",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Install psql + jq",
+          "Validate inputs",
+          "Build seed SQL",
+          "Resolve RDS connection (IAM auth token)",
+          "Execute seed",
+          "Dry-run notice"
+        ],
+        "additional_controls": "Production-step adversarial execution tests cover environment-file newlines, shell metacharacters, qualification/backfill arguments and SQL-value transport. Seed SQL uses quoted psql variables; existing numeric issue validation now preserves actual input."
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=452",
+      "file": ".github/workflows/undeploy.yml",
+      "original_line": 75,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Verify source belongs to reviewed main history",
+          "Validate account_id matches caller",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Configure kubectl",
+          "Run undeploy phases",
+          "Summary",
+          "Verify source belongs to reviewed main history",
+          "Install AWS CLI",
+          "Destroy Terraform state backend",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=476",
+      "file": ".github/workflows/webhook-ingress-destroy.yml",
+      "original_line": 46,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Delete K8s webhook-ingress resources",
+          "Clean up Lambda artifacts from S3",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Summary"
+        ]
+      }
+    },
+    {
+      "selector": "semgrep|original/semgrep/semgrep-results.sarif|ri=478",
+      "file": ".github/workflows/webhook-ingress-destroy.yml",
+      "original_line": 88,
+      "disposition": "already-remediated",
+      "rationale": "Reviewed all current YAML run steps in this original workflow path, rather than interpreting stale original line numbers. Dispatch/call inputs are passed as environment data; no inputs.* or github.event.inputs.* expression is embedded in shell source.",
+      "evidence": {
+        "validation": "tests/unit/test_workflow_input_injection.py parses YAML run steps, including inline - run syntax.",
+        "run_steps_reviewed": [
+          "Confirm module name",
+          "Verify source belongs to reviewed main history",
+          "Install required CLI tools",
+          "Assert AWS account",
+          "Configure kubectl",
+          "Delete K8s webhook-ingress resources",
+          "Clean up Lambda artifacts from S3",
+          "Terraform Init",
+          "Terraform Destroy",
+          "Summary"
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "already-remediated": 30,
+    "fixed": 10,
+    "file-absent": 1,
+    "total": 41,
+    "unresolved": 0
+  }
+}

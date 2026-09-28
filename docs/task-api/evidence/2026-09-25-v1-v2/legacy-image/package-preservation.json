@@ -1,0 +1,29 @@
+{
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "image_source_sha": "029fdfe9dc7e2593db028093a64fc93e05c0c657",
+  "packages": [
+    {
+      "path": "modules/agent-factory/agent/package.json",
+      "unchanged": true,
+      "sha256": "e70c9230cd2d571794eca8424275a7edd1990e38a79387fda43deda114672c9d"
+    },
+    {
+      "path": "modules/agent-factory/agent/package-lock.json",
+      "unchanged": true,
+      "sha256": "3728f56e607371e6615f2ac7f0320fb439b69e57cd509e3b15dea16240849b3b"
+    },
+    {
+      "path": "modules/agent-factory/codex-reviewer/package.json",
+      "unchanged": true,
+      "sha256": "e608a424542d50344e55b47422ea4b3097544cc359d356bda1217fc5acc4e5f5"
+    },
+    {
+      "path": "modules/agent-factory/codex-reviewer/package-lock.json",
+      "unchanged": true,
+      "sha256": "b42808c5c2624e0197dad6023ea8d161a4f34c63dcebd73133d31a81100904b9"
+    }
+  ],
+  "scope": "Package manifests/lockfiles only. Parallel non-Task changes in legacy sources are not claimed absent.",
+  "task_package": "modules/agent-factory/task-agents/investigator/package.json",
+  "task_own_lockfile": "modules/agent-factory/task-agents/investigator/package-lock.json"
+}

@@ -1,0 +1,365 @@
+"""Authoritative persona and model catalogue data — Issue #5420 (PMM-03).
+
+This module is the single source for:
+  - The compatibility-class vocabulary (R2).
+  - The persona-to-class registry staged from the execution source of truth.
+  - The platform-supported model catalogue (seeded from the Lambda's curated
+    model list and extended with account-available Claude models).
+
+Persona rows are derived from ``personas.py`` at request time — never copied
+into a second list.  A persona added or removed in ``personas.py`` flows
+through without any edit here (AC-01).
+
+The staged copy of ``personas.py`` is imported at runtime; a parity test
+in the test suite asserts it matches the authoritative source.  See
+``docs/design-notes/5420-persona-and-model-catalogue.md`` §2.1 option (a).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from typing import Literal
+
+from src.admin.persona_models._personas import (
+    COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION,
+)
+
+# ---------------------------------------------------------------------------
+# Compatibility-class vocabulary (R2, §2.4)
+# ---------------------------------------------------------------------------
+# Class IDs are stable and unversioned.  Versioning lives in the separate
+# ``harness_contract_revision`` field, so a harness upgrade revises evidence
+# without renaming a class.
+
+COMPATIBILITY_CLASS_CLAUDE = "claude-agent-sdk"
+COMPATIBILITY_CLASS_CODEX = "codex-sdk"
+
+COMPATIBILITY_CLASSES: frozenset[str] = frozenset({COMPATIBILITY_CLASS_CLAUDE, COMPATIBILITY_CLASS_CODEX})
+
+# Kept as the model-catalogue shorthand for the Claude request-shape manifest.
+# The value is generated from the exact agent runtime package.json pin.
+HARNESS_CONTRACT_REVISION = COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION[COMPATIBILITY_CLASS_CLAUDE]
+
+
+# ---------------------------------------------------------------------------
+# Persona-to-class registry (R2, §2.4)
+# ---------------------------------------------------------------------------
+# The `codex` supervisor still uses the Claude SDK worker and delegates to a
+# bounded Codex tool.  The event-selected `agent-codex-reviewer`, however, is a
+# native Codex SDK adapter and is classified as codex-sdk by the authoritative
+# registry.  Future native personas extend that registry, not this module.
+
+# Personas that are registered but not configurable, with reason.
+_NOT_CONFIGURABLE: dict[str, str] = {
+    # pt-superpower dispatches with no persona identity today (#4037).
+    # Listing it lets the catalogue stay honest about what exists (AC-01)
+    # while refusing a choice that cannot take effect.
+    "pt-superpower": "dispatches_without_persona_identity",
+}
+
+
+def persona_compatibility_class(persona_key: str) -> str | None:
+    """Return the authoritative compatibility class, or None if unknown."""
+    # Import here to avoid circular imports and to read from the staged copy.
+    # The staged copy is asserted to match the authoritative source by a
+    # parity test — see tests/admin/persona_models/test_persona_parity.py.
+    from src.admin.persona_models._personas import PERSONA_COMPATIBILITY_CLASS
+    from src.tasks.personas import TASK_PERSONAS
+
+    profile = TASK_PERSONAS.get(persona_key)
+    return profile.compatibility_class if profile else PERSONA_COMPATIBILITY_CLASS.get(persona_key)
+
+
+def compatibility_class_harness_contract_revision(compatibility_class: str) -> str | None:
+    """Return the server-owned harness revision for a compatibility class.
+
+    Values are generated from exact runtime package.json pins.  Unknown classes
+    deliberately receive no revision to borrow from another harness.
+    """
+    return COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION.get(compatibility_class)
+
+
+def persona_harness_contract_revision(persona_key: str) -> str:
+    """Return the authoritative harness revision or fail closed.
+
+    Every emitted preference row must identify the exact harness contract it
+    targets.  A newly registered compatibility class therefore cannot borrow
+    another class's revision or silently emit a null revision.
+    """
+    from src.tasks.personas import TASK_PERSONAS
+
+    if persona_key in TASK_PERSONAS:
+        return TASK_PERSONAS[persona_key].harness_contract_revision
+    compatibility_class = persona_compatibility_class(persona_key)
+    if compatibility_class is None:
+        raise ValueError(f"Unknown persona key '{persona_key}'.")
+    revision = compatibility_class_harness_contract_revision(compatibility_class)
+    if revision is None:
+        raise RuntimeError(f"Persona '{persona_key}' has compatibility class '{compatibility_class}' without a registered harness contract revision.")
+    return revision
+
+
+def persona_is_configurable(persona_key: str) -> bool:
+    """Whether a persona can be configured with a model choice."""
+    return persona_key not in _NOT_CONFIGURABLE
+
+
+def persona_not_configurable_reason(persona_key: str) -> str | None:
+    """Machine-readable reason why a persona is not configurable, or None."""
+    return _NOT_CONFIGURABLE.get(persona_key)
+
+
+# ---------------------------------------------------------------------------
+# Platform-supported model catalogue (§3.3)
+# ---------------------------------------------------------------------------
+# Seeded from the Lambda's curated 8 entries (model_validate.py:19-38) plus the
+# D4 Claude-class candidate us.anthropic.claude-sonnet-4-6.
+#
+# That curation came from direct bedrock-runtime invoke-model calls. Direct
+# invocation is NOT proof of the Claude Agent SDK harness request shape, so it
+# does not establish invocability for this story's compatibility class. Seeding
+# decides catalogue MEMBERSHIP only. Protected enforcement requires durable
+# exact-harness evidence (§4.1). Basic mapping admits active, compatible,
+# permitted models without recurring paid probes; provider access is enforced
+# on invocation. Sonnet 5 adds verified availability metadata and local SDK
+# request capture, not a live provider-invocation receipt.
+#
+# This is a NEW versioned artifact, not either alias map (design §3.3).
+# The gateway alias map (model_resolver.py) is wider and contains known
+# non-invocable entries; the Lambda alias map is invocability-curated but
+# uses global. prefixes only.
+
+LifecycleStatus = Literal["active", "retired"]
+
+
+@dataclass(frozen=True)
+class CatalogueModel:
+    """One entry in the platform-supported model catalogue."""
+
+    canonical_model_id: str
+    model_family: str
+    canonical_version: str
+    compatibility_class: str
+    harness_contract_revision: str
+    lifecycle: LifecycleStatus = "active"
+    # Increment on each published lifecycle transition, including re-retirement.
+    lifecycle_version: int = 1
+
+    @property
+    def lifecycle_revision(self) -> str:
+        """Stable transition identity for retirement alert deduplication."""
+        canonical = json.dumps(
+            {"lifecycle": self.lifecycle, "model_id": self.canonical_model_id, "version": self.lifecycle_version},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+
+# The catalogue.  Order is presentational (family groups).
+#
+# Membership here asserts NOTHING about invocability. No entry below carries
+# harness-shaped invocability proof; the evidence store is empty until a bounded
+# probe runs under explicit spend approval (AC-04, PMM-09). Reading this list is
+# not reading evidence.
+#
+# DO NOT add a model here because it has a price row or appears in a listing.
+# Listing is not evidence.  Price coverage is not entitlement.  #2300.
+PLATFORM_MODEL_CATALOGUE: tuple[CatalogueModel, ...] = (
+    # --- Opus family ---
+    # Account availability verified 2026-09-24; membership is not invocation proof.
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-opus-5-5",
+        model_family="Opus",
+        canonical_version="5.5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    # US profile: exact Task cyber Messages probe verified 2026-09-26.
+    # CLI harness readiness still requires its own persisted evidence.
+    CatalogueModel(
+        canonical_model_id="us.anthropic.claude-opus-5",
+        model_family="Opus",
+        canonical_version="5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-opus-5",
+        model_family="Opus",
+        canonical_version="5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-opus-4-8",
+        model_family="Opus",
+        canonical_version="4.8",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-opus-4-7",
+        model_family="Opus",
+        canonical_version="4.7",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-opus-4-6-v1",
+        model_family="Opus",
+        canonical_version="4.6",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-opus-4-5-20251101-v1:0",
+        model_family="Opus",
+        canonical_version="4.5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    # --- Sonnet family ---
+    # Bedrock catalogue, profile and account availability checked 2026-09-20.
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-sonnet-5",
+        model_family="Sonnet",
+        canonical_version="5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-sonnet-4-6",
+        model_family="Sonnet",
+        canonical_version="4.6",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        model_family="Sonnet",
+        canonical_version="4.5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    # --- Haiku family ---
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        model_family="Haiku",
+        canonical_version="4.5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    # --- D4 Claude-class candidate ---
+    # us.anthropic.claude-sonnet-4-6 is the candidate default per the approved
+    # design §3.3.  It is NOT a proven default — evidence is empty until
+    # PMM-09 runs the probes (R3).  No alias resolves to the us. form today;
+    # closing that gap is PMM-09's (#5427).
+    CatalogueModel(
+        canonical_model_id="us.anthropic.claude-sonnet-4-6",
+        model_family="Sonnet",
+        canonical_version="4.6",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
+    # --- GPT-6 family (native Codex personas only) ---
+    CatalogueModel(
+        canonical_model_id="openai.gpt-6-astra",
+        model_family="GPT-6 Astra",
+        canonical_version="6",
+        compatibility_class=COMPATIBILITY_CLASS_CODEX,
+        harness_contract_revision=COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION[COMPATIBILITY_CLASS_CODEX],
+    ),
+    CatalogueModel(
+        canonical_model_id="openai.gpt-6-sol",
+        model_family="GPT-6 Sol",
+        canonical_version="6",
+        compatibility_class=COMPATIBILITY_CLASS_CODEX,
+        harness_contract_revision=COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION[COMPATIBILITY_CLASS_CODEX],
+    ),
+    CatalogueModel(
+        canonical_model_id="openai.gpt-6-luna",
+        model_family="GPT-6 Luna",
+        canonical_version="6",
+        compatibility_class=COMPATIBILITY_CLASS_CODEX,
+        harness_contract_revision=COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION[COMPATIBILITY_CLASS_CODEX],
+    ),
+)
+
+# Index for O(1) lookups by canonical model ID.
+_CATALOGUE_BY_ID: dict[str, CatalogueModel] = {m.canonical_model_id: m for m in PLATFORM_MODEL_CATALOGUE}
+
+
+def catalogue_lookup(canonical_model_id: str) -> CatalogueModel | None:
+    """Look up a model by its canonical versioned identifier."""
+    return next((model for model in PLATFORM_MODEL_CATALOGUE if model.canonical_model_id == canonical_model_id), None)
+
+
+# ---------------------------------------------------------------------------
+# Alias resolution — persona-selection baseline (§3.6, C3)
+# ---------------------------------------------------------------------------
+# Restricted to models in PLATFORM_MODEL_CATALOGUE.  This is deliberately
+# narrower than model_resolver.py's DEFAULT_MODEL_ALIASES, which includes
+# additional models outside the persona catalogue. Compatibility is enforced
+# separately: OpenAI entries are available only to native Codex personas.
+#
+# Bare/ambiguous aliases (opus, sonnet, haiku) are refused, not resolved,
+# to prevent silent drift when a provider moves a "latest" pointer (#2300).
+
+PERSONA_MODEL_ALIASES: dict[str, str] = {
+    "gpt6-astra": "openai.gpt-6-astra",
+    "gpt6-sol": "openai.gpt-6-sol",
+    "gpt6-luna": "openai.gpt-6-luna",
+    "opus55": "global.anthropic.claude-opus-5-5",
+    "opus5": "global.anthropic.claude-opus-5",
+    "opus48": "global.anthropic.claude-opus-4-8",
+    "opus47": "global.anthropic.claude-opus-4-7",
+    "opus46": "global.anthropic.claude-opus-4-6-v1",
+    "opus45": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "sonnet5": "global.anthropic.claude-sonnet-5",
+    "sonnet46": "global.anthropic.claude-sonnet-4-6",
+    "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+
+def aliases_for_model(canonical_model_id: str) -> tuple[str, ...]:
+    """Return every approved, pinned friendly alias for a catalogue model."""
+    return tuple(sorted(alias for alias, target in PERSONA_MODEL_ALIASES.items() if target == canonical_model_id))
+
+
+def resolve_alias(alias: str) -> str | None:
+    """Resolve a friendly alias to a canonical model ID, or None if unknown.
+
+    Returns the canonical ID if the alias is in the persona-selection alias
+    map.  Returns None for bare/ambiguous aliases and unknown strings.
+    A canonical model ID that is already in the catalogue passes through.
+    """
+    lowered = alias.lower().strip()
+    # Direct alias lookup
+    if lowered in PERSONA_MODEL_ALIASES:
+        return PERSONA_MODEL_ALIASES[lowered]
+    # Pass through if it's already a known canonical ID
+    if lowered in _CATALOGUE_BY_ID or alias in _CATALOGUE_BY_ID:
+        return _CATALOGUE_BY_ID.get(lowered, _CATALOGUE_BY_ID.get(alias)).canonical_model_id
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Persona-selection allowed patterns (§3.4, C3)
+# ---------------------------------------------------------------------------
+# Model access and harness compatibility are independent gates. Only pinned
+# GPT-6 members join the baseline; this does not authorize Claude personas to
+# execute them or widen explicit tenant/service restrictions.
+
+PERSONA_ALLOWED_PATTERNS: tuple[str, ...] = (
+    "anthropic.claude-*",
+    "us.anthropic.claude-*",
+    "eu.anthropic.claude-*",
+    "global.anthropic.claude-*",
+    "openai.gpt-6-astra",
+    "openai.gpt-6-sol",
+    "openai.gpt-6-luna",
+)

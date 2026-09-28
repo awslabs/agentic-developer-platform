@@ -1,0 +1,15 @@
+{
+  "$fixture": {
+    "description": "Codex Task closed transport fixture; no provider calls or live authority.",
+    "schema": "process-protocol.schema.json#/$defs/child_to_host",
+    "expect": "valid",
+    "owner": "#6195",
+    "criteria": [
+      "T3-AC03"
+    ]
+  },
+  "protocol_version": 1,
+  "request_id": "293041a5-2c6d-4e7f-b081-920314253647",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "type": "control.request"
+}

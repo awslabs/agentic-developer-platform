@@ -28,11 +28,11 @@ class TestOpenAIPricing:
         cost = pricing_service.calculate_cost("openai.gpt-5.5", 500, 250)
         assert cost == Decimal("0.011")
 
-    def test_gpt_oss_120b_known_tokens_known_cost(self):
-        # $0.1545/1M in, $0.6180/1M out (per-1000: 0.0001545 / 0.000618).
-        # 10000 in + 10000 out → 10*0.0001545 + 10*0.000618 = 0.001545 + 0.00618 = 0.007725.
+    def test_gpt_oss_120b_unconfirmed_tier_uses_conservative_quote(self):
+        # A pre-request quote has no confirmed served tier. Priority is the
+        # highest complete published row: 10 * ($0.0002625 + $0.00105).
         cost = pricing_service.calculate_cost("openai.gpt-oss-120b", 10000, 10000)
-        assert cost == Decimal("0.007725")
+        assert cost == Decimal("0.013125")
 
     def test_zero_tokens_zero_cost(self):
         assert pricing_service.calculate_cost("openai.gpt-5.5", 0, 0) == Decimal("0")

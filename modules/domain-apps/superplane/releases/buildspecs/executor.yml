@@ -1,0 +1,5 @@
+version: 0.2
+phases:
+  build:
+    commands:
+      - bash modules/domain-apps/superplane/releases/build-image.sh superplane-executor

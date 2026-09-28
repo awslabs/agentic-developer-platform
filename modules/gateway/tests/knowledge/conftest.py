@@ -62,8 +62,28 @@ class FakeRow:
 # ---------------------------------------------------------------------------
 
 
+class FakeScalars:
+    """Simulates the object returned by SQLAlchemy's ``Result.scalars()``."""
+
+    def __init__(self, rows: list[Any]):
+        # scalars() yields the first column of each row, matching SQLAlchemy.
+        self._values = [row[0] if isinstance(row, tuple) else row for row in rows]
+
+    def all(self) -> list[Any]:
+        return self._values
+
+    def first(self) -> Any | None:
+        return self._values[0] if self._values else None
+
+
 class FakeResult:
-    """Simulates SQLAlchemy result from execute()."""
+    """Simulates SQLAlchemy result from execute().
+
+    Issue #4070: gained ``all()`` and ``scalars()`` so that ORM-style
+    ``select()`` consumers can be exercised through this fake. Previously it only
+    implemented ``fetchone``/``fetchall``/``scalar``, which limited the fake to
+    raw-``text()`` callers.
+    """
 
     def __init__(self, rows: list[Any] | None = None, scalar_val: Any = None):
         self._rows = rows or []
@@ -74,6 +94,12 @@ class FakeResult:
 
     def fetchall(self) -> list[Any]:
         return self._rows
+
+    def all(self) -> list[Any]:
+        return self._rows
+
+    def scalars(self) -> FakeScalars:
+        return FakeScalars(self._rows)
 
     def scalar(self) -> Any:
         return self._scalar_val
@@ -208,3 +234,17 @@ def make_client(knowledge_app: FastAPI):
         )
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _public_source_dns(monkeypatch):
+    """Example public sources resolve deterministically; real URL checks still run."""
+    import ipaddress
+
+    from src.knowledge.source_policy import url_denylist
+
+    monkeypatch.setattr(
+        url_denylist,
+        "_resolve_hostname",
+        lambda hostname: [ipaddress.ip_address("93.184.216.34")] if hostname in {"docs.example.com", "example.com"} else [],
+    )

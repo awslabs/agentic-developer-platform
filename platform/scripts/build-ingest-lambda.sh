@@ -24,6 +24,24 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 INGEST_DIR="${REPO_ROOT}/modules/agent-factory/gateway/lambdas/ingest"
 REQ_FILE="${INGEST_DIR}/requirements.txt"
 
+# ---------------------------------------------------------------------------
+# Vendor shared in-repo modules into the zip (issue #4233).
+# ---------------------------------------------------------------------------
+# The chat-dispatch tenant gate reuses resolve_installation_for_tenant() from
+# webhook-ingress rather than forking a second org→installation resolver. That
+# file lives outside the ingest source_dir Terraform zips, so copy it in here.
+# Gitignored in the ingest dir — this script is the only writer.
+VENDOR_SRC="${REPO_ROOT}/modules/agent-factory/webhook-ingress/lambda/common"
+for mod in installation_resolver.py; do
+  if [[ -f "${VENDOR_SRC}/${mod}" ]]; then
+    cp -f "${VENDOR_SRC}/${mod}" "${INGEST_DIR}/${mod}"
+    echo "[build-ingest] Vendored ${mod} from webhook-ingress/lambda/common"
+  else
+    echo "[build-ingest] ERROR: expected shared module missing: ${VENDOR_SRC}/${mod}" >&2
+    exit 1
+  fi
+done
+
 if [[ ! -f "${REQ_FILE}" ]]; then
   echo "[build-ingest] No requirements.txt at ${REQ_FILE} — nothing to install."
   exit 0

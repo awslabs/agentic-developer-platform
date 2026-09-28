@@ -1,0 +1,15 @@
+{
+  "observed_at": "2026-09-25T05:39:43.784274+00:00",
+  "queue": "adp-dev-agent-submit.fifo",
+  "attributes": {
+    "ApproximateNumberOfMessages": "0",
+    "ApproximateNumberOfMessagesNotVisible": "0",
+    "ApproximateNumberOfMessagesDelayed": "0"
+  },
+  "held_task": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+  "published_at": "2026-09-25T05:13:39Z",
+  "completed_at": "2026-09-25T05:29:43Z",
+  "held_seconds": 964,
+  "cloudwatch_peak_age_seconds": 956,
+  "assessment": "Queue-age peak correlates with deliberately held clarification fixture, including predecessor capacity defect investigation. After completion source queue is empty. Peak is not evidence of zero scheduling delay."
+}

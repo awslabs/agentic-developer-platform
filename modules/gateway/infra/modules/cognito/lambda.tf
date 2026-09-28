@@ -17,7 +17,8 @@ data "archive_file" "pre_token_generation" {
 
 # IAM Role for the Lambda function
 resource "aws_iam_role" "pre_token_generation" {
-  name = "${var.name_prefix}-pre-token-generation-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-pre-token-generation-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -130,6 +131,7 @@ resource "aws_lambda_function" "pre_token_generation" {
 
 # CloudWatch Log Group for Lambda
 resource "aws_cloudwatch_log_group" "pre_token_generation" {
+  #checkov:skip=CKV_AWS_338: Cognito trigger logs use an explicitly bounded 7- or 30-day operational retention.
   name              = "/aws/lambda/${var.name_prefix}-pre-token-generation"
   retention_in_days = var.environment == "prod" ? 30 : 7
   kms_key_id        = var.cloudwatch_kms_key_arn

@@ -363,9 +363,9 @@ Existing users all have exactly one `org_id`. The migration:
 
 ⚠️ **No schema support today.** The matcher keys on a single `org.name`
 (`handler.py:240`) and one `Organization` row == one tenant == one login. To have
-`sophos` and `sophos-research` both resolve to the `sophos` tenant, you need one of:
-- **A: `organizations.parent_tenant_id`** (nullable self-FK). `sophos-research`'s row
-  points at `sophos`; the matcher resolves `parent_tenant_id or id`. Simple, one column,
+`acme` and `acme-research` both resolve to the `acme` tenant, you need one of:
+- **A: `organizations.parent_tenant_id`** (nullable self-FK). `acme-research`'s row
+  points at `acme`; the matcher resolves `parent_tenant_id or id`. Simple, one column,
   covers the stated use case. **Recommended for v1.**
 - **B: A dedicated `tenant_org_links` table** (`tenant_id`, `github_org_id`,
   `github_login`, unique on `github_org_id`). True many:many, cleaner for reporting,

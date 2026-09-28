@@ -1,0 +1,17 @@
+[
+  {
+    "file": "skypilot-ssh-final-runtime.log",
+    "retained_path": "/workspaces/projects/security27/openssh-latest/skypilot-ssh-final-runtime.log",
+    "sha256": "2874b0fd32907b34eb2fe3da0517672afd4e5a070c8cf01e8f319762cb14b4d0"
+  },
+  {
+    "file": "skypilot-api-final-runtime.log",
+    "retained_path": "/workspaces/projects/security27/openssh-latest/skypilot-api-final-runtime.log",
+    "sha256": "3040eb3f7e75da8bb1786fc0cebfacf7ad57fbbbb52d49236c56d7a198dfa523"
+  },
+  {
+    "file": "skypilot-final-build.log",
+    "retained_path": "/workspaces/projects/security27/openssh-latest/skypilot-final-build.log",
+    "sha256": "eac6fa9b1c337618c914e2cdf8c1863618f6619e8a9774915f7b3766b8261908"
+  }
+]

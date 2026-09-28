@@ -1,0 +1,381 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "functional",
+            "control",
+            "api",
+            "data",
+            "visual"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "kind"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "CriterionOutcome": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_paths": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Artifact Paths",
+          "type": "array"
+        },
+        "baseline_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline Hash"
+        },
+        "criterion_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+          "title": "Criterion Id",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "outcome": {
+          "enum": [
+            "pass",
+            "fail",
+            "skipped",
+            "not_run"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        }
+      },
+      "required": [
+        "criterion_id",
+        "outcome"
+      ],
+      "title": "CriterionOutcome",
+      "type": "object"
+    },
+    "FixtureObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "definition_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Definition Hash",
+          "type": "string"
+        },
+        "fixture_set_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Fixture Set Id",
+          "type": "string"
+        },
+        "roles": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Roles",
+          "type": "array"
+        },
+        "row_counts": {
+          "additionalProperties": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxProperties": 8,
+          "minProperties": 1,
+          "propertyNames": {
+            "maxLength": 256,
+            "minLength": 1
+          },
+          "title": "Row Counts",
+          "type": "object"
+        }
+      },
+      "required": [
+        "fixture_set_id",
+        "definition_hash",
+        "roles",
+        "row_counts"
+      ],
+      "title": "FixtureObservation",
+      "type": "object"
+    },
+    "Producer": {
+      "additionalProperties": false,
+      "properties": {
+        "producer_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Producer Id",
+          "type": "string"
+        },
+        "repository_id": {
+          "minimum": 1,
+          "title": "Repository Id",
+          "type": "integer"
+        },
+        "run_attempt": {
+          "minimum": 1,
+          "title": "Run Attempt",
+          "type": "integer"
+        },
+        "run_id": {
+          "minimum": 1,
+          "title": "Run Id",
+          "type": "integer"
+        },
+        "workflow_path": {
+          "const": ".github/workflows/orchestration-live-tests.yml",
+          "title": "Workflow Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "workflow_path",
+        "run_id",
+        "run_attempt",
+        "producer_id"
+      ],
+      "title": "Producer",
+      "type": "object"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "pattern": "^[0-9]{12}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "provider": {
+          "const": "aws",
+          "title": "Provider",
+          "type": "string"
+        },
+        "region": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Region",
+          "type": "string"
+        },
+        "resource_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "resource_kind": {
+          "const": "eks-namespace",
+          "title": "Resource Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "account_id",
+        "region",
+        "resource_kind",
+        "resource_id"
+      ],
+      "title": "Target",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accepted_plan_version": {
+      "minimum": 1,
+      "title": "Accepted Plan Version",
+      "type": "integer"
+    },
+    "actual_revision": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Actual Revision",
+      "type": "string"
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      },
+      "maxItems": 256,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "claim_generation": {
+      "minimum": 1,
+      "title": "Claim Generation",
+      "type": "integer"
+    },
+    "claim_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Claim Id",
+      "type": "string"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "title": "Completed At",
+      "type": "string"
+    },
+    "criteria": {
+      "items": {
+        "$ref": "#/$defs/CriterionOutcome"
+      },
+      "maxItems": 128,
+      "minItems": 1,
+      "title": "Criteria",
+      "type": "array"
+    },
+    "cycle": {
+      "minimum": 1,
+      "title": "Cycle",
+      "type": "integer"
+    },
+    "deployment_operation_key": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Deployment Operation Key",
+      "type": "string"
+    },
+    "execution_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Execution Id",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "fixtures": {
+      "$ref": "#/$defs/FixtureObservation"
+    },
+    "flow_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Flow Id",
+      "type": "string"
+    },
+    "harness_revision": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Harness Revision",
+      "type": "string"
+    },
+    "live": {
+      "title": "Live",
+      "type": "boolean"
+    },
+    "node_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Node Id",
+      "type": "string"
+    },
+    "org_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Org Id",
+      "type": "string"
+    },
+    "policy_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Hash",
+      "type": "string"
+    },
+    "producer": {
+      "$ref": "#/$defs/Producer"
+    },
+    "schema_version": {
+      "default": 1,
+      "maximum": 1,
+      "minimum": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "specification_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Specification Hash",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/Target"
+    }
+  },
+  "required": [
+    "org_id",
+    "flow_id",
+    "node_id",
+    "execution_id",
+    "cycle",
+    "accepted_plan_version",
+    "policy_hash",
+    "claim_id",
+    "claim_generation",
+    "deployment_operation_key",
+    "actual_revision",
+    "harness_revision",
+    "specification_hash",
+    "target",
+    "fixtures",
+    "producer",
+    "criteria",
+    "started_at",
+    "completed_at",
+    "expires_at",
+    "live"
+  ],
+  "title": "EvaluationReceipt",
+  "type": "object"
+}

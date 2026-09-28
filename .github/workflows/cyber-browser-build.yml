@@ -1,0 +1,31 @@
+name: Cyber Browser Build
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: arc-runner-org
+    steps:
+    - uses: actions/checkout@v7
+    - name: Verify source belongs to reviewed main history
+      shell: bash
+      run: 'set -euo pipefail
+
+        git fetch --no-tags origin "$GITHUB_SHA"
+
+        git merge-base --is-ancestor HEAD FETCH_HEAD
+
+        '
+    - name: Establish trusted build identity
+      uses: ./.github/actions/trusted-build
+      with:
+        role_arn: ${{ vars.ADP_BUILD_ROLE_ARN }}
+        region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+    - name: Run cyber app automation
+      uses: ./modules/domain-apps/cyber/ci/cyber-browser-build
+    if: github.ref == 'refs/heads/main'
+    environment: adp-build-dev
+    permissions:
+      id-token: write
+      contents: read

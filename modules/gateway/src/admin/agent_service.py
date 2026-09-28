@@ -15,7 +15,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from src.shared.config import get_settings
-from src.shared.exceptions import NotFoundError, ValidationError
+from src.shared.exceptions import ConflictError, NotFoundError, ValidationError
 
 from .agent_schemas import (
     AgentCreateRequest,
@@ -69,14 +69,26 @@ class AgentService:
 
         # Configuration
         self.user_pool_id = user_pool_id or settings.cognito_user_pool_id
+        configured_agent_clients_table = getattr(settings, "agent_clients_table", "")
+        if not isinstance(configured_agent_clients_table, str):
+            configured_agent_clients_table = ""
         self.table_name = table_name or os.environ.get(
             "AGENT_CLIENTS_TABLE",
-            f"{os.environ.get('BG_NAME_PREFIX', 'bedrockgw')}-agent-clients",
+            configured_agent_clients_table or f"{os.environ.get('BG_NAME_PREFIX', 'bedrockgw')}-agent-clients",
         )
 
         # Build token endpoint
         cognito_domain = settings.cognito_domain or ""
-        self.token_endpoint = f"https://{cognito_domain}.auth.{self.region}.amazoncognito.com/oauth2/token"
+        # cognito_domain is either a prefix ("bedrockgw-dev-auth") or a custom
+        # domain FQDN ("auth.example.com"). A prefix is a single DNS label, so a
+        # dot tells them apart. Appending the regional suffix to an FQDN yields a
+        # host that does not exist, and the failure surfaces only when a token
+        # exchange is attempted.
+        if "." in cognito_domain:
+            token_base = f"https://{cognito_domain}"
+        else:
+            token_base = f"https://{cognito_domain}.auth.{self.region}.amazoncognito.com"
+        self.token_endpoint = f"{token_base}/oauth2/token"
 
         if not self.user_pool_id:
             logger.warning("Cognito User Pool ID not configured")
@@ -236,7 +248,17 @@ class AgentService:
 
             items = response.get("Items", [])
 
-            # Manual pagination (DynamoDB scan/query returns all matching items)
+            # DynamoDB stops each query at 1 MB. Complete the scoped query
+            # before applying this API's page-number pagination.
+            while response.get("LastEvaluatedKey"):
+                response = table.query(
+                    IndexName="org_id-index",
+                    KeyConditionExpression="org_id = :org_id",
+                    ExpressionAttributeValues={":org_id": org_id},
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
+                )
+                items.extend(response.get("Items", []))
+
             start_idx = (page - 1) * page_size
             end_idx = start_idx + page_size
             page_items = items[start_idx:end_idx]
@@ -334,6 +356,8 @@ class AgentService:
         client_id: str,
         org_id: str,
         request: AgentUpdateRequest,
+        *,
+        expected_updated_at: str | None = None,
     ) -> AgentResponse:
         """
         Update agent metadata.
@@ -393,7 +417,11 @@ class AgentService:
             "UpdateExpression": update_expression,
             "ExpressionAttributeValues": expression_values,
             "ReturnValues": "ALL_NEW",
+            "ConditionExpression": "attribute_not_exists(retirement_operation_id)",
         }
+        if expected_updated_at is not None:
+            kwargs["ConditionExpression"] += " AND attribute_exists(client_id) AND updated_at = :expected_updated_at"
+            expression_values[":expected_updated_at"] = expected_updated_at
         if expression_names:
             kwargs["ExpressionAttributeNames"] = expression_names
 
@@ -414,6 +442,55 @@ class AgentService:
             updated_at=datetime.fromisoformat(item["updated_at"]) if item.get("updated_at") else None,
             status=item.get("status", "active"),
         )
+
+    async def retire_agent(self, client_id: str, org_id: str, *, expected_updated_at: str, operation_id: str) -> AgentResponse:
+        """Claim a terminal tombstone, then idempotently delete exactly one client.
+
+        A failed provider call leaves retiring metadata. Only the same UUID may
+        resume it; ordinary updates cannot revive the tombstone. Cognito access
+        tokens already issued still expire normally, and runs are not stopped.
+        """
+        table = self.dynamodb.Table(self.table_name)
+        item = table.get_item(Key={"client_id": client_id}, ConsistentRead=True).get("Item")
+        if not item or item.get("org_id") != org_id:
+            raise NotFoundError("Agent not found")
+        receipt = item.get("retirement_operation_id")
+        if receipt and receipt != operation_id:
+            raise ConflictError("Another retirement operation already owns this client")
+        if not receipt:
+            try:
+                table.update_item(
+                    Key={"client_id": client_id},
+                    ConditionExpression=(
+                        "attribute_exists(client_id) AND org_id = :org AND updated_at = :expected AND attribute_not_exists(retirement_operation_id)"
+                    ),
+                    UpdateExpression="SET #status = :status, retirement_operation_id = :operation, updated_at = :now",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":org": org_id,
+                        ":expected": expected_updated_at,
+                        ":status": "retiring",
+                        ":operation": operation_id,
+                        ":now": datetime.now(UTC).isoformat(),
+                    },
+                )
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    raise ConflictError("Retirement revision changed") from None
+                raise
+        try:
+            self.cognito.delete_user_pool_client(UserPoolId=self.user_pool_id, ClientId=client_id)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+        table.update_item(
+            Key={"client_id": client_id},
+            ConditionExpression="org_id = :org AND retirement_operation_id = :operation",
+            UpdateExpression="SET #status = :status, updated_at = :now",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":org": org_id, ":operation": operation_id, ":status": "retired", ":now": datetime.now(UTC).isoformat()},
+        )
+        return await self.get_agent(client_id, org_id)
 
     async def delete_agent(self, client_id: str, org_id: str) -> None:
         """

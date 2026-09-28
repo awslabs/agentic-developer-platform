@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aws-e/adp/.github/security/ledger-schema.json",
+  "title": "Security agent run ledger — shard schema",
+  "description": "Per-run ledger for the nightly security agent (intent #4290). Each stage writes ONE object of this shape under s3://<findings-bucket>/security-agent/runs/<YYYY-MM-DD>/. No stage read-modify-writes a shared object (FR-C29): shards are merged at read time by the renderer. This file is the single source of truth for (a) which fields a stage may write, (b) how each field merges across shards, and (c) which fields may reach the rendered report (NT-11).",
+  "schema_version": "1",
+
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_date", "stage", "stage_type", "generated_at", "fields"],
+  "properties": {
+    "schema_version": {
+      "const": "1",
+      "description": "Envelope version. Bump only for breaking shard-shape changes."
+    },
+    "run_date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "The run's YYYY-MM-DD, matching its S3 prefix (FR-C28)."
+    },
+    "stage": {
+      "type": "string",
+      "pattern": "^(workflow|triage|orchestration|ops)(\\.[a-z0-9][a-z0-9-]*)?$",
+      "description": "Unique writer id within the run. The optional dotted suffix is what makes concurrent writers land on DISTINCT keys: the two architect halves write 'workflow.code-review' and 'workflow.pentest'; operations writes one shard per story, 'ops.<story-number>'. Two writers sharing a stage id would overwrite each other, which is why the id — not the field set — is the concurrency boundary."
+    },
+    "stage_type": {
+      "enum": ["workflow", "triage", "orchestration", "ops"],
+      "description": "Must equal the part of `stage` before the first dot. Selects the field allow-list."
+    },
+    "generated_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$",
+      "description": "When the writing stage produced this shard. Supplied BY THE WRITER, never read from a clock by the renderer — this field is how a timestamp reaches the report without making the renderer impure (NFR-6)."
+    },
+    "fields": {
+      "type": "object",
+      "description": "Payload. Every key must appear in x-fields with this shard's stage_type in its `stages` list; anything else is rejected at write time (NT-11, write side)."
+    }
+  },
+
+  "x-fields": {
+    "identified_raw": {
+      "type": "integer",
+      "minimum": 0,
+      "merge": "sum",
+      "stages": ["workflow"],
+      "description": "Vulnerabilities the stage reported before dedup. Sums because the two concurrent halves each report their own."
+    },
+    "identified_new_after_dedup": {
+      "type": "integer",
+      "minimum": 0,
+      "merge": "sum",
+      "stages": ["workflow"],
+      "description": "Findings surviving baseline dedup."
+    },
+    "new_finding_ids": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^f-[0-9a-f]+$"},
+      "merge": "unique-list",
+      "stages": ["workflow"],
+      "description": "Opaque service finding ids only — never titles, paths or reproduction detail (C-8). Present so coverage can be checked by identity rather than by comparing two counts that can both be wrong."
+    },
+    "run_duration_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "merge": "max",
+      "stages": ["workflow"],
+      "description": "Wall-clock seconds for the stage. Merges with max, not sum: the two halves overlap in time, so summing would over-report the run."
+    },
+    "pentest_cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "merge": "sum",
+      "stages": ["workflow"],
+      "description": "Reported cost of the pentest half (FR-B8)."
+    },
+    "daily_epic": {
+      "type": "integer",
+      "minimum": 1,
+      "merge": "single",
+      "stages": ["triage"],
+      "description": "Issue number of that night's dated EPIC. `single`: two different values is a bug, not something to reconcile."
+    },
+    "stories_created": {
+      "type": "integer",
+      "minimum": 0,
+      "merge": "sum",
+      "stages": ["triage"],
+      "description": "Count of story issues filed."
+    },
+    "story_ids": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1},
+      "merge": "unique-list",
+      "stages": ["triage"],
+      "description": "Issue numbers of the stories filed. Lets reconciliation name WHICH story is unaccounted for instead of only reporting a delta."
+    },
+    "findings_covered": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^f-[0-9a-f]+$"},
+      "merge": "unique-list",
+      "stages": ["triage"],
+      "description": "Finding ids that the filed stories cover. Compared against new_finding_ids for the coverage half of FR-C32."
+    },
+    "planned_sequence": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 1},
+      "merge": "single",
+      "stages": ["orchestration"],
+      "description": "Story numbers in dependency order (FR-C21). `single` because order carries meaning — merging two orderings would invent a third."
+    },
+    "unsignalled_sources": {
+      "type": "array",
+      "items": {"type": "string"},
+      "merge": "unique-list",
+      "stages": ["orchestration"],
+      "description": "Scanners that never signalled completion before the join barrier timed out, so the night's plan was written without their findings (unit U10). Absent on a complete plan. Recorded in the ledger and not only in the plan's body, because a partial plan that is only distinguishable by reading an issue is a partial plan nothing downstream can detect — which is the failure mode the timeout escape exists to avoid creating."
+    },
+    "story_status": {
+      "type": "map-of-story-status",
+      "merge": "map-union",
+      "stages": ["ops"],
+      "description": "Keyed by story number as a string. One ops shard per story, so map-union never has to resolve a conflict; a genuine conflict (same story, two different records) is raised rather than silently resolved."
+    }
+  },
+
+  "x-story-status": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["status", "failed_runs", "last_transition_at"],
+    "properties": {
+      "status": {
+        "enum": ["in_progress", "fixed", "stuck"],
+        "description": "Terminal states are `fixed` and `stuck` (FR-C36)."
+      },
+      "reason": {
+        "enum": ["failed_run_limit", "no_transition_timeout", null],
+        "description": "Required non-null when status is `stuck` (FR-C37). A closed enum rather than free text: this value is rendered into the report, and free text here is the path by which exploit detail reaches a document (NT-11)."
+      },
+      "failed_runs": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Failed developer runs on this story. 3 is the stuck threshold (D-19)."
+      },
+      "last_transition_at": {
+        "type": "string",
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$",
+        "description": "Last state change. 24h without one is the other stuck path (D-19)."
+      }
+    }
+  },
+
+  "x-stuck-rule": {
+    "failed_runs_threshold": 3,
+    "no_transition_hours": 24,
+    "description": "D-19. Either path independently makes a story stuck, with the reason stamped. Without a definition a run never finalizes."
+  },
+
+  "x-report-allowlist": [
+    "run_date",
+    "generated_at",
+    "status",
+    "identified_raw",
+    "identified_new_after_dedup",
+    "stories_created",
+    "fixed",
+    "stuck",
+    "in_progress",
+    "run_duration_seconds",
+    "pentest_cost_usd",
+    "daily_epic",
+    "planned_sequence",
+    "stories",
+    "reconciliation"
+  ],
+
+  "x-report-story-allowlist": ["story_id", "status", "reason"],
+
+  "x-report-reconciliation-allowlist": [
+    "ok",
+    "identity_ok",
+    "coverage_ok",
+    "accounted",
+    "missing_story_ids",
+    "unexpected_story_ids",
+    "uncovered_finding_count"
+  ]
+}

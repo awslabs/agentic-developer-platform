@@ -1,0 +1,10 @@
+{
+  "upstream_wheel_sha256": "2804ef44530aee8b768d6d116b108c86885e4e775e878a38a20ba720003b99ca",
+  "legacy_image_config_id": "sha256:470a6580a063efcacfe9936f5933f96634f556e600ad374da63e3c6acfa83548",
+  "legacy_protobuf": "3.20.3",
+  "upstream_scip_module_sha256": "8d230b47bb9de1e68aac891037e5c358d6850b251ab9e69f526f5680e863a910",
+  "schema_sha256": "2a72b078da8b7e700f05168d8feece78f3c21efb17c25cde9861da03883af533",
+  "wire_sha256": "4054c76e01d9ce21102266f607f4ef9845e9b391a9f8d0e1eb0ea8383f053d9d",
+  "unknown_field": "Index field127 varint123 intentionally retained",
+  "scope": "synthetic function definition/reference; no customer data"
+}

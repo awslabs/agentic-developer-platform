@@ -1,0 +1,142 @@
+{
+  "schema_version": "1.0",
+  "key": "task-api-5792-20260925-clarify3",
+  "max_new_tasks": 1,
+  "max_usd_per_task": 1,
+  "command_id": "a3c44dd6-031f-484d-9484-222a31ed5db5",
+  "checks": [
+    {
+      "check": "actual-input-required",
+      "outcome": "PASS",
+      "at": "2026-09-25T05:20:35.113698+00:00",
+      "input_request_id": "07c09a1c-aad9-4442-a646-d2fa551a6f5c"
+    },
+    {
+      "check": "clarification-response-accepted",
+      "outcome": "PASS",
+      "at": "2026-09-25T05:29:32.649724+00:00",
+      "command_id": "a3c44dd6-031f-484d-9484-222a31ed5db5"
+    },
+    {
+      "check": "completed",
+      "outcome": "FAIL",
+      "at": "2026-09-25T05:29:32.964321+00:00",
+      "status": "waiting_for_input"
+    },
+    {
+      "check": "clarification-consumed",
+      "outcome": "FAIL",
+      "at": "2026-09-25T05:29:32.964945+00:00",
+      "receipt": {
+        "authority_expires_at": "2026-09-25T05:46:00Z",
+        "command_id": "a3c44dd6-031f-484d-9484-222a31ed5db5",
+        "kind": "input",
+        "status": "accepted",
+        "turn_number": null,
+        "command_sequence": 1,
+        "handoff": "not_started",
+        "turn_id": null,
+        "schema_version": "1.0",
+        "accepted_at": "2026-09-25T05:29:32Z"
+      }
+    },
+    {
+      "check": "result-artifact-present",
+      "outcome": "FAIL",
+      "at": "2026-09-25T05:29:32.965507+00:00",
+      "artifact_ids": []
+    },
+    {
+      "check": "cost-attribution",
+      "outcome": "NOT RUN",
+      "at": "2026-09-25T05:29:32.966055+00:00",
+      "total_usd": null
+    }
+  ],
+  "criterion_outcome": "NOT RUN",
+  "request": {
+    "schema_version": "1.0",
+    "persona": "agent-task-investigator",
+    "instructions": "Investigate an incident, but no incident facts, logs or metrics have been supplied yet. On the initial turn return findings=[] and explain the missing evidence in uncertainties; do not turn the absence of evidence into a causal finding. Ask the caller for logs before concluding. Once logs arrive as follow-up input, identify the supported mechanism, cite follow_up_input, distinguish observation from hypothesis, and state missing upstream root cause evidence. Use only supplied information; no network, shell, GitHub or other external tools.",
+    "inputs": {},
+    "external_reference": "task-api-5792-20260925-clarify3",
+    "acceptance_criteria": [
+      "Request incident evidence before causal findings.",
+      "Use the caller response and cite follow_up_input.",
+      "Return a structured grounded report with explicit uncertainty."
+    ]
+  },
+  "updated_at": "2026-09-25T05:29:32.966645+00:00",
+  "accepted": {
+    "schema_version": "1.0",
+    "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "invocation_id": "8143ce69-763e-4482-92e3-1bfcff33428f",
+    "status": "accepted",
+    "created_at": "2026-09-25T05:12:43Z",
+    "deadline_at": "2026-09-25T05:42:42Z",
+    "status_url": "/v1/tasks/tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "events_url": "/v1/tasks/tsk_37ce236b-19a2-4d7c-a36d-b3609160b999/events",
+    "request_id": "7569b24f-4427-4abc-81f0-dfad92016ee8",
+    "idempotent_replay": false
+  },
+  "cursor": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:7",
+  "message": {
+    "schema_version": "1.0",
+    "command_id": "a3c44dd6-031f-484d-9484-222a31ed5db5",
+    "reply_to": "07c09a1c-aad9-4442-a646-d2fa551a6f5c",
+    "text": "Incident evidence: at14:08 inventory latency increased from180ms to6200ms; at14:10 checkout logged pool exhausted with all20 connections occupied, then503 acquisition timeout. Configuration pool.max=20 and upstream.timeout_seconds=30. No inventory-service logs or later metrics were supplied. Prioritize pool exhaustion as the checkout failure mechanism; do not invent inventory root cause."
+  },
+  "command_receipt": {
+    "schema_version": "1.0",
+    "command_id": "a3c44dd6-031f-484d-9484-222a31ed5db5",
+    "kind": "input",
+    "status": "accepted",
+    "handoff": "not_started",
+    "command_sequence": 1,
+    "turn_id": null,
+    "turn_number": null,
+    "authority_expires_at": "2026-09-25T05:46:00Z",
+    "accepted_at": "2026-09-25T05:29:32Z"
+  },
+  "snapshot": {
+    "schema_version": "1.0",
+    "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "invocation_id": "8143ce69-763e-4482-92e3-1bfcff33428f",
+    "persona": "agent-task-investigator",
+    "status": "waiting_for_input",
+    "version": 12,
+    "created_at": "2026-09-25T05:12:43Z",
+    "updated_at": "2026-09-25T05:29:32Z",
+    "deadline_at": "2026-09-25T05:42:42Z",
+    "latest_event_cursor": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:8",
+    "oldest_event_cursor": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:1",
+    "generation": 1,
+    "runtime_attempt_id": "4d4fcdeb-2150-4ec3-a43e-8b62a6d9ee3e",
+    "execution_health": "unknown",
+    "recovery_required": false,
+    "result": null,
+    "error": null,
+    "input_request": {
+      "input_request_id": "07c09a1c-aad9-4442-a646-d2fa551a6f5c",
+      "prompt": "The supplied evidence does not support a conclusion. Which additional logs, configuration or time window should the investigation use?",
+      "requested_at": "2026-09-25T05:20:34Z"
+    },
+    "command_receipts": [
+      {
+        "authority_expires_at": "2026-09-25T05:46:00Z",
+        "command_id": "a3c44dd6-031f-484d-9484-222a31ed5db5",
+        "kind": "input",
+        "status": "accepted",
+        "turn_number": null,
+        "command_sequence": 1,
+        "handoff": "not_started",
+        "turn_id": null,
+        "schema_version": "1.0",
+        "accepted_at": "2026-09-25T05:29:32Z"
+      }
+    ],
+    "queue_ack_status": "pending",
+    "request_id": "18a4ceea-f245-429f-8a51-40abf38275e8",
+    "external_reference": "task-api-5792-20260925-clarify3"
+  }
+}

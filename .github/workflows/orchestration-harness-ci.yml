@@ -1,0 +1,163 @@
+name: Orchestration Harness CI
+
+# Network-free unit tests for the qualification harness (tests/e2e/orchestration/,
+# issue #5156). This is the ONLY orchestration job that runs on a pull request,
+# and it deliberately runs nothing that costs money or touches an account:
+# no AWS call, no browser, no deployed environment, no fixture provisioning.
+#
+# Paid qualification lives in orchestration-live-tests.yml, which is
+# workflow_dispatch-only. That split is the point: the harness enforces spend and
+# resource bounds, so its own tests must be runnable on every PR without
+# spending anything.
+#
+# A separate workflow rather than a job in gateway-ci.yml because this suite is
+# not gateway code — gateway-ci.yml's paths and working-directory are all
+# modules/gateway, and repo-root tests/ is covered by no PR workflow at all.
+
+on:
+  pull_request:
+    paths:
+      - 'tests/e2e/orchestration/**'
+      - 'contracts/orchestration-evaluation/**'
+      - '.github/workflows/orchestration-live-tests.yml'
+      - '.github/workflows/orchestration-harness-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/e2e/orchestration/**'
+      - 'contracts/orchestration-evaluation/**'
+      - '.github/workflows/orchestration-live-tests.yml'
+      - '.github/workflows/orchestration-harness-ci.yml'
+
+# No `permissions: id-token` and no AWS credential step anywhere in this file.
+# The self-hosted runner has ambient IRSA, so normal AWS credential discovery is
+# disabled for every test process below. If a test ever needs AWS, it belongs in
+# orchestration-live-tests.yml instead.
+permissions:
+  contents: read
+
+concurrency:
+  group: orchestration-harness-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness-tests:
+    name: Qualification harness unit tests (offline)
+    # Owner direction: every Actions job uses the in-cluster self-hosted pool. The pool's
+    # ambient identity is not a sandbox boundary, so this offline lane disables normal AWS
+    # credential discovery for its test processes and verifies the effective environment.
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Verify the test process has no AWS credentials
+        run: |
+          FOUND=""
+          for var in AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ACCESS_KEY_ID \
+                     AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                     AWS_CONTAINER_CREDENTIALS_FULL_URI \
+                     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI; do
+            if [ -n "${!var:-}" ]; then
+              FOUND="${FOUND} ${var}"
+            fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "::error::AWS credentials are present in the offline test process (set:${FOUND})."
+            exit 1
+          fi
+
+      # E1 shares the normative Pydantic receipt validator with the gateway.
+      # No AWS SDK or credentials are needed for these offline contract tests.
+      - name: Install pytest
+        run: pip install pytest==9.0.3 pydantic==2.12.5
+
+      # Selecting the package explicitly matters. tests/e2e/chat/conftest.py and
+      # tests/e2e/infra/conftest.py skip EVERY collected item when their opt-in
+      # variable is unset, without filtering to their own package — so a whole
+      # tests/ run would report these tests as skipped. This suite's conftest.py
+      # also strips that inherited skip, but the narrow selection keeps the run
+      # from depending on collection order.
+      - name: Run offline harness tests
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          python -m pytest tests/e2e/orchestration \
+            -v \
+            --tb=short \
+            --junitxml=test-results/orchestration-harness-junit.xml
+
+      # The failure mode this guards is a VACUOUS pass: if a sibling conftest's
+      # unfiltered skip ever reaches these items again, pytest still exits 0
+      # while asserting nothing. A green check that tested nothing is worse than
+      # no check, so assert on the executed count rather than the exit code.
+      - name: Assert the run was not vacuous
+        if: always()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("test-results/orchestration-harness-junit.xml")
+          if not report.is_file():
+              sys.exit("::error::No JUnit report — pytest did not get far enough to report "
+                       "anything, so this run is not evidence.")
+
+          root = ET.parse(report).getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          failures = sum(int(s.get("failures", 0)) for s in suites)
+          errors = sum(int(s.get("errors", 0)) for s in suites)
+          executed = total - skipped
+
+          print(f"collected={total} skipped={skipped} executed={executed} "
+                f"failures={failures} errors={errors}")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write("### Qualification harness (offline)\n\n"
+                           "| Collected | Skipped | Executed | Failures | Errors |\n"
+                           "|---|---|---|---|---|\n"
+                           f"| {total} | {skipped} | {executed} | {failures} | {errors} |\n")
+
+          if executed == 0:
+              sys.exit("::error::0 tests executed (collected=%d, skipped=%d). These tests are "
+                       "network-free and must always run; a fully skipped run is not a pass."
+                       % (total, skipped))
+          PY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: orchestration-harness-results
+          path: test-results/
+          retention-days: 14

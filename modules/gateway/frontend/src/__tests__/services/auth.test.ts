@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { apiClient } from '@/services/api';
+import * as authService from '@/services/auth';
 import {
   generatePKCEChallenge,
   storePKCEVerifier,
@@ -456,6 +457,14 @@ describe('Auth Service - OAuth PKCE', () => {
     });
   });
 
+  it.each(['admins', 'platform-admins'])('preserves global authority from the %s group after switching workspace', (group) => {
+    const token = createMockIdToken({ sub: 'sub', 'custom:org_id': 'work', 'custom:role': 'member', 'cognito:groups': [group] });
+    const user = parseIdTokenForUser(token);
+    expect(user?.orgId).toBe('work');
+    expect(user?.role).toBe(AdminRole.PLATFORM_ADMIN);
+    expect(user?.permissions).toContain(Permission.ORG_CREATE);
+  });
+
   describe('refreshToken', () => {
     it('uses stored refresh token to get new tokens', async () => {
       // Store initial tokens
@@ -485,6 +494,21 @@ describe('Auth Service - OAuth PKCE', () => {
       expect(getAccessToken()).toBe('new-access-token');
     });
 
+    it('serializes a workspace refresh after an already-running background refresh', async () => {
+      storeTokens({ access_token: 'home', id_token: 'home-id', refresh_token: 'refresh', expires_in: 3600, token_type: 'Bearer' });
+      let finishBackground!: (value: unknown) => void;
+      mockFetch.mockReturnValueOnce(new Promise((resolve) => { finishBackground = resolve; }));
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: 'work', id_token: 'work-id', expires_in: 3600, token_type: 'Bearer' }) });
+      const background = refreshToken();
+      const selected = refreshToken({ fresh: true });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      finishBackground({ ok: true, json: async () => ({ access_token: 'home-new', id_token: 'home-new-id', expires_in: 3600, token_type: 'Bearer' }) });
+      await Promise.all([background, selected]);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(getAccessToken()).toBe('work');
+      expect(getIdToken()).toBe('work-id');
+    });
+
     it('throws error when no refresh token available', async () => {
       // Don't store any tokens
 
@@ -508,3 +532,19 @@ function createMockIdToken(payload: Partial<CognitoIdTokenPayload>): string {
   const base64Payload = btoa(JSON.stringify(fullPayload));
   return `header.${base64Payload}.signature`;
 }
+
+
+describe('post-login redirect (deep-link preservation)', () => {
+  it('round-trips an internal path and clears on read (single-use)', () => {
+    authService.storePostLoginRedirect('/cli-auth?code=ABCD-2345');
+    expect(authService.consumePostLoginRedirect()).toBe('/cli-auth?code=ABCD-2345');
+    expect(authService.consumePostLoginRedirect()).toBeNull();
+  });
+
+  it('rejects non-internal destinations (open-redirect guard)', () => {
+    for (const bad of ['https://evil.example', '//evil.example/x', 'javascript:alert(1)', '']) {
+      authService.storePostLoginRedirect(bad);
+      expect(authService.consumePostLoginRedirect()).toBeNull();
+    }
+  });
+});

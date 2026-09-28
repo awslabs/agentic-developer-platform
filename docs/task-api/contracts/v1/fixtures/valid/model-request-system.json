@@ -1,0 +1,31 @@
+{
+  "$fixture": {
+    "description": "model-request-system",
+    "schema": "internal-adapters.schema.json#/$defs/model_request",
+    "expect": "valid",
+    "owner": "T4",
+    "criteria": [
+      "T0-AC02",
+      "T0-AC03"
+    ]
+  },
+  "schema_version": "1.0",
+  "attempt": {
+    "run": {
+      "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+      "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+      "generation": 1
+    },
+    "runtime_attempt_id": "69b2861e-96b3-4342-919f-06f272c3fc11"
+  },
+  "turn_id": "2048c8ca-b910-43c8-861e-a092beb53813",
+  "request_digest": "5e7a9c1e3b5d7f9a1c3e5b7d9f1a3c5e7b9d1f3a5c7e9b1d3f5a7c9e1b3d5f77",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Analyze the supplied evidence."
+    }
+  ],
+  "max_tokens": 4096,
+  "system": "Analyze only supplied evidence."
+}

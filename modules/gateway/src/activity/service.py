@@ -25,11 +25,13 @@ import base64
 import json
 import logging
 import os
+from datetime import UTC, datetime
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
+from src.activity.liveness import OBSERVED_TERMINAL_STATUSES, compute_liveness
 from src.activity.schemas import (
     ChainListResponse,
     ChainSummary,
@@ -47,6 +49,18 @@ _DEFAULT_TABLE_NAME = "adp-dev-webhook-events"
 
 # Maximum number of items to retrieve for a chain view (prevents unbounded reads).
 _CHAIN_DEPTH_CAP = 50
+
+# Statuses that represent a delivery which produced NO agent run. Hidden from the
+# board and from chain descendants unless the caller asks for them
+# (include_non_triggering / the "Show all events" toggle — issues #1658, #3708).
+#
+# Issue #4020 added `blocked` (loop/validation guard stopped the spawn) and
+# `skipped` (worker deduplicated a redelivery). Both are non-runs and belong in
+# the same bucket as no_op — the smoke test in #4020 expects them under
+# "Show all events". This list was previously duplicated at four call sites;
+# it is defined once so the set cannot drift between the flat list, the chain
+# view, and the descendant fetch.
+NON_TRIGGERING_STATUSES = ["no_op", "webhook_received", "blocked", "skipped"]
 
 
 def _get_table_name() -> str:
@@ -91,6 +105,7 @@ class ActivityService:
         self,
         user_id: str,
         *,
+        tenant_id: str | None = None,
         page_size: int = 20,
         last_key: str | None = None,
         status: str | None = None,
@@ -128,6 +143,7 @@ class ActivityService:
             index_name="user-index",
             partition_key_name="user_id",
             partition_key_value=user_id,
+            extra_filter_tenant_id=tenant_id,
             page_size=page_size,
             last_key=last_key,
             status=status,
@@ -146,6 +162,7 @@ class ActivityService:
             index_name="root-human-index",
             partition_key_name="root_human_id",
             partition_key_value=user_id,
+            extra_filter_tenant_id=tenant_id,
             page_size=page_size,
             last_key=None,  # root-human-index has its own key space
             status=status,
@@ -249,6 +266,7 @@ class ActivityService:
         since: str | None,
         until: str | None,
         extra_filter_user_id: str | None = None,
+        extra_filter_tenant_id: str | None = None,
         include_non_triggering: bool = False,
     ) -> InvocationListResponse:
         """Execute a DynamoDB Query with shared logic for both endpoints.
@@ -275,12 +293,14 @@ class ActivityService:
         if status:
             filter_expression = Attr("status").eq(status)
         elif not include_non_triggering:
-            # Default: exclude non-triggering statuses (no_op, webhook_received)
-            # so the board shows only actual agent runs. An explicit status filter
-            # takes precedence (the user chose to see that specific status).
-            _non_triggering = ["no_op", "webhook_received"]
-            cond = ~Attr("status").is_in(_non_triggering)
+            # Default: exclude non-triggering statuses so the board shows only
+            # actual agent runs. An explicit status filter takes precedence (the
+            # user chose to see that specific status).
+            cond = ~Attr("status").is_in(NON_TRIGGERING_STATUSES)
             filter_expression = cond
+        if extra_filter_tenant_id is not None:
+            cond = Attr("tenant_id").eq(extra_filter_tenant_id)
+            filter_expression = (filter_expression & cond) if filter_expression else cond
         if channel:
             cond = Attr("channel").eq(channel)
             filter_expression = (filter_expression & cond) if filter_expression else cond
@@ -355,8 +375,16 @@ class ActivityService:
         """Map a raw DynamoDB item to the InvocationItem schema."""
         # Issue #1653: Derive completed_at from status_updated_at for terminal statuses
         status = item.get("status")
-        terminal_statuses = {"complete", "failed", "rejected", "rate_limited", "no_op"}
-        completed_at = item.get("status_updated_at") if status in terminal_statuses else None
+        arrived_at = item.get("arrived_at", "")
+        # Issue #4020: `blocked` (guard stopped the spawn) and `skipped` (worker
+        # deduplicated a redelivery) are terminal too — the row will never be
+        # updated again, so completed_at should be derived for them as well.
+        #
+        # Issue #4176: this set used to be an inline literal here. It now lives in
+        # liveness.py as OBSERVED_TERMINAL_STATUSES and is imported back, so the
+        # completed_at derivation and the liveness verdict cannot disagree about
+        # which statuses represent a positively-observed exit.
+        completed_at = item.get("status_updated_at") if status in OBSERVED_TERMINAL_STATUSES else None
 
         return InvocationItem(
             # Issue #1756: the DDB webhook-events row keys the invocation by
@@ -366,9 +394,19 @@ class ActivityService:
             # which broke the cost-join (cost_map.get("")) so per-run cost never
             # rendered. Fall back to event_id.
             invocation_id=item.get("invocation_id") or item.get("pk") or item.get("event_id", ""),
-            invoked_at=item.get("arrived_at", ""),
+            invoked_at=arrived_at,
             channel=item.get("channel"),
             status=status,
+            # Issue #4176: derived, not stored. "unverifiable" means we could not
+            # learn whether this run is alive — it is NOT a claim that it exited.
+            # Issue #4235: dated from `status_updated_at` (last signal) so a
+            # healthy multi-day run is not called unverifiable for its age alone.
+            liveness=compute_liveness(
+                status,
+                arrived_at,
+                datetime.now(UTC),
+                status_updated_at=item.get("status_updated_at"),
+            ),
             status_updated_at=item.get("status_updated_at"),
             topic=item.get("topic"),
             persona=item.get("persona"),
@@ -380,6 +418,10 @@ class ActivityService:
             run_id=item.get("run_id"),
             # Issue #1653: error_message, completed_at, run_log_url
             error_message=item.get("error_message"),
+            # Issue #4020: why a no_op/blocked/skipped delivery produced no run
+            skip_reason=item.get("skip_reason"),
+            # Issue #4187: why a spend cap stopped a budget_stopped run
+            stop_reason=item.get("stop_reason"),
             completed_at=completed_at,
             run_log_url=item.get("check_run_url"),
             # Issue #3069: S3 transcript key
@@ -403,14 +445,11 @@ class ActivityService:
     ) -> InvocationChainResponse:
         """Retrieve all invocations sharing a correlation_id and build a tree.
 
-        Authorization (membership-based, Issue #3949):
-        - For /me/ (user_id): authorize the CHAIN, not each row. The caller may
-          read the chain if ANY member has user_id == caller or root_human_id ==
-          caller. Once authorized, return ALL members unfiltered. This prevents
-          mid-chain row drops from sparse root_human_id (pre-#2042 rows lack it)
-          which would cause _build_chain_tree to promote orphans to roots.
-        - For /admin/ (tenant_id): authorize by tenant_id on any member.
-        - If both are None, returns empty (safety: never return unscoped data).
+        Authorization (#5668): every returned row must match the requested tenant
+        and, for self reads, user_id or root_human_id. A shared correlation ID is
+        not ownership proof. Sparse historical rows lacking owner proof are omitted;
+        the tree may show an authorized descendant as an orphaned root.
+        Admin callers supply tenant only after their cross-user permission check.
 
         Issue #3708: When include_non_triggering is False (default), excludes
         no_op and webhook_received statuses — the same convention as the flat
@@ -435,24 +474,24 @@ class ActivityService:
 
         # Query all items sharing this correlation_id via the correlation-index
         # GSI (PK=correlation_id, SK=arrived_at). A Query is bounded and cheap.
-        # Issue #3949: membership-based scoping — fetch ALL items, then authorize
-        # the chain as a whole. No per-row user_id filter (root_human_id is sparse;
-        # per-row filtering drops mid-chain members and restructures the tree).
-        # Status filtering (non-triggering) is still applied at the DDB level.
+        # Apply visibility per row; correlation membership cannot confer authority.
         status_filter = None
         if not include_non_triggering:
-            _non_triggering = ["no_op", "webhook_received"]
-            status_filter = ~Attr("status").is_in(_non_triggering)
+            status_filter = ~Attr("status").is_in(NON_TRIGGERING_STATUSES)
 
         # Tenant scoping is still applied as a FilterExpression (tenant_id is
         # always present on every row, so it's safe as a per-row filter).
         filter_expr = None
-        if tenant_id:
+        if tenant_id is not None:
             filter_expr = Attr("tenant_id").eq(tenant_id)
             if status_filter:
                 filter_expr = filter_expr & status_filter
         elif status_filter:
             filter_expr = status_filter
+
+        if user_id is not None:
+            owner_filter = Attr("user_id").eq(user_id) | Attr("root_human_id").eq(user_id)
+            filter_expr = (filter_expr & owner_filter) if filter_expr is not None else owner_filter
 
         all_items: list[dict] = []
         depth_capped = False
@@ -468,7 +507,7 @@ class ActivityService:
 
             while True:
                 response = self._table.query(**query_kwargs)
-                all_items.extend(response.get("Items", []))
+                all_items.extend(item for item in response.get("Items", []) if _row_in_read_scope(item, user_id=user_id, tenant_id=tenant_id))
 
                 if len(all_items) >= depth_cap:
                     all_items = all_items[:depth_cap]
@@ -501,20 +540,6 @@ class ActivityService:
                 )
             raise
 
-        # Issue #3949: Membership-based authorization for user-scoped chains.
-        # Authorize the chain as a whole: the caller may read it if ANY member
-        # has user_id == caller or root_human_id == caller. If none match,
-        # return empty (existence-hiding 404 semantics preserved).
-        if user_id:
-            authorized = any(item.get("user_id") == user_id or item.get("root_human_id") == user_id for item in all_items)
-            if not authorized:
-                return InvocationChainResponse(
-                    correlation_id=correlation_id,
-                    items=[],
-                    total_count=0,
-                    depth_capped=False,
-                )
-
         # Sort by arrived_at ascending (chain order)
         all_items.sort(key=lambda x: x.get("arrived_at", ""))
 
@@ -543,6 +568,7 @@ class ActivityService:
         self,
         user_id: str,
         *,
+        tenant_id: str | None = None,
         page_size: int = 20,
         last_key: str | None = None,
         status: str | None = None,
@@ -576,6 +602,7 @@ class ActivityService:
             index_name="user-index",
             partition_key_name="user_id",
             partition_key_value=user_id,
+            extra_filter_tenant_id=tenant_id,
             page_size=page_size,
             last_key=last_key,
             status=status,
@@ -591,6 +618,7 @@ class ActivityService:
             index_name="root-human-index",
             partition_key_name="root_human_id",
             partition_key_value=user_id,
+            extra_filter_tenant_id=tenant_id,
             page_size=page_size,
             last_key=None,  # root-human-index has its own key space
             status=status,
@@ -682,6 +710,8 @@ class ActivityService:
             # Fetch chain members via correlation-index
             descendants = self._fetch_chain_descendants(
                 correlation_id=correlation_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
                 root_invocation_id=root_item.invocation_id,
                 include_non_triggering=include_non_triggering,
             )
@@ -704,7 +734,7 @@ class ActivityService:
                 continue
             _seen_correlations.add(correlation_id)
 
-            backfilled_root = self._backfill_chain_root(correlation_id)
+            backfilled_root = self._backfill_chain_root(correlation_id, tenant_id=tenant_id, user_id=user_id)
             if backfilled_root is None:
                 # Root fetch degraded (query error, or the whole chain expired) —
                 # skip rather than emitting a rootless chain row.
@@ -712,6 +742,8 @@ class ActivityService:
 
             descendants = self._fetch_chain_descendants(
                 correlation_id=correlation_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
                 root_invocation_id=backfilled_root.invocation_id,
                 include_non_triggering=include_non_triggering,
             )
@@ -735,6 +767,8 @@ class ActivityService:
         correlation_id: str,
         root_invocation_id: str,
         *,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
         include_non_triggering: bool = False,
         depth_cap: int = _CHAIN_DEPTH_CAP,
     ) -> list[InvocationChainItem]:
@@ -752,7 +786,7 @@ class ActivityService:
         protection backstop against unbounded DDB reads.
         """
         # Non-triggering statuses to exclude from descendants
-        _non_triggering_statuses = {"no_op", "webhook_received"}
+        _non_triggering_statuses = set(NON_TRIGGERING_STATUSES)
 
         # Issue #3723: Accumulate filtered descendants directly, applying
         # depth_cap to the POST-FILTER count so noise doesn't consume budget.
@@ -771,6 +805,8 @@ class ActivityService:
                 response = self._table.query(**query_kwargs)
 
                 for item in response.get("Items", []):
+                    if not _row_in_read_scope(item, user_id=user_id, tenant_id=tenant_id):
+                        continue
                     # Issue #1756: fall back to event_id (the real DDB key)
                     inv_id = item.get("invocation_id") or item.get("pk") or item.get("event_id", "")
                     if inv_id == root_invocation_id:
@@ -781,12 +817,21 @@ class ActivityService:
                     if not include_non_triggering and item_status in _non_triggering_statuses:
                         continue
 
+                    item_arrived_at = item.get("arrived_at", "")
                     descendants.append(
                         InvocationChainItem(
                             invocation_id=inv_id,
-                            invoked_at=item.get("arrived_at", ""),
+                            invoked_at=item_arrived_at,
                             channel=item.get("channel"),
                             status=item_status,
+                            # Issue #4176: derived liveness verdict. Issue #4235:
+                            # dated from the last signal, not the start time.
+                            liveness=compute_liveness(
+                                item_status,
+                                item_arrived_at,
+                                datetime.now(UTC),
+                                status_updated_at=item.get("status_updated_at"),
+                            ),
                             topic=item.get("topic"),
                             persona=item.get("persona"),
                             parent_invocation_id=item.get("parent_invocation_id"),
@@ -815,7 +860,7 @@ class ActivityService:
 
         return descendants
 
-    def _backfill_chain_root(self, correlation_id: str) -> InvocationItem | None:
+    def _backfill_chain_root(self, correlation_id: str, *, tenant_id: str | None = None, user_id: str | None = None) -> InvocationItem | None:
         """Fetch the chain root for a correlation_id via correlation-index.
 
         Issue #3949: When page 1 of query_chains_by_user contains only descendants
@@ -823,7 +868,7 @@ class ActivityService:
         the chain. This helper fetches the earliest item in the correlation (the
         root, which has no parent_invocation_id) and returns it as an InvocationItem.
 
-        If the true root is TTL-expired or missing (all items have
+        Unproven/other-owner historical rows are omitted. If the true root is TTL-expired or missing (all items have
         parent_invocation_id), falls back to the earliest member as the chain
         representative — a chain row anchored on a surviving descendant beats an
         empty view.
@@ -840,7 +885,7 @@ class ActivityService:
                 KeyConditionExpression=Key("correlation_id").eq(correlation_id),
                 ScanIndexForward=True,  # ascending arrived_at → root is first
             )
-            items = response.get("Items", [])
+            items = [item for item in response.get("Items", []) if _row_in_read_scope(item, user_id=user_id, tenant_id=tenant_id)]
             # Find the true root (no parent_invocation_id)
             for item in items:
                 if not item.get("parent_invocation_id"):
@@ -877,7 +922,7 @@ class ActivityService:
         - user_id provided: allow if item.user_id == caller OR
           item.root_human_id == caller. This covers both direct runs and
           chain-attributed runs (bot user_id, human root_human_id).
-        - tenant_id provided: allow if item.tenant_id == caller_tenant.
+        - tenant_id provided: additionally require item.tenant_id == caller_tenant.
         - Neither provided: return None (safety).
 
         Returns None if not found or not authorized (existence-hiding 404).
@@ -913,11 +958,18 @@ class ActivityService:
         if user_id:
             if row.get("user_id") != user_id and row.get("root_human_id") != user_id:
                 return None
-        elif tenant_id:
+        if tenant_id is not None:
             if row.get("tenant_id") != tenant_id:
                 return None
 
         return self._map_item(row)
+
+
+def _row_in_read_scope(item: dict, *, user_id: str | None, tenant_id: str | None) -> bool:
+    """Correlation membership is not owner proof, including sparse legacy rows."""
+    return (tenant_id is None or item.get("tenant_id") == tenant_id) and (
+        user_id is None or bool(user_id) and (item.get("user_id") == user_id or item.get("root_human_id") == user_id)
+    )
 
 
 def _derive_trigger_kind(item: dict) -> TriggerKind:
@@ -944,14 +996,27 @@ def _build_chain_tree(items: list[dict]) -> list[InvocationChainItem]:
     """
     # Create nodes
     nodes: dict[str, InvocationChainItem] = {}
+    now = datetime.now(UTC)
     for item in items:
         # Issue #1756: fall back to event_id (the real DDB key) — see _map_item.
         inv_id = item.get("invocation_id") or item.get("pk") or item.get("event_id", "")
+        arrived_at = item.get("arrived_at", "")
         nodes[inv_id] = InvocationChainItem(
             invocation_id=inv_id,
-            invoked_at=item.get("arrived_at", ""),
+            invoked_at=arrived_at,
             channel=item.get("channel"),
             status=item.get("status"),
+            # Issue #4176: derived liveness verdict. `now` is hoisted out of the
+            # loop so every node in one tree is judged against the same instant —
+            # otherwise a run near the cutoff could read `live` while its sibling
+            # of identical age read `unverifiable`.
+            # Issue #4235: dated from the last signal, not the start time.
+            liveness=compute_liveness(
+                item.get("status"),
+                arrived_at,
+                now,
+                status_updated_at=item.get("status_updated_at"),
+            ),
             topic=item.get("topic"),
             persona=item.get("persona"),
             parent_invocation_id=item.get("parent_invocation_id"),

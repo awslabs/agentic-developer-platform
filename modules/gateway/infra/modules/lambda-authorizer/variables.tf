@@ -60,6 +60,16 @@ variable "lambda_artifact_bucket" {
   type        = string
 }
 
+variable "pyjwt_layer_s3_key" {
+  description = "S3 key of the currently selected PyJWT layer package"
+  type        = string
+}
+
+variable "pyjwt_layer_skip_destroy" {
+  description = "Retain old PyJWT layer versions during upgrades and rollback"
+  type        = bool
+}
+
 # =============================================================================
 # Lambda Configuration
 # =============================================================================
@@ -117,4 +127,10 @@ variable "enable_reserved_concurrency" {
   description = "Enable reserved concurrent executions. Set to false on fresh accounts where Lambda quota is too low (Issue #2910)."
   type        = bool
   default     = true
+}
+
+variable "ip_allowlist_ssm_parameter" {
+  description = "Name of an SSM String parameter holding a comma-separated CIDR allowlist applied to the authorizer's JWT/browser path. Empty (the default) omits the environment variable and the IAM grant, leaving behaviour unchanged. The IAM branch (agents, in-cluster callers) is never subject to this check."
+  type        = string
+  default     = ""
 }

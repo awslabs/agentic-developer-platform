@@ -65,3 +65,43 @@ variable "memory" {
   type        = number
   default     = 2048
 }
+
+variable "container_image_digest" {
+  description = "Verified OCI digest. Empty only for the storage/build bootstrap targets; ECS refuses activation without a digest."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.container_image_digest == "" || can(regex("^sha256:[0-9a-f]{64}$", var.container_image_digest))
+    error_message = "container_image_digest must be an OCI sha256 digest."
+  }
+}
+
+variable "endpoint_security_group_ids" {
+  description = "Existing private AWS endpoint security groups that admit Gbrain task HTTPS"
+  type        = set(string)
+  default     = []
+}
+
+variable "container_command" {
+  description = "Optional explicit runtime command to preserve an existing deployment during image delivery"
+  type        = list(string)
+  default     = null
+}
+
+variable "container_entrypoint" {
+  description = "Optional explicit runtime entrypoint to preserve an existing deployment during image delivery"
+  type        = list(string)
+  default     = null
+}
+
+variable "container_environment" {
+  description = "Optional complete ordered environment list; retain deployment-specific settings when updating the image"
+  type        = list(object({ name = string, value = string }))
+  default     = null
+}
+
+variable "service_subnet_ids" {
+  description = "Optional ECS-only subnet list; preserve service networking without changing the database subnet group"
+  type        = list(string)
+  default     = null
+}

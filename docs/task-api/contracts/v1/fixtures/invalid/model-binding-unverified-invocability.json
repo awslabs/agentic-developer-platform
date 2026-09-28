@@ -1,0 +1,17 @@
+{
+  "$fixture": {
+    "description": "A model binding issued without verifying the model can actually be invoked. Listing a model is not permission to call it; an unverified binding turns a start-of-run access problem into a mid-run failure after the client has already been told the task is running.",
+    "schema": "bootstrap.schema.json#/$defs/model_binding",
+    "expect": "invalid",
+    "reason": "invocability_verified is fixed true; presence in a model list is not proof of access",
+    "violates": ["bootstrap.schema.json#/$defs/model_binding", "decisions.json#/O1"],
+    "owner": "T4",
+    "criteria": ["T0-AC03", "V0-03", "V2-05"]
+  },
+  "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "transport": "anthropic_messages",
+  "model_policy_version": "mp-2026-09-18-004",
+  "request_shape_version": "rs-2026-08-02-011",
+  "pricing_evidence_version": "pe-2026-09-23-001",
+  "invocability_verified": false
+}

@@ -27,15 +27,39 @@ spec:
       app.kubernetes.io/name: zoekt-webserver
   template:
     metadata:
+      # These services do not run a JVM; omit the unused Java agent and JARs.
+      annotations:
+        cloudwatch.aws.amazon.com/auto-annotate-java: "false"
+        instrumentation.opentelemetry.io/inject-java: "false"
       labels:
         app.kubernetes.io/name: zoekt-webserver
         app.kubernetes.io/part-of: agent-context-platform
         app.kubernetes.io/component: search
     spec:
       serviceAccountName: ${SERVICE_ACCOUNT}
+      # Pod-level security context (#6105 — pod security reconciliation).
+      securityContext:
+        # Read/traverse the synthetic Mountpoint GID without filesystem chown.
+        # Both S3 readers retain readOnly mounts; no group write permission.
+        supplementalGroups: [10001]
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
       - name: prepare-index
-        image: busybox:1.36
+        image: docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
         command: ["sh", "-c"]
         args:
           - |
@@ -53,14 +77,20 @@ spec:
           readOnly: true
       containers:
       - name: zoekt-webserver
-        image: ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}
-        command: ["zoekt-webserver"]
-        args:
-          - "-index"
-          - "/data/index"
-          - "-listen"
-          - ":6070"
-          - "-rpc"
+        image: ${ZOEKT_IMAGE}
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          capabilities:
+            drop: ["ALL"]
+        # Raw Zoekt listens only on pod loopback. Only the Door has this key.
+        command: ["zoekt-auth-proxy"]
+        env:
+        - name: ZOEKT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: zoekt-backend-auth
+              key: api-key
         ports:
         - containerPort: 6070
           name: http
@@ -77,7 +107,7 @@ spec:
             memory: "4Gi"
         readinessProbe:
           httpGet:
-            path: /
+            path: /healthz
             port: 6070
           initialDelaySeconds: 15
           periodSeconds: 10
@@ -85,7 +115,7 @@ spec:
           failureThreshold: 3
         livenessProbe:
           httpGet:
-            path: /
+            path: /healthz
             port: 6070
           initialDelaySeconds: 10
           periodSeconds: 30
@@ -97,7 +127,13 @@ spec:
       # Removes shards from the index that no longer exist on S3 (stale cleanup).
       # Issue: #3287
       - name: shard-sync
-        image: busybox:1.36
+        image: docker.io/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         command: ["sh", "-c"]
         args:
           - |
@@ -161,3 +197,38 @@ spec:
     targetPort: 6070
     protocol: TCP
   type: ClusterIP
+
+---
+# Keep one ready replica through voluntary node consolidation. Deployment
+# rollouts still follow the strategy configured above.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zoekt-webserver
+  namespace: ${NAMESPACE}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: zoekt-webserver
+
+---
+# Defense in depth; authentication remains mandatory even without CNI enforcement.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zoekt-door-only
+  namespace: ${NAMESPACE}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: zoekt-webserver
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: context-mcp
+    ports:
+    - protocol: TCP
+      port: 6070

@@ -29,6 +29,65 @@ from pricing_fallback import (  # noqa: E402
     resolve_model_id,
 )
 
+# Issue #4391: the Lambda's mirror of the root-principal helpers. `lambda/shared`
+# is on sys.path via `._handler_loader` above, same as `pricing_fallback`.
+from root_principal import (  # noqa: E402
+    SERVICE_PRINCIPAL_PREFIX,
+    unqualify_root_principal_id,
+)
+
+
+def _bundled_rate_source():
+    """A real `RateSourceState` over the bundled snapshot, for ledger-shape tests.
+
+    Issue #4969: `process_chat_log` used to take a flat `{model_id: {input, output}}`
+    dict, and the tests below passed `MODEL_PRICING` for it. It now takes the rate
+    rows of a pricing generation, because a flat table keyed on model id alone
+    cannot express geography, service tier, context tier or cache rates.
+
+    These tests are about which LEDGER ROWS get written and what they hold, not
+    about rate correctness, so they want a rate source that simply works. The
+    bootstrap state is exactly that and it needs no database. Their models are
+    curated non-OpenAI (Claude), whose rates this change deliberately preserves, so
+    the costs they assert are unchanged from before — which is the point: a
+    regression in the non-OpenAI ledger would show up here.
+    """
+    from pricing_policy.storage import V2RateCache
+
+    return V2RateCache().state(monotonic=0.0, now_iso="2026-09-12T00:00:00+00:00")
+
+
+def _settled_cost(log: dict) -> Decimal:
+    """The cost `process_chat_log` will settle `log` at, via the same seam it uses.
+
+    The ledger-shape tests below need *a* cost to assert their arithmetic against
+    (one hop vs. six, one row vs. two). They used to compute it with
+    `calculate_cost(..., MODEL_PRICING)` — the retired flat-table helper. That
+    expectation agrees with the handler today only because these fixtures use
+    curated Claude models whose rates are deliberately preserved; the moment a
+    rate moved, the expectation would move with the *old* table and the tests
+    would fail for a reason that has nothing to do with the ledger shape they
+    exist to protect.
+
+    Going through `settle_chat_log` instead means expectation and handler read the
+    same rates from the same source, so these tests keep testing row arithmetic
+    and leave rate correctness to the pricing_policy suites.
+    """
+    handler_mod = load_handler("budget-usage-tracker")
+    parsed = handler_mod.parse_chat_log(log)
+    assert parsed is not None, "the fixture must be a log the handler accepts"
+
+    source = _bundled_rate_source()
+    return handler_mod.settle_chat_log(
+        parsed,
+        chat_log=log,
+        rows=source.rows,
+        snapshot=handler_mod.compatibility_snapshot(),
+        generation_id=source.generation_id,
+        pointer_revision=source.pointer_revision,
+        source_reasons=source.reasons,
+    ).cost
+
 
 class TestResolveModelId:
     """Tests for cross-region inference profile model ID resolution."""
@@ -383,14 +442,14 @@ class TestBridgeCostToUsageLogs:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.0105"))
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.0105"), org_id="org-1", user_id="user-1")
 
         assert result is True
         mock_cursor.execute.assert_called_once()
         sql_call = mock_cursor.execute.call_args
         assert "UPDATE usage_logs" in sql_call[0][0]
         # Issue #1616: params now include chat_log_s3_key (None when not provided)
-        assert sql_call[0][1] == (0.0105, None, "req-123")
+        assert sql_call[0][1] == (Decimal("0.0105"), None, "req-123", "org-1", "user-1")
 
     def test_bridge_no_matching_row(self):
         """Test that bridge returns False when no matching row found."""
@@ -404,7 +463,7 @@ class TestBridgeCostToUsageLogs:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "nonexistent-req", Decimal("0.01"))
+        result = bridge_cost_to_usage_logs(mock_conn, "nonexistent-req", Decimal("0.01"), org_id="org-1", user_id="user-1")
 
         assert result is False
 
@@ -418,7 +477,7 @@ class TestBridgeCostToUsageLogs:
         mock_conn.cursor.return_value.__enter__ = MagicMock(side_effect=Exception("DB connection lost"))
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"))
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"), org_id="org-1", user_id="user-1")
 
         assert result is False
 
@@ -439,6 +498,8 @@ class TestBridgeCostToUsageLogs:
             "req-456",
             Decimal("0.05"),
             chat_log_s3_key="acme/user-1/2026/06/19/req-456.json",
+            org_id="org-1",
+            user_id="user-1",
         )
 
         assert result is True
@@ -446,7 +507,7 @@ class TestBridgeCostToUsageLogs:
         assert "chat_log_s3_key" in sql_call[0][0]
         assert "COALESCE" in sql_call[0][0]
         # Params: (cost, s3_key, request_id)
-        assert sql_call[0][1] == (0.05, "acme/user-1/2026/06/19/req-456.json", "req-456")
+        assert sql_call[0][1] == (Decimal("0.05"), "acme/user-1/2026/06/19/req-456.json", "req-456", "org-1", "user-1")
 
     def test_bridge_s3_key_none_when_not_provided(self):
         """Issue #1616: When chat_log_s3_key not provided, passes None."""
@@ -460,12 +521,12 @@ class TestBridgeCostToUsageLogs:
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "req-789", Decimal("0.03"))
+        result = bridge_cost_to_usage_logs(mock_conn, "req-789", Decimal("0.03"), org_id="org-1", user_id="user-1")
 
         assert result is True
         sql_call = mock_cursor.execute.call_args
         # Params: (cost, None, request_id)
-        assert sql_call[0][1] == (0.03, None, "req-789")
+        assert sql_call[0][1] == (Decimal("0.03"), None, "req-789", "org-1", "user-1")
 
 
 @pytest.mark.skipif(
@@ -498,6 +559,7 @@ class TestTransactionIsolation:
     def _chat_log(request_id: str = "req-1") -> dict:
         return {
             "org_id": "org-1",
+            "settlement_version": 1,
             "user_id": "user-1",
             "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
             "response": {"usage": {"input_tokens": 100, "output_tokens": 50}},
@@ -515,12 +577,12 @@ class TestTransactionIsolation:
         mock_conn.cursor.return_value.__enter__ = MagicMock(side_effect=Exception("boom"))
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"))
+        result = bridge_cost_to_usage_logs(mock_conn, "req-123", Decimal("0.01"), org_id="org-1", user_id="user-1")
 
         assert result is False
         mock_conn.rollback.assert_called_once()
 
-    def test_process_chat_log_commits_bridge_before_upserts(self):
+    def test_process_chat_log_keeps_bridge_and_receipt_in_one_transaction(self):
         """The cost bridge must be committed before any budget_usage upsert runs.
 
         If the commit happened after the upserts, an upsert failure would
@@ -542,11 +604,12 @@ class TestTransactionIsolation:
 
         mock_cursor.execute = tracking_execute
 
-        handler_mod.process_chat_log(mock_conn, self._chat_log(), handler_mod.MODEL_PRICING, chat_log_s3_key="k.json")
+        handler_mod.process_chat_log(mock_conn, self._chat_log(), _bundled_rate_source(), chat_log_s3_key="k.json")
 
         assert "bridge" in calls and "upsert" in calls
         # A commit must sit between the bridge and the first upsert.
-        assert calls.index("bridge") < calls.index("commit") < calls.index("upsert")
+        assert "commit" not in calls
+        assert calls.index("bridge") < calls.index("upsert")
 
     def test_handler_isolates_failing_record(self):
         """One record failing mid-batch must not abort or roll back the others."""
@@ -561,9 +624,9 @@ class TestTransactionIsolation:
         cm.__exit__ = MagicMock(return_value=False)
 
         bodies = {
-            "logs/a.json": json_mod.dumps(self._chat_log("req-a")),
-            "logs/b.json": json_mod.dumps(self._chat_log("req-b")),
-            "logs/c.json": json_mod.dumps(self._chat_log("req-c")),
+            "org-1/user-1/req-a.json": json_mod.dumps(self._chat_log("req-a")),
+            "org-1/user-1/req-b.json": json_mod.dumps(self._chat_log("req-b")),
+            "org-1/user-1/req-c.json": json_mod.dumps(self._chat_log("req-c")),
         }
 
         def fake_get_object(Bucket, Key):  # noqa: N803 — boto3 kwarg names
@@ -575,24 +638,648 @@ class TestTransactionIsolation:
 
         def fake_process(conn, chat_log, pricing_table, chat_log_s3_key=None):
             process_calls.append(chat_log_s3_key)
-            if chat_log_s3_key == "logs/b.json":
+            if chat_log_s3_key == "org-1/user-1/req-b.json":
                 raise Exception("integer out of range")
 
-        event = {"Records": [{"s3": {"bucket": {"name": "bkt"}, "object": {"key": k}}} for k in ["logs/a.json", "logs/b.json", "logs/c.json"]]}
+        event = {
+            "Records": [
+                {"s3": {"bucket": {"name": "bkt"}, "object": {"key": k}}}
+                for k in ["org-1/user-1/req-a.json", "org-1/user-1/req-b.json", "org-1/user-1/req-c.json"]
+            ]
+        }
 
         with (
             patch.object(handler_mod, "get_db_connection", return_value=cm),
-            patch.object(handler_mod, "get_pricing_table", return_value=handler_mod.MODEL_PRICING),
+            patch.object(handler_mod, "get_rate_source", return_value=_bundled_rate_source()),
             patch.object(handler_mod.s3_client, "get_object", side_effect=fake_get_object),
             patch.object(handler_mod, "process_chat_log", side_effect=fake_process),
         ):
-            result = handler_mod.handler(event, None)
-
-        body = json_mod.loads(result["body"])
+            with pytest.raises(RuntimeError, match="1 settlement records failed; 2 committed"):
+                handler_mod.handler(event, None)
         # All three attempted; the failure neither stopped the batch nor
         # counted the good records as errors.
-        assert process_calls == ["logs/a.json", "logs/b.json", "logs/c.json"]
-        assert body == {"processed": 2, "errors": 1}
+        assert process_calls == ["org-1/user-1/req-a.json", "org-1/user-1/req-b.json", "org-1/user-1/req-c.json"]
         # Good records committed individually; the bad one rolled back.
         assert mock_conn.commit.call_count >= 2
         mock_conn.rollback.assert_called_once()
+
+
+# =============================================================================
+# Issue #4300: root-human attribution in the settled ledger
+# =============================================================================
+
+
+class _LedgerCursor:
+    """A cursor that accumulates ``budget_usage`` rows the way Postgres would.
+
+    The upsert is ``INSERT ... ON CONFLICT (org_id, entity_type, entity_id,
+    period_start, period_type) DO UPDATE SET total_cost_usd = existing +
+    EXCLUDED``. Counting ``execute`` calls cannot tell "wrote a third row" from
+    "debited an existing row twice" — those are the two outcomes #4300 has to
+    keep apart — so this replays the conflict key and sums per row instead.
+    """
+
+    def __init__(self):
+        # (entity_type, entity_id, period_type) -> {"cost": Decimal, "tokens": int, "requests": int}
+        self.rows: dict[tuple[str, str, str], dict] = {}
+        self.rowcount = 1
+        self.receipts = {}
+        self.result = None
+
+    def fetchone(self):
+        return self.result
+
+    def execute(self, sql, params=None):
+        if "INSERT INTO budget_settlement_receipts" in sql:
+            org, request, user, cost, tokens, allocation = params
+            key = (org, request)
+            self.result = None if key in self.receipts else (request,)
+            self.receipts.setdefault(key, (user, cost, tokens, allocation))
+            return
+        if "SELECT user_id, cost_usd, total_tokens, allocation_key FROM budget_settlement_receipts" in sql:
+            self.result = self.receipts.get(tuple(params))
+            return
+        if "INSERT INTO budget_usage" not in sql or params is None:
+            return
+        (_id, org_id, entity_type, entity_id, period_start, period_type, cost, tokens) = params
+        key = (entity_type, entity_id, period_type)
+        row = self.rows.setdefault(key, {"cost": Decimal("0"), "tokens": 0, "requests": 0, "org_id": org_id})
+        row["cost"] += Decimal(str(cost))
+        row["tokens"] += tokens
+        row["requests"] += 1
+
+    def fetchall(self):
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _LedgerConn:
+    """Connection handing out a single shared :class:`_LedgerCursor`."""
+
+    def __init__(self):
+        self.cursor_obj = _LedgerCursor()
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def _chat_log_4300(root_human_id=None, **overrides) -> dict:
+    """A minimal valid chat log, optionally carrying a root-human attribution."""
+    log = {
+        "org_id": "org-acme",
+        "settlement_version": 1,
+        "user_id": "cognito-sub-of-the-agent-service-account",
+        "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "response": {"usage": {"input_tokens": 1000, "output_tokens": 500}},
+        "timestamp": "2026-08-20T12:00:00Z",
+        "request_id": "req-4300",
+    }
+    if root_human_id is not None:
+        log["root_human_id"] = root_human_id
+    log.update(overrides)
+    return log
+
+
+def _entity_types(conn: _LedgerConn) -> set[str]:
+    return {k[0] for k in conn.cursor_obj.rows}
+
+
+class TestRootHumanEntityTypeContract:
+    """T15: the writer's entity_type string must equal the reader's enum value.
+
+    This is the highest-value test in the #4300 set. The Lambda is a separate
+    deploy artifact and cannot import gateway ``src``, so the two halves of the
+    settled ledger agree only by convention. If the writer emits one string and
+    enforcement reads another, nothing raises and no log line appears — the cap
+    simply reads an empty ledger and every request passes. That silent failure
+    mode already happened once on the org line (writer ``"organization"`` vs.
+    reader ``"org"``, fixed in #4322 — see
+    ``TestOrganizationEntityTypeContract`` below), where it means budgets are not
+    enforced at all.
+    """
+
+    def test_writer_constant_equals_reader_enum_value(self):
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+
+        assert handler_mod._ROOT_USER_ENTITY_TYPE == EntityType.ROOT_USER.value
+
+    def test_rows_written_are_readable_by_the_enforcement_enum(self):
+        """The end-to-end shape of the contract: the string that lands in the
+        table is the string ``_get_entity_hierarchy`` will query with."""
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id="users-id-alice"), _bundled_rate_source())
+
+        written = {k[0] for k in conn.cursor_obj.rows if k[1] == "users-id-alice"}
+        assert written == {EntityType.ROOT_USER.value}
+
+
+# =============================================================================
+# Issue #4322: the org line's writer/reader agreement
+# =============================================================================
+
+
+class TestOrganizationEntityTypeContract:
+    """#4322: the org row's ``entity_type`` must be what enforcement queries.
+
+    T15 generalized to the org line — and the org line is where the drift
+    actually shipped. This Lambda wrote ``"organization"`` while
+    ``_check_entity_budget`` has always filtered on
+    ``EntityType.ORGANIZATION.value`` == ``"org"``, so the query matched nothing
+    and ``current_spend`` was ``Decimal("0")`` on every request. Nothing raised,
+    nothing logged: the org cap simply never enforced against accumulated spend.
+
+    These are the tests that fail on pre-#4322 code.
+    """
+
+    def test_writer_constant_equals_reader_enum_value(self):
+        """The constant, not the emitted row — this is the whole contract.
+
+        Fails if someone re-spells the constant back to the longer word, even if
+        no row is written in the failing test.
+        """
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+
+        assert handler_mod._ORGANIZATION_ENTITY_TYPE == EntityType.ORGANIZATION.value
+
+    def test_rows_written_are_readable_by_the_enforcement_enum(self):
+        """The string that lands in the table is the string enforcement reads."""
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(), _bundled_rate_source())
+
+        written = {k[0] for k in conn.cursor_obj.rows if k[1] == "org-acme"}
+        assert written == {EntityType.ORGANIZATION.value}
+
+    def test_the_stale_literal_is_never_written(self):
+        """No row anywhere carries ``"organization"``.
+
+        Explicit because the failure is one of ABSENCE: a row under the old
+        spelling is invisible to the reader, so a test that only asserts the new
+        row exists would still pass if both were written — and both being written
+        is the double-count the migration exists to prevent.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", team_id="team-7", account_type="service", agent_id="agent-9"),
+            _bundled_rate_source(),
+        )
+
+        assert "organization" not in _entity_types(conn)
+
+    def test_org_row_still_holds_the_cost_exactly_once(self):
+        """Relabelling must not change the arithmetic — one request, one debit.
+
+        The rename is only correct if the org line still receives exactly
+        ``cost``. A fix that emitted both spellings, or appended the org entity
+        twice, would double the figure and deny the org at half its real cap.
+        """
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        log = _chat_log_4300()
+        handler_mod.process_chat_log(conn, log, _bundled_rate_source())
+
+        expected = _settled_cost(log)
+        assert expected > 0  # a zero cost would make the assertion below vacuous
+        row = conn.cursor_obj.rows[(EntityType.ORGANIZATION.value, "org-acme", "daily")]
+        assert row["cost"] == expected
+        assert row["requests"] == 1
+
+    def test_org_row_is_written_for_each_period(self):
+        """All three period rows move to the new spelling, not just the daily one."""
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(), _bundled_rate_source())
+
+        periods = {k[2] for k in conn.cursor_obj.rows if k[0] == EntityType.ORGANIZATION.value}
+        assert periods == {"daily", "weekly", "monthly"}
+
+    def test_other_entity_lines_are_unaffected(self):
+        """Regression: ``user``/``team``/``agent``/``root_user`` literals already
+        agreed with the reader and must stay byte-identical (#4322 scope guard)."""
+        from src.shared.schemas.budget import EntityType
+
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", team_id="team-7", account_type="service", agent_id="agent-9"),
+            _bundled_rate_source(),
+        )
+
+        assert _entity_types(conn) == {
+            "user",
+            "team",
+            "agent",
+            "root_user",
+            EntityType.ORGANIZATION.value,
+        }
+
+
+class TestRootHumanLedgerRows:
+    """T2: the root-human row is a THIRD row, not a second debit elsewhere."""
+
+    def test_root_human_row_is_written_for_each_period(self):
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id="users-id-alice"), _bundled_rate_source())
+
+        periods = {k[2] for k in conn.cursor_obj.rows if k[0] == "root_user"}
+        assert periods == {"daily", "weekly", "monthly"}
+
+    def test_root_human_row_holds_the_cost_exactly_once(self):
+        """The root-human line must equal one request's cost, not two.
+
+        A naive implementation that reused the ``user`` entity_type — or appended
+        the same entity twice — would double the figure and deny the human at
+        half their real cap.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        log = _chat_log_4300(root_human_id="users-id-alice")
+        handler_mod.process_chat_log(conn, log, _bundled_rate_source())
+
+        expected = _settled_cost(log)
+        assert expected > 0  # a zero cost would make the assertion below vacuous
+        row = conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]
+        assert row["cost"] == expected
+        assert row["requests"] == 1
+
+    def test_org_row_is_not_double_debited_by_the_new_entity(self):
+        """The org line must be unchanged by #4300 — same cost as before.
+
+        Compared against a run of the *same* chat log with no attribution, so
+        this fails if the new entity ever debits an existing row instead of
+        adding its own.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+
+        without = _LedgerConn()
+        handler_mod.process_chat_log(without, _chat_log_4300(), _bundled_rate_source())
+
+        with_root = _LedgerConn()
+        handler_mod.process_chat_log(with_root, _chat_log_4300(root_human_id="users-id-alice"), _bundled_rate_source())
+
+        # #4322 relabelled the org line "organization" -> "org"; the entity id it
+        # is keyed on is unchanged, and so is the invariant under test here.
+        for entity, entity_id in (("org", "org-acme"), ("user", "cognito-sub-of-the-agent-service-account")):
+            key = (entity, entity_id, "daily")
+            assert with_root.cursor_obj.rows[key]["cost"] == without.cursor_obj.rows[key]["cost"]
+            assert with_root.cursor_obj.rows[key]["requests"] == without.cursor_obj.rows[key]["requests"] == 1
+
+    def test_sub_agent_fan_out_accumulates_on_one_human_line(self):
+        """Six sub-agents on six service accounts, one shared human.
+
+        This is the ledger half of the feature: each hop writes its own ``user``
+        row, but every hop adds to the single ``root_user`` line, so the human's
+        settled floor grows with the whole chain.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        for i in range(6):
+            handler_mod.process_chat_log(
+                conn,
+                _chat_log_4300(root_human_id="users-id-alice", user_id=f"cognito-sub-agent-{i}", request_id=f"req-{i}"),
+                _bundled_rate_source(),
+            )
+
+        one = _settled_cost(_chat_log_4300())
+        human = conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]
+        assert human["requests"] == 6
+        assert human["cost"] == one * 6
+        # Each hop's own identity carries only its own hop.
+        for i in range(6):
+            assert conn.cursor_obj.rows[("user", f"cognito-sub-agent-{i}", "daily")]["requests"] == 1
+
+
+class TestRootHumanAbsent:
+    """T18/T19: absence must be inert, and must never degrade metering."""
+
+    def test_chat_log_without_the_field_still_records_usage(self):
+        """Back-compat: every log written before #4300 shipped, and every
+        non-human-rooted request, has no ``root_human_id`` at all.
+
+        If the field had joined ``required_fields``, ``parse_chat_log`` would
+        return ``None`` for these and the Lambda would stop recording ALL budget
+        usage for them — an attribution gap would become a metering outage.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(), _bundled_rate_source())
+
+        # "org", not "organization", since #4322.
+        assert _entity_types(conn) == {"user", "org"}
+
+    def test_parse_chat_log_without_the_field_is_still_valid(self):
+        handler_mod = load_handler("budget-usage-tracker")
+
+        parsed = handler_mod.parse_chat_log(_chat_log_4300())
+
+        assert parsed is not None
+        assert parsed["root_human_id"] is None
+
+    @pytest.mark.parametrize("empty", ["", None])
+    def test_empty_attribution_writes_no_row(self, empty):
+        """An empty value must add NO row.
+
+        A row keyed on ``""`` would collapse every non-human-rooted request in
+        the tenant into one shared bogus ledger line — and the first tenant to
+        exceed it would deny everyone.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(conn, _chat_log_4300(root_human_id=empty), _bundled_rate_source())
+
+        assert "root_user" not in _entity_types(conn)
+        assert not [k for k in conn.cursor_obj.rows if k[1] == ""]
+
+    def test_attribution_is_independent_of_the_agent_entity(self):
+        """A human-rooted IAM agent request writes both lines, not one or the
+        other: ``agent`` for the machine, ``root_user`` for the person."""
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", account_type="service", agent_id="agent-uuid-7"),
+            _bundled_rate_source(),
+        )
+
+        assert {"agent", "root_user"} <= _entity_types(conn)
+        assert conn.cursor_obj.rows[("agent", "agent-uuid-7", "daily")]["requests"] == 1
+        assert conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]["requests"] == 1
+
+
+# =============================================================================
+# Issue #4391: the write path must skip root_user when the root IS the caller
+# =============================================================================
+
+
+_SERVICE_ROOTED_KEY = "sched-key"
+
+
+class TestRootIsCallerWritesNoRootUserRow:
+    """#4391: the equality skip, mirroring `enforcement_service.py:437`.
+
+    Enforcement has always skipped the ROOT_USER entity when the root principal
+    is the caller; the tracker was presence-gated only, so the same dollar
+    settled on both the ``user`` and the ``root_user`` line — distinct rows under
+    ``uq_budget_usage``, x3 period types. Nothing raised: enforcement never read
+    the line, so no cap moved, and only the spend dashboard (#4324) summed the
+    inflated figure.
+
+    Both tests in this class fail on the pre-#4391 handler.
+    """
+
+    def test_service_rooted_run_writes_no_root_user_row(self):
+        """The headline case: `user_id="k"`, `root_human_id="service:k"`.
+
+        #4344 qualifies the root id at publication, so the two values are not
+        byte-equal and a verbatim comparison would not catch this — the skip has
+        to unqualify first.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id=f"service:{_SERVICE_ROOTED_KEY}", user_id=_SERVICE_ROOTED_KEY),
+            _bundled_rate_source(),
+        )
+
+        assert "root_user" not in _entity_types(conn)
+
+    def test_direct_human_caller_writes_no_root_user_row(self):
+        """The case the issue title omits: caller is their own root, both bare.
+
+        `enforcement_service.py:420-429` documents this as one of the two cases
+        its guard actually fires for, so the write path must cover it too.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", user_id="users-id-alice"),
+            _bundled_rate_source(),
+        )
+
+        assert "root_user" not in _entity_types(conn)
+
+    def test_service_rooted_spend_is_settled_exactly_once(self):
+        """The defect stated as money: one request, one dollar on one line.
+
+        Asserts the `user` and `org` lines each carry exactly `cost` once, which
+        is what the pre-fix double-write inflated when the dashboard summed
+        `user` + `root_user` for the same principal.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        log = _chat_log_4300(root_human_id=f"service:{_SERVICE_ROOTED_KEY}", user_id=_SERVICE_ROOTED_KEY)
+        handler_mod.process_chat_log(conn, log, _bundled_rate_source())
+
+        expected = _settled_cost(log)
+        assert expected > 0  # a zero cost would make the assertions below vacuous
+
+        # The principal's total across every row naming it is ONE cost, not two.
+        settled = sum(
+            row["cost"]
+            for key, row in conn.cursor_obj.rows.items()
+            if key[2] == "daily" and unqualify_root_principal_id(key[1]) == _SERVICE_ROOTED_KEY
+        )
+        assert settled == expected
+        assert conn.cursor_obj.rows[("org", "org-acme", "daily")]["cost"] == expected
+
+    def test_row_count_is_entities_times_period_types(self):
+        """Catches an accidental skip of the WRONG entity.
+
+        Service-rooted with a team: user + org + team = 3 entities, no root_user,
+        x3 period types = 9 rows. A fix that dropped the user or org line instead
+        would still satisfy the "no root_user" assertions above.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(
+                root_human_id=f"service:{_SERVICE_ROOTED_KEY}",
+                user_id=_SERVICE_ROOTED_KEY,
+                team_id="team-7",
+            ),
+            _bundled_rate_source(),
+        )
+
+        assert _entity_types(conn) == {"user", "org", "team"}
+        assert len(conn.cursor_obj.rows) == 3 * 3
+
+
+class TestRootIsNotCallerStillWritesRootUserRow:
+    """#4300 must survive #4391: the hosted agent run keeps its attribution.
+
+    This is the case the whole root_user envelope exists for, and the case where
+    the new skip must be inert. If this regresses, per-human budgets silently
+    stop accumulating across an agent chain.
+    """
+
+    def test_agent_worker_with_distinct_human_root_writes_the_row(self):
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="users-id-alice", user_id="worker-sa"),
+            _bundled_rate_source(),
+        )
+
+        assert conn.cursor_obj.rows[("root_user", "users-id-alice", "daily")]["requests"] == 1
+
+    def test_row_is_keyed_on_the_qualified_id_not_the_unqualified_one(self):
+        """The comparison unqualifies; the KEY must not.
+
+        The qualified id is what enforcement reads and what the ledger has
+        settled under since #4344. A fix that wrote the stripped id would move
+        every service-rooted-but-distinct-caller row to a new key and desync the
+        two sides again — the #4322 failure mode, in the other direction.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="service:root-key", user_id="a-different-caller"),
+            _bundled_rate_source(),
+        )
+
+        assert ("root_user", "service:root-key", "daily") in conn.cursor_obj.rows
+        assert ("root_user", "root-key", "daily") not in conn.cursor_obj.rows
+
+    def test_id_merely_containing_a_colon_is_not_mangled(self):
+        """Only an exact leading `service:` is stripped for the comparison.
+
+        An id containing a colon elsewhere must compare as-is, or an unrelated
+        principal could be mistaken for the caller and lose its row.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+        conn = _LedgerConn()
+
+        handler_mod.process_chat_log(
+            conn,
+            _chat_log_4300(root_human_id="tenant:alice", user_id="alice"),
+            _bundled_rate_source(),
+        )
+
+        assert conn.cursor_obj.rows[("root_user", "tenant:alice", "daily")]["requests"] == 1
+
+
+class TestRootPrincipalHelperParity:
+    """T17: the Lambda's copy of the helper must not drift from `src`.
+
+    Same reasoning as T15/T16: the Lambda is a separate deploy artifact and
+    cannot import gateway `src`, so the two sides of the equality skip agree only
+    by convention. A one-sided edit has no compile-time consequence and its
+    runtime symptom is silent — the ledger quietly returns to double-counting.
+    `src` is authoritative; this test makes drift a CI failure.
+    """
+
+    def test_prefix_matches_the_authoritative_one(self):
+        from src.budget import enforcement_service
+
+        assert SERVICE_PRINCIPAL_PREFIX == enforcement_service._SERVICE_PRINCIPAL_PREFIX
+
+    @pytest.mark.parametrize(
+        "entity_id",
+        [
+            "users-id-alice",  # bare human id
+            "service:sched-key",  # service-qualified
+            "",  # empty stays empty
+            "tenant:alice",  # contains a colon, but not the prefix
+            "service:service:doubled",  # only one layer is stripped
+            "SERVICE:upper",  # prefix match is case-sensitive
+        ],
+    )
+    def test_unqualify_matches_the_authoritative_implementation(self, entity_id):
+        from src.budget import enforcement_service
+
+        assert unqualify_root_principal_id(entity_id) == enforcement_service._unqualify_root_principal_id(entity_id)
+
+    def test_handler_uses_the_shared_helper(self):
+        """Pins the sharing mechanism, not just the behaviour.
+
+        A handler that re-implemented the prefix logic inline would pass every
+        test above while being exactly the drift risk T17 exists to prevent.
+        """
+        handler_mod = load_handler("budget-usage-tracker")
+
+        assert handler_mod.unqualify_root_principal_id is unqualify_root_principal_id
+
+
+@pytest.mark.parametrize("owner_matches", [True, False])
+def test_s3_notification_reads_exact_version_and_validates_owner(monkeypatch, owner_matches):
+    import io
+    import json
+    from unittest.mock import MagicMock
+
+    handler_mod = load_handler("budget-usage-tracker")
+    conn = MagicMock()
+    cm = MagicMock()
+    cm.__enter__.return_value = conn
+    monkeypatch.setattr(handler_mod, "get_db_connection", lambda: cm)
+    monkeypatch.setattr(handler_mod, "get_rate_source", lambda *args: _bundled_rate_source())
+    log = _chat_log_4300()
+    key = f"{log['org_id']}/{log['user_id']}/{log['request_id']}.json"
+    if not owner_matches:
+        log["user_id"] = "wrong-owner"
+    get = MagicMock(return_value={"Body": io.BytesIO(json.dumps(log).encode())})
+    process = MagicMock()
+    monkeypatch.setattr(handler_mod.s3_client, "get_object", get)
+    monkeypatch.setattr(handler_mod, "process_chat_log", process)
+    event = {"Records": [{"s3": {"bucket": {"name": "logs"}, "object": {"key": key.replace("/", "%2F"), "versionId": "immutable-v1"}}}]}
+    if owner_matches:
+        result = handler_mod.handler(event, None)
+        assert json.loads(result["body"])["processed"] == 1
+        process.assert_called_once()
+    else:
+        with pytest.raises(RuntimeError):
+            handler_mod.handler(event, None)
+        process.assert_not_called()
+    get.assert_called_once_with(Bucket="logs", Key=key, VersionId="immutable-v1")

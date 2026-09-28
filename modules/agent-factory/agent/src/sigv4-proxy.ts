@@ -20,7 +20,9 @@ import * as https from 'https';
 import { URL } from 'url';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Hash } from '@smithy/hash-node';
-import { defaultProvider } from '@aws-sdk/credential-provider-node';
+import { workerAwsCredentialProvider, workerIdentityHeaders, readIdentityToken, gatewaySigningRegion } from './lib/runIdentity';
+import { handleKnowledgeBridge } from './lib/knowledgeBridge';
+import { proxyPort } from './lib/proxyPort';
 
 const args = process.argv.slice(2);
 const get = (flag: string, def: string) => {
@@ -29,8 +31,7 @@ const get = (flag: string, def: string) => {
 };
 
 const TARGET    = get('--target', process.env.SIGV4_PROXY_TARGET || '');
-const PORT      = parseInt(get('--port', process.env.SIGV4_PROXY_PORT || '8080'), 10);
-const REGION    = get('--region', process.env.AWS_REGION || 'us-east-1');
+const PORT      = parseInt(get('--port', proxyPort()), 10);
 const TENANT_ID = process.env.TENANT_ID || '';
 const AGENT_RUN_ID = process.env.ADP_MESSAGE_ID || '';
 const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
@@ -38,20 +39,27 @@ const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';
 if (!TARGET) { console.error('ERROR: --target is required'); process.exit(1); }
 
 const targetUrl = new URL(TARGET);
+const REGION = get('--region', gatewaySigningRegion(TARGET));
 
 const STRIP = new Set([
   'authorization', 'x-amz-security-token', 'x-amz-date',
   'x-amz-content-sha256', 'host',
+  'x-adp-run-credential', 'x-adp-workload-token', 'x-adp-report-credential',
 ]);
 
+let platformCredentials: Awaited<ReturnType<typeof workerAwsCredentialProvider>>;
 const signer = new SignatureV4({
-  credentials: defaultProvider(),
+  credentials: async () => {
+    platformCredentials ??= await workerAwsCredentialProvider();
+    return platformCredentials();
+  },
   region: REGION,
   service: 'execute-api',
   sha256: Hash.bind(null, 'sha256'),
 });
 
 const server = http.createServer(async (req, res) => {
+  if (await handleKnowledgeBridge(req, res)) return;
   // Health-check endpoint for entrypoint readiness probe (issue #747)
   if (req.url === '/__health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
@@ -92,6 +100,16 @@ const server = http.createServer(async (req, res) => {
   // Re-sign with execute-api
   let signed: { headers: Record<string, string> };
   try {
+    if (process.env.ADP_AGENT_AUTHORITY_ENABLED === 'true') {
+      // Read refreshed identity per call; local clients cannot select a run.
+      for (const [name, value] of Object.entries(workerIdentityHeaders())) {
+        headers[name.toLowerCase()] = value;
+      }
+    } else if (process.env.ADP_RUN_REPORT_CREDENTIAL_FILE) {
+      // Shared-role dispatch uses the same server-owned run assignment for
+      // model attribution. Never forward a local client's chosen capability.
+      headers['x-adp-report-credential'] = readIdentityToken(process.env.ADP_RUN_REPORT_CREDENTIAL_FILE);
+    }
     signed = await signer.sign({
       method,
       hostname: targetUrl.hostname,
@@ -109,7 +127,18 @@ const server = http.createServer(async (req, res) => {
 
   // Response-body idle timeout: if upstream sends headers then stalls mid-stream,
   // destroy the connection so the SDK sees a broken stream and retries.
-  const RESP_IDLE_MS = 180_000; // 3 minutes
+  //
+  // Must sit ABOVE every other idle ceiling in the model path so this watchdog
+  // never fires first on a healthy-but-quiet stream. The gateway's own Bedrock
+  // streaming client tolerates 300s between chunks (pool/simple_pool.py), and
+  // the API Gateway integration + both ALBs allow 900s. A long implementation
+  // turn on a large context can legitimately go quiet for minutes (long time-to-
+  // first-token, or an extended-thinking stretch), so the old 180s value severed
+  // healthy streams mid-response — the SDK surfaced it as "API Error: Connection
+  // closed mid-response" and the run stalled with nothing pushed (repeatedly, on
+  // #4450). 600s clears those false kills while still catching a genuinely dead
+  // upstream well before the 3600s socket timeout below.
+  const RESP_IDLE_MS = 600_000; // 10 minutes
 
   const parsed = new URL(upstreamUrl);
   const proxyReq = https.request({

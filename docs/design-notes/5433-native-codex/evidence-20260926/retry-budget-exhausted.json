@@ -1,0 +1,227 @@
+{
+  "model": "openai.gpt-6-sol",
+  "effort": "medium",
+  "status": "failed",
+  "error": {
+    "schema_version": "1.0",
+    "outcome": "failed",
+    "code": "process_failed",
+    "message": "Codex Task did not complete with validated output and current authority.",
+    "committed_at": "2026-09-26T16:32:17Z",
+    "child_exit_confirmed": true,
+    "recovery_required": false,
+    "total_usd": null
+  },
+  "final_messages": [
+    "I\u2019ll read the module and repository guidance, then make the scoped change.",
+    "The module has only the old calculation. I\u2019ll add validation, defaults, and capped jitter.",
+    "I spotted one edge case: a tiny base can outlive an overflowing exponent. I\u2019ll fix that before validation.",
+    "The calculation now handles zero base and large exponents. I\u2019ll commit it and run acceptance.",
+    "Acceptance passed all 24 cases on the commit. I\u2019ll publish the ready PR."
+  ],
+  "runtime_commit": "c8b6acf9899c14bc220f736b4f75e14bf5b80e43",
+  "model_calls": [
+    {
+      "provider_request_id": "6ad4c19d-d5a1-4fab-ba0e-4095b49eb820",
+      "duration_seconds": 1.597,
+      "usage": {
+        "input_tokens": 5990,
+        "input_tokens_details": {
+          "cache_write_tokens": 5988,
+          "cached_tokens": 0
+        },
+        "output_tokens": 104,
+        "output_tokens_details": {
+          "reasoning_tokens": 25
+        },
+        "total_tokens": 6094
+      }
+    },
+    {
+      "provider_request_id": "e04e3bc4-c554-4991-9757-7a52dccfcace",
+      "duration_seconds": 1.498,
+      "usage": {
+        "input_tokens": 6350,
+        "input_tokens_details": {
+          "cache_write_tokens": 360,
+          "cached_tokens": 5988
+        },
+        "output_tokens": 69,
+        "output_tokens_details": {
+          "reasoning_tokens": 12
+        },
+        "total_tokens": 6419
+      }
+    },
+    {
+      "provider_request_id": "bdae60af-3c50-4388-92cb-5cdc65e8583d",
+      "duration_seconds": 6.129,
+      "usage": {
+        "input_tokens": 6580,
+        "input_tokens_details": {
+          "cache_write_tokens": 230,
+          "cached_tokens": 6348
+        },
+        "output_tokens": 787,
+        "output_tokens_details": {
+          "reasoning_tokens": 351
+        },
+        "total_tokens": 7367
+      }
+    },
+    {
+      "provider_request_id": "7fa8f1f4-9a8b-4249-a038-dd52235fbd5d",
+      "duration_seconds": 11.74,
+      "usage": {
+        "input_tokens": 7558,
+        "input_tokens_details": {
+          "cache_write_tokens": 978,
+          "cached_tokens": 6578
+        },
+        "output_tokens": 1521,
+        "output_tokens_details": {
+          "reasoning_tokens": 1034
+        },
+        "total_tokens": 9079
+      }
+    },
+    {
+      "provider_request_id": "f520a012-516d-47b1-8d63-a74bebb4e95b",
+      "duration_seconds": 5.756,
+      "usage": {
+        "input_tokens": 9279,
+        "input_tokens_details": {
+          "cache_write_tokens": 1721,
+          "cached_tokens": 7556
+        },
+        "output_tokens": 528,
+        "output_tokens_details": {
+          "reasoning_tokens": 67
+        },
+        "total_tokens": 9807
+      }
+    },
+    {
+      "provider_request_id": "42d97105-33ab-4f9d-8303-0b5c75c630ef",
+      "duration_seconds": 1.893,
+      "usage": {
+        "input_tokens": 9998,
+        "input_tokens_details": {
+          "cache_write_tokens": 719,
+          "cached_tokens": 9277
+        },
+        "output_tokens": 105,
+        "output_tokens_details": {
+          "reasoning_tokens": 18
+        },
+        "total_tokens": 10103
+      }
+    },
+    {
+      "provider_request_id": "fe9ea8c3-ef86-41aa-9e24-92bb8a7fe6bc",
+      "duration_seconds": 1.782,
+      "usage": {
+        "input_tokens": 10336,
+        "input_tokens_details": {
+          "cache_write_tokens": 338,
+          "cached_tokens": 9996
+        },
+        "output_tokens": 83,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 10419
+      }
+    },
+    {
+      "provider_request_id": "a26a407a-e548-4ed0-a0a5-24031ec86451",
+      "duration_seconds": 2.501,
+      "usage": {
+        "input_tokens": 10784,
+        "input_tokens_details": {
+          "cache_write_tokens": 448,
+          "cached_tokens": 10334
+        },
+        "output_tokens": 247,
+        "output_tokens_details": {
+          "reasoning_tokens": 56
+        },
+        "total_tokens": 11031
+      }
+    }
+  ],
+  "tool_effects": 8,
+  "publication": {
+    "schema_version": "1.0",
+    "task_id": "tsk_33d5f226-0d2d-4f59-9977-7a9458c60b1f",
+    "provider": "github",
+    "repository_id": "456",
+    "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "local_head": "85daabe7a2ebf2197339fada38e03c27a5da7453",
+    "tree": "b0bad933ae745b0155ed47295d441f4f1dfaa8dd",
+    "provider_head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "branch": "adp/task-33d5f226-0d2d-4f59-9977-7a9458c60b1f",
+    "number": 7,
+    "url": "https://github.com/org/repo/pull/7",
+    "state": "open",
+    "draft": false
+  },
+  "manifest": {
+    "schema_version": "1.0",
+    "provider": "github",
+    "repository_id": "456",
+    "repository": "org/repo",
+    "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "local_head": "85daabe7a2ebf2197339fada38e03c27a5da7453",
+    "base_tree": "fc2176fe24f6edbd3838fcbb219c4d3d39b8c82a",
+    "tree": "b0bad933ae745b0155ed47295d441f4f1dfaa8dd",
+    "changes": [
+      {
+        "path": "retry-delay.js",
+        "mode": "100644",
+        "deleted": false,
+        "content_base64": "J3VzZSBzdHJpY3QnOwoKZnVuY3Rpb24gcmV0cnlEZWxheShvcHRpb25zID0ge30pIHsKICBjb25zdCB7IGF0dGVtcHQsIGJhc2VNcyA9IDEwMCwgbWF4TXMgPSAzMDAwMCwgcmFuZG9tID0gTWF0aC5yYW5kb20gfSA9IG9wdGlvbnM7CgogIGlmICghTnVtYmVyLmlzSW50ZWdlcihhdHRlbXB0KSB8fCBhdHRlbXB0IDwgMCkgewogICAgdGhyb3cgbmV3IFJhbmdlRXJyb3IoJ2F0dGVtcHQgbXVzdCBiZSBhIG5vbm5lZ2F0aXZlIGludGVnZXInKTsKICB9CiAgaWYgKHR5cGVvZiBiYXNlTXMgIT09ICdudW1iZXInIHx8ICFOdW1iZXIuaXNGaW5pdGUoYmFzZU1zKSB8fCBiYXNlTXMgPCAwKSB7CiAgICB0aHJvdyBuZXcgUmFuZ2VFcnJvcignYmFzZU1zIG11c3QgYmUgYSBmaW5pdGUgbm9ubmVnYXRpdmUgbnVtYmVyJyk7CiAgfQogIGlmICh0eXBlb2YgbWF4TXMgIT09ICdudW1iZXInIHx8ICFOdW1iZXIuaXNGaW5pdGUobWF4TXMpIHx8IG1heE1zIDwgMCkgewogICAgdGhyb3cgbmV3IFJhbmdlRXJyb3IoJ21heE1zIG11c3QgYmUgYSBmaW5pdGUgbm9ubmVnYXRpdmUgbnVtYmVyJyk7CiAgfQoKICBpZiAoYXR0ZW1wdCA9PT0gMCkgewogICAgcmV0dXJuIDA7CiAgfQoKICBjb25zdCBzYW1wbGUgPSByYW5kb20oKTsKICBpZiAodHlwZW9mIHNhbXBsZSAhPT0gJ251bWJlcicgfHwgIU51bWJlci5pc0Zpbml0ZShzYW1wbGUpIHx8IHNhbXBsZSA8IDAgfHwgc2FtcGxlID49IDEpIHsKICAgIHRocm93IG5ldyBSYW5nZUVycm9yKCdyYW5kb20gbXVzdCByZXR1cm4gYSBmaW5pdGUgbnVtYmVyIGluIFswLCAxKScpOwogIH0KCiAgbGV0IGJhY2tvZmYgPSBiYXNlTXM7CiAgbGV0IHJlbWFpbmluZyA9IGF0dGVtcHQgLSAxOwogIHdoaWxlIChyZW1haW5pbmcgPiAwICYmIGJhY2tvZmYgPiAwICYmIGJhY2tvZmYgPCBtYXhNcykgewogICAgY29uc3Qgc3RlcCA9IE1hdGgubWluKHJlbWFpbmluZywgMTAyMyk7CiAgICBiYWNrb2ZmICo9IDIgKiogc3RlcDsKICAgIHJlbWFpbmluZyAtPSBzdGVwOwogIH0KCiAgcmV0dXJuIE1hdGguZmxvb3Ioc2FtcGxlICogTWF0aC5taW4obWF4TXMsIGJhY2tvZmYpKTsKfQoKbW9kdWxlLmV4cG9ydHMgPSB7IHJldHJ5RGVsYXkgfTsK"
+      }
+    ]
+  },
+  "tool_results": [
+    {
+      "tool": "repository.read",
+      "status": "completed"
+    },
+    {
+      "tool": "repository.read",
+      "status": "rejected"
+    },
+    {
+      "tool": "repository.write",
+      "status": "completed"
+    },
+    {
+      "tool": "repository.write",
+      "status": "completed"
+    },
+    {
+      "tool": "repository.write",
+      "status": "completed"
+    },
+    {
+      "tool": "repository.commit",
+      "status": "completed"
+    },
+    {
+      "tool": "validation.run",
+      "status": "passed"
+    },
+    {
+      "tool": "change.create",
+      "status": null
+    }
+  ],
+  "limitations": [
+    "Task admission identity and ledger use Moto fixtures",
+    "provider source and PR publication use fixtures",
+    "gateway inference is live and charged to the authenticated user"
+  ],
+  "runtime_source_note": "Working tree based on the recorded runtime_commit; uncommitted report/policy changes were present. Not an immutable-source qualification."
+}

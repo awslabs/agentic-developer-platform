@@ -1,0 +1,97 @@
+# =============================================================================
+# Edge ALB internal-plane deny — GATED PATCH (Issue #4010)
+# =============================================================================
+# Strategic-merge patch applied to the EDGE Ingress (`k8s/ingress.yaml`) to make
+# the internal control plane unreachable from the CloudFront edge by ROUTING.
+#
+# ############################################################################
+# # DO NOT `kubectl apply -f` THIS FILE DIRECTLY, AND DO NOT MOVE IT INTO     #
+# # `k8s/`. Apply it only via:                                               #
+# #     modules/gateway/scripts/apply-internal-plane-deny.sh                 #
+# ############################################################################
+#
+# WHY IT IS GATED
+# ---------------
+# This patch changes what the edge ALB does with `/internal/*`: it starts
+# answering 403 instead of forwarding to the pod. That is only safe once the API
+# Gateway `/internal/{proxy+}` integration has been repointed at the SEPARATE
+# internal-plane ALB (`k8s/ingress-internal.yaml`).
+#
+# While `internal_plane_alb_dns` is empty, the Terraform in
+# `modules/gateway/infra/modules/api-gateway/main.tf` falls back to the EDGE ALB
+# for `/internal/{proxy+}`. Applying this patch in that state 403s every SigV4
+# internal call — agent provenance writes, credential paths — with no automatic
+# recovery. So the deny must be applied strictly AFTER a confirmed repoint. The
+# apply script enforces exactly that precondition by reading the live
+# integration URI, and its `--verify` mode fails loudly on the inverted state.
+#
+# WHY THIS IS AN INGRESS PATCH AND NOT A TERRAFORM `aws_lb_listener_rule`
+# ----------------------------------------------------------------------
+# The Auto Mode controller places its own catch-all `/*` forward at ALB rule
+# PRIORITY 1, and ALB rule priorities start at 1. Verified against the live ALB:
+#   create-rule --priority 1 -> PriorityInUse: Priority '1' is currently in use
+#   create-rule --priority 0 -> ParamValidation: valid min value: 1
+# An out-of-band rule can therefore never be ordered BEFORE the catch-all: it
+# lands at >=2, is evaluated after the catch-all has already matched, and is a
+# SILENT NO-OP. Expressing the deny through the Ingress lets the controller order
+# it by path specificity (`/internal` beats `/`), which is the only ordering that
+# actually denies. A missing rule does NOT deny — it falls through to the
+# listener's default action.
+#
+# WHY THE DENY IS NEEDED AT ALL, GIVEN THE INTERNAL PLANE HAS ITS OWN ALB
+# -----------------------------------------------------------------------
+# This ALB is CloudFront's VPC origin, so anything the edge can ask for arrives
+# here. The CloudFront function strips the `/api` prefix, so an edge request to
+# `/api/internal/v1/...` reaches this ALB as `/internal/v1/...` — byte-identical
+# to a legitimate internal call. Path is the only available discriminator at this
+# ALB, so `/internal` is denied outright here.
+#
+# NOTE ON `spec.rules`: a strategic-merge patch REPLACES the `rules` list rather
+# than merging into it (the list has no patch merge key), so both the deny rule
+# and the catch-all must be restated below, in this order. Keep the catch-all
+# byte-identical to `k8s/ingress.yaml` — if that file's rule changes, change it
+# here too or the patch will silently revert it.
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bedrockgateway
+  namespace: adp-gateway
+  annotations:
+    # `actions.*` / `conditions.*` on individual Ingress resources are supported
+    # on EKS Auto Mode (AWS: "you can use annotations on individual Ingress
+    # resources ... such as alb.ingress.kubernetes.io/conditions.*").
+    alb.ingress.kubernetes.io/actions.deny-internal: >-
+      {"type":"fixed-response","fixedResponseConfig":
+      {"contentType":"text/plain","statusCode":"403",
+      "messageBody":"Not available from the edge"}}
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          # Internal-plane deny — MUST precede the catch-all `/` below.
+          # The backend name `deny-internal` matches the `actions.deny-internal`
+          # annotation above, which makes this a fixed-response 403 rather than a
+          # forward to any Service. No such Service exists, and none is needed:
+          # the ALB answers directly and the request never reaches a pod.
+          #
+          # This covers both `/internal` exactly and `/internal/...` (Prefix
+          # pathType matches on whole path segments, so `/internalfoo` is NOT
+          # matched and is not accidentally denied).
+          - path: /internal
+            pathType: Prefix
+            backend:
+              service:
+                name: deny-internal
+                port:
+                  name: use-annotation
+          # Catch-all — must stay in sync with k8s/ingress.yaml (see note above).
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bedrockgateway
+                port:
+                  number: 80

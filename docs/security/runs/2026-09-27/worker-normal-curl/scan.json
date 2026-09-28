@@ -1,0 +1,18 @@
+{
+  "image": "security27/worker:normal-curl",
+  "docker_root_descriptor": "sha256:cb081f259e95108195c22ef7506eeed843fef6d015f7ce33366ad4f69fd8284c",
+  "config_digest": "sha256:1aa7cea0a1462ee7e6780bacacc5ea753cbef849b3ab7228be31a13fe323732d",
+  "time": "2026-09-27T13:16:19.439177+00:00",
+  "packages": 2494,
+  "native_counts": {
+    "Negligible": 680,
+    "Critical": 24,
+    "High": 106,
+    "Medium": 103,
+    "Low": 27,
+    "Unknown": 3
+  },
+  "sbom_sha256": "5794332cd290a29baaca5e67ebdd95afa1d7c90a4d04b588a2ea21b90770dc0d",
+  "grype_sha256": "c44f739be004986ce616980f18b9185b5bc5a63139a981349a9d6e4273887e58",
+  "archive_sha256": "7e5a6fd7125447a0614f548f805d9e8b53ac7ee0ceb9afd582f43ae281ccce3f"
+}

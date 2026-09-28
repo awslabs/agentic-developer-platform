@@ -13,11 +13,11 @@ from src.proxy.service import ProxyService
 class TestAnthropicUsageCacheFields:
     """AnthropicUsage schema must carry cache token fields."""
 
-    def test_cache_fields_default_to_zero(self):
-        """Cache fields default to 0 for non-cached requests."""
+    def test_missing_cache_fields_remain_unknown(self):
+        """Missing counters do not assert measured zero cache activity."""
         usage = AnthropicUsage(input_tokens=100, output_tokens=50)
-        assert usage.cache_read_input_tokens == 0
-        assert usage.cache_creation_input_tokens == 0
+        assert usage.cache_read_input_tokens is None
+        assert usage.cache_creation_input_tokens is None
 
     def test_cache_fields_populated(self):
         """Cache fields accept nonzero values."""
@@ -83,8 +83,8 @@ class TestBedrockToAnthropicCacheFields:
         assert result.usage.input_tokens == 1
         assert result.usage.output_tokens == 4000
 
-    def test_no_cache_fields_defaults_to_zero(self):
-        """When Bedrock response has no cache fields, they default to 0."""
+    def test_absent_cache_fields_remain_unknown(self):
+        """Absent Bedrock cache fields remain unknown through translation."""
         translator = FormatTranslator()
         bedrock_response = BedrockInvokeResponse(
             id="msg_test123",
@@ -97,8 +97,8 @@ class TestBedrockToAnthropicCacheFields:
         )
 
         result = translator.bedrock_to_anthropic(bedrock_response, "claude-3.5-sonnet")
-        assert result.usage.cache_read_input_tokens == 0
-        assert result.usage.cache_creation_input_tokens == 0
+        assert result.usage.cache_read_input_tokens is None
+        assert result.usage.cache_creation_input_tokens is None
 
     def test_response_model_dump_has_cache_fields(self):
         """Full response model_dump includes cache fields in usage."""

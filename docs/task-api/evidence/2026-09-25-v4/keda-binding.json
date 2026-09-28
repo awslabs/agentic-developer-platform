@@ -1,0 +1,26 @@
+{
+  "source": "isolation/v5-scaledjobs.json captured2026-09-25T05:29UTC",
+  "items": [
+    {
+      "name": "agent-scaledjob",
+      "namespace": "adp-agents",
+      "triggers": [
+        {
+          "authenticationRef": {
+            "name": "agent-scaledjob-aws-auth"
+          },
+          "metadata": {
+            "awsRegion": "us-east-1",
+            "queueLength": "1",
+            "queueURL": "https://sqs.us-east-1.amazonaws.com/879318057152/adp-dev-agent-submit.fifo"
+          },
+          "type": "aws-sqs-queue"
+        }
+      ],
+      "maxReplicaCount": 50,
+      "images": [
+        "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "pytest_exit": 0,
+  "span_count": 18,
+  "span_names": [
+    "adp.codex.completion",
+    "adp.codex.model",
+    "adp.codex.run",
+    "adp.codex.tool",
+    "adp.codex.turn"
+  ],
+  "trace_count": 1,
+  "correlated_log_count": 17,
+  "metrics_exported": true
+}

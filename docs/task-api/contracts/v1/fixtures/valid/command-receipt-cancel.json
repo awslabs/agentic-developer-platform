@@ -1,0 +1,25 @@
+{
+  "$fixture": {
+    "description": "A cancellation command receipt. A cancel never carries a model handoff or turn assignment of its own; its effect is to latch cancel_requested and block new turn/model/input admission.",
+    "schema": "commands.schema.json#/$defs/command_receipt",
+    "expect": "valid",
+    "owner": "T7",
+    "criteria": [
+      "T0-AC02",
+      "T7-AC03",
+      "V0-04"
+    ]
+  },
+  "schema_version": "1.0",
+  "command_id": "f6071829-3a4b-4c5d-9f70-819203142536",
+  "kind": "cancel",
+  "status": "accepted",
+  "handoff": "not_started",
+  "command_sequence": 3,
+  "turn_id": null,
+  "turn_number": null,
+  "accepted_at": "2026-09-24T14:48:10Z",
+  "consumed_at": null,
+  "authority_expires_at": null,
+  "reason": "Client no longer needs the investigation."
+}

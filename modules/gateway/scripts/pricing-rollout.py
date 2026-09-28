@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""Quiesce pricing before code/infra updates; verify seed and finalize afterward.
+
+Uses existing AWS CLI and kubectl credentials. It never prints tokens or database
+connection strings. A failed step leaves the refresh schedule disabled.
+"""
+
+import argparse
+import importlib.util
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import zipfile
+from pathlib import Path
+
+
+def command(args, *, input_text=None):
+    result = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False, timeout=300)
+    if result.returncode:
+        raise RuntimeError(f"{args[0]} {args[1]} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def aws(args, *parts, missing_ok=False):
+    result = subprocess.run(
+        ["aws", *parts, "--region", args.region, "--output", "json", "--cli-connect-timeout", "10", "--cli-read-timeout", "240"],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=300,
+    )
+    if result.returncode:
+        if missing_ok and ("ResourceNotFoundException" in result.stderr or "ResourceNotFound" in result.stderr):
+            return None
+        raise RuntimeError(f"AWS {parts[0]} {parts[1]} failed: {result.stderr.strip()}")
+    return json.loads(result.stdout) if result.stdout.strip() else {}
+
+
+def _ready_pods_once(args):
+    deployment = json.loads(command(["kubectl", "get", "deployment/bedrockgateway", "-n", args.namespace, "-o", "json"]))
+    image = next(c["image"] for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "bedrockgateway")
+    if deployment["spec"].get("replicas", 1) < 1:
+        raise RuntimeError("Gateway has no requested serving replicas")
+    if args.expected_image and image != args.expected_image:
+        raise RuntimeError("Gateway deployment does not use the expected release image")
+    pods = json.loads(command(["kubectl", "get", "pods", "-n", args.namespace, "-l", "app=bedrockgateway", "-o", "json"]))["items"]
+    selected = []
+    for pod in pods:
+        if pod["metadata"].get("deletionTimestamp"):
+            continue
+        conditions = pod.get("status", {}).get("conditions", [])
+        if not any(c["type"] == "Ready" and c["status"] == "True" for c in conditions):
+            continue
+        containers = pod["spec"]["containers"]
+        if any(c["name"] == "bedrockgateway" and c["image"] == image for c in containers):
+            selected.append(pod["metadata"]["name"])
+    if not selected or len(selected) < deployment["spec"].get("replicas", 1):
+        return [], image
+    return sorted(selected), image
+
+
+def ready_pods(args):
+    """Wait boundedly for serving replicas during normal node replacement.
+
+    A wrong release image or zero desired replicas remains an immediate error.
+    The CLI sets the wait bound; programmatic callers may request a zero wait.
+    """
+    timeout = getattr(args, "readiness_timeout", 0)
+    if not 0 <= timeout <= 600:
+        raise RuntimeError("Readiness timeout must be between 0 and 600 seconds")
+    deadline = time.monotonic() + timeout
+    while True:
+        pods, image = _ready_pods_once(args)
+        if pods:
+            return pods, image
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Not all required gateway replicas are Ready on the release image")
+        print(f"Waiting for gateway replicas on the release image ({remaining:.0f}s remaining)", flush=True)
+        time.sleep(min(10, remaining))
+
+
+SEED_PROBE = r"""
+import asyncio, json
+from sqlalchemy import text
+from pricing_policy import RateRow, load_snapshot
+from pricing_policy.refresh import canonical_content_hash
+from src.shared.database import get_engine
+from src.chat_logging.config import get_chat_logging_settings
+
+async def main():
+    engine = get_engine()
+    async with engine.connect() as connection:
+        pointer = (await connection.execute(text("SELECT * FROM model_pricing_active WHERE singleton"))).mappings().one()
+        assert pointer["consumers_enabled"] and pointer["current_generation_id"] is not None, "Pricing not activated"
+        generation = (await connection.execute(
+            text("SELECT * FROM model_pricing_generations WHERE generation_id=:gid"),
+            {"gid": pointer["current_generation_id"]},
+        )).mappings().one()
+        assert generation["status"] == "validated", "Unvalidated pricing generation"
+        rows = (await connection.execute(
+            text("SELECT * FROM model_pricing_rates_v2 WHERE generation_id=:gid"),
+            {"gid": pointer["current_generation_id"]},
+        )).mappings().all()
+        validated_rows = tuple(RateRow.from_mapping(dict(row)) for row in rows)
+        assert canonical_content_hash(validated_rows) == generation["content_sha256"], "Active generation content hash mismatch"
+        keys = {(r["model_id"], r["geography"], r["service_tier"], r["context_tier"], r["region"]) for r in rows}
+        required = {tuple(key) for key in generation["required_variants"]}
+        assert required and required <= keys, "Incomplete active generation"
+        snapshot = load_snapshot()
+        bundled = {(r.model_id, r.geography, r.service_tier, r.context_tier, r.region) for r in snapshot.rates}
+        assert bundled <= keys, "Active pricing omits bundled variants"
+        active_by_key = {row.variant_key: row for row in validated_rows}
+        for template in snapshot.rates:
+            if getattr(template, "cache_write_1h_price_per_1k_tokens", None) is not None:
+                hourly = getattr(active_by_key[template.variant_key], "cache_write_1h_price_per_1k_tokens", None)
+                assert hourly is not None, "Active pricing omits published one-hour cache write rate"
+        expected_models = {r.model_id for r in snapshot.rates}
+        actual_models = {r["model_id"] for r in rows}
+        assert expected_models <= actual_models, "Bundled provider/model coverage incomplete"
+        providers = {provider: sum(r["model_id"].startswith(provider + ".") for r in rows)
+                     for provider in ("openai", "anthropic")}
+        revision = (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+        print(json.dumps({
+            "generation_id": pointer["current_generation_id"], "pointer_revision": pointer["pointer_revision"],
+            "variants": len(keys), "snapshot_version": snapshot.snapshot_version, "provider_variants": providers,
+            "alembic_revision": revision, "refresh_paused": pointer["refresh_paused"],
+            "chat_logging_enabled": get_chat_logging_settings().chat_logging_enabled,
+        }))
+    await engine.dispose()
+asyncio.run(main())
+"""
+
+
+class PodReplaced(RuntimeError):
+    """A selected serving pod disappeared during an exec operation."""
+
+
+def pod_command(args, pod, parts, *, input_text=None):
+    try:
+        return command(
+            ["kubectl", "exec", "-i", "-n", args.namespace, pod, "-c", "bedrockgateway", "--", *parts],
+            input_text=input_text,
+        )
+    except RuntimeError as exc:
+        current = command(["kubectl", "get", "pod", pod, "-n", args.namespace, "--ignore-not-found", "-o", "json"])
+        if not current.strip() or json.loads(current)["metadata"].get("deletionTimestamp"):
+            raise PodReplaced(f"Gateway pod {pod} was replaced during pricing rollout") from exc
+        raise  # SQL errors, OOMs and failures on a live pod are not retried.
+
+
+def verify_seed(args, *, migrate=False):
+    # Readiness is a point-in-time observation. Node consolidation can replace
+    # a pod between selection and exec; reselect the release after that race.
+    # A completed migration is not repeated when only a later probe was lost.
+    for attempt in range(3):
+        pods, image = ready_pods(args)
+        try:
+            if migrate:
+                pod_command(args, pods[0], ["env", "PYTHONPATH=/app", "alembic", "upgrade", "head"])
+                migrate = False
+            evidence = []
+            for pod in pods:
+                output = pod_command(args, pod, ["env", "PYTHONPATH=/app", "python", "-"], input_text=SEED_PROBE)
+                evidence.append({"pod": pod, "pricing": json.loads(output)})
+            print(json.dumps({"image": image, "replicas": evidence}))
+            return evidence
+        except PodReplaced:
+            if attempt == 2:
+                raise
+            print("Gateway pod replaced; reselecting Ready release replicas for pricing verification", flush=True)
+
+
+def quiesce(args):
+    rule = f"bedrockgw-{args.environment}-pricing-refresh-schedule"
+    if aws(args, "events", "describe-rule", "--name", rule, missing_ok=True) is not None:
+        aws(args, "events", "disable-rule", "--name", rule)
+    config = aws(args, "lambda", "get-function-configuration", "--function-name", f"bedrockgw-{args.environment}-pricing-refresh", missing_ok=True)
+    if config:
+        delay = config["Timeout"] + 5
+        print(f"Refresh disabled; allowing {delay}s for an old invocation to drain", flush=True)
+        # Keep long drains observable without changing the required old-timeout
+        # bound. Disabling the rule does not cancel an in-flight invocation.
+        while delay:
+            interval = min(delay, 30)
+            time.sleep(interval)
+            delay -= interval
+            if delay:
+                print(f"Waiting for old refresh invocation: {delay}s remaining", flush=True)
+
+
+def verify_lambda_code(args, function):
+    """Compare normalized deployed ZIP contents with this reviewed checkout."""
+    deployed = aws(args, "lambda", "get-function", "--function-name", function)
+    config = deployed["Configuration"]
+    if not (config["State"] == "Active" and config["LastUpdateStatus"] == "Successful"):
+        raise AssertionError(f"{function} is not ready")
+    spec = importlib.util.spec_from_file_location("pricing_archive_builder", Path(__file__).with_name("build-budget-lambda-archives.py"))
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    short_name = function.removeprefix(f"bedrockgw-{args.environment}-")
+    expected = builder.manifest(Path(__file__).resolve().parents[1], short_name)
+    # Lambda's signed download URL is kept out of commands, logs and exceptions.
+    try:
+        with urllib.request.urlopen(deployed["Code"]["Location"], timeout=30) as response:
+            payload = response.read(10 * 1024 * 1024 + 1)
+    except Exception:
+        raise RuntimeError(f"Could not download {function} code for release verification") from None
+    if not (len(payload) <= 10 * 1024 * 1024):
+        raise AssertionError("Lambda archive exceeds verification size bound")
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        if not (len(archive.namelist()) == len(set(archive.namelist()))):
+            raise AssertionError("Duplicate deployed ZIP members")
+        if not (set(archive.namelist()) == set(expected)):
+            raise AssertionError(f"{function} archive manifest differs from this release")
+        if not (all(archive.read(name) == path.read_bytes() for name, path in expected.items())):
+            raise AssertionError(f"{function} source differs from this release")
+    return config
+
+
+def verify_queue(args, arn):
+    parts = arn.split(":")
+    if not (len(parts) == 6 and parts[2] == "sqs" and parts[4] == args.account_id):
+        raise AssertionError("Unexpected pricing failure queue")
+    url = aws(args, "sqs", "get-queue-url", "--queue-name", parts[5], "--queue-owner-aws-account-id", parts[4])["QueueUrl"]
+    attributes = aws(args, "sqs", "get-queue-attributes", "--queue-url", url, "--attribute-names", "All")["Attributes"]
+    if not (attributes["QueueArn"] == arn):
+        raise AssertionError()
+    if not (int(attributes["MessageRetentionPeriod"]) == 1209600):
+        raise AssertionError("Pricing failure retention is not 14 days")
+    if not (attributes.get("SqsManagedSseEnabled") == "true"):
+        raise AssertionError("Pricing queue encryption is not configured")
+
+
+def verify_alarm_routes(args):
+    names = [f"bedrockgw-{args.environment}-pricing-{suffix}" for suffix in ("full-refresh-missing", "oldest-source")]
+    alarms = aws(args, "cloudwatch", "describe-alarms", "--alarm-names", *names)["MetricAlarms"]
+    if not ({alarm["AlarmName"] for alarm in alarms} == set(names)):
+        raise AssertionError("Required pricing freshness alarms are missing")
+    topics = set()
+    for alarm in alarms:
+        if not (alarm["ActionsEnabled"] and alarm["AlarmActions"]):
+            raise AssertionError("Pricing alarm has no enabled notification destination")
+        if not (alarm["TreatMissingData"] == "breaching"):
+            raise AssertionError("Pricing freshness alarm does not detect missing measurements")
+        topics.update(alarm["AlarmActions"])
+    for topic in sorted(topics):
+        subscriptions = []
+        token = None
+        while True:
+            extra = ("--next-token", token) if token else ()
+            page = aws(args, "sns", "list-subscriptions-by-topic", "--topic-arn", topic, *extra)
+            subscriptions.extend(page["Subscriptions"])
+            token = page.get("NextToken")
+            if not token:
+                break
+        if not (any(s["SubscriptionArn"].startswith("arn:") for s in subscriptions)):
+            raise AssertionError("Pricing alarm topic has no confirmed subscription")
+        if topic.endswith(f":bedrockgw-{args.environment}-pricing-alarms"):
+            inboxes = [s["Endpoint"] for s in subscriptions if s["Protocol"] == "sqs" and s["SubscriptionArn"].startswith("arn:")]
+            if not (inboxes):
+                raise AssertionError("Default pricing alarm inbox subscription is missing")
+            for inbox in inboxes:
+                verify_queue(args, inbox)
+
+
+def finalize(args):
+    rule_name = f"bedrockgw-{args.environment}-pricing-refresh-schedule"
+    existing_rule = aws(args, "events", "describe-rule", "--name", rule_name, missing_ok=True)
+    if existing_rule is not None:
+        aws(args, "events", "disable-rule", "--name", rule_name)
+    evidence = verify_seed(args)
+    logging_states = {item["pricing"]["chat_logging_enabled"] for item in evidence}
+    if not (len(logging_states) == 1):
+        raise AssertionError("Gateway replicas disagree on chat logging configuration")
+    if logging_states == {False}:
+        print("Pricing seed verified; scheduled refresh remains disabled because chat logging is disabled")
+        return
+    if not (existing_rule is not None):
+        raise AssertionError("Pricing is enabled but its schedule is missing; apply reviewed budget-lambda infrastructure and rerun finalization")
+    if any(item["pricing"]["refresh_paused"] for item in evidence):
+        raise RuntimeError("Refresh is explicitly paused; resolve rollback before finalizing")
+    function = f"bedrockgw-{args.environment}-pricing-refresh"
+    config = verify_lambda_code(args, function)
+    verify_lambda_code(args, f"bedrockgw-{args.environment}-budget-usage-tracker")
+    if not (config["Timeout"] >= 180):
+        raise AssertionError("Pricing infrastructure timeout has not been applied")
+    asynchronous = aws(args, "lambda", "get-function-event-invoke-config", "--function-name", function)
+    if not (asynchronous["MaximumRetryAttempts"] == 2 and asynchronous["MaximumEventAgeInSeconds"] == 3600):
+        raise AssertionError()
+    execution_queue = asynchronous["DestinationConfig"]["OnFailure"]["Destination"]
+    rule = aws(args, "events", "describe-rule", "--name", rule_name)
+    if not (rule["ScheduleExpression"] == "cron(0 6 * * ? *)"):
+        raise AssertionError()
+    targets = aws(args, "events", "list-targets-by-rule", "--rule", rule_name)["Targets"]
+    target = next(t for t in targets if t["Arn"] == config["FunctionArn"])
+    if not (target["RetryPolicy"] == {"MaximumRetryAttempts": 2, "MaximumEventAgeInSeconds": 3600}):
+        raise AssertionError()
+    if not (target["DeadLetterConfig"]["Arn"] != execution_queue):
+        raise AssertionError()
+    verify_queue(args, target["DeadLetterConfig"]["Arn"])
+    verify_queue(args, execution_queue)
+    verify_alarm_routes(args)
+    with tempfile.TemporaryDirectory() as temporary:
+        payload = Path(temporary) / "refresh.json"
+        result = aws(
+            args,
+            "lambda",
+            "invoke",
+            "--function-name",
+            function,
+            "--invocation-type",
+            "RequestResponse",
+            "--cli-binary-format",
+            "raw-in-base64-out",
+            "--payload",
+            '{"report_partial":true}',
+            str(payload),
+        )
+        if result.get("FunctionError") or result.get("StatusCode") != 200:
+            raise RuntimeError("Immediate pricing refresh failed; inspect Lambda logs. Schedule remains disabled.")
+        refresh = json.loads(payload.read_text())
+        if not (refresh.get("status") == "published"):
+            raise AssertionError("Refresh did not publish a validated generation")
+        if refresh.get("partial"):
+            known_gap = getattr(args, "allow_known_claude_gap", False)
+            if known_gap and not (
+                args.account_id == "879318057152"
+                and args.environment == "dev"
+                and args.region == "us-east-1"
+                and refresh.get("retained_variants") == 264
+                and refresh.get("retained_models")
+                == [
+                    "anthropic.claude-fable-5",
+                    "anthropic.claude-fable-5-1",
+                    "anthropic.claude-mythos-5-1",
+                    "anthropic.claude-opus-4-7",
+                    "anthropic.claude-opus-4-8",
+                    "anthropic.claude-opus-5",
+                    "anthropic.claude-sonnet-5",
+                ]
+            ):
+                raise RuntimeError("Retained rates differ from the reviewed dev Claude source gap")
+            if not (getattr(args, "allow_partial_refresh", False) or known_gap):
+                raise RuntimeError("Refresh retained older rates; schedule remains disabled. Review source gaps before --allow-partial-refresh.")
+            if not (refresh.get("fresh_variants", 0) > 0):
+                raise AssertionError("Partial refresh has no freshly verified prices")
+            if not (not refresh.get("failed_sources")):
+                raise AssertionError("Transport failures must be resolved before partial finalization")
+            print("WARNING: enabling scheduled retries with retained, older rates; freshness and partial-refresh alarms remain active.")
+        print(json.dumps({"immediate_refresh": refresh}))
+    after = verify_seed(args)
+    if not (after[0]["pricing"]["pointer_revision"] > evidence[0]["pricing"]["pointer_revision"]):
+        raise AssertionError("Refresh did not publish a new generation")
+    for item in after:
+        if not (item["pricing"]["generation_id"] == refresh["generation_id"]):
+            raise AssertionError("Active generation differs from the verified refresh")
+        if not (item["pricing"]["pointer_revision"] == refresh["pointer_revision"]):
+            raise AssertionError("Active pointer differs from the verified refresh")
+        if not (item["pricing"]["variants"] == refresh["variants"]):
+            raise AssertionError("Refresh coverage differs from the active generation")
+    try:
+        aws(args, "events", "enable-rule", "--name", rule_name)
+        if not (aws(args, "events", "describe-rule", "--name", rule_name)["State"] == "ENABLED"):
+            raise AssertionError()
+    except Exception:
+        aws(args, "events", "disable-rule", "--name", rule_name)
+        raise
+    print("Pricing generation published; daily 06:00 UTC refresh enabled" + (" (DEGRADED: retained rates)" if refresh.get("partial") else ""))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("phase", choices=("quiesce", "migrate", "verify-seed", "finalize"))
+    parser.add_argument("--account-id", required=True)
+    parser.add_argument("--environment", default=os.environ.get("ENVIRONMENT", "dev"))
+    parser.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
+    parser.add_argument("--namespace", default="adp-gateway")
+    parser.add_argument("--expected-image")
+    parser.add_argument(
+        "--allow-partial-refresh",
+        action="store_true",
+        help="Resume scheduling after a validated partial publication with no transport failures; retained prices stay stale",
+    )
+    parser.add_argument(
+        "--allow-known-claude-gap",
+        action="store_true",
+        help="Resume only for the reviewed 264-variant dev Claude widget gap; retain partial-refresh alarms",
+    )
+    parser.add_argument("--readiness-timeout", type=int, default=180, help="Seconds to wait for required release replicas (0-600)")
+    args = parser.parse_args()
+    try:
+        if not (aws(args, "sts", "get-caller-identity")["Account"] == args.account_id):
+            raise AssertionError("AWS account mismatch")
+        if args.phase == "finalize" and not args.expected_image:
+            raise RuntimeError("Finalization requires --expected-image from the reviewed release")
+        if args.phase == "quiesce":
+            quiesce(args)
+        elif args.phase == "finalize":
+            finalize(args)
+        else:
+            verify_seed(args, migrate=args.phase == "migrate")
+    except (AssertionError, RuntimeError, KeyError, StopIteration, ValueError, subprocess.TimeoutExpired, zipfile.BadZipFile) as exc:
+        print(f"Pricing rollout failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

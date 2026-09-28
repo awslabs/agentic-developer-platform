@@ -17,10 +17,12 @@
 # - X-Agent-AllowedModels: comma-separated list of allowed models
 # =============================================================================
 
+import ipaddress
 import json
 import logging
 import os
 import re
+import time
 from typing import Any
 from urllib.error import URLError
 
@@ -37,8 +39,17 @@ COGNITO_REGION = os.environ.get("COGNITO_REGION", "us-east-1")
 AGENT_REGISTRY_TABLE = os.environ.get("AGENT_REGISTRY_TABLE", "")
 AUTHORIZER_CACHE_TTL = int(os.environ.get("AUTHORIZER_CACHE_TTL", "300"))
 
+# Optional SSM parameter holding a comma-separated CIDR allowlist for the
+# JWT/browser path. Unset (the default) disables the check entirely.
+IP_ALLOWLIST_SSM_PARAM = os.environ.get("IP_ALLOWLIST_SSM_PARAM", "")
+
 # DynamoDB client
 _dynamodb_client = None
+
+# SSM client + allowlist cache (see _load_ip_allowlist)
+_ssm_client = None
+_ip_allowlist_cache: list[Any] | None = None
+_ip_allowlist_cached_at = 0.0
 
 
 def get_dynamodb_client() -> "boto3.client":
@@ -89,7 +100,8 @@ def validate_jwt(token: str) -> dict[str, Any] | None:
         return claims
 
     except PyJWTError as e:
-        logger.error(f"JWT validation failed: {e}")
+        # JWT/JWKS errors can contain attacker-controlled token header values.
+        logger.error("JWT validation failed (%s)", type(e).__name__)
         return None
     except (URLError, TimeoutError) as e:
         logger.error(f"Failed to fetch JWKS: {e}")
@@ -195,6 +207,87 @@ def lookup_agent_in_registry(role_arn: str) -> dict[str, Any] | None:
         return None
 
 
+def get_ssm_client() -> "boto3.client":
+    """Get or create SSM client."""
+    global _ssm_client
+    if _ssm_client is None:
+        _ssm_client = boto3.client("ssm", region_name=COGNITO_REGION)
+    return _ssm_client
+
+
+def _load_ip_allowlist() -> list[Any] | None:
+    """
+    Load the optional source-IP allowlist from SSM.
+
+    Returns a list of ip_network objects, or None when no allowlist applies.
+
+    Fail direction is deliberate and asymmetric:
+
+    - **Unconfigured means allow.** If IP_ALLOWLIST_SSM_PARAM is unset, or the
+      parameter does not exist, or the role lacks ssm:GetParameter, we return
+      None and the caller skips the check. An operator who takes this code
+      without the matching IAM/parameter changes therefore sees no behaviour
+      change, rather than a total authorization outage.
+    - **Configured means keep enforcing.** Once a list has been read
+      successfully it is cached and reused if a later read fails, so a transient
+      SSM error cannot silently switch the control off.
+
+    Cached for AUTHORIZER_CACHE_TTL so allowlist edits take effect without a
+    redeploy.
+    """
+    global _ip_allowlist_cache, _ip_allowlist_cached_at
+
+    if not IP_ALLOWLIST_SSM_PARAM:
+        return None
+
+    now = time.monotonic()
+    if _ip_allowlist_cache is not None and (now - _ip_allowlist_cached_at) < AUTHORIZER_CACHE_TTL:
+        return _ip_allowlist_cache
+
+    try:
+        response = get_ssm_client().get_parameter(Name=IP_ALLOWLIST_SSM_PARAM)
+        raw = response["Parameter"]["Value"]
+        networks = [ipaddress.ip_network(entry.strip(), strict=False) for entry in raw.split(",") if entry.strip()]
+        _ip_allowlist_cache = networks or None
+        _ip_allowlist_cached_at = now
+        return _ip_allowlist_cache
+    except (ClientError, ValueError, KeyError) as e:
+        # Stale value if we have one, otherwise treat as unconfigured.
+        logger.warning(
+            "Could not read IP allowlist %s (%s) - %s",
+            IP_ALLOWLIST_SSM_PARAM,
+            e,
+            "reusing cached value" if _ip_allowlist_cache else "treating as unconfigured",
+        )
+        return _ip_allowlist_cache
+
+
+def source_ip_allowed(event: dict[str, Any]) -> bool:
+    """
+    Check the request's source IP against the optional allowlist.
+
+    Returns True when no allowlist is configured. When one is configured, a
+    missing or unparseable source IP is denied — if we cannot tell where a
+    request came from, we cannot honour the allowlist.
+    """
+    networks = _load_ip_allowlist()
+    if networks is None:
+        return True
+
+    source_ip = ((event.get("requestContext") or {}).get("identity") or {}).get("sourceIp", "")
+    if not source_ip:
+        logger.warning("IP allowlist configured but request has no sourceIp - denying")
+        return False
+
+    try:
+        address = ipaddress.ip_address(source_ip)
+    except ValueError:
+        logger.warning("Unparseable sourceIp - denying")
+        return False
+
+    return any(address in network for network in networks)
+
+
 def generate_policy(
     principal_id: str,
     effect: str,
@@ -242,19 +335,71 @@ def extract_bearer_token(auth_header: str | None) -> str | None:
     return parts[1]
 
 
+def _single_event_value(event: dict[str, Any], single_key: str, multi_key: str, name: str, *, ignore_case: bool = False) -> str | None:
+    """Read one credential, accepting API Gateway's consistent single/multi mirror.
+
+    Repeated values (even identical ones), case-variant header duplicates, and
+    inconsistent mirrors are ambiguous and must never pick an arbitrary user.
+    """
+    values = []
+    for key in (single_key, multi_key):
+        fields = event.get(key) or {}
+        matches = [value for field, value in fields.items() if (field.lower() if ignore_case else field) == name]
+        if len(matches) > 1:
+            raise ValueError("Ambiguous authentication credentials")
+        if not matches:
+            continue
+        value = matches[0]
+        if key == multi_key:
+            if not isinstance(value, list) or len(value) != 1:
+                raise ValueError("Ambiguous authentication credentials")
+            value = value[0]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Empty or malformed authentication credentials")
+        values.append(value)
+    if len(set(values)) > 1:
+        raise ValueError("Inconsistent authentication credentials")
+    return values[0] if values else None
+
+
+def _extract_request_token(event: dict[str, Any]) -> str | None:
+    """Accept query JWTs only at the WebSocket $connect authorization boundary."""
+    auth_header = _single_event_value(event, "headers", "multiValueHeaders", "authorization", ignore_case=True)
+    request_context = event.get("requestContext") or {}
+    websocket_connect = (
+        event.get("type") == "REQUEST"
+        and request_context.get("routeKey") == "$connect"
+        and request_context.get("eventType") == "CONNECT"
+        and event.get("methodArn", "").endswith("/$connect")
+    )
+    if websocket_connect:
+        query_token = _single_event_value(event, "queryStringParameters", "multiValueQueryStringParameters", "token")
+        if query_token is not None:
+            if auth_header is not None or event.get("authorizationToken") is not None:
+                raise ValueError("Multiple authentication transports")
+            return query_token
+    return extract_bearer_token(auth_header)
+
+
 def _redact_sensitive_event(event: dict[str, Any]) -> dict[str, Any]:
     """Create a redacted copy of the event for safe logging."""
     redacted = event.copy()
 
-    # Redact headers
-    if "headers" in redacted and redacted["headers"]:
-        redacted["headers"] = {
-            k: "[REDACTED]" if k.lower() in ("authorization", "x-api-key", "cookie") else v for k, v in redacted["headers"].items()
-        }
+    sensitive_headers = {"authorization", "proxy-authorization", "x-api-key", "cookie", "x-amz-security-token"}
+    sensitive_query = sensitive_headers | {"token", "access_token", "id_token", "refresh_token", "x-amz-signature", "x-amz-credential"}
+    for key, names in (
+        ("headers", sensitive_headers),
+        ("multiValueHeaders", sensitive_headers),
+        ("queryStringParameters", sensitive_query),
+        ("multiValueQueryStringParameters", sensitive_query),
+    ):
+        if redacted.get(key):
+            redacted[key] = {k: "[REDACTED]" if k.lower() in names else v for k, v in redacted[key].items()}
 
-    # Redact authorizationToken if present (TOKEN authorizer format)
-    if "authorizationToken" in redacted:
-        redacted["authorizationToken"] = "[REDACTED]"
+    # Alternate API Gateway event formats can repeat the same credentials here.
+    for key in ("authorizationToken", "identitySource", "rawQueryString"):
+        if key in redacted:
+            redacted[key] = "[REDACTED]"
 
     return redacted
 
@@ -270,14 +415,24 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # Get the method ARN for the policy
     method_arn = event.get("methodArn", "*")
 
-    # Try to extract Authorization header
-    headers = event.get("headers", {}) or {}
-    # Handle both lowercase and mixed case header names
-    auth_header = headers.get("Authorization") or headers.get("authorization")
-
-    # Check for Bearer token first
-    token = extract_bearer_token(auth_header)
+    try:
+        token = _extract_request_token(event)
+    except ValueError:
+        logger.warning("Ambiguous or malformed authentication credentials - denying")
+        return generate_policy(principal_id="unauthorized", effect="Deny", resource=method_arn)
     if token:
+        # Optional network allowlist, scoped to this branch on purpose. The IAM
+        # branch below serves agents and in-cluster callers whose source address
+        # is a VPC endpoint or NAT gateway, never a corporate egress IP, so a
+        # blanket check here would break them.
+        if not source_ip_allowed(event):
+            logger.warning("JWT request from disallowed source IP - denying")
+            return generate_policy(
+                principal_id="unauthorized",
+                effect="Deny",
+                resource=method_arn,
+            )
+
         # JWT Authentication
         claims = validate_jwt(token)
         if claims:
@@ -287,7 +442,11 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 "X-Agent-Id": claims.get("sub", ""),
                 "X-Agent-OrgId": claims.get("custom:org_id", "default"),
                 "X-Agent-TeamId": claims.get("custom:team_id", ""),
+                "X-Agent-DepartmentId": claims.get("custom:department_id", ""),
                 "X-Agent-UserId": claims.get("sub", ""),
+                "X-Agent-Email": claims.get("email", ""),
+                "X-Agent-Tenant": claims.get("custom:tenant_id", ""),
+                "X-Agent-Role": claims.get("custom:role", ""),
                 "X-Agent-AccountType": claims.get("custom:account_type", "user"),
                 "X-Agent-Scope": claims.get("custom:scope", "personal"),
                 "X-Agent-BudgetConfigId": claims.get("custom:budget_config_id", ""),

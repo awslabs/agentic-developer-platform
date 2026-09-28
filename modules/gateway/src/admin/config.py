@@ -37,6 +37,7 @@ class Permission(str, Enum):
 
     # Usage and logs
     USAGE_READ = "usage:read"
+    ACTIVITY_READ_ALL = "activity:read_all"  # Tenant-wide individual activity; org/platform admins only.
     LOGS_READ = "logs:read"
     LOGS_EXPORT = "logs:export"
 
@@ -54,6 +55,31 @@ class Permission(str, Enum):
     # every role that can edit any org attribute.
     AGENT_REGISTER = "agent:register"
 
+    # Issue #4200: writes into orchestration promotion state — accepting a loop
+    # proposal at a gate, and amending an accepted plan. A dedicated permission
+    # rather than reusing ORG_UPDATE, which every role that can edit any org
+    # attribute holds: promotion state is the record of what was approved, and
+    # the EPIC's central guarantee is that it cannot be reached by anything
+    # softer than an explicit approval authority. Amendment is a SECOND write
+    # path into that state, so it shares this permission rather than getting a
+    # weaker one of its own — a softer door into the same room is the same hole.
+    PLAN_APPROVE = "plan:approve"
+
+    # Issue #4528: registering a loop proposal as an *inert draft*. Deliberately
+    # weaker than PLAN_APPROVE, and deliberately a separate permission rather than
+    # a relaxation of it, because the two authorise structurally different things:
+    #
+    #   PLAN_APPROVE  — "this plan may execute". Arms dispatch.
+    #   PLAN_DRAFT    — "this plan may be looked at". Arms nothing.
+    #
+    # An authoring agent needs the second and must never hold the first: a plan it
+    # registered is behind an acceptance gate that only a PLAN_APPROVE human can
+    # answer, and the decision row registration writes (`PLAN_DRAFTED`) is absent
+    # from `genesis.APPROVAL_DECISION_KINDS`, so it cannot root a dispatch. Both
+    # properties are structural, which is what makes the weaker permission safe
+    # rather than merely convenient.
+    PLAN_DRAFT = "plan:draft"
+
 
 # Role to permissions mapping
 ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
@@ -69,12 +95,15 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.POOL_READ,
         Permission.POOL_MANAGE,
         Permission.USAGE_READ,
+        Permission.ACTIVITY_READ_ALL,
         Permission.LOGS_READ,
         Permission.LOGS_EXPORT,
         Permission.USER_READ,
         Permission.USER_MANAGE,
         Permission.METRICS_READ,
         Permission.AGENT_REGISTER,
+        Permission.PLAN_APPROVE,
+        Permission.PLAN_DRAFT,
     },
     AdminRole.ORG_ADMIN: {
         Permission.ORG_READ,
@@ -84,6 +113,7 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         Permission.RATELIMIT_READ,
         Permission.RATELIMIT_UPDATE,
         Permission.USAGE_READ,
+        Permission.ACTIVITY_READ_ALL,
         Permission.LOGS_READ,
         Permission.LOGS_EXPORT,
         Permission.USER_READ,
@@ -91,6 +121,10 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
         # Issue #3989: an org admin may register agents into their OWN org; the
         # target_org_id scope check in check_permission() enforces the boundary.
         Permission.AGENT_REGISTER,
+        # Issue #4200: an org admin may accept and amend plans for their OWN
+        # org's flows; the target_org_id scope check enforces the boundary.
+        Permission.PLAN_APPROVE,
+        Permission.PLAN_DRAFT,
     },
     AdminRole.DEPT_ADMIN: {
         Permission.BUDGET_READ,
@@ -106,6 +140,39 @@ ROLE_PERMISSIONS: dict[AdminRole, set[Permission]] = {
     # the 403 an unprivileged caller must get.
     AdminRole.MEMBER: {
         Permission.USAGE_READ,
+        # Issue #4528: MEMBER holds PLAN_DRAFT, and this is a deliberate widening
+        # that has to be justified rather than assumed, because it is the first
+        # write permission this least-privilege role has ever held.
+        #
+        # It is here because a registry-resolved agent principal (the AIDLC worker
+        # pod, arriving over the SigV4 `/agent/*` path) has no `tenant_memberships`
+        # row and therefore resolves to MEMBER. The alternative — granting the pod
+        # ORG_ADMIN, or letting it hold PLAN_APPROVE — is the self-approval the
+        # EPIC exists to prevent.
+        #
+        # WHO ACTUALLY HOLDS THIS: not just that pod. `_MEMBERSHIP_ROLE_TO_ADMIN_ROLE`
+        # below maps `member`, `user` AND `viewer` to MEMBER, so this grant reaches
+        # **every ordinary human user in every tenant**, including read-only ones.
+        # An earlier version of this comment claimed the grant was scoped to the
+        # worker pod; that was wrong, and review (PR #4558) reproduced a
+        # plan-of-record rewrite through it. Any future reasoning about PLAN_DRAFT
+        # must start from "every ordinary user has this", never from "only the agent".
+        #
+        # Why it is nonetheless safe, structurally rather than by trust — all three
+        # in `src/orchestration/registration.py`:
+        #   1. The decision kind it writes (PLAN_DRAFTED) is absent from
+        #      `genesis.APPROVAL_DECISION_KINDS`, so it cannot root a dispatch.
+        #   2. The graph it writes sits behind an acceptance gate born in
+        #      `awaiting_gate`, whose progress edges are `_HUMAN_ONLY` in state.py.
+        #   3. Registration refuses any flow that already carries an approval or a
+        #      differing in-force plan, so a draft can neither inherit a human's
+        #      approval nor supersede the plan of record — it only ever creates
+        #      version 1 of a flow that had nothing.
+        # PLAN_DRAFT is also org-scoped (`access_control._ORG_SCOPED_PERMISSIONS`),
+        # so a principal with no resolvable org is denied outright. The worst a
+        # holder can do is add inert rows to a new flow in their own tenant, which a
+        # PLAN_APPROVE human must accept before anything executes.
+        Permission.PLAN_DRAFT,
     },
 }
 
@@ -137,6 +204,20 @@ ROLE_RANK: dict[str, int] = {
     "admin": 3,
     "platform_admin": 3,
 }
+
+# Issue #4019: the canonical, alias-free roles the admin UI may offer, in
+# ascending privilege order. ROLE_RANK above is deliberately alias-rich (it must
+# recognize every string a caller might submit: "user"/"member"/"viewer" all mean
+# the same thing, "admin"/"platform_admin" likewise). A role *picker* must show
+# each privilege level exactly once, so it needs this narrower list rather than
+# ROLE_RANK.keys().
+#
+# Every entry MUST be a key of ROLE_RANK, or require_assignable_role would reject
+# an option the UI offered (the bug this replaces: get_available_roles returned a
+# hardcoded list that omitted dept_admin and included "service_account", which is
+# absent from ROLE_RANK and so raised InvalidRoleError for every non-platform
+# caller — a dropdown option that always failed).
+ASSIGNABLE_ROLES: tuple[str, ...] = ("member", "dept_admin", "org_admin", "platform_admin")
 
 # The privilege rank held by each admin role, used as the assignment ceiling.
 CALLER_ROLE_RANK: dict[AdminRole, int] = {

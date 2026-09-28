@@ -1,0 +1,751 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "process-protocol.schema.json",
+  "title": "Host-child process protocol contract v1",
+  "description": "The newline-delimited JSON protocol between the Python worker host and the task agent child process. One JSON object per line, sent incrementally: the host must not buffer output until the child exits, because buffered final stdout cannot satisfy the live-progress requirement. Stdout is protocol-only; diagnostics go to bounded sanitized stderr. The child never receives an AWS, GitHub, gateway or customer credential, so no message in either direction carries one. Design revision b5761a4a2502aceaa9133afef552b567a19cb46e, design section 8.",
+  "$defs": {
+    "frame": {
+      "description": "Any protocol frame in either direction. Invalid protocol, identity mismatch or a missing valid final result fails the run.",
+      "oneOf": [
+        { "$ref": "process-protocol.schema.json#/$defs/host_to_child" },
+        { "$ref": "process-protocol.schema.json#/$defs/child_to_host" }
+      ]
+    },
+
+    "identity": {
+      "type": "object",
+      "description": "Identity fields carried where applicable. A mismatch fails the run rather than being tolerated.",
+      "properties": {
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
+        "generation": { "$ref": "common.schema.json#/$defs/generation" },
+        "runtime_attempt_id": { "$ref": "common.schema.json#/$defs/uuid4" }
+      }
+    },
+
+    "host_to_child": {
+      "description": "Host-to-child frame types: artifact.chunk before start, then start, turn, model.result, report.ack, cancel.",
+      "oneOf": [
+        { "$ref": "process-protocol.schema.json#/$defs/tool_result_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/artifact_chunk_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/start_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/control_result_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/completion_result_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/turn_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/model_result_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/report_ack_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/cancel_frame" }
+      ]
+    },
+
+    "child_to_host": {
+      "description": "Child-to-host frame types: ready, progress, model.request, input.required, result, cancelled, error.",
+      "oneOf": [
+        { "$ref": "process-protocol.schema.json#/$defs/tool_request_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/ready_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/control_request_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/completion_request_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/progress_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/model_request_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/input_required_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/result_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/cancelled_frame" },
+        { "$ref": "process-protocol.schema.json#/$defs/error_frame" }
+      ]
+    },
+
+    "start_frame": {
+      "type": "object",
+      "allOf": [
+        { "if": { "required": ["repository"] }, "then": { "required": ["harness"] } },
+        {
+          "if": { "required": ["model_binding"], "properties": { "model_binding": { "required": ["transport"], "properties": { "transport": { "const": "openai_responses" } } } } },
+          "then": { "required": ["harness"] }
+        },
+        {
+          "if": { "required": ["harness"] },
+          "then": {
+            "required": ["model_binding", "persona", "deadline_at"],
+            "properties": { "model_binding": { "properties": { "transport": { "const": "openai_responses" } } } }
+          }
+        }
+      ],
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "invocation_id", "generation", "instructions"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "type": { "const": "start" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
+        "generation": { "$ref": "common.schema.json#/$defs/generation" },
+        "runtime_attempt_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "tool_grants": {
+          "description": "Frozen host-provided permissions for selecting Task tools; gateway authorization remains authoritative.",
+          "type": "array", "maxItems": 128, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$" }
+        },
+        "harness": { "$ref": "codex-harness.schema.json#" },
+        "repository": {
+          "type": "object", "additionalProperties": false, "required": ["binding", "capabilities"],
+          "description": "Trusted host projection after source provisioning; task inputs cannot supply this authority.",
+          "properties": {
+            "binding": { "type": "object", "additionalProperties": false, "required": ["provider", "repositoryId", "sourceRevision"],
+              "properties": { "provider": { "enum": ["github", "gitlab"] }, "repositoryId": { "type": "string", "pattern": "^[1-9][0-9]*$" }, "sourceRevision": { "type": "string", "pattern": "^[a-f0-9]{40}$" } } },
+            "capabilities": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "enum": ["repository.read", "repository.write", "change.create"] } }
+          }
+        },
+        "persona": { "type": "string", "pattern": "^agent-task-gpt-[a-z][a-z0-9-]{0,62}$" },
+        "model_binding": { "$ref": "bootstrap.schema.json#/$defs/model_binding" },
+        "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "instructions": { "type": "string", "minLength": 1, "maxLength": 16000 },
+        "inputs": { "type": "object" },
+        "acceptance_criteria": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "type": "string", "maxLength": 1000 }
+        },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "artifact_id",
+                  "content_type",
+                  "content"
+                ],
+                "properties": {
+                  "artifact_id": {
+                    "$ref": "common.schema.json#/$defs/artifact_id"
+                  },
+                  "content_type": {
+                    "$ref": "common.schema.json#/$defs/content_type"
+                  },
+                  "content": {
+                    "type": "string",
+                    "maxLength": 262144
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "artifact_id",
+                  "content_type",
+                  "content_sha256",
+                  "byte_length"
+                ],
+                "properties": {
+                  "artifact_id": {
+                    "$ref": "common.schema.json#/$defs/artifact_id"
+                  },
+                  "content_type": {
+                    "$ref": "common.schema.json#/$defs/content_type"
+                  },
+                  "content_sha256": {
+                    "$ref": "common.schema.json#/$defs/sha256_digest"
+                  },
+                  "byte_length": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 262144
+                  }
+                }
+              }
+            ]
+          },
+          "description": "Legacy embedded bytes or descriptors of completed artifact.chunk transfers. The child performs no fetch. Transfers and embedded bytes together remain at most four artifacts and one MiB; chunk data is verified before start."
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_turns": { "type": "integer", "minimum": 1, "maximum": 1000 },
+            "max_output_tokens_per_turn": { "type": "integer", "minimum": 1, "maximum": 10000 },
+            "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+          }
+        }
+      },
+      "not": {
+        "description": "The child receives no credential of any kind.",
+        "anyOf": [
+          { "required": ["aws_access_key_id"] },
+          { "required": ["aws_secret_access_key"] },
+          { "required": ["aws_session_token"] },
+          { "required": ["github_token"] },
+          { "required": ["gateway_token"] },
+          { "required": ["run_credential"] },
+          { "required": ["api_key"] }
+        ]
+      }
+    },
+
+    "artifact_chunk_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Before start only. Reserve total_bytes before buffering; at most four artifacts and one MiB. Each decoded chunk is exactly 32768 bytes except the last remainder; sequence starts at one and last is true exactly at total_bytes. Metadata cannot change; digest and strict UTF-8 are verified before use.",
+      "required": [
+        "protocol_version",
+        "type",
+        "request_id",
+        "task_id",
+        "artifact_id",
+        "content_type",
+        "content_sha256",
+        "sequence",
+        "total_bytes",
+        "data_base64",
+        "last"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "artifact.chunk"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "artifact_id": {
+          "$ref": "common.schema.json#/$defs/artifact_id"
+        },
+        "content_type": {
+          "$ref": "common.schema.json#/$defs/content_type"
+        },
+        "content_sha256": {
+          "$ref": "common.schema.json#/$defs/sha256_digest"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "data_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 43692,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "last": {
+          "type": "boolean"
+        }
+      }
+    },
+
+    "turn_frame": {
+      "type": "object",
+      "description": "Delivers committed follow-up input to the child at a safe turn boundary.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "turn_id", "turn_number", "messages"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "type": { "const": "turn" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "turn_id": { "$ref": "common.schema.json#/$defs/turn_id" },
+        "turn_number": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command_id", "text"],
+            "properties": {
+              "command_id": { "$ref": "common.schema.json#/$defs/command_id" },
+              "text": { "type": "string", "minLength": 1, "maxLength": 4000 },
+              "reply_to": { "$ref": "common.schema.json#/$defs/uuid4" }
+            }
+          },
+          "description": "Each command appears in exactly one turn frame. Ordinary input grants no resource or approval."
+        }
+      }
+    },
+
+    "model_result_frame": {
+      "type": "object",
+      "description": "The host returns a stored model result. A repeated child request reads the stored operation rather than causing another send.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "turn_id", "operation_status"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "type": { "const": "model.result" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "turn_id": { "$ref": "common.schema.json#/$defs/turn_id" },
+        "operation_status": { "enum": ["pending", "confirmed", "unknown", "rejected"] },
+        "content": {
+          "type": ["array", "null"],
+          "description": "Anthropic Messages-format content blocks when confirmed; null otherwise."
+        },
+        "stop_reason": { "type": ["string", "null"], "maxLength": 64 },
+        "responses_response": { "anyOf": [
+          { "$ref": "codex-responses.schema.json#/$defs/TaskResponsesResult" },
+          { "$ref": "codex-responses-tools.schema.json#/$defs/TaskToolsResponsesResult" }
+        ] },
+        "error_code": {
+          "type": ["string", "null"],
+          "enum": ["model_access_denied", "budget_exceeded", "authority_revoked", "model_outcome_unknown", "deadline_exceeded", null]
+        }
+      },
+      "allOf": [
+        {
+          "description": "An unknown outcome carries no content; the child must not treat it as a usable answer or request an automatic resend.",
+          "if": { "properties": { "operation_status": { "const": "unknown" } }, "required": ["operation_status"] },
+          "then": { "properties": { "content": { "type": "null" } }, "not": { "required": ["responses_response"] } }
+        },
+        {
+          "if": { "properties": { "operation_status": { "const": "confirmed" } }, "required": ["operation_status"] },
+          "then": { "required": ["content"], "properties": { "content": { "type": "array" } } }
+        }
+      ]
+    },
+
+    "report_ack_frame": {
+      "type": "object",
+      "description": "Confirms a child report reached durable storage, carrying its committed sequence.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "report_id", "sequence"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "type": { "const": "report.ack" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "report_id": { "$ref": "common.schema.json#/$defs/report_id" },
+        "sequence": { "$ref": "common.schema.json#/$defs/sequence" }
+      }
+    },
+
+    "cancel_frame": {
+      "type": "object",
+      "description": "Typed intentional cancellation. It must never enter a generic retry path or start another attempt.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "command_id", "intentional"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "type": { "const": "cancel" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "command_id": { "$ref": "common.schema.json#/$defs/command_id" },
+        "intentional": {
+          "const": true,
+          "description": "Typed as intentional so it is distinguishable from a fault-driven abort."
+        },
+        "reason": { "type": "string", "maxLength": 1000 }
+      }
+    },
+
+    "ready_frame": {
+      "type": "object",
+      "description": "Child announces its protocol version and only the capabilities it actually implements.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "capabilities"],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": { "const": 1 },
+        "type": { "const": "ready" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["input", "cancel"] },
+          "description": "v1 advertises input and cancel only; pause and resume are not implemented."
+        }
+      }
+    },
+
+    "progress_frame": {
+      "type": "object",
+      "description": "Authored progress naming evidence inspected or findings so far. No fabricated percentage and no private model reasoning.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "report_id", "message"],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": { "const": 1 },
+        "type": { "const": "progress" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "report_id": { "$ref": "common.schema.json#/$defs/report_id" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "stage": { "enum": ["evidence_inventory", "analysis", "clarification", "synthesis"] },
+        "producer_timestamp": { "$ref": "common.schema.json#/$defs/timestamp" }
+      },
+      "not": {
+        "description": "Progress must not carry a fabricated completion percentage or private reasoning.",
+        "anyOf": [
+          { "required": ["percent_complete"] },
+          { "required": ["reasoning"] },
+          { "required": ["thinking"] }
+        ]
+      }
+    },
+
+    "completion_request_frame": {"type": "object", "additionalProperties": false, "required": ["protocol_version", "request_id", "task_id", "type"], "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },"protocol_version": {"const": 1}, "request_id": {"$ref": "common.schema.json#/$defs/uuid4"}, "task_id": {"$ref": "common.schema.json#/$defs/task_id"}, "type": {"const": "completion.request"}}},
+    "completion_result_frame": {"type": "object", "additionalProperties": false, "required": ["protocol_version", "request_id", "task_id", "type", "verified"], "properties": {"protocol_version": {"const": 1}, "request_id": {"$ref": "common.schema.json#/$defs/uuid4"}, "task_id": {"$ref": "common.schema.json#/$defs/task_id"}, "type": {"const": "completion.result"}, "verified": {"type": "boolean"}}},
+    "control_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type"
+      ],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "control.request"
+        }
+      }
+    },
+    "control_result_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type",
+        "current"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "control.result"
+        },
+        "current": {
+          "type": "boolean"
+        }
+      }
+    },
+    "model_request_frame": {
+      "oneOf": [
+        {
+          "$ref": "process-protocol.schema.json#/$defs/messages_request_frame"
+        },
+        {
+          "$ref": "process-protocol.schema.json#/$defs/responses_request_frame"
+        }
+      ]
+    },
+    "responses_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "request_id",
+        "task_id",
+        "type",
+        "turn_id",
+        "responses_request"
+      ],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": {
+          "const": 1
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "type": {
+          "const": "model.request"
+        },
+        "turn_id": {
+          "$ref": "common.schema.json#/$defs/turn_id"
+        },
+        "responses_request": {
+          "oneOf": [
+            { "$ref": "codex-responses.schema.json#/$defs/TaskResponsesRequest" },
+            { "$ref": "codex-responses-tools.schema.json#/$defs/TaskToolsResponsesRequest" }
+          ]
+        }
+      }
+    },
+
+    "messages_request_frame": {
+      "type": "object",
+      "description": "The child asks the host to perform a model call. The child holds no credential and cannot reach a provider itself.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "turn_id", "messages"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "type": { "const": "model.request" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "turn_id": { "$ref": "common.schema.json#/$defs/turn_id" },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Anthropic Messages-format request content."
+        },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "system": { "type": "string", "maxLength": 16000 }
+      },
+      "not": {
+        "description": "The child cannot select a model, override authority or address a provider directly.",
+        "anyOf": [
+          { "required": ["model"] },
+          { "required": ["model_id"] },
+          { "required": ["endpoint"] },
+          { "required": ["api_key"] },
+          { "required": ["region"] }
+        ]
+      }
+    },
+
+    "input_required_frame": {
+      "type": "object",
+      "description": "Child requests clarification, moving the task to waiting_for_input.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "input_request_id", "prompt"],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": { "const": 1 },
+        "type": { "const": "input.required" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "input_request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 }
+      }
+    },
+
+    "result_frame": {
+      "type": "object",
+      "description": "The child's final report. Malformed or absent final output fails the run and can never be reported as success.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "report"],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": { "const": 1 },
+        "type": { "const": "result" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "report": { "$ref": "results.schema.json#/$defs/investigator_report" }
+      }
+    },
+
+    "cancelled_frame": {
+      "type": "object",
+      "description": "Child acknowledges intentional cancellation. The host still confirms actual process exit before the task is marked cancelled.",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "command_id"],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": { "const": 1 },
+        "type": { "const": "cancelled" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "command_id": { "$ref": "common.schema.json#/$defs/command_id" },
+        "partial_findings": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+
+    "error_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "type", "request_id", "task_id", "code", "message"],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": { "const": 1 },
+        "type": { "const": "error" },
+        "request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "code": {
+          "enum": ["invalid_agent_output", "protocol_violation", "process_failed", "deadline_exceeded", "model_outcome_unknown"]
+        },
+        "message": { "$ref": "common.schema.json#/$defs/safe_message" }
+      }
+    },
+
+    "tool_request_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "type",
+        "request_id",
+        "task_id",
+        "tool",
+        "payload"
+      ],
+      "properties": {
+        "traceparent": { "type": "string", "pattern": "^00-(?!0{32}-)[a-f0-9]{32}-(?!0{16}-)[a-f0-9]{16}-0[01]$" },
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "tool.request"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}\\.[a-z][a-z0-9_]{0,63}$"
+        },
+        "payload": {
+          "type": "object"
+        },
+        "model_call": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "turn_id",
+            "call_id"
+          ],
+          "properties": {
+            "turn_id": {
+              "$ref": "common.schema.json#/$defs/uuid4"
+            },
+            "call_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        }
+      },
+      "description": "Generic tool request; Codex tools require a confirmed model_call binding. Host enforces admitted payload schemas and byte bounds. Legacy investigator does not support this frame."
+    },
+
+    "tool_result_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "type",
+        "request_id",
+        "task_id",
+        "tool",
+        "operation_status",
+        "result"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": 1
+        },
+        "type": {
+          "const": "tool.result"
+        },
+        "request_id": {
+          "$ref": "common.schema.json#/$defs/uuid4"
+        },
+        "task_id": {
+          "$ref": "common.schema.json#/$defs/task_id"
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}\\.[a-z][a-z0-9_]{0,63}$"
+        },
+        "operation_status": {
+          "enum": [
+            "pending",
+            "confirmed",
+            "unknown",
+            "rejected"
+          ]
+        },
+        "result": {
+          "type": "object"
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifact_id",
+            "content_type",
+            "content_sha256",
+            "byte_length"
+          ],
+          "properties": {
+            "artifact_id": {
+              "$ref": "common.schema.json#/$defs/artifact_id"
+            },
+            "content_type": {
+              "const": "application/json"
+            },
+            "content_sha256": {
+              "$ref": "common.schema.json#/$defs/sha256_digest"
+            },
+            "byte_length": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 32768
+            }
+          }
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 32768
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "error_code": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "content"
+            ]
+          },
+          "then": {
+            "required": [
+              "artifact",
+              "is_error"
+            ],
+            "properties": {
+              "operation_status": {
+                "const": "confirmed"
+              }
+            }
+          }
+        }
+      ],
+      "description": "Host-owned tool outcome. Codex confirmed content is canonical JSON bounded to 32768 UTF-8 bytes. Unconfirmed outcomes cannot continue SDK execution; owner tokens never cross IPC."
+    }
+  }
+}

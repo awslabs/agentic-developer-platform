@@ -1,0 +1,212 @@
+{
+  "run_id": 36393031888,
+  "source_revision": "02199115ab646a393a57d6a3283caa8d5ca63fe9",
+  "original_high": 34,
+  "local_remaining_high": 6,
+  "findings": [
+    {
+      "rule": "B202",
+      "path": "modules/domain-apps/superplane/images/api-compat-high/verify.py",
+      "original_line": 81,
+      "disposition": "open scanner result: controlled regression fixture with explicit extraction filter; no suppression added"
+    },
+    {
+      "rule": "B324",
+      "path": "modules/domain-apps/superplane/images/native-node/source_provenance.py",
+      "original_line": 47,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "modules/domain-apps/superplane/images/native-node/source_provenance.py",
+      "original_line": 80,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B202",
+      "path": "modules/domain-apps/superplane/images/skypilot/high-security/tarfile_regression.py",
+      "original_line": 29,
+      "disposition": "open scanner result: controlled regression fixture with explicit extraction filter; no suppression added"
+    },
+    {
+      "rule": "B202",
+      "path": "modules/gateway/security/stdlib/check.py",
+      "original_line": 46,
+      "disposition": "open scanner result: controlled regression fixture with explicit extraction filter; no suppression added"
+    },
+    {
+      "rule": "B202",
+      "path": "modules/gateway/security/stdlib/check.py",
+      "original_line": 72,
+      "disposition": "open scanner result: controlled regression fixture with explicit extraction filter; no suppression added"
+    },
+    {
+      "rule": "B202",
+      "path": "modules/gateway/security/stdlib/check.py",
+      "original_line": 100,
+      "disposition": "open scanner result: controlled regression fixture with explicit extraction filter; no suppression added"
+    },
+    {
+      "rule": "B324",
+      "path": "modules/gateway/src/tasks/repository_authority.py",
+      "original_line": 80,
+      "disposition": "hardened: compare authenticated repository bytes, not only SHA-1 object ID"
+    },
+    {
+      "rule": "B324",
+      "path": "platform/scripts/agent-control-eval.py",
+      "original_line": 8526,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "platform/scripts/operator/wave3/collect_fixture_pr.py",
+      "original_line": 48,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "platform/security/rsync-3.5.1/package.py",
+      "original_line": 42,
+      "disposition": "unchanged: Debian md5sums compatibility; OS remediation block preserved"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_fixture_payload_digests.py",
+      "original_line": 120,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_historical_digests.py",
+      "original_line": 49,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_mock_secret_id_references.py",
+      "original_line": 122,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_model_reference_fixtures.py",
+      "original_line": 115,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_model_reference_fixtures.py",
+      "original_line": 126,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_public_document_digests.py",
+      "original_line": 136,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_public_secret_examples.py",
+      "original_line": 50,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_secret_git_objects.py",
+      "original_line": 58,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/test_verify_secret_git_objects.py",
+      "original_line": 155,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_derived_secret_digests.py",
+      "original_line": 116,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_derived_secret_digests.py",
+      "original_line": 147,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_fixture_payload_digests.py",
+      "original_line": 146,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_mock_secret_id_references.py",
+      "original_line": 311,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_model_reference_fixtures.py",
+      "original_line": 271,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_nonsecret_artifact_digests.py",
+      "original_line": 163,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_nonsecret_artifact_digests.py",
+      "original_line": 202,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_public_document_digests.py",
+      "original_line": 151,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_public_secret_examples.py",
+      "original_line": 49,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_public_secret_examples.py",
+      "original_line": 66,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_secret_git_objects.py",
+      "original_line": 79,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_secret_git_objects.py",
+      "original_line": 101,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_secret_resource_references.py",
+      "original_line": 153,
+      "disposition": "source clarified; non-security format compatibility"
+    },
+    {
+      "rule": "B324",
+      "path": "scripts/security/s21/verify_secret_resource_references.py",
+      "original_line": 194,
+      "disposition": "source clarified; non-security format compatibility"
+    }
+  ]
+}

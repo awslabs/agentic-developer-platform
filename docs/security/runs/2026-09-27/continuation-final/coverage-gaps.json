@@ -1,0 +1,184 @@
+[
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-5bgb7",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-6sdxz",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-bnfpc",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-ds4c2",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-ksdcs",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-njjxt",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "cloudwatch-agent-wvzrc",
+    "nearest_owner": {
+      "kind": "AmazonCloudWatchAgent",
+      "name": "cloudwatch-agent",
+      "namespace": "amazon-cloudwatch",
+      "uid": "42938a0e-66dd-4539-b7b7-a6401bdd9139"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-agent-5f66b876-listener",
+    "nearest_owner": {
+      "kind": "AutoscalingListener",
+      "name": "arc-runner-agent-5f66b876-listener",
+      "namespace": "arc-systems",
+      "uid": "411bfbb9-4477-4d12-8ea9-3dbb2c52e9f4"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-cip-744d6f9f-listener",
+    "nearest_owner": {
+      "kind": "AutoscalingListener",
+      "name": "arc-runner-cip-744d6f9f-listener",
+      "namespace": "arc-systems",
+      "uid": "00c65a91-380b-4c65-8038-7117a61f4bb8"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "owner_chain_incomplete",
+    "pod": "arc-runner-org-5f66b876-listener",
+    "nearest_owner": {
+      "kind": "AutoscalingListener",
+      "name": "arc-runner-org-5f66b876-listener",
+      "namespace": "arc-systems",
+      "uid": "9a342b26-605a-41c8-9128-fec4b1391264"
+    },
+    "impact": "running image remains observed; launcher template and stable parent identity not fully inventoried"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "CronJob",
+      "namespace": "agent-context",
+      "name": "ingestion-refresh",
+      "uid": "b7d46c14-7b07-4a3b-9476-fae7b3457da6"
+    },
+    "container": "refresh",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "CronJob",
+      "namespace": "agent-context",
+      "name": "vuln-scan",
+      "uid": "660b55a8-f6be-4499-ab3e-d99dd1a41b2a"
+    },
+    "container": "vuln-scan",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "ScaledJob",
+      "namespace": "adp-agents",
+      "name": "agent-scaledjob",
+      "uid": "0c987d4d-257a-4736-8838-c3436cbc376e"
+    },
+    "container": "agent-worker",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:5c0b7c9f0a8da85f81df0a38480fe59dff60c221e30c3bed43ad167bee59b2cd",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "ScaledJob",
+      "namespace": "adp-gateway-agents",
+      "name": "agent-gateway-worker",
+      "uid": "429aa0b6-2fb0-48f9-9030-b2507d1e2c1a"
+    },
+    "container": "agent-worker",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "ScaledJob",
+      "namespace": "adp-gateway-agents",
+      "name": "chat-agent-worker",
+      "uid": "a7450496-1380-40bf-a184-ea34bca20b9b"
+    },
+    "container": "chat-agent",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2ee40d54e1b1d878fc2017ffe712bed379e52d0e52522e80736d83ce6a673153",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  },
+  {
+    "type": "desired_template_without_observed_digest",
+    "workload": {
+      "kind": "ScaledJob",
+      "namespace": "agent-context",
+      "name": "ingestion-worker",
+      "uid": "d470c825-5f4f-4c28-983d-959891dce293"
+    },
+    "container": "worker",
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "impact": "desired/future execution; tag resolution cannot establish an executed digest"
+  }
+]

@@ -21,11 +21,19 @@ class LimitType(str, Enum):
 class EntityType(str, Enum):
     """Entity types for rate limit hierarchy."""
 
-    ORGANIZATION = "organization"
+    ORGANIZATION = "org"
     DEPARTMENT = "department"
     TEAM = "team"
     USER = "user"
     SERVICE_ACCOUNT = "service_account"
+
+    @classmethod
+    def _missing_(cls, value: object):
+        # Preserve the old /ratelimit API input during rolling upgrades. The
+        # admin API and stored configs use "org" as the canonical spelling.
+        if value == "organization":
+            return cls.ORGANIZATION
+        return None
 
 
 class RateLimitConfig(BaseModel):

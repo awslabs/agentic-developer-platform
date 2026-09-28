@@ -1,3 +1,11 @@
+import { developerRecoveryContext } from './developer-recovery';
+import { writeFailureReport } from './failure-report';
+import { reviewCyclePrompt } from './review-cycle-input';
+import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
+import { archiveProtectedGitChanges } from './lib/gitArchiveGateway';
+import { headIsPublished } from './lib/gitPublication';
+import { saveToS3Fallback } from './utils/ghPost';
+import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
  * Generic Agent Worker
  *
@@ -12,10 +20,19 @@
  * - operations: Infrastructure, deployment, monitoring
  */
 
+import { loadHumanCommunication } from './human-communication';
+import { assistantText } from './reporting-text';
+import { captureRuntimeAppAuth, configureRuntimeGitHubAdapters, initializeRuntimeGitHubToken, spawnSdkWithoutAppKey } from './github-runtime-auth';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
-import { initTokenManager, getToken, getTokenStatus, writeTokenFile } from './token-refresh';
-import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
+import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
+import { TmpSpillStore } from './utils/spill';
+import { createWorkerToolHooks, developerCheckpointGuidance } from './developer-checkpoints';
+import { initTokenManager, isTokenManagerInitialized, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
+import { AuthWatchdog } from './lib/authWatchdog';
+import { isBrokerEnabled } from './lib/githubTokenBroker';
+import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
+import { createWorkerActivityLog } from './worker-activity-log';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -40,6 +57,36 @@ import { LiveStatusComment, createWorkerStages } from './github-comments';
 // activity (tool calls) without needing the comment passed through every layer.
 let activeLiveComment: LiveStatusComment | null = null;
 
+/**
+ * Issue #3961: this run's live-control runtime, or null when it has none.
+ *
+ * Published module-scope for the same reason as the live comment above: it is
+ * built in main() alongside the control listener it serves and consumed in
+ * runAgent()'s query options and heartbeat, with several layers in between that
+ * have no business knowing about live control.
+ *
+ * `null` is the ordinary case — no control listener, no barrier — and every read
+ * site treats it as "this run cannot pause". That is a correct answer rather than
+ * a degraded one, and it is what keeps a run without an operator watching on
+ * byte-identical code paths to the ones it took before this story.
+ */
+let activeControlRuntime: {
+  adapter: ClaudeControlAdapter;
+  gate: PauseGate;
+  /**
+   * The run's steering delivery pump — Issue #3965.
+   *
+   * Published here rather than kept in `main()` because two things in
+   * `runAgent()` need it and neither can be reached from there: the query loop's
+   * boundaries, where a completing run must drain or cancel the queue
+   * deterministically, and the re-subscription that follows every retry. It is
+   * part of this object rather than a separate module-scope binding so a run
+   * either has the whole control runtime or none of it — a half-published runtime
+   * would be a steering queue with no attempt to deliver to.
+   */
+  steerQueue: SteerQueue;
+} | null = null;
+
 // Correlation propagation — Phase 2-d (EPIC #779)
 import { prependCorrelationMarker } from './lib/correlationMarker';
 import { writePointer } from './lib/correlationStore';
@@ -51,6 +98,25 @@ import { CheckRunStreamer, computeCodexCostUsd } from './components/checkRunStre
 // Codex Event Watcher — stream Codex delegation sub-steps to the live page
 // while a codex-bridge delegation is in flight (issue #2884, EPIC #2702).
 import { CodexEventWatcher } from './components/codexEventWatcher';
+// Issue #3960: live-control foundations. Both modules are transport/SDK-isolated
+// so the control surface is unit-testable without starting a run.
+import { ControlListener } from './control-listener';
+import type { ExplanationEvents } from './explanation-events';
+let activeExplanationEvents: ExplanationEvents | undefined;
+import { ControlStateStore, type ControlAction } from './control-state';
+// Issue #5840: the heartbeat/exit-watchdog emitter, shared with the live
+// pause-expiry runner so both describe the same execution and the same gate.
+import { startRunHeartbeat } from './run-heartbeat';
+// Issue #3962: the harness-neutral control contract and its first adapter. The
+// worker composes them; it does not reach past the interface into the SDK.
+import { ClaudeControlAdapter } from './harnesses/claude-control';
+import { PauseGate } from './pause-gate';
+// Issue #5891: the shared composition — see control-runtime-factory.ts for why
+// this replaced an inline assembly of pause gate + adapter + store + queue +
+// listener that only `main()` could build.
+import { startControlRuntime } from './control-runtime-factory';
+import { isControlCancellation } from './control-runtime';
+import { SteerQueue, steerMarker } from './steer-queue';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -60,6 +126,10 @@ import {
   KNOWLEDGE_LAYER_PROMPT,
   getKnowledgeLayerMcpConfig,
 } from './knowledge-layer-config';
+
+// Mediated GitHub operations — Issue #5223: this run has no GitHub token, so the
+// agent must be told the helper that replaces `git push`/`gh pr create`.
+import { MEDIATED_GITHUB_ENABLED, MEDIATED_GITHUB_PROMPT, isMediatedRun } from './mediated-github-config';
 
 // Beads module - distributed state management for agents
 import {
@@ -79,10 +149,16 @@ import {
 // Extracts learnings from agent output and persists to personal-context store.
 import { saveExperienceLearnings } from './experience-save-hook';
 import { buildPersonalContextIdentity, getPersonalContextHeaders } from './complex-task-chat/personal-context-headers';
+import {
+  createCommentPageFetcher,
+  deliverModelPolicyFeedback,
+  FeedbackCommentPageFetcher,
+} from './model-policy-feedback';
 
 // AIDLC Gate Enforcer — deterministic enforcement of commit + gate comment protocol
 // (Issue #3231, EPIC #3158 hardening wave). Only invoked when AIDLC_ENABLED.
 import { enforceAidlcGate } from './aidlc-gate-enforcer';
+import { isTruncatedStreamResult } from './stream-truncation';
 
 // AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232, EPIC #3158).
 // Writes a synthetic audit event proving a real human answered the gate, satisfying
@@ -93,19 +169,25 @@ import { mintSyntheticPresence, extractGateAnswerComment, findPendingGateStage a
 // Configuration
 // ============================================================================
 
+const runtimeAppAuth = captureRuntimeAppAuth();
+
 const REPO_OWNER = process.env.REPO_OWNER || '';
 const REPO_NAME = process.env.REPO_NAME || '';
 const ISSUE_NUMBER = process.env.ISSUE_NUMBER || '';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const GH_APP_TOKEN = process.env.GH_APP_TOKEN || '';
 const CWD = process.env.WORK_DIR || process.cwd();
-const MODEL = process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-opus-5';
+const MODEL = process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-sonnet-5';
 const AGENT_TYPE = process.env.AGENT_TYPE || 'developer';
-const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
+const AWS_REGION = workerAwsRegion();
 
 // Beads configuration - distributed state management (shared with PM)
-const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false';
-const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || 'adp-agent-state';
+const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false' && !protectedArtifactRun();
+// Issue #4184: no `adp-agent-state` default — that bucket is in a foreign AWS
+// account and no IAM statement here permits it. Empty degrades to a clean no-op
+// (beads syncPull/syncPush guard on it); the real value arrives via
+// BEADS_S3_BUCKET, set on the pod template in webhook-ingress scaledjob.tf.
+const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || '';
 const BEADS_S3_REGION = process.env.BEADS_S3_REGION || AWS_REGION;
 const BEADS_S3_PATH = process.env.BEADS_S3_PATH || `beads/${REPO_NAME}`;
 
@@ -114,65 +196,34 @@ const BEADS_S3_PATH = process.env.BEADS_S3_PATH || `beads/${REPO_NAME}`;
 // install marker (contains `spaces/default/memory/`).
 const AIDLC_ENABLED = fs.existsSync(path.join(CWD, 'aidlc'));
 
+// GitHub App installation tokens live ~60 min. Issue #4369: these two values are
+// load-bearing TOGETHER — the interval must be short enough that a tick reliably
+// lands inside the threshold window before expiry. A 30-min interval with a
+// 15-min threshold has no tick in the window at all, which is how >1h runs ended
+// up in an unrecoverable 401 loop. Named here so the pairing is visible and the
+// cadence is assertable from a test.
+const TOKEN_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const TOKEN_REFRESH_THRESHOLD_MS = 20 * 60 * 1000;
+
+/**
+ * Process exit code meaning "this run failed in a way a retry can fix".
+ *
+ * entrypoint.py acks (deletes) the SQS message on every other terminal exit, so
+ * a plain non-zero exit would destroy the task rather than retry it. This code is
+ * the opt-out: entrypoint.py leaves the message untouched, its visibility timeout
+ * lapses, and SQS redelivers into a pod with a fresh token (bounded by
+ * maxReceiveCount → DLQ). Keep in sync with AGENT_EXIT_RETRYABLE there.
+ */
+const EXIT_RETRYABLE = 75;
+
 // ============================================================================
 // CloudWatch Logging
 // ============================================================================
 
-const LOG_GROUP = '/github-ccsdk-agent/logs';
-const LOG_STREAM = `agent-${AGENT_TYPE}-issue-${ISSUE_NUMBER}-${Date.now()}`;
-const cwClient = new CloudWatchLogsClient({ region: AWS_REGION });
-let cwBuffer: { timestamp: number; message: string }[] = [];
-let cwInitialized = false;
-
-async function initCloudWatch(): Promise<void> {
-  try {
-    await cwClient.send(new CreateLogStreamCommand({
-      logGroupName: LOG_GROUP,
-      logStreamName: LOG_STREAM,
-    }));
-    cwInitialized = true;
-    log('INFO', `CloudWatch logging initialized for @agent-${AGENT_TYPE}`);
-  } catch (err: unknown) {
-    if ((err as { name?: string }).name !== 'ResourceAlreadyExistsException') {
-      console.warn('CloudWatch init failed:', (err as Error).message);
-    } else {
-      cwInitialized = true;
-    }
-  }
-}
-
-function log(level: string, message: string, context?: Record<string, unknown>): void {
-  const entry = {
-    level,
-    message,
-    issueNumber: ISSUE_NUMBER,
-    agentType: AGENT_TYPE,
-    ...context,
-    timestamp: new Date().toISOString(),
-  };
-  const line = JSON.stringify(entry);
-
-  const emoji = level === 'ERROR' ? '❌' : level === 'WARN' ? '⚠️' : '→';
-  console.log(`${emoji} [${AGENT_TYPE}] ${message}`);
-
-  if (cwInitialized) {
-    cwBuffer.push({ timestamp: Date.now(), message: line });
-  }
-}
-
-async function flushCloudWatch(): Promise<void> {
-  if (!cwInitialized || cwBuffer.length === 0) return;
-  const events = cwBuffer.splice(0, cwBuffer.length);
-  try {
-    await cwClient.send(new PutLogEventsCommand({
-      logGroupName: LOG_GROUP,
-      logStreamName: LOG_STREAM,
-      logEvents: events,
-    }));
-  } catch (err) {
-    console.warn('CloudWatch flush failed:', (err as Error).message);
-  }
-}
+const activityLog = createWorkerActivityLog(AGENT_TYPE, ISSUE_NUMBER);
+const initCloudWatch = activityLog.start;
+const log = activityLog.log;
+const flushCloudWatch = activityLog.flush;
 
 const cwFlushTimer = setInterval(flushCloudWatch, 5000);
 
@@ -355,49 +406,29 @@ async function execCommand(command: string, useAppToken: boolean = false): Promi
 /**
  * Resolve the GitHub App installation id for this run's target org.
  *
- * Resolution order:
- *   1. GH_APP_INSTALLATION_ID — authoritative, exported by entrypoint.py for the
- *      exact installation that received the triggering webhook.
- *   2. /orgs/{REPO_OWNER}/installation then /users/{REPO_OWNER}/installation —
- *      resolve by the target owner via the App JWT.
- *   3. Last resort: installations[0] (with a warning) — preserves old behavior
- *      only when no owner/installation context is available at all.
- *
- * Returns the installation id as a string, or null if none could be resolved.
+ * The ladder itself lives in `utils/installation.ts` so that `utils/ghPost.ts`
+ * shares it rather than keeping its own (previously `installations[0]`) copy —
+ * see issue #4071. This wrapper only binds the worker's `log()`.
  */
 async function resolveInstallationId(jwtToken: string): Promise<string | null> {
-  const explicit = process.env.GH_APP_INSTALLATION_ID;
-  if (explicit) return explicit;
-
-  const owner = process.env.REPO_OWNER;
-  const authHeaders = { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' };
-
-  if (owner) {
-    for (const kind of ['orgs', 'users']) {
-      try {
-        const r = await fetch(`https://api.github.com/${kind}/${owner}/installation`, { headers: authHeaders });
-        if (r.ok) {
-          const data = await r.json() as { id: number };
-          if (data?.id) return String(data.id);
-        }
-      } catch {
-        // try next kind
-      }
-    }
-    log('WARN', `Could not resolve installation for owner ${owner}; falling back to installations[0]`);
-  }
-
-  // Last-resort fallback (legacy behavior) — only when no target context exists.
-  const resp = await fetch('https://api.github.com/app/installations', { headers: authHeaders });
-  const installations = await resp.json() as Array<{ id: number }>;
-  if (!installations.length) return null;
-  log('WARN', 'Using installations[0] as a last resort — REPO_OWNER/GH_APP_INSTALLATION_ID not set');
-  return String(installations[0].id);
+  return sharedResolveInstallationId(jwtToken, { log });
 }
 
 async function refreshAppToken(): Promise<void> {
   const appId = process.env.GH_APP_ID;
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
+
+  if (process.env.ADP_TOKEN_MODE === 'pat') return;
+  // #5223: mediated runs hold no token, so there is nothing to refresh. Returning
+  // rather than throwing keeps the auth watchdog's recovery attempt a no-op: a 401
+  // in a mediated run means a call that should have gone through the gateway, and
+  // re-minting is neither possible nor the fix.
+  if (isMediatedRun()) return;
+  if (isTokenManagerInitialized() || isBrokerEnabled()) {
+    await getRuntimeGitHubToken();
+    return;
+  }
+
   if (!appId || !privateKey) return; // Not using app auth
 
   try {
@@ -430,8 +461,15 @@ async function refreshAppToken(): Promise<void> {
       process.env.GH_TOKEN = tokenData.token;
       process.env.GITHUB_TOKEN = tokenData.token;
       process.env.GH_APP_TOKEN = tokenData.token;
-      // GIT_ASKPASS reads $GITHUB_TOKEN at each git network call — no disk
-      // persistence needed; updating the env var is sufficient.
+      // Issue #4369: keep the token file in step. The old comment here claimed
+      // "GIT_ASKPASS reads $GITHUB_TOKEN at each git network call — updating the
+      // env var is sufficient", which stopped being true at #1469:
+      // git-askpass-helper and gh-wrapper both read the FILE first and only fall
+      // back to the env var when it is absent. So env-only refresh left every
+      // subprocess git/gh authenticating with the stale file — a refresh that
+      // logged success while the run kept 401ing. The broker branch above always
+      // did this; this local-mint branch was the divergence.
+      writeTokenFile(tokenData.token);
       log('INFO', 'Refreshed GitHub App token for gh CLI');
     }
   } catch (err) {
@@ -466,17 +504,108 @@ interface IssueComment {
   author: string;
   body: string;
   createdAt: string;
+  /**
+   * GitHub's own answer to "did the credential making this request author this
+   * comment?", computed server-side against our installation token. Trusted
+   * provenance for marker-based dedup: an arbitrary commenter cannot set it,
+   * and unlike `gh api user` it is available to an installation token.
+   * Undefined when the field is missing from the payload.
+   */
+  viewerDidAuthor?: boolean;
+}
+
+/**
+ * One page of issue comments with GitHub's own authorship attestation.
+ *
+ * Separate from `getIssueComments` on purpose. That one slices to the last N for
+ * the agent's prompt context and is the wrong instrument for deciding whether we
+ * already posted a notice: a genuine earlier comment followed by N unrelated
+ * ones falls out of the window, and the dedup check would then post a duplicate.
+ * This walks the full history oldest-first and keeps `viewerDidAuthor` on every
+ * page, which is the only field that distinguishes our own comment from a forged
+ * marker. GraphQL is used because `viewerDidAuthor` is computed server-side
+ * against the installation token; there is no equivalent in the `gh issue view`
+ * projection, and `gh api user` is refused for that token (403).
+ */
+export function buildIssueCommentPageQuery(cursor: string | null): string {
+  const after = cursor ? `, after: ${JSON.stringify(cursor)}` : '';
+  return `query { repository(owner: ${JSON.stringify(REPO_OWNER)}, name: ${JSON.stringify(REPO_NAME)}) { issueOrPullRequest(number: ${Number(ISSUE_NUMBER)}) { ... on Issue { comments(first: 100${after}) { nodes { body viewerDidAuthor } pageInfo { endCursor hasNextPage } } } ... on PullRequest { comments(first: 100${after}) { nodes { body viewerDidAuthor } pageInfo { endCursor hasNextPage } } } } } }`;
+}
+
+/**
+ * Run one GraphQL query as an argument vector with a hard timeout.
+ *
+ * Deliberately not `gh()`/`execCommand()`, and the difference is the point.
+ *
+ * - **Argument array, not a shell string.** The previous version interpolated the
+ *   JSON-encoded query into a ``gh api graphql -f query=...`` command string and
+ *   handed that to ``execSync``, which runs it through a shell. JSON encoding is
+ *   not shell quoting: it escapes ``"`` and ``\`` but leaves ``$``, backtick,
+ *   ``;`` and ``&`` untouched, so any of those reaching the query -- today via a
+ *   repository or owner name -- would be interpreted by the shell rather than sent
+ *   to GitHub. ``execFile`` with an argv passes the query as one opaque argument,
+ *   so there is no quoting scheme that has to be correct.
+ *   (The old expression is not reproduced literally here: a wiring test asserts it
+ *   appears nowhere in this file, and a comment quoting it would defeat that.)
+ * - **A timeout.** ``execCommand`` sets none, so a wedged ``gh`` or an
+ *   unresponsive network blocked the run indefinitely -- on a notice about a model
+ *   request. ``killSignal: 'SIGKILL'`` because a process ignoring SIGTERM is
+ *   exactly the case the timeout exists for.
+ *
+ * Failures propagate: the caller treats an incomplete lookup as "unknown" and
+ * posts, rather than claiming there was no earlier notice.
+ */
+async function runIssueCommentGraphQL(query: string, timeoutMs: number): Promise<string> {
+  const { execFile } = await import('child_process');
+  const token = process.env.GH_APP_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN;
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      'gh',
+      ['api', 'graphql', '-f', `query=${query}`],
+      {
+        cwd: CWD,
+        encoding: 'utf-8',
+        env: { ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token },
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: timeoutMs,
+        killSignal: 'SIGKILL',
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(new Error(`gh api graphql failed: ${(error as Error).message}`));
+          return;
+        }
+        resolve(String(stdout).trim());
+      },
+    );
+  });
+}
+
+/**
+ * The paged, bounded, validated comment-history lookup for feedback dedup.
+ *
+ * All three of those properties live in `model-policy-feedback.ts`
+ * (`createCommentPageFetcher` / `parseCommentPageResponse`) rather than here, so
+ * they are testable without a child process. This function is only the wiring:
+ * how to build the query and how to run it.
+ */
+function issueCommentPageFetcher(): FeedbackCommentPageFetcher {
+  return createCommentPageFetcher({
+    runGraphQL: runIssueCommentGraphQL,
+    buildQuery: buildIssueCommentPageQuery,
+  });
 }
 
 async function getIssueComments(limit: number = 20): Promise<IssueComment[]> {
   log('INFO', `Fetching up to ${limit} issue comments...`);
   try {
     const json = await gh(`issue view ${ISSUE_NUMBER} --json comments --jq '.comments[-${limit}:]'`);
-    const comments = JSON.parse(json || '[]') as Array<{ author: { login: string }; body: string; createdAt: string }>;
+    const comments = JSON.parse(json || '[]') as Array<{ author: { login: string }; body: string; createdAt: string; viewerDidAuthor?: boolean }>;
     return comments.map(c => ({
       author: c.author?.login || 'unknown',
       body: c.body || '',
       createdAt: c.createdAt || '',
+      viewerDidAuthor: typeof c.viewerDidAuthor === 'boolean' ? c.viewerDidAuthor : undefined,
     }));
   } catch (err) {
     log('WARN', `Failed to fetch comments: ${(err as Error).message}`);
@@ -514,21 +643,7 @@ async function postToMainIssue(mainIssueNumber: number | null, body: string): Pr
     writeOutboundCorrelation(`issue:${targetIssue}`, 'comment_post');
   } catch (err) {
     log('WARN', `GitHub post failed, saving to S3 fallback: ${(err as Error).message}`);
-    try {
-      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-      const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
-      const key = `agent-fallback/issue-${targetIssue}/${new Date().toISOString().replace(/[:.]/g, '-')}-comment.md`;
-      await s3.send(new PutObjectCommand({
-        Bucket: process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state',
-        Key: key,
-        Body: markedBody,
-        ContentType: 'text/markdown',
-      }));
-      log('INFO', `Comment saved to s3://${process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state'}/${key}`);
-      console.log(`📦 GitHub API failed — comment saved to S3: ${key}`);
-    } catch (s3Err) {
-      log('ERROR', `Both GitHub and S3 fallback failed: ${(s3Err as Error).message}`);
-    }
+    await saveToS3Fallback(targetIssue, 'comment', markedBody);
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
   }
@@ -553,14 +668,30 @@ function writeOutboundCorrelation(channelSuffix: string, actionKind: string): vo
     log('WARN', `Correlation pointer write failed (non-fatal): ${(err as Error).message}`);
   });
 
+  // Issue #4029: org_id is required and non-null, and comes from the run's
+  // server-resolved tenant. Skip rather than post a null the gateway must reject.
+  const tenantId = process.env.ADP_TENANT_ID || '';
+  if (!tenantId) {
+    log('WARN', 'No ADP_TENANT_ID in env — skipping provenance post');
+    return;
+  }
+
   postProvenance({
     actorUserId: process.env.ADP_USER_ID || '',
     triggeredBy: null,
     rootHumanId,
     isHumanRooted,
     actionKind,
-    sourceEvent: 'worker:agent-runtime',
+    // source_event must be an object — the column is JSONB. Key vocabulary
+    // matches the other producers so JSONB consumers need no per-producer branch.
+    sourceEvent: {
+      source: 'worker:agent-runtime',
+      event_type: actionKind,
+      repo,
+      channel_suffix: channelSuffix,
+    },
     correlationId,
+    orgId: tenantId,
   }).catch(err => {
     log('WARN', `Provenance post failed (non-fatal): ${(err as Error).message}`);
   });
@@ -575,21 +706,7 @@ async function postComment(body: string): Promise<void> {
     await gh(`issue comment ${ISSUE_NUMBER} --body-file "${tmpFile}"`);
   } catch (err) {
     log('WARN', `GitHub post failed, saving to S3 fallback: ${(err as Error).message}`);
-    try {
-      const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-      const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
-      const key = `agent-fallback/issue-${ISSUE_NUMBER}/${new Date().toISOString().replace(/[:.]/g, '-')}-comment.md`;
-      await s3.send(new PutObjectCommand({
-        Bucket: process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state',
-        Key: key,
-        Body: body,
-        ContentType: 'text/markdown',
-      }));
-      log('INFO', `Comment saved to S3: ${key}`);
-      console.log(`📦 GitHub API failed — comment saved to S3: ${key}`);
-    } catch (s3Err) {
-      log('ERROR', `Both GitHub and S3 fallback failed: ${(s3Err as Error).message}`);
-    }
+    await saveToS3Fallback(ISSUE_NUMBER, 'comment', body);
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
   }
@@ -606,7 +723,7 @@ async function getBeadsPrimeContext(cwd: string): Promise<string> {
       cwd,
       encoding: 'utf-8',
       timeout: 10000,
-      env: { ...process.env },
+      env: workerAwsEnvironment(),
     }).trim();
 
     if (output) {
@@ -704,7 +821,110 @@ function loadRules(): string {
     rules.push(`## Agent Memory\n${fs.readFileSync(memoryRules, 'utf-8')}`);
   }
 
+  rules.push(loadHumanCommunication([path.join(rulesDir, 'personas')]));
+
   return rules.join('\n\n---\n\n');
+}
+
+// ============================================================================
+// Result metadata bridge (/tmp/adp-result-metadata.json)
+// ============================================================================
+
+/**
+ * Cross-process channel to entrypoint.py. Python owns the DynamoDB write
+ * because it holds both halves of the row key (`event_id` = message_id AND
+ * `arrived_at`); Node only ever has `ADP_MESSAGE_ID`. Rather than export
+ * `arrived_at` into Node and add a second DDB writer, Node writes facts here
+ * and Python does the single write (issue #4186 Phase 1).
+ */
+const RESULT_METADATA_PATH = '/tmp/adp-result-metadata.json';
+
+/**
+ * Recognise a gateway spend-cap denial in a thrown SDK error (issue #4187).
+ *
+ * The gateway denies with HTTP 402 and a body naming the scope that ran out
+ * (`run`, `chain`, or a hierarchy entity). 402 is chosen precisely because
+ * nothing retries it, so by the time the error reaches here the run is over and
+ * the only question is how it gets recorded.
+ *
+ * Matching on the message text is unpleasant but it is the only channel
+ * available: the SDK surfaces upstream HTTP errors as an `Error` whose message
+ * embeds the status and body, with no structured status field to read. Both the
+ * status and the error code must appear, so an unrelated error that merely
+ * contains "402" is not misclassified.
+ *
+ * Returns null when this is not a budget stop, i.e. the normal path.
+ */
+function detectBudgetStop(err: Error): { stopReason: string } | null {
+  const message = err?.message || '';
+  const lower = message.toLowerCase();
+  if (!lower.includes('402') || !lower.includes('budget_exceeded')) {
+    return null;
+  }
+
+  // The scope discriminator, when the gateway included one. A bare
+  // `budget_exceeded` is a hierarchy cap (org/team/user), which predates #4187.
+  //
+  // A static enum, not a sentence — same contract as `skip_reason` (#4020), so
+  // the wording lives in the frontend and can change without redeploying the
+  // agent image (see frontend/src/utils/stopReason.ts).
+  // `root_user` (#4300) is the initiating human's own cumulative envelope. It
+  // must be distinguishable from the hierarchy default: telling an operator to
+  // raise an org budget when the real limit was one person's cap sends them to
+  // change the wrong knob.
+  // `person` (#4630) is the person's OWN platform-wide ceiling, spanning every org
+  // their agents run in. It must be distinguishable from `root_user` — which is
+  // one org's cap on that person — because the remedies differ and only one of
+  // them involves an administrator: nobody but the person can raise a person cap.
+  const scope = /"scope"\s*:\s*"(run|chain|root_user|person)"/.exec(message)?.[1];
+  const stopReason = scope === 'run'
+    ? 'run_cap_exceeded'
+    : scope === 'chain'
+      ? 'chain_cap_exceeded'
+      : scope === 'root_user'
+        ? 'root_user_cap_exceeded'
+        : scope === 'person'
+          ? 'person_cap_exceeded'
+          : 'hierarchy_cap_exceeded';
+  return { stopReason };
+}
+
+/**
+ * Merge fields into the result-metadata file, preserving anything already
+ * there.
+ *
+ * Merge rather than overwrite because there are now two writers at different
+ * times: the session id lands mid-stream (on first capture) and the
+ * cost/turns fields land at the `result` message. A truncating write from
+ * either would erase the other — and the cost/turns pair is load-bearing for
+ * the zero-token infrastructure-failure discriminator in entrypoint.py
+ * (issue #2883), so losing it would resurrect that bug.
+ *
+ * Best-effort by design: mirrors the /tmp/adp-check-run-final.md pattern and
+ * never throws.
+ */
+function writeResultMetadata(fields: Record<string, unknown>): void {
+  try {
+    let existing: Record<string, unknown> = {};
+    try {
+      const raw = fs.readFileSync(RESULT_METADATA_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        existing = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Absent or unparseable — start from an empty object. A corrupt file is
+      // not worth failing over; the fields we are about to write are the ones
+      // that matter.
+    }
+    fs.writeFileSync(
+      RESULT_METADATA_PATH,
+      JSON.stringify({ ...existing, ...fields }),
+      'utf8',
+    );
+  } catch (err) {
+    log('WARN', `Failed to write result metadata (non-fatal): ${err}`);
+  }
 }
 
 // ============================================================================
@@ -726,35 +946,37 @@ async function runAgent(issue: Issue, mainIssueNumber: number | null, beadsPrime
     architect: 'System Architect - responsible for design, architecture decisions, and units generation',
     developer: 'Developer - responsible for code implementation, unit tests, and PRs',
     reviewer: 'Code Reviewer - responsible for code review, integration testing, and quality validation',
-    operations: 'DevOps/SRE - responsible for infrastructure, deployment, and monitoring',
+    operations: 'DevOps/SRE and delivery coordinator - responsible for authorized infrastructure work and orchestration through acceptance',
   };
 
   const mainIssueInfo = mainIssueNumber
     ? `\n\n**IMPORTANT**: This task is part of a larger initiative. Post your progress updates to the MAIN issue #${mainIssueNumber}.`
     : '';
 
-  const prompt = `You are @agent-${AGENT_TYPE}, the ${agentDescriptions[AGENT_TYPE] || 'agent'}.${mainIssueInfo}
-
-## Your Task
-Process this GitHub issue and complete the assigned work.
-
-### Issue #${issue.number}: ${issue.title}
-
-${wrapUntrusted(issue.body)}
-${memoryCtx ? `
----
-
-${memoryCtx}
-` : ''}${commentsContext ? `
----
-
-## Existing Discussion / Comments
-
-The following comments have been posted on this issue. Read them carefully - they may contain important context, decisions, research, or approvals from previous agents or users.
-
-${wrapUntrusted(commentsContext)}
-` : ''}
----
+  // ── Prompt assembly: most-stable-first ordering (issue #4183) ──────────────
+  // Sections are emitted in descending order of stability, so that the
+  // invariant head of the prompt is an actual PREFIX:
+  //
+  //   1. role line                       — varies by AGENT_TYPE, not by run
+  //   2. Rules and Guidelines (`rules`)  — the largest block in the prompt;
+  //                                        byte-identical for a given persona
+  //   3. Available Skills / Knowledge Layer — static text, env-gated
+  //   ─────── stable/variable boundary: the `## Your Task` heading ───────
+  //   4. issue title / body / memory / comments — new on every single run
+  //   5. Instructions                    — interpolates ISSUE_NUMBER, so it
+  //                                        belongs below the boundary
+  //
+  // Previously `rules` was emitted AFTER the issue body, which put the largest
+  // invariant segment behind the highest-entropy one: nothing downstream of the
+  // issue body could ever be a reusable prefix.
+  //
+  // NOTE for the cache-marker work (#4180): `## Your Task` is the boundary a
+  // cache breakpoint should attach to. Everything above it is run-invariant;
+  // everything below it changes per run. Ordering alone does not produce reuse
+  // — the provider must also be told where the boundary is, which is that
+  // issue's job and not this one's. Do not introduce run-specific
+  // interpolations above `## Your Task` without moving that breakpoint too.
+  const prompt = `You are @agent-${AGENT_TYPE}, the ${agentDescriptions[AGENT_TYPE] || 'agent'}.
 
 ## Rules and Guidelines
 
@@ -781,8 +1003,34 @@ You have access to skills in \`.claude/skills/\`. Each skill has a \`SKILL.md\` 
 ${KNOWLEDGE_LAYER_ENABLED ? `
 ---
 
-${KNOWLEDGE_LAYER_PROMPT}` : ''}
+${KNOWLEDGE_LAYER_PROMPT}` : ''}${MEDIATED_GITHUB_ENABLED ? `
+---
 
+${MEDIATED_GITHUB_PROMPT}` : ''}
+
+---
+
+## Your Task
+${AGENT_TYPE === 'developer' ? developerRecoveryContext(process.env.ADP_DEVELOPER_RECOVERY_CONTEXT) : ''}
+Process this GitHub issue and complete the assigned work.${mainIssueInfo}
+
+### Issue #${issue.number}: ${issue.title}
+
+${wrapUntrusted(issue.body)}
+${reviewCyclePrompt(process.env.ADP_REVIEW_CYCLE_INPUT, process.env.ADP_HANDOFF_REQUIRED === 'true')}
+${memoryCtx ? `
+---
+
+${memoryCtx}
+` : ''}${commentsContext ? `
+---
+
+## Existing Discussion / Comments
+
+The following comments have been posted on this issue. Read them carefully - they may contain important context or research from previous agents or users.
+
+${wrapUntrusted(commentsContext)}
+` : ''}
 ---
 
 ## Instructions
@@ -791,32 +1039,59 @@ ${KNOWLEDGE_LAYER_PROMPT}` : ''}
 
 ### Step 1: Analyze and Plan
 - Read the issue carefully to understand what's being asked
-- Research as needed (web search for external docs, grep/glob for codebase)
-- Create a clear, numbered implementation plan
+- Identify whether the task is a bounded assessment, repository review, implementation or deployment
+- Research only what the requested conclusion needs; use supplied evidence for a bounded scenario
+- Create a clear plan for the assigned role and task
 
 ### Step 2: Post Your Plan
-**Before doing any implementation work**, post your plan to the issue using:
-\`\`\`bash
-gh issue comment ${ISSUE_NUMBER} --body "## 📋 Implementation Plan
+For a small read-only assessment answerable from the supplied material, skip a
+separate plan comment and return the answer as your final response. Do not launch
+a repository scan or create specification artifacts just to fill a role template.
+If the task is hypothetical, assess its stated premises; do not replace them with
+today's implementation. A missing review target calls for a brief blocked outcome.
 
-**Agent**: @agent-${AGENT_TYPE}
-**Issue**: #${issue.number}
+For implementation, substantial investigation or a workflow that requires a plan,
+post a self-contained plan before substantive work using
+\`gh issue comment ${ISSUE_NUMBER} --body-file <plan-file>\`.
+Explain the requested change, main steps and verification in enough detail for
+the reader to understand the work without opening another document.
+Match the plan to your role; do not announce implementation for an assessment.
+For an implementation plan, lead with two clearly labelled parts:
 
-### Analysis
-[Your analysis of what needs to be done]
+- **My understanding of the task:** explain the requested change in simple
+  language and good detail. Start with how it should work when complete, then
+  explain the relevant current behavior and what must keep working. Focus on
+  the change itself; no required "who needs this" section. Do not open with
+  file paths or internal mechanisms unless they are the requested change.
+- **How I plan to implement it:** explain the proposed approach in logical order,
+  leading each step with what it accomplishes, why it is needed and how it
+  connects to the other steps. Explain how you will check the result. For
+  example, "Keep each environment's login separate so signing in to one cannot
+  overwrite another" explains a step before naming storage files or locks.
 
-### Implementation Steps
-1. [Step 1 - be specific]
-2. [Step 2 - be specific]
-3. [Continue as needed...]
+Write both in plain, self-contained language for someone who has not read the
+issue, earlier comments, design documents or code. A self-contained plan does
+not need to reproduce the technical design. Explain each requirement once;
+keep supporting file inventories, schemas, locks, ports, helper names and
+branch/checkpoint details after the readable explanation or in the design.
+Explain unavoidable technical terms by their purpose. Keep consequential
+decisions and verification in the explanation itself; links cannot replace it.
+Scale detail to the task without a fixed word limit or repeated design prose.
+Before posting, check that the reader can describe the change, main steps and
+verification without the technical notes. Describe the proposed behavior and
+approach, not private deliberation.
 
-### Expected Deliverables
-- [File/artifact 1]
-- [File/artifact 2]
+Qualify unresolved facts accurately: an environment's address or test access
+being unverified does not mean the environment does not exist. State what
+needs checking, the affected step and work that can continue. Put commands
+for different terminals in separate labelled code blocks, not side by side
+in one shell block; identify placeholders and prerequisites.
 
----
-Starting implementation..."
-\`\`\`
+Existing approval gates and required AIDLC plan artifacts still apply; the small
+assessment exception does not bypass them or authorize execution.
+Apply phase templates when the task is part of that workflow, not merely because
+the persona has those templates available.
+${developerCheckpointGuidance(AGENT_TYPE)}
 
 ### Step 3: Execute Your Plan
 - Follow your plan step by step
@@ -858,9 +1133,21 @@ Before editing or creating any code file, read and internalize \`docs/agent-codi
 
 Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
-## Pre-submit checks (MANDATORY before creating a PR)
+${AGENT_TYPE === 'developer' ? `## Developer delivery and review handoff
 
-Before you push your branch and open the PR, run the linters and tests for the module(s) you touched. A PR that lands with red CI wastes the reviewer's time, trains everyone to ignore the signal, and ships bugs the linter would have caught.
+Implement the agreed story, including its integration, focused regression tests
+and documentation. Use targeted checks during development where they help solve
+the task; do not run every test in a touched module by default.
+Commit and push the implementation, then open or reuse its ready PR. Do not create
+a draft PR. Disclose checks passed, failed or not run and any incomplete evidence.
+Once that PR is open, stop developer work and return the PR link immediately.
+Do not run further tests, lint, validation-receipt verification, CI polling or
+repair loops after publication. An existing ready PR for the delivered story goes
+directly to handoff. Codex owns review, additional validation, repairs and merge.
+The engine records the PR handoff; development does not declare the story closed.
+` : `## Pre-submit checks (MANDATORY before requesting review)
+
+Do not create draft PRs, even if older task text requests one. Complete the agreed implementation, integration, tests and documentation, then run the linters and tests for the module(s) you touched before opening a ready PR or requesting review. Incomplete branch checkpoints may be pushed with check status disclosed; share commit links and continue working. Reuse any existing PR, marking an existing draft ready only after the same completion checks. Required CI still gates merge.
 
 ### Module → check commands
 
@@ -875,123 +1162,181 @@ Before you push your branch and open the PR, run the linters and tests for the m
 ### Rules
 
 - **Run ALL commands for EVERY module you touched.** If your diff spans two modules, run two sets of checks.
-- **If any command fails**, fix the underlying issue before pushing. Do NOT suppress warnings with \`# noqa\` or \`eslint-disable\` unless the rule genuinely doesn't apply — and note why in a comment.
+- **If any command fails**, fix the underlying issue before requesting review. You may push an incomplete checkpoint with the failure disclosed. Do NOT suppress warnings with \`# noqa\` or \`eslint-disable\` unless the rule genuinely doesn't apply — and note why in a comment.
 - **If a check fails on code you didn't touch** (pre-existing debt), note it in the PR description as "pre-existing on main: <file>:<line> <rule>" and move on. Don't clean up unrelated debt in the same PR (surgical changes principle from \`docs/agent-coding-guidelines.md\`).
 - **Auto-fix tools are fine**: \`ruff check --fix\`, \`ruff format\`, \`eslint --fix\`. Treat their output as code you wrote — review the diff before committing.
+
+### Final-commit validation and long tests
+
+Commit intended files before final validation. Use \`adp-validate run --cwd <module> --timeout 3600 -- <command> <args>\`
+for each required check. For compound commands use \`-- sh -c 'setup && check'\`.
+The command runs in a disposable detached worktree at HEAD: include dependency
+setup (for example \`npm ci\`) in that command. Do not share mutable node_modules
+or virtualenvs with the author checkout. Long suites must use this isolated runner;
+you may continue editing the author checkout, but any new commit needs fresh checks.
+Receipts and full logs are stored outside the source tree. Successful results are
+reused only for the same commit, command, cwd, timeout and recorded environment.
+Use \`--no-cache\` for checks depending on changing external services or dependencies.
+A receipt is local execution evidence, not proof of complete acceptance coverage.
+
+Immediately before publishing a ready PR/requesting review, run \`adp-validate verify\`.
+If it fails, rerun the recorded commands at the final HEAD and fix or disclose
+failures; do not describe an earlier commit's tests as validating the final commit.
+Do not leave uncommitted implementation for the entrypoint to finish: leftovers
+are preserved as an unvalidated checkpoint, with no ready-for-review handoff.
+If no executable checks apply, explain why in the handoff; do not invent a token check.
+
+### Requirement evidence in the final handoff (report-only)
+
+Re-read the issue and accepted clarifications, including requested amendments to
+an existing PR. In the PR description and final report, include one row per
+requirement: requirement | implementation location | evidence (command and commit,
+or manual observation) | met / partial / unverified / not applicable.
+Explicitly identify production wiring, error paths and documentation where the
+issue requires them. State missing evidence and unmet requirements plainly.
+Passing tests alone do not establish requirement coverage. This checklist reports
+coverage for the reviewer; it does not introduce a new automated acceptance gate.
 
 ### Post-commit sanity
 
 After committing, before pushing, run \`git diff HEAD~1 --stat\` and confirm the files you expected to change are the only ones that changed. If the linter reformatted a file you didn't mean to touch, that's a surgical-changes violation — revert it.
 
-Failing to run these checks is a process bug. PRs that land with lint/test failures traceable to the PR's own changes will be reverted.
+Failing to run these checks is a process bug. PRs that land with lint/test failures traceable to the PR's own changes will be reverted.`}
+
 
 ${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
 
-You are reviewing a PR. Treat this as an INDEPENDENT review — don't trust the PR description, verify against the code.
+Verify the assigned PR independently against accepted scope and current code;
+do not trust its description as proof. The reviewer owns review, in-scope repair,
+verification and the final report on the SAME PR. Reviewer-specific instructions
+below take precedence over generic instructions to create a new branch/PR.
 
-**If you cannot find PR_NUMBER in the environment**, stop and report the setup failure in an issue comment — don't proceed with an unscoped review.
+**If you cannot find PR_NUMBER in the environment**, do not proceed with an unscoped
+PR review. Return a brief setup blocker with the missing target and next action.
+Do not select an unrelated PR or manufacture review/security evidence.
 
 1. **Identify the PR and the driving issue:**
    \`\`\`bash
-   # PR_NUMBER is provided in your environment
-   echo "Reviewing PR #\$PR_NUMBER against issue #\$ISSUE_NUMBER"
-   gh pr view \$PR_NUMBER --json title,body,files,additions,deletions
+   gh pr view \$PR_NUMBER --json number,title,body,state,isDraft,headRefName,headRefOid,files
+   \`\`\`
+   Stop if the assigned PR is a draft or is not open; do not mark it ready for its
+   author. Verify the repository and bound issue, record headRefOid, and fetch
+   that exact branch/diff. Never review a substitute checkout.
+   \`\`\`bash
    gh pr diff \$PR_NUMBER > /tmp/pr-diff.patch
    \`\`\`
 
 2. **Extract the acceptance criteria from the issue:**
-   Re-read the issue body (already shown above). List every acceptance criterion, invariant, and "must NOT" constraint as a checklist. If there's an "Acceptance Criteria" section, extract it verbatim. If not, synthesize from the Goal + Scope sections.
+   Re-read the issue body (already shown above), accepted story/design and
+   applicable AGENTS.md. Separate code-merge
+   requirements from explicitly deferred deployment/live criteria; retain their
+   later gates without requiring live execution in this code review.
 
-3. **Verify each criterion against the diff:**
-   For each criterion in your checklist, find the concrete line(s) in the diff that satisfy it. If you can't find one, that's a HIGH-confidence merge blocker.
+3. **Verify each criterion against the diff and current implementation:**
+   Include unchanged code and test evidence. A missing changed line is not proof
+   of missing behavior. Missing evidence is unverified until investigated, not an
+   automatic HIGH-confidence defect. Report the concrete failure or unmet
+   applicable requirement and practical consequence for every blocker.
 
 4. **Check for invariant violations:**
-   Specifically watch for things the issue said NOT to do — "do not touch X", "do not change behavior of Y", "zero regression to Z". Grep the diff for those areas. Any violation is a HIGH-confidence merge blocker.
+   Verify the actual scope, behavior and evidence for each claimed violation.
+   Preserve accepted architecture and isolation; do not invent requirements.
 
 5. **Check for committed files that should not exist:**
-   The repo's AGENTS.md at the root defines a set of "must not commit" rules (e.g. \`agent_learning/*.md\`, \`tfplan\` files, anything under \`.terraform/\`). Grep the diff's file list for violations — these are HIGH-confidence merge blockers and the agent should propose fixes.
+   Respect AGENTS.md prohibitions such as \`agent_learning/*.md\`, secrets or
+   generated infrastructure artifacts. Remove prohibited additions when safe and
+   authorized; do not just suggest a fix you can make on the assigned PR.
 
-6. **Categorize every finding by confidence:**
-   - **HIGH**: certain merge blocker, verified against code
-   - **MEDIUM**: likely issue, worth discussing before merge
-   - **LOW**: nice-to-have, file as a follow-up
+6. **Label each finding independently:**
+   - Impact severity: high / medium / low, with the practical consequence
+   - Confidence: high / medium / low, with evidence or uncertainty
+   - Approval impact: blocker / discussion needed / optional follow-up
+   Applicable acceptance, security and prohibited-file requirements remain
+   blockers. Style preferences and unrelated inherited debt are optional.
 
-7. **Write the review summary to a file:**
-   \`\`\`bash
-   mkdir -p data/code-review
-   cat > data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md <<'SUMMARY'
-   # Review of PR #$PR_NUMBER
+7. Collect provisional findings and continue to security review and repair.
+   Do not publish a final REQUEST CHANGES or dispatch a developer for findings
+   that you can fix within this task's scope, authority and remaining budget.
 
-   ## Driving issue
-   - #$ISSUE_NUMBER: <issue title>
+### Step 3.5: Security Review (MANDATORY for @agent-reviewer)
 
-   ## Acceptance criteria checklist
-   - [x|✗] <criterion 1> — <where in diff it's satisfied OR why it's not>
-   - [x|✗] <criterion 2> — ...
+Run \`/security-review\` before approving. Investigate its findings against the
+actual changed behavior, reachability and threat model; scanner output alone is
+not proof. Check secrets, auth/authz, inputs, dependencies and configuration.
+Fold confirmed in-scope defects into the repair batch below. Preserve explicit
+permissions for changes to live credentials, resources, security policy or data;
+review authority does not grant those operations. Keep functional and security
+evidence distinct and do not claim either was run when it was not.
 
-   ## Findings (by confidence)
+### Step 3.6: Reviewer-owned repair, verification and final verdict
 
-   ### HIGH — merge blockers
-   - <file:line>: <concrete issue + exact line in diff>
-
-   ### MEDIUM — discuss before merge
-   - ...
-
-   ### LOW — follow-up candidates
-   - ...
-
-   ## Recommendation
-   APPROVE / REQUEST CHANGES / BLOCK
-   SUMMARY
-   \`\`\`
-
-8. **Post the review summary to the PR:**
+1. **Verify branch ownership before edits.** Use current claim/run evidence to
+   establish one writer. An active developer/reviewer/supervisor or unavailable
+   ownership is a concrete hold, not permission to race. Re-read the remote head;
+   concurrent changes require reconciliation. Never reset or force-push.
+2. **Fix confirmed in-scope defects on the existing PR branch.** Missing behavior,
+   logic/error-handling bugs, configuration, failing tests and inaccurate required
+   handoff evidence are reviewer work when the solution is clear. Keep repairs
+   surgical and batch related findings. Work size alone does not require sending
+   the story back. Reproduce meaningful failures and add useful regressions.
+   A read-only delegated review returns findings for the owning reviewer to fix;
+   respect an explicitly read-only parent task and unavailable write authority.
+3. **Verify and publish the repairs.** Inspect the changed diff, run affected
+   tests/integrations and pinned lint tools, stage only intended files, commit and
+   push through the authorized path to the SAME PR. Confirm the remote SHA. Do
+   not claim unpublished local changes are fixed in the PR. Do not commit review
+   logs or create artifact-only PRs. Preserve claim, action, lineage and budget;
+   do not manually trigger another developer/reviewer solely because you fixed
+   something. Cooperate with any review already scheduled by the engine.
+4. **Validate the final revision.** Recheck repaired behavior and affected security
+   surfaces, and observe all required checks. Reuse identified evidence for
+   unchanged areas; broaden verification for changed risk, failure or unresolved
+   concerns instead of repeating an unchanged full review. A new head invalidates
+   earlier approval. You are the repair author; satisfy any independently required
+   approval without pretending your own verdict is independent approval.
+   Billing/runner/credential failures are external check blocks, not code rework.
+   Never waive required CI or treat skipped/unrun tests as passes.
+5. **Hand off only concrete blockers.** Complete independent authorized repairs
+   first. An unresolved product/security/architecture decision, expanded scope,
+   missing authority/input, active writer, external failure or exhausted limit
+   needs its exact reason, remaining findings, owner and next action. Do not
+   return REQUEST CHANGES for defects already fixed or merely optional cleanup.
+6. **Write the final review summary to a file** at
+   \`data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md\`:
+   - Start with verdict (APPROVE / REQUEST CHANGES / BLOCK), verified final revision,
+     fixes/commits, remaining blocker count and practical consequence.
+   - State validation gaps and outstanding required checks, and the next owner/action.
+   - Record each finding as fixed (author/commit/evidence), unresolved blocker
+     (reason/owner) or optional follow-up. Include functional/security results and
+     required engine attribution. Interim updates must state actual phase/owner:
+     reviewing, reviewer fixing, verifying, or waiting for a named input/check.
+   - Follow with the full acceptance-criteria checklist (satisfied/missing,
+     evidence per criterion) and detailed findings.
+7. **Publish the final result for the verified remote head** through the available
+   structured review/artifact channel and assigned PR:
    \`\`\`bash
    gh pr comment \$PR_NUMBER --body-file data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md
    \`\`\`
-
-9. **Only after Step 8:** proceed to the security review step below.
+   Publish any required formal GitHub review through the authorized review path;
+   if the current identity cannot do so, name that pending approval explicitly.
+   A comment or successful worker exit is not a substitute for required approval.
+   Leave merging to the configured owner unless explicitly authorized to merge.
 
 **DO NOT approve a PR if**:
-- Any HIGH finding is unresolved
-- Any acceptance criterion from the issue is ✗
-- Any file committed to the PR matches a "must not commit" rule in AGENTS.md
+- Any merge-blocking finding is unresolved
+- Any acceptance criterion due at this stage is unsatisfied
+- A prohibited-file violation or required check/independent approval is unresolved
+- Functional/security evidence describes a different head
 
-### Step 3.5: Security Review (MANDATORY for @agent-reviewer)
-**You MUST run security review before approving ANY PR:**
-
-1. **Run the /security-review command:**
-   Use the built-in security review skill by invoking:
-   \`/security-review\`
-
-   This will automatically:
-   - Scan for hardcoded secrets and credentials
-   - Check for vulnerable dependencies
-   - Identify OWASP Top 10 vulnerabilities
-   - Flag insecure configurations
-
-2. **Review and fix findings:**
-   - Fix issues you can fix safely (see pr-review.md for guidance)
-   - Document unfixable issues for human review
-
-3. **Create review log file:**
-   \`\`\`bash
-   mkdir -p data/code-review
-   # Create data/code-review/review-YYYYMMDD-pr-NNN.md with:
-   # - Security findings from /security-review
-   # - Fixes applied
-   # - Issues escalated
-   \`\`\`
-
-4. **Post security summary to PR:**
-   \`\`\`bash
-   gh pr comment $PR_NUMBER --body "## 🔒 Security Review Complete
-   [Summary of /security-review findings and actions taken]"
-   \`\`\`
-
-**DO NOT merge without completing /security-review.**
+Do not merge, deploy, approve live gates or change credentials as an incidental
+part of review. See pr-review.md and the reviewer persona for this same contract.
 ` : ''}${AGENT_TYPE === 'operations' ? `### Step 3.5: Execution (MANDATORY for @agent-operations)
-**You are the DEPLOYMENT agent. Your job is to EXECUTE infrastructure changes, not just prepare them.**
+**For authorized deployment work, execute and verify the requested infrastructure changes.**
+
+The following execution steps apply only to an authorized deployment task. For
+an assessment of a supplied record, assess that record and label its provenance;
+do not run deployment commands or treat absent deployment authorization as a
+blocker. Keep conclusions within the supplied evidence.
 
 When working on deployment tasks:
 
@@ -1019,12 +1364,16 @@ When working on deployment tasks:
    - Other blocker? State the specific reason
 
 **DO NOT just create YAML files, PRs, or documentation without attempting actual deployment.**
-**DO NOT consider your task complete until you have either deployed OR clearly stated why you could not.**
+**Deployment is complete only when the requested deployment and checks are verified.**
+If deployment is blocked, report that action as blocked and continue any independent
+authorized work. For orchestration, retain the assigned review, repair, merge,
+deployment and evaluation ownership until acceptance, an acknowledged continuation,
+or an evidenced block/stop as defined in the operations persona. A clear blocker
+report or a child dispatch does not complete the delivery assignment.
 ` : ''}### Step 4: Report Results
-- Summarize what you accomplished
-- List files created/modified
-- Note any issues encountered
-- Recommend next steps
+- Return the outcome once in your final response, following Completion Summary Format
+- Name the meaningful result, remaining blockers and next owner/action
+- Include file changes only when they help the user assess the requested work
 
 ## Available Tools
 
@@ -1054,55 +1403,51 @@ ${beadsPrimeContext}` : ''}
 
 ## Completion Summary Format
 
-**IMPORTANT**: When your work is complete, your FINAL message must be a well-structured summary that stakeholders can easily read and understand. Use this EXACT format:
+Your FINAL message is the human outcome report. Follow the shared writing rules
+and your persona's format. Start with the capability/problem and its actual
+state, including any blocker; then evidence, limitations and next owner/action.
+Use a few connected paragraphs or brief sections when helpful. Distinguish a
+prepared design, PR opened, code merged, deployment and verified acceptance.
+A run ending does not establish any of those states. Do not use a generic
+"Task Complete" heading when work or required checks remain.
 
-\`\`\`
-## ✅ Task Complete: [Brief title of what was accomplished]
+The runtime publishes your final response as the issue's outcome. For an issue
+assessment, do not first use \`gh issue comment\` to publish the assessment and
+then return a recap: both would appear on the same issue. Return the full answer
+only here. Required gate comments, formal PR reviews and audit records still
+belong in their designated places; link to those with a brief status and next
+action rather than repeating their findings in the final response.
+Keep technical inventories, commands and long test matrices below the summary
+or in linked evidence. For implementation work, include the shared policy's
+walkthrough of the mechanism, decisions and reproducible verification in the
+final response. Critical caveats must remain visible.
 
-### What Was Done
-[2-4 bullet points describing the key accomplishments in business terms. Focus on OUTCOMES, not just actions. Example: "Deployed agent-mail service to EKS cluster" not "Ran kubectl apply"]
-
-### Key Deliverables
-| Deliverable | Status | Location/Details |
-|-------------|--------|------------------|
-| [e.g., Docker image] | ✅ Ready | [e.g., ECR: xxx.dkr.ecr...] |
-| [e.g., K8s manifests] | ✅ Created | [e.g., k8s/agent-mail/] |
-| [e.g., PR] | ✅ Opened | [e.g., #268] |
-
-### Verification
-[How can someone verify this work is complete? Include specific commands or URLs]
-
-### Next Steps
-[What should happen next? Who/what is unblocked by this work?]
-
-### Issues Encountered (if any)
-[Only include if there were significant issues. Briefly describe and how resolved]
-
-${AGENT_TYPE === 'operations' ? `### Deployment Status (REQUIRED for @agent-operations)
-| Action | Status | Details |
-|--------|--------|---------|
-| Deployment Executed? | ✅ Yes / ❌ No | [If No, explain WHY: awaiting approval, missing creds, etc.] |
-| Service Running? | ✅ Yes / ❌ No / N/A | [Status check result] |
-| Endpoint Accessible? | ✅ Yes / ❌ No / N/A | [URL/IP or reason not accessible] |
-
-**If deployment was NOT executed, clearly explain why and what is needed to proceed.**
-` : ''}### Learnings
-[Document insights that would help future work on this codebase or similar tasks:
-- Gotchas or non-obvious configurations discovered
-- Useful patterns or approaches that worked well
-- Things that didn't work and why
-- Recommendations for improving the process
-Keep each learning to 1-2 sentences. These help future agents and humans avoid repeating mistakes.]
-\`\`\`
-
-Your summary will be posted to the parent issue for stakeholders to review. Make it clear, concise, and actionable.
-
-**Also write learnings to file**: After posting your summary, save detailed learnings to \`agent_learning/{date}-issue-{number}-learnings.md\`. This file is read by future agents — make it HIGH QUALITY:
+${AGENT_TYPE === 'operations' ? `For operations, name the target environment and state separately whether
+ deployment ran, the service is running, and the endpoint was checked. Report
+ passed, failed, skipped and not-run checks; explain missing deployment or
+ acceptance checks and the next action. Include relevant cleanup/cost exposure.
+` : ''}
+**Write handoff learnings to file**: Before returning your final report, save detailed learnings to \`agent_learning/{date}-issue-{number}-learnings.md\`. This file is read by future agents — make it HIGH QUALITY:
 - What worked and what didn't (specific commands, configurations, error messages)
 - Key technical decisions and why they were made
 - Gotchas, workarounds, and things that took multiple attempts
 - Exact versions, endpoints, resource names that future agents will need
 - NEVER include secrets, API keys, tokens, passwords, or private keys in learnings
+
+Writing the required learnings record is a file change, even when no source code
+changed. Do not end with blanket claims such as "no files changed" or "no actions
+taken". Omit routine scope footers and bookkeeping unless requested or consequential;
+when needed, describe the verified scope precisely. Keep missing checks visible.
+Before returning, remove unnecessary assumptions and follow-up questions that
+would not change the recommendation or the user's requested next step. Keep
+qualifications beside their claims and required approvals explicit; a
+recommendation is not the owner's decision. Keep each message as short as its
+purpose allows. Ending an explanation does not end execution: continue unfinished
+authorized work, including required waits and follow-through, until the assigned
+acceptance is verified, an authorized continuation is acknowledged, or an evidenced
+block, human gate, cancellation or execution limit requires stopping. A written
+next action is not an accepted handoff. A standalone assessment ends when its
+requested answer is complete.
 
 Now, complete the assigned task.`;
 
@@ -1110,20 +1455,31 @@ Now, complete the assigned task.`;
   // Instantiate only when CHECK_RUN_ID is present (pod environment with #417
   // entrypoint baseline). Absent in ARC-runner flows → complete no-op.
   let checkRunStreamer: CheckRunStreamer | null = null;
+  // Sink for streamer PATCH errors; assigned once the auth watchdog exists
+  // inside the query loop below (#4430). Until then, errors are just logged.
+  let checkRunPatchErrorSink: ((msg: string) => void) | null = null;
   const checkRunIdEnv = process.env.CHECK_RUN_ID;
   if (checkRunIdEnv) {
     const crId = parseInt(checkRunIdEnv, 10);
+    // One-shot PRESENCE check only — don't start a streamer with no token at
+    // all. The value itself must never be captured for PATCHes: a run outlives
+    // its ~60-min installation token, so the streamer resolves the token at
+    // patch time via tokenProvider (#4430).
     const crToken = process.env.GITHUB_TOKEN || '';
     const crRepo = `${REPO_OWNER}/${REPO_NAME}`;
     if (!isNaN(crId) && crToken && crRepo !== '/') {
       checkRunStreamer = new CheckRunStreamer({
         checkRunId: crId,
         repo: crRepo,
-        token: crToken,
+        // Same precedence ladder as ghPost.ts — read fresh on every PATCH so
+        // the token manager's re-mints actually reach the streamer.
+        tokenProvider: () =>
+          process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '',
         persona: AGENT_TYPE,
         issueNumber: parseInt(ISSUE_NUMBER) || 0,
         model: MODEL,
         log: (msg) => log('WARN', msg),
+        onPatchError: (msg) => checkRunPatchErrorSink?.(msg),
       });
       log('INFO', `CheckRunStreamer active for check run ${crId}`);
     }
@@ -1162,37 +1518,107 @@ Now, complete the assigned task.`;
     let queryCompleted = false;          // tracks whether a 'result' message was received
     let queryCompletedTime: number | null = null; // timestamp when query completed
 
-    // Max time (ms) to wait for the stream to close after query completes.
-    // If the SDK iterator doesn't terminate within this window, the heartbeat
-    // will force-exit the process.  10 minutes is generous — in practice the
-    // stream should close within seconds.
-    const POST_COMPLETION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+    // Issue #4369: watch the stream for the stale-token signature. The failing
+    // pushes happen inside the SDK subprocess, so this is the only place the
+    // worker can see them.
+    const authWatchdog = new AuthWatchdog();
+
+    /**
+     * Apply the watchdog's verdict for one chunk of stream output.
+     *
+     * Refreshing rewrites the token file that the subprocess's git/gh read at
+     * command time, so a re-mint here actually reaches the failing caller. If
+     * 401s survive that, exiting with EXIT_RETRYABLE hands the task back to SQS
+     * for redelivery into a fresh pod — the automatic form of the manual
+     * `kubectl delete job` recovery this bug required.
+     */
+    const applyAuthWatchdog = async (text: string): Promise<void> => {
+      const action = authWatchdog.observe(text);
+
+      if (action === 'force_refresh') {
+        log('WARN', 'Repeated GitHub 401s in the agent stream — forcing token refresh', {
+          phase: 'auth-watchdog',
+        });
+        try {
+          await forceRefresh();
+          log('INFO', 'Token force-refreshed after 401 cluster', { phase: 'auth-watchdog' });
+        } catch (err) {
+          log('ERROR', `Forced token refresh failed: ${(err as Error).message}`, {
+            phase: 'auth-watchdog',
+          });
+        }
+        return;
+      }
+
+      if (action === 'abort') {
+        log('ERROR', 'GitHub 401s persist after a forced token refresh — aborting for retry', {
+          phase: 'auth-watchdog',
+        });
+        // Record the cause before exiting: without it this looks like a generic
+        // crash and the operator re-runs it blind.
+        writeResultMetadata({ auth_failure: true, stop_reason: 'github_auth_401' });
+        await flushCloudWatch();
+        process.exit(EXIT_RETRYABLE);
+      }
+    };
+
+    // Route check-run PATCH failures into the watchdog (#4430): a PATCH failing
+    // every cycle against a dead token is the highest-signal 401 in the run,
+    // and previously it was swallowed into a WARN log the watchdog never saw.
+    checkRunPatchErrorSink = (msg) => {
+      void applyAuthWatchdog(msg).catch(() => {
+        // fail-soft: a watchdog error must never break the streamer
+      });
+    };
 
     // Heartbeat: log a "still alive" message if no SDK messages arrive for 60s.
     // Also acts as a safety net: if the query already completed but the stream
     // hasn't closed, force-exit after POST_COMPLETION_TIMEOUT_MS.
-    const heartbeat = setInterval(() => {
-      const silentSec = Math.round((Date.now() - lastActivityTime) / 1000);
-
-      // Safety net: force exit if stream hangs after query completion
-      if (queryCompleted && queryCompletedTime) {
-        const elapsed = Date.now() - queryCompletedTime;
-        if (elapsed >= POST_COMPLETION_TIMEOUT_MS) {
-          const msg = `⚠️  Force exit — stream did not close ${Math.round(elapsed / 1000)}s after query completed`;
-          console.log(msg);
-          log('WARN', msg, { phase: 'post-completion-timeout', elapsedMs: elapsed });
-          process.exit(0);
-        }
-      }
-
-      if (silentSec >= 60) {
-        const msg = `💓 Heartbeat — no SDK messages for ${silentSec}s (turn ${turnCount})`;
-        console.log(msg);
-        log('INFO', msg, { phase: 'heartbeat', silentSeconds: silentSec, turn: turnCount });
-      }
-    }, 30_000);
+    //
+    // The decision logic lives in `run-heartbeat.ts` (#5840) so that the live
+    // pause-expiry experiment can run the *same* production emitter against the
+    // gate it is actually pausing. While this was inline, the only heartbeat
+    // records in existence described this worker's own gate, so they were evidence
+    // about a different execution than any experiment's — and W2-05's visibility
+    // claims are precisely that a paused run keeps reporting and says it is paused.
+    // Thresholds, wording, `phase` values and the paused-tick fields are unchanged;
+    // `run-heartbeat.test.ts` pins them.
+    //
+    // Every source below is read live rather than captured, as before: a pause can
+    // begin and end between two ticks of this interval (#3961).
+    const heartbeat = startRunHeartbeat(
+      {
+        gate: () => activeControlRuntime?.gate ?? null,
+        lastActivityAt: () => lastActivityTime,
+        turnCount: () => turnCount,
+        queryCompletedAt: () => (queryCompleted ? queryCompletedTime : null),
+        // Exiting stays here rather than moving into the module: the module decides,
+        // the worker acts, which is what keeps the decision unit-testable.
+        onForceExit: () => process.exit(0),
+      },
+      { log, console: (msg) => console.log(msg) },
+    );
 
     try {
+      // Issue #3962 left the adapter's three transport hooks (`attemptInputFactory`,
+      // `onAttemptHandle`, `cancellation`) proven-but-unused here, because passing
+      // them switches the prompt from a string to a streaming iterable — a
+      // different SDK code path — and S3 had no verb that needed it.
+      //
+      // Issue #3961 is the story that needs it, so they go in now, behind
+      // `activeControlRuntime`. Two of the three are load-bearing for pause:
+      // `onAttemptHandle` is what publishes a live attempt, and without an attempt
+      // `requestPause` correctly reports `unavailable` however good the barrier is;
+      // and the input channel it opens is how an *expired* pause delivers its
+      // neutral annotation back into the same session.
+      //
+      // The gate is exactly as #3962 described: the switch happens for runs that
+      // asked for control, and nothing changes for the ordinary runs — including
+      // the other 17 callers of this wrapper — because a run with no started
+      // listener passes `undefined` for all three and takes the string-prompt path
+      // byte-for-byte.
+      const control = activeControlRuntime;
       // Labeled loop so we can break out of the `for await` from inside the
       // switch statement.  Without the label, `break` only exits the switch.
       queryLoop:                          // eslint-disable-line no-labels
@@ -1200,6 +1626,7 @@ Now, complete the assigned task.`;
         queryParams: {
           prompt,
           options: {
+            spawnClaudeCodeProcess: spawnSdkWithoutAppKey,
             model: MODEL,
             cwd: CWD,
             allowedTools: [
@@ -1220,12 +1647,46 @@ Now, complete the assigned task.`;
             // beyond the pod's lifetime.
             persistSession: true,
             maxTurns: 10000,
+            // Issue #4179: spill oversized tool output to the run's workspace
+            // and hand the model a `Read`-able locator instead of the full
+            // blob. With maxTurns: 10000, one verbose command's output would
+            // otherwise be re-sent on every remaining turn and force an early
+            // (lossy) compaction. The hook fails open — a storage error leaves
+            // the original output in place.
+            // Issue #3961: the pause barrier joins the same composed hook set.
+            // `pauseHooks` is undefined for a run with no control listener, in
+            // which case the composed object is byte-identical to what it was
+            // before this story — an ordinary run gains no PreToolUse hook and
+            // therefore no new failure mode on the path every agent takes.
+            hooks: createWorkerToolHooks({
+              agentType: AGENT_TYPE,
+              store: buildWorkerSpillStore(),
+              log: (msg) => log('INFO', msg),
+            }),
           }
         },
         maxRetries: 5,
         baseDelayMs: 10_000,
         maxDelayMs: 120_000,
         idleTimeoutMs: 600_000, // 10 min — detect silent upstream stalls (issue #1223)
+        // Per-attempt transport hooks and output hold (#3961). These are
+        // undefined without a started control listener.
+        attemptInputFactory: control?.adapter.attemptInputFactory((pauseHooks) => ({
+          hooks: createWorkerToolHooks({
+            agentType: AGENT_TYPE,
+            store: buildWorkerSpillStore(),
+            log: (msg) => log('INFO', msg),
+            pauseHooks,
+          }),
+        })),
+        beforeOutput: control ? () => control.gate.waitForOutput() : undefined,
+        onAttemptHandle: control?.adapter.onAttemptHandle(),
+        cancellation: control?.adapter.cancellationSource(),
+        // Issue #3961: a paused stream is quiet on purpose. Without this the idle
+        // guard would retry the attempt a pause is deliberately holding, and a
+        // retry replaces the live attempt — destroying the same-execution resume
+        // that is the entire point of pausing rather than stopping.
+        idleSuspended: control ? () => control.gate.isPauseActive() : undefined,
         // Issue #2079: On retry, resilientQuery resumes the persisted session
         // (full conversation history reloaded), so this nudge is just a short
         // continuation instruction — the agent already remembers what it read,
@@ -1238,6 +1699,16 @@ Now, complete the assigned task.`;
           `(re-reading files, re-running analysis, or re-posting an Implementation`,
           `Plan you already posted). Proceed with the next unfinished step.`,
         ].join('\n'),
+        // Issue #4186 (Phase 1): record the SDK session id as soon as it
+        // exists, so it outlives this process. Written to the metadata bridge
+        // (not DynamoDB) because Python holds the row key — see
+        // writeResultMetadata. Observability only: nothing reads this to
+        // resume yet (that is Phase 3), so a Phase-1 deploy cannot change the
+        // outcome of any run.
+        onSessionId: (sessionId) => {
+          log('INFO', `SDK session id captured: ${sessionId}`, { phase: 'session-id', sessionId });
+          writeResultMetadata({ session_id: sessionId });
+        },
         log: (msg) => log('WARN', msg),
       })) {
         lastActivityTime = Date.now();
@@ -1258,14 +1729,47 @@ Now, complete the assigned task.`;
                 codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
               });
             }
-            // Stream tool_use to the live status comment so users watching the
-            // issue page see what the agent is currently doing.
+            activeExplanationEvents?.publish(assistantText(assistantMsg.message.content));
+            // Publish intentional explanations as well as technical activity.
             if (activeLiveComment) {
+              activeLiveComment.setExplanation(assistantText(assistantMsg.message.content));
               for (const block of assistantMsg.message.content) {
                 if (block.type === 'tool_use' && typeof block.name === 'string') {
                   const inputPreview = JSON.stringify(block.input ?? {}).slice(0, 80);
                   activeLiveComment.appendActivity(`turn ${turnCount}  ${block.name}  ${inputPreview}`);
                 }
+              }
+            }
+            await applyAuthWatchdog(turnText);
+            break;
+          }
+
+          // Issue #4369: tool results are where a failed `git push` / `gh pr
+          // create` actually surfaces — the assistant's own prose may never
+          // mention the 401. Not previously handled at all, which is precisely
+          // why the auth failure was invisible to the worker.
+          case 'user': {
+            const userMsg = message as unknown as {
+              message?: { content?: unknown };
+            };
+            const content = userMsg.message?.content;
+            if (typeof content === 'string') {
+              await applyAuthWatchdog(content);
+            } else if (Array.isArray(content)) {
+              for (const block of content) {
+                const b = block as { type?: string; content?: unknown };
+                if (b.type !== 'tool_result') continue;
+                // tool_result content is either a bare string or an array of
+                // {type:'text', text}. Flatten both to one string.
+                const raw = b.content;
+                const text = typeof raw === 'string'
+                  ? raw
+                  : Array.isArray(raw)
+                    ? raw
+                        .map((part) => (part as { text?: string })?.text ?? '')
+                        .join('\n')
+                    : '';
+                await applyAuthWatchdog(text);
               }
             }
             break;
@@ -1289,19 +1793,14 @@ Now, complete the assigned task.`;
             // gracefully in that case, so without this signal the entrypoint
             // would report a fake success (issue #2883). Best-effort: mirrors
             // the /tmp/adp-check-run-final.md pattern; never throws.
-            try {
-              fs.writeFileSync(
-                '/tmp/adp-result-metadata.json',
-                JSON.stringify({
-                  subtype: res.subtype ?? null,
-                  total_cost_usd: res.total_cost_usd ?? null,
-                  num_turns: res.num_turns ?? null,
-                }),
-                'utf8',
-              );
-            } catch (err) {
-              log('WARN', `Failed to write result metadata (non-fatal): ${err}`);
-            }
+            //
+            // Issue #4186: merged rather than overwritten so the session id
+            // written mid-stream survives this write.
+            writeResultMetadata({
+              subtype: res.subtype ?? null,
+              total_cost_usd: res.total_cost_usd ?? null,
+              num_turns: res.num_turns ?? null,
+            });
             // Flush final transcript to Check Run before breaking the loop
             if (checkRunStreamer) {
               const codexUsage = codexEventWatcher.getTotalUsage();
@@ -1345,7 +1844,23 @@ Now, complete the assigned task.`;
         }
       }
     } finally {
-      clearInterval(heartbeat);
+      // Issue #3965: the run's steering queue closes here — at the boundary where
+      // the query loop has ended — and deterministically. This is the earliest
+      // honest point: past this line there is no attempt, no transport and no
+      // reader, so nothing queued can ever be delivered, and every path out of the
+      // loop reaches this `finally` (normal completion, a thrown error, an abort's
+      // typed cancellation and a `break queryLoop` alike).
+      //
+      // "Drains or cancels deterministically" resolves to cancel, and deliberately
+      // so. A last-gasp drain would have to either push into a closing transport —
+      // which reports `rejected` and settles the command as undelivered anyway, so
+      // it buys nothing — or hold teardown open waiting for a boundary that is not
+      // coming. Cancelling says the true thing: the run ended before these
+      // instructions were delivered. Leaving them `pending` is the one unacceptable
+      // option, because the journal an operator reads back would show an
+      // instruction still in flight for a run that is over.
+      activeControlRuntime?.steerQueue.dispose();
+      heartbeat.stop();
       // Stop the Codex event watcher before the streamer so no late poll can
       // forward into a destroyed streamer (issue #2884).
       codexEventWatcher.dispose();
@@ -1371,7 +1886,21 @@ Now, complete the assigned task.`;
     return lastTurnText || fullResponse.slice(-3000) || 'Task completed but no response returned.';
   } catch (error) {
     const err = error as Error;
-    log('ERROR', 'Agent execution failed', { error: err.message });
+    log(isControlCancellation(error) ? 'INFO' : 'ERROR',
+      isControlCancellation(error) ? 'Agent execution stopped by operator' : 'Agent execution failed',
+      { error: err.message });
+    // Issue #4187: a budget stop is a distinct outcome, not a generic failure.
+    // The gateway already returns a non-retryable 402 with a `scope`
+    // discriminator, and resilientQuery correctly refuses to retry it — but the
+    // signal died here, at the process boundary, so the run was recorded as
+    // "failed" with a stack trace and an operator could not tell an
+    // out-of-budget stop from a crash. Persisting it lets entrypoint.py record
+    // `budget_stopped` + a stop reason instead.
+    const budgetStop = detectBudgetStop(err);
+    if (budgetStop) {
+      log('WARN', 'Run stopped by a spend cap', budgetStop);
+      writeResultMetadata({ budget_stopped: true, stop_reason: budgetStop.stopReason });
+    }
     throw error;
   }
 }
@@ -1406,6 +1935,44 @@ function sanitizeMemory(text: string): string {
 }
 
 /**
+ * Build the spill store for this run (Issue #4179).
+ *
+ * The workspace directory is the authoritative destination: `Read` is in the
+ * allowlist above, so a path under CWD is a locator the model can always act
+ * on. The S3 leg is strictly best-effort durability so the payload outlives the
+ * pod — it is decoupled from the locator on purpose, because the worker's
+ * bucket configuration is known-unreliable (#4184). Spilling must work with the
+ * S3 leg entirely absent.
+ */
+function buildWorkerSpillStore(): TmpSpillStore {
+  const bucket = process.env.AGENT_RUN_LOGS_BUCKET || '';
+
+  const uploadToS3 = protectedArtifactRun()
+    ? async (_key: string, body: string): Promise<void> => { await uploadRunArtifact('spill', body); }
+    : bucket
+    ? async (key: string, body: string): Promise<void> => {
+        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
+        const s3 = new S3Client({ region: AWS_REGION, credentials: workerAwsCredentials() });
+        // Same run-scoped prefix shape as the transcript upload in
+        // agent-worker-image/entrypoint.py — keeps spills beside the run they
+        // came from, and inherits that prefix's scoping rather than inventing
+        // a new shared location.
+        await s3.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: `${AGENT_TYPE}/${REPO_OWNER}/${REPO_NAME}/issue-${ISSUE_NUMBER}/spill/${key}`,
+          Body: body,
+          ContentType: 'text/plain',
+        }));
+      }
+    : undefined;
+
+  return new TmpSpillStore(CWD, {
+    uploadToS3,
+    log: (msg) => log('WARN', msg),
+  });
+}
+
+/**
  * Upload uncommitted/unpushed git changes to S3 as fallback when git push fails.
  */
 async function uploadGitChangesToS3(): Promise<void> {
@@ -1417,7 +1984,7 @@ async function uploadGitChangesToS3(): Promise<void> {
 
     // Check if there are any changes (committed but not pushed, or uncommitted)
     const status = execSync('git status --porcelain', { cwd: CWD, encoding: 'utf-8' }).trim();
-    const unpushed = execSync('git log --oneline origin/main..HEAD 2>/dev/null || echo ""', { cwd: CWD, encoding: 'utf-8' }).trim();
+    const unpushed = !headIsPublished(CWD);
 
     if (!status && !unpushed) {
       log('INFO', 'No git changes to backup to S3');
@@ -1448,10 +2015,27 @@ async function uploadGitChangesToS3(): Promise<void> {
     // Tar the changed files
     execSync(`tar czf ${tarFile} ${uniqueFiles.join(' ')}`, { cwd: CWD, stdio: 'pipe' });
 
-    // Upload to S3
-    const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
-    const bucket = process.env.AGENT_FALLBACK_BUCKET || 'adp-agent-state';
-    const key = `agent-fallback/issue-${ISSUE_NUMBER}/${timestamp}-git-changes.tar.gz`;
+    // Upload to S3.
+    // Issue #4184: this is the one fallback site that loses IRREPLACEABLE work —
+    // it preserves uncommitted changes after `git push` already failed, i.e. the
+    // entire output of a run that may have burned hours of model time. It was
+    // silently AccessDenied on every occurrence. When the bucket is unconfigured,
+    // say so on stdout too: a log line the operator never reads is not an alert.
+    if (protectedArtifactRun()) {
+      await archiveProtectedGitChanges({ archivePath: tarFile, issueNumber: ISSUE_NUMBER, timestamp, files: uniqueFiles });
+      return;
+    }
+    const bucket = resolveFallbackBucket(msg => log('ERROR', msg));
+    if (!bucket) {
+      console.error(
+        `❌ Git push failed and AGENT_FALLBACK_BUCKET is unset — ` +
+          `${uniqueFiles.length} changed files could NOT be preserved.`
+      );
+      try { fs.unlinkSync(tarFile); } catch {}
+      return;
+    }
+    const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
+    const key = buildFallbackKey(ISSUE_NUMBER, 'git-changes', 'tar.gz');
 
     const fileContent = fs.readFileSync(tarFile);
     await s3.send(new PutObjectCommand({
@@ -1481,6 +2065,31 @@ async function uploadGitChangesToS3(): Promise<void> {
   }
 }
 
+/**
+ * Apply an accepted control command to the running agent — Issue #3961.
+ *
+ * The missing half of the control channel until now: S1 built the journal and
+ * S3 built the adapter, but nothing drained one into the other, so an enabled
+ * verb would have answered 202 and then done nothing at all.
+ *
+ * Exported and parameterised rather than closed over module state so the mapping
+ * from outcome to journal status is testable without a running agent — that
+ * mapping is the entire operator-visible contract of a pause, and it is the part
+ * that must not be able to say `applied` for a pause that did not take effect.
+ *
+ * The three pause outcomes map to three different journal statuses on purpose:
+ *
+ * - `confirmed` → `applied` + phase `paused`. The barrier is closed and admitted
+ *   work has drained, so "Paused" is a claim about the world.
+ * - `requested` → the command stays **pending** and the phase becomes
+ *   `pause_requested`. Not `applied`, because nothing has settled yet; not
+ *   `rejected`, because admission *is* closed and the pause may still confirm.
+ *   Leaving it pending is what lets the dashboard show "pausing…" honestly, and a
+ *   later resume settles it as `cancelled`.
+ * - `unavailable` → `rejected` with the gate's reason. The one thing that must
+ *   never happen is this outcome rendering as a pause.
+ */
+
 async function main(): Promise<void> {
   console.log('');
   console.log('═'.repeat(60));
@@ -1488,17 +2097,27 @@ async function main(): Promise<void> {
   console.log('═'.repeat(60));
   console.log('');
 
+  // Validate the external token directory before the manager can publish.
+  configureRuntimeGitHubAdapters(CWD);
   await initCloudWatch();
 
   // Initialize token refresh for long-running tasks (tokens expire after 1 hour)
   const appId = process.env.GH_APP_ID || '';
-  const appKey = process.env.GH_APP_PRIVATE_KEY || process.env.GH_APP_KEY || '';
+  const appKey = runtimeAppAuth.privateKey || '';
   const repoOwner = process.env.REPO_OWNER || '';
+  // Issue #4272: in broker mode there is no private key in this process — the
+  // gateway gatekeeper mints. The predicate MUST NOT require appKey then, or the
+  // token manager never initialises, no refresh is ever scheduled, and the run
+  // dies at the 1-hour mark with a 401 while git/gh degrade quietly.
+  const brokerMode = isBrokerEnabled();
 
-  if (appId && appKey && repoOwner) {
+  // Capture uses canInitTokenManager before removing signing aliases from env.
+  // Re-evaluating the local-mint predicate now would silently disable renewal.
+  if (runtimeAppAuth.enabled) {
     initTokenManager({
       appId,
-      privateKey: appKey,
+      privateKey: brokerMode ? undefined : appKey,
+      brokerMode,
       owner: repoOwner,
       repo: REPO_NAME,
       // Authoritative installation id for this run's target org (exported by
@@ -1506,45 +2125,71 @@ async function main(): Promise<void> {
       // is installed on many tenants.
       installationId: process.env.GH_APP_INSTALLATION_ID || undefined,
       workDir: CWD,
-      refreshThresholdMs: 15 * 60 * 1000, // Refresh when 15 min remaining
+      // Issue #4369: 20 min for BOTH modes. A gatekeeper round-trip can fail and
+      // need retrying, but a local mint can too, and the old 15-min local value
+      // was half of the reason >1h runs died: see the interval note below.
+      refreshThresholdMs: TOKEN_REFRESH_THRESHOLD_MS,
     });
 
-    // Proactively refresh token every 30 minutes
+    adoptBootstrapToken();
+
+    // Issue #4369: tick every 5 min, not 30. `getToken()` is a no-op unless the
+    // token is inside the refresh threshold, so a short interval costs nothing —
+    // but a 30-min interval against a ~60-min token and a 15-min threshold never
+    // refreshed AT ALL: the ticks landed at t≈30 (30 min left → skip) and t≈60
+    // (already expiring), straddling the window entirely. Every call in the last
+    // few minutes then 401ed for the rest of the run. 5 min / 20 min puts at
+    // least three ticks inside the window, so a re-mint always lands early.
     const tokenRefreshInterval = setInterval(async () => {
       try {
+        const before = getTokenStatus()?.refreshedAt?.getTime();
         await getToken();
         const status = getTokenStatus();
-        log('INFO', 'Token refreshed proactively', {
-          expiresInMin: status ? Math.round(status.expiresIn / 60000) : 0,
-        });
+        // Only claim a refresh when a NEW token was actually minted. This used to
+        // log unconditionally, so the logs asserted the refresh was healthy on
+        // every tick while the token silently expired.
+        if (status && status.refreshedAt.getTime() !== before) {
+          log('INFO', 'Token refreshed proactively', {
+            expiresInMin: Math.round(status.expiresIn / 60000),
+          });
+        }
       } catch (err) {
         log('WARN', `Token refresh failed: ${(err as Error).message}`);
       }
-    }, 30 * 60 * 1000); // Every 30 minutes
+    }, TOKEN_REFRESH_INTERVAL_MS);
 
     // Clean up interval on exit
     process.on('exit', () => clearInterval(tokenRefreshInterval));
     // Also store reference for cleanup in finally block
     (global as any).__tokenRefreshInterval = tokenRefreshInterval;
 
-    log('INFO', 'Token manager initialized with 30-minute refresh interval');
+    log('INFO', `Token manager initialized with ${TOKEN_REFRESH_INTERVAL_MS / 60000}-minute refresh interval`);
 
     // Write the initial token to file BEFORE the SDK query starts, so that
     // GIT_ASKPASS and the gh wrapper can read it from day one (issue #1469).
     try {
-      const initialToken = await getToken();
-      writeTokenFile(initialToken);
+      await initializeRuntimeGitHubToken();
       log('INFO', 'Initial token written to token file for SDK subprocess');
     } catch (err) {
+      if (brokerMode || runtimeAppAuth.required) throw err;
       log('WARN', `Initial token file write failed: ${(err as Error).message}`);
     }
-  } else {
+  } else if (isMediatedRun()) {
+    // #5223: having no token is this run's correct steady state, not a
+    // misconfiguration. Must be checked BEFORE the brokerMode throw below —
+    // mediated runs in the authority cohort have brokerMode true, so falling
+    // through would abort every mediated run at startup.
+    log('INFO', 'Mediated GitHub operations: no token to refresh; writes go through the gateway');
+  } else if (process.env.ADP_TOKEN_MODE !== 'pat') {
+    if (brokerMode || runtimeAppAuth.required) throw new Error('GitHub renewal configuration unavailable');
     log('WARN', 'GitHub App credentials not available — token refresh disabled. Token will expire after ~1 hour.');
   }
 
   // Initialize Beads if available (shared state with PM)
   let beadsTaskId: string | null = null;
   let beadsAvailable = false;
+
+  if (protectedArtifactRun()) log('INFO', 'Protected run uses GitHub task tracking; shared Beads S3 sync is unavailable');
 
   if (BEADS_ENABLED) {
     configureBeads({
@@ -1591,7 +2236,72 @@ async function main(): Promise<void> {
   let memoryContext = '';
   let detectedComponent = 'general';
   let agentSucceeded = false;
+  let agentAborted = false;
   let agentResult = '';
+
+  // Issue #3960: the in-pod control listener. Declared outside the try so the
+  // finally block can close the port on every exit path — including a thrown
+  // error — rather than only on the success path.
+  let controlListener: ControlListener | null = null;
+  // Issue #5891: this composition — pause barrier, Claude adapter, command
+  // store, steering queue and the in-pod HTTP listener — used to be assembled
+  // inline here and nowhere else. That made it impossible for anything other
+  // than an ordinary run to start the *same* runtime the gateway's dashboard
+  // talks to: a fixture wanting to prove pause/resume/steer/abort reach a real
+  // agent had no choice but to build a second, similar-looking copy, which
+  // proves the pieces fit together and nothing about production. Extracting it
+  // to `startControlRuntime` (control-runtime-factory.ts) removes that gap —
+  // ordinary runs and the fixture launcher now call the one function that
+  // decides how a control runtime is built. This call is behavior-preserving:
+  // same construction order, same options, same teardown obligations as the
+  // inline version it replaces.
+  try {
+    // Started here, after config resolution and before the SDK query, so a
+    // state read is answerable for the whole life of the run. Everything the
+    // listener needs was placed in this process's env by the entrypoint, which
+    // only does so when the flag is on and registration succeeded — so an
+    // unregistered listener cannot exist.
+    const { runtime, listener, outcome, events } = await startControlRuntime({
+      log,
+      // Issue #3965: the deterministic live-comment marker. Written on the
+      // outcome, which is after the handoff — never on acceptance. The
+      // ordinary worker has a live comment to append to; a fixture launcher
+      // passes no callback, which is a correct, inert choice.
+      onSteerOutcome: ({ commandId, outcome }) => {
+        activeLiveComment?.appendActivity(steerMarker(commandId, outcome));
+      },
+    });
+    if (outcome.started) { controlListener = listener; activeExplanationEvents = events; }
+    if (outcome.started && runtime && listener) {
+      controlListener = listener;
+      // Issue #3961: publishing the runtime here — and only here — is what
+      // installs the admission barrier into the query options below. Gating it on
+      // a *started* listener rather than on the gate merely existing keeps two
+      // properties. A run nobody can send a command to gets the pre-#3961 hook set
+      // exactly, so the barrier cannot introduce a `PreToolUse` failure mode on
+      // the path every ordinary agent takes. And the capability claim stays
+      // truthful in the only direction that matters: pause is advertised where the
+      // mechanism is actually in place.
+      //
+      // Issue #3965: the steering queue is published on the same condition, and
+      // that is the flag-off guarantee for this story. A run with no started
+      // listener leaves `activeControlRuntime` null, so the query below passes
+      // `undefined` for every transport hook and takes the plain string-prompt
+      // path byte-for-byte — there is no queue, no input iterable and no way for
+      // a steering command to exist, because there is no socket to submit one to.
+      activeControlRuntime = runtime;
+      log('INFO', `Control listener started on port ${outcome.port}`);
+    }
+    if (!outcome.started && outcome.reason !== 'disabled') {
+      // A failure to start is logged at WARN and the run continues: control is an
+      // add-on, and refusing to work without it would make an intervention
+      // channel a new way for ordinary runs to die. 'disabled' is silent because
+      // it is the normal state for every ordinary workload.
+      log('WARN', `Control listener unavailable (${outcome.reason}): ${outcome.detail ?? ''}`);
+    }
+  } catch (err) {
+    log('WARN', `Control listener setup failed (non-blocking): ${(err as Error).message}`);
+  }
 
   try {
     await ensureAdpBranch();
@@ -1623,6 +2333,22 @@ async function main(): Promise<void> {
       ? existingComments.map((c, i) => `### Comment ${i + 1} (by ${c.author} at ${c.createdAt}):\n${c.body}`).join('\n\n---\n\n')
       : '';
     log('INFO', `Found ${existingComments.length} existing comments to include in context`);
+
+    // #2293 / PMM-07: a rejected direct model request must not disappear into
+    // logs. In report-only this accurately says legacy execution is unchanged;
+    // it does not pretend the enforcing flip has happened.
+    // Dedup requires GitHub-attested authorship of the earlier marker comment,
+    // so a forged marker cannot silence the notice; see
+    // model-policy-feedback.ts. It uses its own paginated lookup rather than
+    // `existingComments` above: that 20-comment slice is the LLM context window,
+    // and a genuine earlier notice pushed out of it would be posted again.
+    // The fetcher is built per delivery, not shared: its overall deadline starts
+    // when it is created, so a long-lived one would arrive already expired.
+    await deliverModelPolicyFeedback({
+      fetchCommentPage: issueCommentPageFetcher(),
+      postComment,
+      log,
+    });
 
     // AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232).
     // Must run BEFORE the SDK query starts so that mint-presence.ts sees the
@@ -1679,7 +2405,7 @@ async function main(): Promise<void> {
 
     // Initialize live status comment (edit-in-place progress)
     const token = process.env.GH_APP_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN;
-    activeLiveComment = new LiveStatusComment(createWorkerStages(), {
+    activeLiveComment = new LiveStatusComment(createWorkerStages(AGENT_TYPE), {
       owner: REPO_OWNER,
       repo: REPO_NAME,
       issueNumber: parseInt(ISSUE_NUMBER),
@@ -1717,12 +2443,21 @@ Working on this task...`);
     const result = await runAgent(issue, mainIssueNumber, beadsPrimeContext, commentsContext, memoryContext);
     agentResult = result || '';
 
-    // Mark analyze through PR stages as complete (agent handles all internally)
+    // #4450: The SDK degrades a mid-stream connection drop into a *successful*
+    // result whose final assistant text is a "Connection closed mid-response"
+    // sentinel (subtype 'success', normal turns/cost — so the #2883 $0/1-turn
+    // guard misses it). Trusting it posts a fake "Done / no changes needed" and
+    // silently abandons the work. Route it through the catch block instead so
+    // the run reports Failed and can be re-dispatched honestly.
+    if (isTruncatedStreamResult(agentResult)) {
+      throw new Error(
+        'Model response stream was truncated (connection closed mid-response); ' +
+        'treating run as failed rather than reporting a false completion',
+      );
+    }
+
+    // The runtime observes execution ending, not implementation/test/PR outcomes.
     activeLiveComment.transition(1, 'complete');
-    activeLiveComment.transition(2, 'complete');
-    activeLiveComment.transition(3, 'complete');
-    activeLiveComment.transition(4, 'complete');
-    activeLiveComment.transition(5, 'complete');
 
     // Complete task in Beads (if claimed)
     if (beadsAvailable && beadsTaskId) {
@@ -1763,32 +2498,46 @@ Working on this task...`);
     // Status will be set to Done automatically by GitHub project automation
     // when the PR is merged and the issue is closed.
 
-    // Finalize live status comment with success summary
-    const runDuration = Date.now() - (activeLiveComment.getStages()[0]?.startedAt || Date.now());
-    await activeLiveComment.finalizeSuccess({
-      durationMs: runDuration,
-      details: result ? result.substring(0, 500) : undefined,
-    }).catch(err => log('WARN', `Could not finalize live comment: ${(err as Error).message}`));
-
-    // Post completion to main issue
-    const summary = `## @agent-${AGENT_TYPE} Completed
-
-**Task**: #${issue.number} - ${issue.title}
-**Status**: Done
-**Completed**: ${new Date().toISOString()}
-${beadsTaskId ? `**Beads ID**: ${beadsTaskId}` : ''}
-
-### Summary
-${result}`;
-
-    await postToMainIssue(mainIssueNumber, summary);
+    // Publish one full outcome without cutting away qualifications or blockers.
+    const outcome = result || 'The run ended without an outcome report. Task completion has not been verified.';
+    let outcomeUrl: string | undefined;
+    try {
+      await activeLiveComment.finalizeSuccess({ details: outcome });
+      outcomeUrl = activeLiveComment.getCommentUrl() || undefined;
+    } catch (err) {
+      log('WARN', `Could not finalize live comment: ${(err as Error).message}`);
+    }
+    if (outcomeUrl) {
+      writeResultMetadata({ outcome_comment_url: outcomeUrl });
+      if (mainIssueNumber && mainIssueNumber !== issue.number) {
+        await postToMainIssue(mainIssueNumber,
+          `Agent run ended for **${issue.title}** (#${issue.number}). [Outcome, remaining work and next action](${outcomeUrl}).`);
+      }
+    } else {
+      await postToMainIssue(mainIssueNumber, outcome);
+    }
 
     log('INFO', 'Work completed successfully');
     agentSucceeded = true;
 
   } catch (error) {
     const err = error as Error;
+    writeFailureReport(error);
+    if (isControlCancellation(error)) {
+      agentAborted = true;
+      log('INFO', 'Operator abort requested; supervisor will finalize the run');
+      await activeLiveComment?.finalizeAbortRequested().catch(finalizeErr =>
+        log('WARN', `Could not update stopping comment: ${finalizeErr.message}`));
+      throw error;
+    }
     log('ERROR', `Agent failed: ${err.message}`);
+    if (activeLiveComment) {
+      await activeLiveComment.finalizeFailure({
+        error: err.message,
+        durationMs: activeLiveComment.getDurationMs(),
+      }).catch(finalizeErr => log('WARN', `Could not finalize live comment: ${finalizeErr.message}`));
+    }
+
 
     // Report failure to Beads (if task was claimed)
     if (beadsAvailable && beadsTaskId) {
@@ -1823,7 +2572,7 @@ Please check the workflow logs for details.`);
     // Write agent memory context to adp branch (best-effort, never blocks)
     try {
       const issue = await getIssue().catch(() => null);
-      if (issue) {
+      if (issue && !agentAborted) {
         const component = detectedComponent || detectComponent(issue.labels, issue.body);
         const memStatus = agentSucceeded ? 'success' : 'failed';
         await writeComponentRecord(component, buildComponentRecord({
@@ -1869,6 +2618,43 @@ Please check the workflow logs for details.`);
       }
     }
 
+    // Issue #3960: close the control port before the process exits. Placed with
+    // the other teardown rather than after it because `process.exit` below is
+    // unconditional — anything past that line never runs. Awaited so the socket
+    // is actually closed rather than merely asked to close, and wrapped because a
+    // teardown throw here would mask the run's real outcome.
+    // Issue #3965: dispose the steering queue before the listener stops, so a
+    // command accepted in the last instant before teardown is settled rather than
+    // left pending. `runAgent`'s own `finally` normally gets here first, and
+    // `dispose` is idempotent — this exists for the paths that never reached the
+    // query loop at all (a prompt-construction failure, a config error), where the
+    // queue would otherwise hold a subscription and any late command forever.
+    activeControlRuntime?.steerQueue.dispose();
+
+    if (controlListener) {
+      try {
+        await controlListener.stop();
+        log('INFO', 'Control listener stopped');
+      } catch (err) {
+        log('WARN', `Control listener stop failed: ${(err as Error).message}`);
+      }
+    }
+
+    // Issue #3962: dispose the adapter after the listener, not before. The
+    // listener is what can still answer a request, and a request answered from a
+    // disposed runtime would read the post-teardown state as though it were the
+    // run's — so the surface closes first and the runtime it describes second.
+    // Idempotent, and safe when no attempt was ever attached.
+    //
+    // Issue #5891: reads `activeControlRuntime` rather than a local `controlAdapter`
+    // binding — the composition now lives in `startControlRuntime`, so the adapter
+    // this run holds (if any) is exactly the one published there.
+    try {
+      await activeControlRuntime?.adapter.dispose();
+    } catch (err) {
+      log('WARN', `Control adapter dispose failed: ${(err as Error).message}`);
+    }
+
     clearInterval(cwFlushTimer);
     if ((global as any).__tokenRefreshInterval) {
       clearInterval((global as any).__tokenRefreshInterval);
@@ -1885,6 +2671,7 @@ Please check the workflow logs for details.`);
 }
 
 main().catch((err) => {
+  writeFailureReport(err);
   console.error('Fatal error in main:', err);
   process.exit(1);
 });

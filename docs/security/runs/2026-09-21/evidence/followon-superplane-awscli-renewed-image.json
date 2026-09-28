@@ -1,0 +1,1045 @@
+{
+  "issue": 6124,
+  "PR": 6380,
+  "built_source_commit": "518ac08b6b6e3a5551d661e137d39a621e1cdb33",
+  "review_status": "local implementation validation; root independent review and finalhead CI pending",
+  "image": "security25-superplane-executor:awscli-renewed-518ac08b6",
+  "docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2",
+  "docker_archive_sha256": "c9bd7edd6101d27d666cf56ed512a420ddebbbc93212a59d8c5ae7117878a2f8",
+  "local_OCI_index": "sha256:0a25c2470978eabc04a843976a593f820bf9e23628d88d721a94ac6cd385b423",
+  "both_scanners_same_verified_config": true,
+  "raw_counts": {
+    "High": 53,
+    "Medium": 77,
+    "Negligible": 45,
+    "Low": 14
+  },
+  "raw_total": 189,
+  "runtime": {
+    "uid": 65531,
+    "kubectl": {
+      "clientVersion": {
+        "major": "1",
+        "minor": "31",
+        "gitVersion": "v1.31.4+adp.security.1",
+        "gitCommit": "a78aa47129b8539636eb86a9d00e31b2720fe06b",
+        "gitTreeState": "dirty",
+        "buildDate": "1970-01-01T00:00:00Z",
+        "goVersion": "go1.26.8",
+        "compiler": "gc",
+        "platform": "linux/amd64"
+      },
+      "kustomizeVersion": "v5.4.2"
+    },
+    "terraform": "1.9.8",
+    "aws_cli": "2.37.4",
+    "pip_check": "passed",
+    "paid_worker_missing_authority": "refused",
+    "service_missing_authority": "idle_without_serving",
+    "offline_kubectl_creation": "passed",
+    "installed_imports_and_workspace_lock": "passed"
+  },
+  "installed_service_models": {
+    "scope": "offline parser/service-model only; no cloud or credential calls",
+    "results": [
+      {
+        "version": "aws-cli/2.37.4 Python/3.14.6 Linux/7.0.0-1012-aws exe/x86_64.debian.13",
+        "launcher_sha256": "f8b07be1ad7c2cc63c5c14238d927e5f48bd278173fc1c71ae40f4a12ff88e49",
+        "service_model_input_skeletons": [
+          "eks describe-cluster",
+          "eks describe-access-entry",
+          "eks list-associated-access-policies",
+          "eks list-access-entries",
+          "ec2 describe-security-group-rules",
+          "ec2 describe-security-groups",
+          "ec2 describe-vpc-endpoints",
+          "iam simulate-principal-policy",
+          "sts get-caller-identity",
+          "sts assume-role",
+          "s3api head-object",
+          "ssm get-parameter"
+        ],
+        "invalid_command_refused": true
+      }
+    ]
+  },
+  "signature_and_archive_binding": {
+    "installed": {
+      "aws": "f8b07be1ad7c2cc63c5c14238d927e5f48bd278173fc1c71ae40f4a12ff88e49",
+      "libpython3.14.so.1.0": "4a8c64960f20110d164a047987ffcf7b557c8a3ccf7dc6d8f47d055d1d41baa7"
+    },
+    "wheel_paths": [
+      "/opt/aws-cli/v2/2.37.4/dist/awscli/examples/comprehend/describe-flywheel-iteration.rst",
+      "/opt/aws-cli/v2/2.37.4/dist/awscli/examples/comprehend/describe-flywheel.rst",
+      "/opt/aws-cli/v2/2.37.4/dist/awscli/examples/comprehend/update-flywheel.rst",
+      "/opt/aws-cli/v2/2.37.4/dist/awscli/examples/comprehend/create-flywheel.rst",
+      "/opt/aws-cli/v2/2.37.4/dist/awscli/examples/comprehend/list-flywheels.rst",
+      "/opt/aws-cli/v2/2.37.4/dist/awscli/examples/comprehend/start-flywheel-iteration.rst",
+      "/opt/aws-cli/v2/2.37.4/dist/awscli/examples/comprehend/delete-flywheel.rst",
+      "/opt/aws-cli/v2/2.37.4/dist/awscli/examples/comprehend/list-flywheel-iteration-history.rst"
+    ],
+    "signed_zip": {
+      "aws": "f8b07be1ad7c2cc63c5c14238d927e5f48bd278173fc1c71ae40f4a12ff88e49",
+      "libpython3.14.so.1.0": "4a8c64960f20110d164a047987ffcf7b557c8a3ccf7dc6d8f47d055d1d41baa7"
+    },
+    "signature_preserved": "installed launcher and bundled Python library byte-identical to renewed-key-verified official ZIP"
+  },
+  "verifier_tests": {
+    "renewed": "accepted",
+    "expired": "rejected",
+    "modified_zip": "rejected",
+    "live_auth_or_network_calls": false
+  },
+  "High_outcomes": [
+    {
+      "id": "CVE-2025-13836",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2025-13836",
+      "vendor_github_severity": "medium",
+      "github_advisory_url": "https://github.com/advisories/GHSA-399h-rrqc-rpgv",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 0,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [],
+      "outcome": "source_package_fixed_in_exact_candidate_by_PSF_range_and_signed_binary_identity",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "modules": [
+            "http.client"
+          ],
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.20",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.15",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.13",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.11",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0",
+              "lessThan": "3.14.1",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0a3",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2025-13836",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-7210",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-7210",
+      "vendor_github_severity": "medium",
+      "github_advisory_url": "https://github.com/advisories/GHSA-wxv8-w48j-r2f4",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 1,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=8"
+      ],
+      "outcome": "source_package_fixed_in_exact_candidate_by_PSF_range_and_signed_binary_identity",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "modules": [
+            "xml",
+            "expat"
+          ],
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0",
+              "lessThan": "3.14.6",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0b2",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-7210",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-4224",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-4224",
+      "vendor_github_severity": "medium",
+      "github_advisory_url": "https://github.com/advisories/GHSA-h46w-ffvp-4pw5",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 2,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=9"
+      ],
+      "outcome": "source_package_fixed_in_exact_candidate_by_PSF_range_and_signed_binary_identity",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.21",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.13",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0",
+              "lessThan": "3.14.4",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0a8",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-4224",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-6100",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-6100",
+      "vendor_github_severity": "critical",
+      "github_advisory_url": "https://github.com/advisories/GHSA-pg25-7cx5-cvcm",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 3,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=29"
+      ],
+      "outcome": "source_package_fixed_in_exact_candidate_by_PSF_range_and_signed_binary_identity",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.21",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0a1",
+              "lessThan": "3.14.5rc1",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0b1",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-6100",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-11940",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-11940",
+      "vendor_github_severity": "high",
+      "github_advisory_url": "https://github.com/advisories/GHSA-9mc4-rqmq-h467",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 4,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=36"
+      ],
+      "outcome": "unresolved_same_advisory_still_affects3.14.6",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.21",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.15",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0",
+              "lessThan": "3.14.7",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0b4",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-11940",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-11972",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-11972",
+      "vendor_github_severity": "high",
+      "github_advisory_url": "https://github.com/advisories/GHSA-wqxf-pjxh-hh4h",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 5,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=38"
+      ],
+      "outcome": "unresolved_same_advisory_still_affects3.14.6",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "modules": [
+            "tarfile"
+          ],
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.21",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.15",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0",
+              "lessThan": "3.14.7",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0b4",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-11972",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-15308",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-15308",
+      "vendor_github_severity": "critical",
+      "github_advisory_url": "https://github.com/advisories/GHSA-7qj2-q5c8-cxx5",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 6,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=54"
+      ],
+      "outcome": "unresolved_same_advisory_still_affects3.14.6",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "modules": [
+            "html.parser",
+            "html"
+          ],
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.21",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.15",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0",
+              "lessThan": "3.14.7",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0b4",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-15308",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-9669",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-9669",
+      "vendor_github_severity": "high",
+      "github_advisory_url": "https://github.com/advisories/GHSA-8jvr-397x-xqh9",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 7,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=55"
+      ],
+      "outcome": "source_package_fixed_in_exact_candidate_by_PSF_range_and_signed_binary_identity",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "modules": [
+            "bz2"
+          ],
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.21",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0",
+              "lessThan": "3.14.6",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0b3",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-9669",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-3644",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-3644",
+      "vendor_github_severity": "medium",
+      "github_advisory_url": "https://github.com/advisories/GHSA-vf33-88pf-hwp3",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 11,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=66"
+      ],
+      "outcome": "source_package_fixed_in_exact_candidate_by_PSF_range_and_signed_binary_identity",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "modules": [
+            "http.cookies"
+          ],
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.21",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.13",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0",
+              "lessThan": "3.14.4",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0a8",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-3644",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-4786",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-4786",
+      "vendor_github_severity": "high",
+      "github_advisory_url": "https://github.com/advisories/GHSA-cccx-m78h-m3xw",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 18,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=107"
+      ],
+      "outcome": "source_package_fixed_in_exact_candidate_by_PSF_range_and_signed_binary_identity",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.10.21",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.11.0",
+              "lessThan": "3.11.16",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.12.0",
+              "lessThan": "3.12.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.13.0",
+              "lessThan": "3.13.14",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.14.0a1",
+              "lessThan": "3.14.5rc1",
+              "status": "affected",
+              "versionType": "python"
+            },
+            {
+              "version": "3.15.0a1",
+              "lessThan": "3.15.0b1",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-4786",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "GHSA-8rrh-rw8j-w5fx",
+      "native_severity": "High",
+      "native_namespace": "github:language:python",
+      "native_data_source": "https://github.com/advisories/GHSA-8rrh-rw8j-w5fx",
+      "vendor_github_severity": "high",
+      "github_advisory_url": "https://github.com/advisories/GHSA-8rrh-rw8j-w5fx",
+      "baseline_version": "0.45.1",
+      "baseline_image_match_index": 53,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/wheel-0.45.1.dist-info/METADATA",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/wheel-0.45.1.dist-info/METADATA",
+          "annotations": {
+            "evidence": "primary"
+          }
+        },
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/wheel-0.45.1.dist-info/RECORD",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/wheel-0.45.1.dist-info/RECORD",
+          "annotations": {
+            "evidence": "supporting"
+          }
+        },
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/wheel-0.45.1.dist-info/direct_url.json",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/wheel-0.45.1.dist-info/direct_url.json",
+          "annotations": {
+            "evidence": "supporting"
+          }
+        }
+      ],
+      "package": "wheel",
+      "candidate_version": null,
+      "original_selectors": [
+        "grype|modules-domain-apps-superplane-executor|run=0|ri=168"
+      ],
+      "outcome": "source_package_removed_from_exact_candidate_verified_signed_ZIP_installed_paths_and_same_config_SBOM",
+      "live_acceptance": "open",
+      "vendor_affected": [
+        {
+          "package": {
+            "ecosystem": "pip",
+            "name": "wheel"
+          },
+          "vulnerable_version_range": ">= 0.40.0, <= 0.46.1",
+          "first_patched_version": "0.46.2",
+          "vulnerable_functions": []
+        }
+      ],
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    },
+    {
+      "id": "CVE-2026-82049",
+      "native_severity": "High",
+      "native_namespace": "nvd:cpe",
+      "native_data_source": "https://nvd.nist.gov/vuln/detail/CVE-2026-82049",
+      "vendor_github_severity": "high",
+      "github_advisory_url": "https://github.com/advisories/GHSA-ghff-gcpf-9r9p",
+      "baseline_version": "3.13.7",
+      "baseline_image_match_index": 90,
+      "baseline_locations": [
+        {
+          "path": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "layerID": "sha256:10a6d7e78dc499b8214a95225e3ceee3fa400a960381bd262738961deb81edb0",
+          "accessPath": "/opt/aws-cli/v2/2.31.22/dist/libpython3.13.so.1.0",
+          "annotations": {
+            "evidence": "primary"
+          }
+        }
+      ],
+      "package": "python",
+      "candidate_version": "3.14.6",
+      "original_selectors": [],
+      "outcome": "source_package_fixed_in_exact_candidate_by_PSF_range_and_signed_binary_identity",
+      "live_acceptance": "open",
+      "PSF_CNA_affected": [
+        {
+          "defaultStatus": "unaffected",
+          "modules": [
+            "tarfile"
+          ],
+          "product": "CPython",
+          "repo": "https://github.com/python/cpython",
+          "vendor": "Python Software Foundation",
+          "versions": [
+            {
+              "version": "0",
+              "lessThan": "3.14.0b1",
+              "status": "affected",
+              "versionType": "python"
+            }
+          ]
+        }
+      ],
+      "PSF_CNA_url": "https://cveawg.mitre.org/api/cve/CVE-2026-82049",
+      "candidate_Docker_config_id": "sha256:a512c87543ee44054dc65ec473a662e0268fde09592ae600871317891dc81de2"
+    }
+  ],
+  "vendor_Critical_retained": "CVE-2026-15308; Python3.14.6 affected; minimum stable3.14.7; latest official signed AWSCLI2.37.4 still bundles3.14.6",
+  "official_latest_check": {
+    "checked_at": "2026-09-26T16:41:04.344181+00:00",
+    "finding": "CVE-2026-15308",
+    "PSF_minimum_fixed_stable_Python_3_14": "3.14.7",
+    "scope": "bounded official latest AWS CLI release metadata + exact latest signed distribution bytes only",
+    "official_repo_latest_tags": [
+      {
+        "name": "2.37.4",
+        "zipball_url": "https://api.github.com/repos/aws/aws-cli/zipball/refs/tags/2.37.4",
+        "tarball_url": "https://api.github.com/repos/aws/aws-cli/tarball/refs/tags/2.37.4",
+        "commit": {
+          "sha": "d22f2115447d212da4af5fc35e440ec7f960aad4",
+          "url": "https://api.github.com/repos/aws/aws-cli/commits/d22f2115447d212da4af5fc35e440ec7f960aad4"
+        },
+        "node_id": "MDM6UmVmNjc4MDc2NzpyZWZzL3RhZ3MvMi4zNy40"
+      },
+      {
+        "name": "2.37.3",
+        "zipball_url": "https://api.github.com/repos/aws/aws-cli/zipball/refs/tags/2.37.3",
+        "tarball_url": "https://api.github.com/repos/aws/aws-cli/tarball/refs/tags/2.37.3",
+        "commit": {
+          "sha": "7ccaa88f981438688e1b20ec24f6615e40d9799e",
+          "url": "https://api.github.com/repos/aws/aws-cli/commits/7ccaa88f981438688e1b20ec24f6615e40d9799e"
+        },
+        "node_id": "MDM6UmVmNjc4MDc2NzpyZWZzL3RhZ3MvMi4zNy4z"
+      },
+      {
+        "name": "2.37.2",
+        "zipball_url": "https://api.github.com/repos/aws/aws-cli/zipball/refs/tags/2.37.2",
+        "tarball_url": "https://api.github.com/repos/aws/aws-cli/tarball/refs/tags/2.37.2",
+        "commit": {
+          "sha": "91eed131d3548c0af429503bb989567f797ed1d9",
+          "url": "https://api.github.com/repos/aws/aws-cli/commits/91eed131d3548c0af429503bb989567f797ed1d9"
+        },
+        "node_id": "MDM6UmVmNjc4MDc2NzpyZWZzL3RhZ3MvMi4zNy4y"
+      },
+      {
+        "name": "2.37.1",
+        "zipball_url": "https://api.github.com/repos/aws/aws-cli/zipball/refs/tags/2.37.1",
+        "tarball_url": "https://api.github.com/repos/aws/aws-cli/tarball/refs/tags/2.37.1",
+        "commit": {
+          "sha": "98db0ae0ae1d243c4ba7718522da533a56eacae4",
+          "url": "https://api.github.com/repos/aws/aws-cli/commits/98db0ae0ae1d243c4ba7718522da533a56eacae4"
+        },
+        "node_id": "MDM6UmVmNjc4MDc2NzpyZWZzL3RhZ3MvMi4zNy4x"
+      },
+      {
+        "name": "2.37.0",
+        "zipball_url": "https://api.github.com/repos/aws/aws-cli/zipball/refs/tags/2.37.0",
+        "tarball_url": "https://api.github.com/repos/aws/aws-cli/tarball/refs/tags/2.37.0",
+        "commit": {
+          "sha": "941e56792156b8f79cb08fd9d0d45f3f96a8668e",
+          "url": "https://api.github.com/repos/aws/aws-cli/commits/941e56792156b8f79cb08fd9d0d45f3f96a8668e"
+        },
+        "node_id": "MDM6UmVmNjc4MDc2NzpyZWZzL3RhZ3MvMi4zNy4w"
+      }
+    ],
+    "headers": {
+      "Last-Modified": "Fri, 25 Sep 2026 19:19:38 GMT",
+      "Content-Length": "73776085"
+    },
+    "sha256": "0c59444563f4df735eeb5481f6165f95dae546c33761760d8be9855d5cfe2d12",
+    "headers.sig": {
+      "Last-Modified": "Fri, 25 Sep 2026 19:20:36 GMT",
+      "Content-Length": "566"
+    },
+    "sha256.sig": "566d2945f644158c8654c8f68203facac4e0dfca970d14e018811aa9d57168e2",
+    "latest_archive_identical_to_reviewed_2_37_4": true,
+    "conclusion": "Official latest signed archive is byte-identical to2.37.4 with bundledPython3.14.6; does not supply3.14.7. Await official signed bundle with fixedPython or separately authorized supported remedy; no signed bundle internals altered."
+  },
+  "artifact_sha256": {
+    "/workspaces/projects/security25/critical-high-current/pr-6380-renewed-scan/grype.private.json": "7ffc43c5ef8ed6ba83d5f864d79381bdd9b6d0ac81801aae361b3758f2980c26",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-renewed-scan/syft.json": "54e509ad788f1a9f287fcbf0548f94d670979b405876d37dde4385d4a45e8260",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-renewed-scan/identity.json": "0d80b205ec98260b83e50d0bac7348d4aac1a713c01d1f6af5ea261433286c27",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-renewed-scan/scanner-metadata.json": "53c21b2e2eab59ef32562cb1be084b9d10daf4cc1255dd1a12abc82a96c47866",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-renewed-runtime.json": "e3cf3d54952f1b6d8ad489c674fb892bf33098f7831d8eb6ba6be2f2c1762f03",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-renewed-models.json": "911181dcb2b655b8cd779224c6b6e6990e48681c0c6224c88cf75ac736c7f909",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-renewed-installed-hashes.json": "fa09ac58166cb20edee6667cb16398dd90d98ca7edcca1040e5161b47a095f0e",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-python-cna.json": "dd11a0d994f9d2039bdf6a1e91c715382c0fa12d98a8c0fa2b8339d8078eb035",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-vendor-high.json": "c0c349614e3175e7cb8757cb07948b20313a564f006c86a869cf91a5bfbc1004",
+    "/workspaces/projects/security25/critical-high-current/pr-6380-official-latest-signature.log": "fbab8d9f96fafcc2c8110ff37b518f3d4c71bdead6cb61bbdcc9cb7d8a03af6c",
+    "/tmp/pr-6380-renewed-build.log": "54de4c0bd49706e8fa2bc6c88bd32ecebba455b846a02bb95ba9c579f3394ca7"
+  },
+  "publication": false,
+  "rollout": false,
+  "remaining_scope": "53High plus136lower-severity full-image matches remain. No cloud calls, live credentials, source suppression or signature-covered modified bundle claims."
+}

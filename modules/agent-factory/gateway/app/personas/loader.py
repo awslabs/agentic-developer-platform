@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Directories to search for persona files
 PERSONAS_YAML_DIR = os.environ.get("PERSONAS_DIR", "/app/config/personas")
-PERSONAS_MD_DIR = os.environ.get("ADP_RULES_DIR", "/app/repo/.adp-rules/personas")
+PERSONAS_MD_DIR = os.environ.get("ADP_RULES_DIR", "/app/personas")
 
 # In-memory cache
 _cache: dict[str, "Persona"] = {}
@@ -120,6 +120,18 @@ def load_persona(name: str) -> Persona:
         return _cache[name]
 
     persona = _try_load(name)
+    # Apply even for YAML and fallback personas; persona choice cannot omit it.
+    policy_paths = [
+        Path("/app/personas/shared/human-communication.md"),
+        Path(PERSONAS_MD_DIR) / "shared/human-communication.md",
+        Path(__file__).resolve().parents[3] / "rules/personas/shared/human-communication.md",
+    ]
+    for policy in policy_paths:
+        if policy.is_file():
+            persona.system_prompt += "\n\n" + policy.read_text()
+            break
+    else:
+        logger.warning("Shared human communication policy is missing from the installation")
     _cache[name] = persona
     return persona
 

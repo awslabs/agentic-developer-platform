@@ -30,9 +30,157 @@ class InstallStartResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Onboarding verification (Issue #4016)
+#
+# Every check is TRI-STATE: True = verified working, False = verified broken,
+# None = could not determine. None must render amber/grey and NEVER red — a
+# check that errored is not the same as a check that failed, and a
+# false-negative red makes operators "fix" a non-problem.
+#
+# The split into two models is deliberate (🔴-2): the platform checks read
+# deployment-global singletons with no tenant segment in their paths, so they
+# are admin-gated and returned once per response. The connection checks are
+# per-installation/per-tenant.
+# ---------------------------------------------------------------------------
+
+
+class ConnectionVerification(BaseModel):
+    """Per-connection onboarding health, computed read-only at request time."""
+
+    record_present: bool | None = Field(
+        default=None,
+        description=(
+            "Whether a Postgres ChannelTenantMap row backs this connection. False on a "
+            "synthetic entry surfaced from DynamoDB only — the install never reached the "
+            "gateway callback, so the platform cannot manage it."
+        ),
+    )
+    tenant_secret_seeded: bool | None = Field(
+        default=None,
+        description=(
+            "Whether adp/<env>/tenants/<tenant>/github-app exists. False means the first "
+            "agent worker for this tenant will die fetching its credentials."
+        ),
+    )
+    identity_index_row: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the forward DynamoDB row (installation → tenant) exists. False means "
+            "inbound webhooks for this installation are rejected as unknown_installation."
+        ),
+    )
+    reverse_identity_row: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the reverse DynamoDB row (tenant → installation) exists. False means "
+            "agent-to-agent dispatch (adp-trigger) cannot resolve this tenant. Repair is "
+            "owned by issue #3860; this is observation only."
+        ),
+    )
+    # Issue #5184: provenance of the sibling ``repositories`` list.
+    #
+    # ``_fetch_live_repos`` degrades to the stored metadata snapshot whenever the
+    # GitHub read fails, and the two are otherwise indistinguishable in the
+    # response. A caller that must PROVE access to a specific repository — the
+    # CLI's ``adp github connect --repo owner/name`` — cannot treat a snapshot as
+    # proof, so the provenance has to travel with the list.
+    #
+    # True is not weakened by the 60s repo cache: a cached list came from a real
+    # GitHub read within that window. Same tri-state convention as above.
+    repositories_live: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the ``repositories`` list on this connection was read live from GitHub "
+            "(within the 60s cache window). False means GitHub could not be reached and the "
+            "stored snapshot was served instead, so the list reflects configuration rather "
+            "than confirmed current access. None when no read was attempted."
+        ),
+    )
+
+
+class PlatformVerification(BaseModel):
+    """Deployment-wide onboarding health. Admin-scoped (Issue #4016, 🔴-2).
+
+    These read platform singletons (no tenant segment in the secret paths), so
+    they are returned only to callers who can manage connections — a tenant
+    member must not see, or try to "fix", global deployment state.
+    """
+
+    login_credentials: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the broker OAuth secret holds a real, non-placeholder client_id. False means 'Sign in with GitHub' is dead for everyone."
+        ),
+    )
+    webhook_secret: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the webhook-ingress secret has been populated with a real value. "
+            "False means every GitHub delivery fails signature validation with 401."
+        ),
+    )
+
+    # -----------------------------------------------------------------------
+    # GitHub App configuration drift (Issue #4017)
+    #
+    # App settings on GitHub can be edited at any time and no webhook event
+    # fires when they are, so these are diffed at read time. Same tri-state
+    # convention as above: None = could not determine (amber), never red.
+    #
+    # These are deployment-wide by construction — one App, one -meta secret, one
+    # GET /app — so they live on PlatformVerification (admin-gated) rather than
+    # being duplicated onto every ConnectionVerification.
+    # -----------------------------------------------------------------------
+
+    app_webhook_url_matches: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the App's webhook URL on GitHub (GET /app/hook/config) matches "
+            "this deployment's webhook endpoint. False means GitHub is delivering "
+            "events somewhere else, so no agent is ever triggered. None when either "
+            "side could not be resolved."
+        ),
+    )
+    app_permissions_match: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the App still grants every permission the platform requires (GET /app). False means some agent operations will fail with 403."
+        ),
+    )
+    app_events_match: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the App is still subscribed to every event the platform needs (GET /app). False means some triggers silently never fire."
+        ),
+    )
+    expected_callback_url: str | None = Field(
+        default=None,
+        description=(
+            "The OAuth callback URL this deployment sends as redirect_uri. "
+            "INFORMATIONAL ONLY — GitHub exposes no API to read an App's callback "
+            "URL back, so this can never be diffed and must never render as a "
+            "pass/fail check. It is shown for comparison against the App's "
+            "settings page; a genuine mismatch surfaces at login time as "
+            "redirect_uri_mismatch."
+        ),
+    )
+    app_oauth_settings_url: str | None = Field(
+        default=None,
+        description="Deep-link to the App's OAuth settings page on GitHub, for comparing the callback URL by eye.",
+    )
+    app_config_warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable detail for the App-config checks above — the same prose the manual-registration flow returns in its warnings list."
+        ),
+    )
+
+
 class GitHubConnectionItem(BaseModel):
     """A single GitHub App installation connected to the caller's ADP tenant."""
 
+    revocation_pending: bool = False
     provider: str = Field(default="github")
     installation_id: int
     account_login: str = Field(..., description="GitHub org or user login")
@@ -69,10 +217,21 @@ class GitHubConnectionItem(BaseModel):
         default=None,
         description="Whether this connection belongs to the caller's currently active tenant.",
     )
+    # Issue #4016: per-connection onboarding verification
+    verification: ConnectionVerification | None = Field(
+        default=None,
+        description="Read-only onboarding health checks for this connection.",
+    )
 
 
 class ConnectionsListResponse(BaseModel):
     connections: list[GitHubConnectionItem]
+    # Issue #4016: admin-scoped platform checks — omitted entirely for callers
+    # who cannot manage connections.
+    platform_verification: PlatformVerification | None = Field(
+        default=None,
+        description=("Deployment-wide onboarding health. Present only for callers who can manage connections."),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -98,8 +257,15 @@ class SwitchTenantResponse(BaseModel):
 
 
 class DeleteConnectionResponse(BaseModel):
+    """Local denial is durable; provider uninstall and cleanup can remain pending."""
+
     deleted: bool
     installation_id: int
+    local_revoked: bool = True
+    provider_uninstall_requested: bool = False
+    provider_revoked: bool = False
+    residual: list[str] = Field(default_factory=list)
+    warning: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +374,34 @@ class AppStatusResponse(BaseModel):
         default=None,
         description="ISO-8601 timestamp when the App secret was last written (if available)",
     )
+
+
+class RevalidateAppResponse(BaseModel):
+    """Response from POST /api/admin/connections/github/app/revalidate (Issue #4017).
+
+    The explicit "re-check the App's configuration" action. Read-only against
+    GitHub; the only thing it writes is the expected-config record in the App
+    ``-meta`` secret (never credentials, never Lambda environment).
+    """
+
+    checked: bool = Field(..., description="Whether the App's live configuration could be read from GitHub")
+    app_webhook_url_matches: bool | None = Field(default=None, description="Tri-state webhook URL check (see PlatformVerification)")
+    app_permissions_match: bool | None = Field(default=None, description="Tri-state permissions check")
+    app_events_match: bool | None = Field(default=None, description="Tri-state events check")
+    expected_callback_url: str | None = Field(
+        default=None,
+        description="The callback URL this deployment sends. Informational — not verifiable via the GitHub API.",
+    )
+    app_oauth_settings_url: str | None = Field(
+        default=None,
+        description="Deep-link to the App's OAuth settings page for comparing the callback URL by eye.",
+    )
+    warnings: list[str] = Field(default_factory=list, description="Human-readable detail for any check that did not pass")
+    expected_config_recorded: bool = Field(
+        default=False,
+        description=("Whether the expected-config record in the App metadata secret was (re)written. Credentials are never touched by this action."),
+    )
+    message: str = Field(..., description="Human-readable status message")
 
 
 class RotateKeyResponse(BaseModel):

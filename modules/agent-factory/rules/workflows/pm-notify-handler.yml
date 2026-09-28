@@ -15,7 +15,7 @@ concurrency:
 jobs:
   check-progress:
     if: github.event.label.name == 'pm-notify'
-    runs-on: arc-runner-adp
+    runs-on: arc-runner-org
     permissions:
       contents: write
       issues: write

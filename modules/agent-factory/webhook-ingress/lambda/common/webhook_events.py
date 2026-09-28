@@ -12,26 +12,203 @@ Table schema:
   GSI2SK: arrived_at
   TTL: expires_at (arrived_at + 30 days)
 
+  engine-command-index (sparse, #4527):
+    PK: engine_command_status  SK: arrived_at
+
 Query patterns:
   - All events for a tenant in the last 24h via tenant-index
   - All events for a user via user-index
   - Single event lookup by event_id + arrived_at
+  - Outstanding `@agent-engine` commands, oldest first, via engine-command-index
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
+
+from common import command_signing
 
 logger = logging.getLogger(__name__)
 
 # TTL: 30 days in seconds
 EVENT_TTL_SECONDS = 30 * 24 * 60 * 60
+
+# --- Engine-command bridge (issue #4527) -------------------------------------
+# An `@agent-engine` comment produces no agent pod and no SQS message. The ROW is
+# the delivery mechanism: this Lambda marks it pending, and the gateway-side
+# orchestration tick queries the sparse `engine-command-index` on its next wake,
+# applies the command and flips the marker to consumed.
+#
+# `engine_command_status` is the index's hash key, which makes the index sparse:
+# only rows carrying this attribute are projected, so the tick's Query scans the
+# handful of outstanding commands rather than every webhook of the last 30 days.
+#
+# The tick lives in the gateway container and CANNOT import this module (separate
+# deploy units — same constraint that forces `_emit_row_write_dropped` to
+# re-implement the gateway's metric helper). It re-declares these two values; the
+# pair is asserted equal by a test on each side.
+ENGINE_COMMAND_STATUS_PENDING = "pending"
+ENGINE_COMMAND_STATUS_CONSUMED = "consumed"
+
+#: Cap on the stored comment body. Commands are one line; a `replan:` directive
+#: may be a paragraph. GitHub allows 65536-char comments, and this row is written
+#: from unauthenticated-until-verified webhook input, so it is bounded here rather
+#: than trusted to be small. Generous enough that no realistic command is cut, far
+#: enough under DynamoDB's 400 KB item limit that a body can never be what makes a
+#: write fail.
+ENGINE_COMMAND_BODY_MAX_CHARS = 4000
+
+# --- Engine-command attribution signature (issue #4539) -----------------------
+# The row above is the delivery mechanism, which makes it the carrier of *who
+# asked for what, on which plan*. Those fields are ordinary mutable attributes:
+# GitHub's HMAC is verified on the DELIVERY and, before #4539, nothing carried
+# that verification forward, so anything able to write the row could choose the
+# acting identity and routing target of a human approval.
+#
+# These four attributes are that missing link. `common/command_signing.py` builds
+# a versioned canonical envelope over exactly the authority-and-routing tuple and
+# signs it under a DEDICATED key; the gateway tick refuses any marked row whose
+# signature does not reproduce, before it resolves an identity or uses a row field
+# for a side effect.
+#
+# The signed tuple is stored as the CANONICAL JSON STRING, not as a DynamoDB map.
+# A map would round-trip every number through `Decimal` (boto3's resource layer),
+# so `4539` would come back as `Decimal('4539')` and re-serialize as `4539.0` or
+# raise — silent numeric drift in the one value the signature must reproduce
+# byte-for-byte. A string is opaque to that conversion, and it is already exactly
+# the bytes that were signed.
+ENGINE_COMMAND_SIGNATURE_ATTR = "engine_command_signature"
+ENGINE_COMMAND_KEY_ID_ATTR = "engine_command_signing_key_id"
+ENGINE_COMMAND_SIGNED_PAYLOAD_ATTR = "engine_command_signed_payload"
+ENGINE_COMMAND_PROTOCOL_VERSION_ATTR = "engine_command_protocol_version"
+
+# Imported rather than re-declared: `command_signing` is in THIS deploy unit
+# (both are `common/`, zipped into the same artifact), so the two cannot drift.
+# Contrast `ENGINE_COMMAND_STATUS_*` above, which the gateway must re-declare
+# precisely because it is a different deploy unit and cannot import this file.
+ENGINE_COMMAND_PROTOCOL = command_signing.ENVELOPE_VERSION
+
+# Issue #4347: namespace/metric for a dropped row write. Namespace matches the
+# existing WebhookIngress metrics (metrics.py, correlation_store.py) so the
+# drop lands on the same dashboard as the rest of ingress observability.
+METRICS_NAMESPACE = "WebhookIngress"
+ROW_WRITE_DROPPED_METRIC = "WebhookEventRowWriteDropped"
+
+#: Issue #4539: emitted when a pending marker is written WITHOUT a signature.
+#: Such a row is refused and quarantined by the tick, which is the intended
+#: fail-visible behaviour — but the tick's refusal only says "this row was not
+#: signed", whereas this metric fires at the point that knows *why* (no key
+#: seeded, keyring malformed, oversize body). An environment that never seeded
+#: the key therefore shows up here on the first command instead of as a silent
+#: stream of refusals nobody can attribute.
+ENGINE_COMMAND_UNSIGNED_METRIC = "EngineCommandRowUnsigned"
+
+_cloudwatch = None
+
+
+def _get_cloudwatch():
+    """Return a lazily-created, module-cached CloudWatch client."""
+    global _cloudwatch
+    if _cloudwatch is None:
+        region = (
+            os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+            or "us-east-1"
+        )
+        _cloudwatch = boto3.client("cloudwatch", region_name=region)
+    return _cloudwatch
+
+
+def _emit_row_write_dropped(status: str, error_kind: str) -> None:
+    """Emit ``WebhookEventRowWriteDropped`` when a row write is swallowed (#4347).
+
+    The row write below is best-effort by design so audit logging never blocks a
+    webhook response. That is correct while the row is only an audit record — but
+    under #4187 enforce the same row becomes the run's AUTHORIZATION record
+    (``run_binding.verify_row_matches_caller`` reads it on the model-call path).
+    A silently dropped write then means the run dispatches fine and is denied on
+    every model call for its whole lifetime, with no retry path: ``unknown_run``
+    is deliberately not negative-cached, but the row never appears either, so
+    re-lookup never succeeds.
+
+    This metric removes the silence. It does NOT change the best-effort
+    semantics — making the write authoritative (fail the spawn) is the separate,
+    deliberately deferred option 1.
+
+    Modelled on the gateway's ``emit_run_binding_drift`` (dimension per cause, so
+    the drop is alertable) but implemented with the in-module
+    ``put_metric_data`` pattern from ``correlation_store``: webhook-ingress is a
+    Lambda deploy unit and cannot import gateway container code.
+
+    Emitted ONLY on a drop — the happy path emits nothing, so there are no false
+    positives and no per-webhook metric cost.
+
+    Args:
+        status: The row's lifecycle status, so an operator can tell an
+            authorization-bearing ``webhook_received`` drop (the #4187 hazard)
+            from a terminal-at-ingress ``blocked``/``no_op`` drop (audit only).
+        error_kind: Exception class name of the underlying failure.
+    """
+    try:
+        _get_cloudwatch().put_metric_data(
+            Namespace=METRICS_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": ROW_WRITE_DROPPED_METRIC,
+                    "Dimensions": [
+                        {"Name": "Status", "Value": status or "unknown"},
+                        {"Name": "ErrorKind", "Value": error_kind},
+                    ],
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        # Best-effort — a metric failure must never crash the caller, or the
+        # observability fix would become a worse outage than the silence it fixes.
+        logger.debug("Failed to emit %s metric: %s", ROW_WRITE_DROPPED_METRIC, e)
+
+
+def _emit_engine_command_unsigned(reason: str) -> None:
+    """Emit ``EngineCommandRowUnsigned`` when a marker is written unsigned (#4539).
+
+    Signing failure deliberately does not block the webhook response and does not
+    drop the audit row — the row is written with its marker and without a
+    signature, and the tick refuses and quarantines it. That is the correct
+    fail-visible outcome, but the tick can only report "unsigned"; the cause is
+    known HERE (no key seeded, keyring malformed, body over the bound).
+
+    Reason values are a bounded set derived from the exception class name, never
+    payload content and never any part of the secret: an unbounded dimension would
+    both blow up CloudWatch cardinality and risk putting delivery content into
+    metric names.
+
+    Args:
+        reason: Short, bounded cause tag for the dimension.
+    """
+    try:
+        _get_cloudwatch().put_metric_data(
+            Namespace=METRICS_NAMESPACE,
+            MetricData=[
+                {
+                    "MetricName": ENGINE_COMMAND_UNSIGNED_METRIC,
+                    "Dimensions": [{"Name": "Reason", "Value": reason or "unknown"}],
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            ],
+        )
+    except Exception as e:
+        logger.debug("Failed to emit %s metric: %s", ENGINE_COMMAND_UNSIGNED_METRIC, e)
 
 
 class WebhookEventLogger:
@@ -75,6 +252,7 @@ class WebhookEventLogger:
         status: str = "webhook_received",
         processing_time_ms: int | None = None,
         error_message: str | None = None,
+        skip_reason: str | None = None,
         user_id: str = "unattributed",
         github_login: str | None = None,
         persona: str | None = None,
@@ -85,9 +263,20 @@ class WebhookEventLogger:
         correlation_id: str | None = None,
         parent_invocation_id: str | None = None,
         chain_depth: int | None = None,
+        credential_chain_depth: int | None = None,
         root_human_id: str | None = None,
         is_human_rooted: bool | None = None,
         authorized_user_id: str = "",
+        engine_command: bool = False,
+        comment_body: str | None = None,
+        sender_github_id: str | None = None,
+        sender_is_bot: bool = False,
+        actor_kind: str | None = None,
+        actor_user_id: str | None = None,
+        engine_command_signature: str | None = None,
+        engine_command_signing_key_id: str | None = None,
+        engine_command_signed_payload: str | None = None,
+        create_only: bool = False,
     ) -> dict[str, Any]:
         """Record a webhook event in DynamoDB.
 
@@ -106,6 +295,11 @@ class WebhookEventLogger:
             status: Processing status lifecycle value.
             processing_time_ms: Lambda processing time in milliseconds.
             error_message: Error details if status is 'error'.
+            skip_reason: Issue #4020 — why this delivery produced no agent run.
+                A static enum from common/skip_reasons.py, or a SpawnResult
+                block_reason. Read by the Activity UI to explain a no_op /
+                blocked / skipped row instead of showing a bare "✗ No-op" badge.
+                MUST NOT contain webhook payload content (see skip_reasons.py).
             user_id: Platform user ID from identity resolver.
                 "unattributed" if resolution failed (never dropped).
             github_login: GitHub sender login (display only).
@@ -120,9 +314,63 @@ class WebhookEventLogger:
                 the Activity chain view. Computed by determine_correlation but
                 previously never persisted to the row (issue #1750).
             chain_depth: This run's depth in the chain (#1696).
+            credential_chain_depth: Conservative, monotonic depth used for the
+                credential horizon (#5365).  Persisted separately because the
+                recursion cap is per-lineage while credential inheritance must
+                never be recoverable by selecting a shallower row.
             authorized_user_id: Canonical user whose credentials this run
                 may access (#3174). Set at spawn from chain policy; empty
                 string means no vault access. Written but unread until S2.
+            actor_kind: Acting principal type, separate from human attribution.
+            actor_user_id: Actual acting principal, separate from human authority.
+            create_only: Preserve an existing invocation row on an ingress retry.
+            engine_command: Issue #4527 — this delivery is an ``@agent-engine``
+                comment. Marks the row ``engine_command_status=pending`` so the
+                orchestration tick picks it up. Nothing else about the row
+                changes: no queue message, no gateway call.
+            comment_body: The raw comment text, stored ONLY when
+                ``engine_command`` is true and truncated to
+                ``ENGINE_COMMAND_BODY_MAX_CHARS``. The tick parses the command
+                from it — this Lambda deliberately does not, because parsing needs
+                the graph and the tenant, which it cannot see (#4303).
+            sender_github_id: The commenter's NUMERIC GitHub id as a string, again
+                only on the engine path. Numeric rather than the login because
+                logins are renameable, so a login would let a renamed account
+                inherit another user's approvals. The tick resolves it to a
+                platform identity server-side and never trusts it as authority.
+            sender_is_bot: Issue #4599 — whether a bot or GitHub App authored the
+                comment. A FACT this component already knows (it gates persona
+                dispatch on the same signal) and the tick cannot recompute, because
+                only the body and the sender id reach the row — author-kind never
+                did. Carried, not parsed, so #4303's closed-routes constraint is
+                untouched: the Lambda still decides nothing about the command.
+
+                The tick reads it to skip replying to a bot's own comment. It is a
+                NOISE filter, not an authorization boundary — bot identities seed
+                with ``role="agent"``, which resolves to MEMBER and therefore lacks
+                ``PLAN_APPROVE``, so a bot command is refused on authority whether
+                or not this flag is present. Do not relax that RBAC because this
+                exists.
+            engine_command_signature: Issue #4539 — base64url HMAC-SHA256 over the
+                canonical authority envelope, produced by
+                ``common/command_signing.sign_command`` immediately after GitHub's
+                webhook signature verified. The tick recomputes it and refuses the
+                row if it does not reproduce, BEFORE resolving an identity or using
+                any row field for a side effect.
+            engine_command_signing_key_id: The keyring id the signature was
+                produced under, so a rotation has an explicit active/previous key
+                and the verifier can select material rather than guess. An unknown
+                or stale id fails closed.
+            engine_command_signed_payload: The exact canonical JSON the signature
+                covers, stored verbatim as a STRING. The verifier reconstructs the
+                signed bytes from THIS rather than from the row's other mutable
+                attributes, then cross-checks those attributes against it — which is
+                what makes a tampered mutable copy detectable instead of merely
+                inconsistent. Stored as a string, not a map, because boto3's
+                resource layer round-trips map numbers through ``Decimal`` and would
+                silently change the bytes.
+
+                All three arrive together or not at all: see the write block below.
 
         Returns:
             The DDB item that was written.
@@ -159,6 +407,11 @@ class WebhookEventLogger:
             item["processing_time_ms"] = processing_time_ms
         if error_message:
             item["error_message"] = error_message
+        # Issue #4020: the reason a delivery produced no run. Optional — rows
+        # written before this change simply lack the attribute, and the API
+        # serializes the absence as null.
+        if skip_reason:
+            item["skip_reason"] = skip_reason
         if github_login:
             item["github_login"] = github_login
         if persona:
@@ -177,6 +430,8 @@ class WebhookEventLogger:
             item["parent_invocation_id"] = parent_invocation_id
         if chain_depth is not None:
             item["chain_depth"] = chain_depth
+        if credential_chain_depth is not None:
+            item["credential_chain_depth"] = credential_chain_depth
         # Issue #2042: persist the chain's human root so the Activity layer can
         # attribute agent-spawned runs to the originating human (not the bot
         # sender) — otherwise cross-issue/agent-triggered runs never appear under
@@ -189,9 +444,85 @@ class WebhookEventLogger:
         # user whose credentials this run may access (ships dark until S2).
         if authorized_user_id:
             item["authorized_user_id"] = authorized_user_id
+        if actor_kind:
+            item["actor_kind"] = actor_kind
+        if actor_user_id:
+            item["actor_user_id"] = actor_user_id
+        # Issue #4527: mark the row for the orchestration tick. The three
+        # attributes are written together or not at all — a pending marker with no
+        # body would make the tick wake up to a command it cannot parse, and a body
+        # with no marker would never be found (the index is sparse on the marker).
+        # Issue #4599: `engine_command_sender_is_bot` joins that all-or-nothing set.
+        # Always written (not conditional on being true) so the tick can tell "this
+        # row predates the field" from "this row says the author was human" — an
+        # absent attribute defaulting to False is the safe read either way, but an
+        # always-present boolean is what makes the cross-side contract testable.
+        #
+        # Issue #4539: the attribution signature joins that same all-or-nothing set,
+        # in BOTH directions.
+        #
+        #   * No signature without a marker. A signature on an unmarked row is dead
+        #     weight the sparse index never surfaces, and writing one would suggest
+        #     a verified command exists where none does.
+        #   * No marker "half-signed". The signature, its key id, the protocol
+        #     version and the signed payload are written as a unit. A row carrying a
+        #     signature but no key id (or no payload) is unverifiable-but-
+        #     signed-looking, which is the single worst state available here: a
+        #     verifier that treated a missing key id as "use the active key" would
+        #     hand an attacker the choice of which key their forgery is checked
+        #     against.
+        #
+        # An UNSIGNED marker, by contrast, is a legitimate and expected state — it
+        # is what a signing failure produces, and the tick refuses and quarantines
+        # it. That path is fail-visible on purpose (metric below), because the
+        # alternative, dropping the row, would erase the audit record of a command
+        # somebody really did send.
+        if engine_command:
+            item["engine_command_status"] = ENGINE_COMMAND_STATUS_PENDING
+            item["engine_command_body"] = (comment_body or "")[
+                :ENGINE_COMMAND_BODY_MAX_CHARS
+            ]
+            item["engine_command_sender_github_id"] = sender_github_id or ""
+            item["engine_command_sender_is_bot"] = bool(sender_is_bot)
+
+            signature = (engine_command_signature or "").strip()
+            key_id = (engine_command_signing_key_id or "").strip()
+            signed_payload = engine_command_signed_payload or ""
+            if signature and key_id and signed_payload:
+                item[ENGINE_COMMAND_SIGNATURE_ATTR] = signature
+                item[ENGINE_COMMAND_KEY_ID_ATTR] = key_id
+                item[ENGINE_COMMAND_SIGNED_PAYLOAD_ATTR] = signed_payload
+                item[ENGINE_COMMAND_PROTOCOL_VERSION_ATTR] = ENGINE_COMMAND_PROTOCOL
+            else:
+                # Partial input is treated as no signature at all, never as a
+                # partially trusted one. `incomplete` is distinguished from `absent`
+                # because they have different causes: absent means signing raised
+                # (no key, bad keyring, oversize body) and incomplete means a caller
+                # passed a subset, which is a code defect worth its own alarm.
+                reason = (
+                    "absent"
+                    if not (signature or key_id or signed_payload)
+                    else ("incomplete")
+                )
+                logger.error(
+                    "Engine command row %s written WITHOUT an attribution signature "
+                    "(%s); the orchestration tick will refuse and quarantine it. "
+                    "Check that the engine-command signing key is seeded for this "
+                    "environment.",
+                    event_id,
+                    reason,
+                )
+                _emit_engine_command_unsigned(reason)
 
         try:
-            self._table.put_item(Item=item)
+            self._table.put_item(
+                Item=item,
+                **(
+                    {"ConditionExpression": "attribute_not_exists(event_id)"}
+                    if create_only
+                    else {}
+                ),
+            )
             logger.info(
                 "Logged webhook event: event_id=%s tenant=%s user=%s status=%s",
                 event_id,
@@ -200,8 +531,32 @@ class WebhookEventLogger:
                 status,
             )
         except Exception as e:
-            # Best-effort logging — never block the webhook response
-            logger.error("Failed to log webhook event %s: %s", event_id, e)
+            if (
+                create_only
+                and isinstance(e, ClientError)
+                and e.response["Error"]["Code"] == "ConditionalCheckFailedException"
+            ):
+                return {
+                    "event_id": event_id,
+                    "arrived_at": arrived_at,
+                    "already_recorded": True,
+                }
+            # Best-effort logging — never block the webhook response.
+            # Issue #4347: but no longer SILENTLY. Under #4187 enforce this row is
+            # the run's authorization record, so a dropped write means the run
+            # dispatches and is then denied on every model call for its whole
+            # life, with no retry. Emit an alertable metric so the drop is caught
+            # before it becomes a wave of 402s.
+            logger.error(
+                "Failed to log webhook event %s (status=%s): %s — row dropped; "
+                "under #4187 enforce this row is the run's authorization record, "
+                "so this run may be denied on every model call",
+                event_id,
+                status,
+                e,
+            )
+            _emit_row_write_dropped(status=status, error_kind=type(e).__name__)
+            item["write_failed"] = True
 
         return item
 

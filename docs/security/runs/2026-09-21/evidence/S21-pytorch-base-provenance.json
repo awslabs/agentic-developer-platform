@@ -1,0 +1,12 @@
+{
+  "repository": "docker.io/pytorch/pytorch",
+  "tag": "2.8.0-cuda12.8-cudnn9-runtime",
+  "digest": "sha256:417bd75df6365104c283ea4c1651fb3530d9eb5a4c2fafa51943cff2a94e6385",
+  "source": "Docker Hub official pytorch organization registry manifest",
+  "manifest_sha256_verified": true,
+  "architecture": "amd64",
+  "os": "linux",
+  "config_digest": "sha256:b2078535036f785b93ef4da8138bcbba589ab3a0e66b74d6f3f05dc838b6f059",
+  "config_sha256_verified": true,
+  "layer_bytes": 4288258545
+}

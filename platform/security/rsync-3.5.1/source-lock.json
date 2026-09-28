@@ -1,0 +1,13 @@
+{
+  "upstream_version": "3.5.1",
+  "package_version": "3.5.1-0+adp1",
+  "source_url": "https://github.com/RsyncProject/rsync/releases/download/v3.5.1/rsync-3.5.1.tar.gz",
+  "source_sha256": "c55f9c9dc10fb8bec397b399a0fdded53cc9a2d8e30891bb0d63724d25c37bef",
+  "authenticated_checksum_source": "GitHub official release asset digest",
+  "signature_fingerprint": "8EDF88F4731A1E8B45D67FBE6909546B2C52EC2D",
+  "signature_primary_fingerprint": "C0E1054505704F757D925AB26A64E8AA2EFBCF5D",
+  "key_source": "https://keys.openpgp.org/vks/v1/by-fingerprint/8EDF88F4731A1E8B45D67FBE6909546B2C52EC2D",
+  "maintainer_authority_evidence": "official release NEWS: Zen Dodd now has release authority as an rsync maintainer",
+  "system_zlib": true,
+  "debian_integration_package": "3.4.1+ds1-5+deb13u4"
+}

@@ -1,0 +1,11 @@
+{
+  "image": "security27/skypilot-go-tools:fixed",
+  "docker_root_descriptor": "sha256:65e92431d58468d1a662591c0158a0c623e11915304eb3a9ac2a1728037b9164",
+  "config_digest": "sha256:276924e727b876ae439a5f1b07b530812b0ddd91e6382fbe55571535d6b962a9",
+  "time": "2026-09-27T20:15:35.288941+00:00",
+  "packages": 35,
+  "native_counts": {},
+  "sbom_sha256": "6db3dcb3cc150a2400ceceb1b20ad588373174225f1c07dc42bcacf40f7a5884",
+  "grype_sha256": "2f678d9022d5e27e483152d4f24939999b37e13c16b93f95ea5b903d56d13f36",
+  "archive_sha256": "77bdf9ccacb5ec4204cb2541ecf0deac46ba1f94d1b58cb2ce2f15d88e60db48"
+}

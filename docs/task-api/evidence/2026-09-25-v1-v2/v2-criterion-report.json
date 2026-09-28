@@ -1,0 +1,67 @@
+{
+  "evaluation": "V2 #5803",
+  "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "review_at": "2026-09-25T05:18:55.772249+00:00",
+  "evaluator": "runtime_contracts",
+  "image_digest": "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+  "image_source": "029fdfe9d",
+  "fixture_source": "0cf34e510ef2c4bb9b9a0033f879362fff8897ca",
+  "criteria": {
+    "V2-01": {
+      "status": "PASS",
+      "proof": "Actual57d image preserves all four Claude/Codex package manifests and lockfiles versus accepteddesign revision, distinct taskpackage/lockfile; installedsourcehashes and fullmainexecution prove original entrycommands. legacy-image/{package-preservation.json,installed-source.json,provenance.json}."
+    },
+    "V2-02": {
+      "status": "PASS",
+      "proof": "Built image task selection with GitHub-free envelope executes useful/cancelled/malformed task cases; selectors preserve branch isolation and unknown task persona refusal. runtime-image/result.json."
+    },
+    "V2-03": {
+      "status": "PASS",
+      "proof": "Built-image useful fixture runs with network denied and zero observed network calls (runtime-image/result.json/network-probe.json). Separate actual two-model-turn useful completion has isolated service tenant and no GitHub integration: ../2026-09-25-clean-completion/completion-report.json."
+    },
+    "V2-04": {
+      "status": "PASS",
+      "proof": "21 exact-source ingress isolation tests for GitHub, EventBridge and agent-trigger admission off/on and task module import failure: v2-ingress-isolation-tests.xml (source128473159)."
+    },
+    "V2-05": {
+      "status": "PASS",
+      "proof": "26 passing tests inside actual57d image import installed productionmain andCodexfinalizer; Claude/Codex fullentrypointcontrolledprocessreceipt, exactCodexstdin/text/capture/result summary and dedicated finalization publication/replay/failure tested. legacy-image/{results.xml,test_installed_legacy.py,provenance.json}. No live modelcalls claimed for this lane."
+    },
+    "V2-06": {
+      "status": "PASS",
+      "proof": "Built-image installed task host/child with controlled gateway exercises bounded run credentials/workspace/model path; independent task bootstrap and authority refusal tests in v1-authority-tests.xml; actual clean task uses public input artifact without GitHub host flow."
+    },
+    "V2-07": {
+      "status": "PASS",
+      "proof": "Actual clear progress preceding terminal completion, consumed clarification and useful validated output: ../2026-09-25-clean-completion/{public-events.ndjson,progress-latency.json,completion-report.json}. Result artifact2762bytes SHA256e7e993ac7ce632e264b7335cfad091dd5f4a4acb16acc884b5f5d05e8372e6cc verified before queue acknowledgement."
+    },
+    "V2-08": {
+      "status": "PASS",
+      "proof": "Built-image lost receipt replay persists one unique artifact and safely completes/acks; corrupt receipt fails with75 and no completion/ack. Cancelled and malformed child results and cleanup evidence preserved; task read/report/store/stream tests prove fences, stream subscription closure and explicit lifecycle. Previous failed realrun is preserved separately and not counted as completion."
+    }
+  },
+  "limits": [
+    "Controlled image lanes explicitly have zero real model/gateway calls; actual useful completion is separately evidenced.",
+    "Network-denied controlled fixture proves no GitHub dependency; does not assert packet-level observation of every production worker connection.",
+    "Legacy image first harness launch failed collection because pytest py.py shim was absent. Corrected harness then executed26 tests without production changes; both attempts preserved."
+  ],
+  "artifact_sha256": {
+    "runtime-image/adapter-result.json": "7e54b2587b9af6b94bfa3206e5230a1461dbe1482b788a4c87f03bb21cc1f30a",
+    "runtime-image/network-probe.json": "b4eb15f67d5ab07613e9ad433d9c349151c398b82d5fa077e6ec97f3af54f687",
+    "runtime-image/result.json": "bcc75c4289a58d71da612910ed39571fb42dfdf548a835e215e5354ef2566be0",
+    "runtime-image/host-result.json": "e974d76966b46533d6ac1a247dab883a087ed1b67dc9d0199fcaf5a3c6997583",
+    "runtime-image/cleanup-check.json": "844adc79b88204fb650a175e14a6eb8946bceb5cde57d484d4971fc996c56850",
+    "runtime-image/provenance.json": "18c4a67cd82d4018fec0289caffd3ab81c87affbc69809068c4af3ed461940f8",
+    "runtime-image/expected-hashes.json": "c830d1584b1070e6c51cd331bfeebd19c4cb274a62a9e200d5d45b35501a6ed8",
+    "legacy-image/pytest.log": "56820786df644329ece4c013246a0ad7615daed4297ecb9ae4fece0732406483",
+    "legacy-image/pytest-missing-shim.log": "f01e007eec14414d2e35a3a37ff4ffd9c0a9685b1ff57233db4f5ce767513571",
+    "legacy-image/results.xml": "af4871888f1442b7ff2e0e1c8b20b724f85485b0f7cb5e1865bed135a9fc383d",
+    "legacy-image/package-preservation.json": "13ac37d9bc63aec0af6f9d8312947b4d0f3a6485337f08df12ec728787960e23",
+    "legacy-image/test_installed_legacy.py": "75666519dd19c6b16c1bbd9f4655f0b2e4765ca2a348b7847d0143406070c2e8",
+    "legacy-image/provenance.json": "44e3fc73af7b891dbf64b1e0309c15d6dd6df3b211891baa83ea99d9713ec25c",
+    "legacy-image/installed-source.json": "7841c380037f94ee93d57a3df42e6a40be5d74a0677fd18082daf589e6898c8e",
+    "legacy-image/expected-hashes.json": "979197edde8077cdababc588173fe3941a3d4d108f25513bd502dc275c382e72",
+    "legacy-image/digest.txt": "c5c238b1da2aa14fef606a04988725c0bd5753665828a7e4c57d10572239c7d2",
+    "legacy-image/cleanup-check.json": "844adc79b88204fb650a175e14a6eb8946bceb5cde57d484d4971fc996c56850"
+  }
+}

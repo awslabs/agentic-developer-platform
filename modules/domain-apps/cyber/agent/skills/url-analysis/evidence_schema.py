@@ -3,7 +3,7 @@ Evidence schema for url-analysis skill.
 
 Defines the structured data contract between the agent-written orchestration
 script and the deterministic verdict/report logic. The agent populates Evidence
-by whatever means (CDP, InvokeBrowser, Playwright); verdict.py consumes it.
+through the guarded browser facade; verdict.py consumes it.
 """
 
 from __future__ import annotations
@@ -103,6 +103,7 @@ class Evidence(BaseModel):
     run_started_at: str = ""  # ISO8601
     run_completed_at: str = ""  # ISO8601
     session_id: str = ""
+    collection_status: Literal["complete", "partial", "failed"] = "complete"
     error: str | None = None
     agent_orchestration_script_uri: str | None = None
 
@@ -111,9 +112,11 @@ class Evidence(BaseModel):
         Convert to the dict format expected by verdict.synthesize_verdict().
 
         This bridges the new Evidence schema to the existing verdict interface,
-        keeping verdict.py byte-identical.
+        including collection failures so they cannot produce clearance.
         """
         return {
+            "error": self.error,
+            "collection_status": self.collection_status,
             "final_url": self.final_url,
             "http_status": self.http_status,
             "redirect_chain": [r.to_url for r in self.redirects],

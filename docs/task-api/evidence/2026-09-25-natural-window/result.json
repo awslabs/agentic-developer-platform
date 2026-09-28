@@ -1,0 +1,29 @@
+{
+  "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+  "cursor": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:14",
+  "lane": "completed-task-natural-connection-window",
+  "writes_performed": 0,
+  "connections": [
+    {
+      "started_at": "2026-09-25T05:35:24.036415+00:00",
+      "last_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:14",
+      "frames": 40,
+      "heartbeats": 39,
+      "http_status": 200,
+      "close": "natural-eof",
+      "ended_at": "2026-09-25T05:45:25.082221+00:00",
+      "elapsed_seconds": 601.0458327460219
+    },
+    {
+      "started_at": "2026-09-25T05:45:25.082502+00:00",
+      "last_event_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999:14",
+      "frames": 2,
+      "heartbeats": 1,
+      "http_status": 200,
+      "close": "observer-after-snapshot-and-heartbeat",
+      "ended_at": "2026-09-25T05:45:40.650841+00:00",
+      "elapsed_seconds": 15.56834382400848
+    }
+  ],
+  "criterion_outcome": "PASS"
+}

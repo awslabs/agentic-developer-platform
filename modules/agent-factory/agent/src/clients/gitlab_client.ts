@@ -34,6 +34,8 @@ export class GitLabClient {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/issues/${issueIid}/notes`;
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
     const resp = await fetch(url, {
+      // Keep credentials and request bodies on the configured destination (S21).
+      redirect: 'error',
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({ body }),
@@ -54,6 +56,8 @@ export class GitLabClient {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/repository/branches`;
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
     const resp = await fetch(url, {
+      // Keep credentials and request bodies on the configured destination (S21).
+      redirect: 'error',
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({ branch: branchName, ref }),
@@ -77,6 +81,8 @@ export class GitLabClient {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/merge_requests`;
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
     const resp = await fetch(url, {
+      // Keep credentials and request bodies on the configured destination (S21).
+      redirect: 'error',
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({
@@ -105,6 +111,8 @@ export class GitLabClient {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/repository/files/${encodedPath}?ref=${encodeURIComponent(ref)}`;
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
     const resp = await fetch(url, {
+      // Keep credentials and request bodies on the configured destination (S21).
+      redirect: 'error',
       method: 'GET',
       headers: this.headers(),
     });

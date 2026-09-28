@@ -14,11 +14,13 @@
 
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
+import { buildSummaryPrompt } from './utils/superpower-summary-prompt';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
+import { resolveAgentLogGroup } from './lib/logGroup';
 
 // ============================================================================
 // Configuration
@@ -53,7 +55,7 @@ const POLL_INTERVAL_MS = 30_000; // 30 seconds
 // CloudWatch Logging
 // ============================================================================
 
-const LOG_GROUP = '/github-ccsdk-agent/logs';
+const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `agent-superpower-issue-${ISSUE_NUMBER}-${Date.now()}`;
 const cwClient = new CloudWatchLogsClient({ region: AWS_REGION });
 let cwBuffer: { timestamp: number; message: string }[] = [];
@@ -939,93 +941,16 @@ User rejected the proposed design. No changes made.`);
     try {
       for await (const message of resilientQuery({
         queryParams: {
-          prompt: `You just completed implementing a task. Generate a detailed, SPECIFIC completion summary for the GitHub issue.
-
-## Original Issue
-**Title**: ${issue.title}
-**Issue #**: ${issue.number}
-
-**Description**:
-${issue.body}
-
-## What Was Done
-
-### Brainstorming/Design Phase Output:
-${design.substring(0, 3000)}
-
-### Implementation Output:
-${result.substring(0, 3000)}
-
-### Files Created (${fileList.length} total):
-${fileList.slice(0, 50).join('\n')}
-${fileList.length > 50 ? `\n... and ${fileList.length - 50} more files` : ''}
-
-## Your Task
-
-Write a GitHub comment that provides a **SPECIFIC** summary of what was accomplished.
-
-**IMPORTANT**: Do NOT use generic phrases like "Created implementation plan" or "Analyzed requirements".
-Instead, be SPECIFIC about:
-- What specific design decisions were made and WHY
-- What specific components/features were built
-- What specific technologies/tools are used
-- What specific tests were written
-- Any important configuration or setup details
-- Specific next steps the user should take
-
-Format the comment as:
-
-## 🦸 @agent-pt-superpower Complete
-
-**Completed**: [timestamp]
-**Project Folder**: \`${projectFolder}/\`
-
----
-
-### 📋 Summary
-
-[2-3 sentences summarizing the SPECIFIC outcome - what was built, not generic process description]
-
----
-
-### 🎯 Key Decisions Made
-
-[Bullet points of SPECIFIC decisions from brainstorming, e.g., "Chose Hub-and-Spoke architecture because...", "Selected ArgoCD over Flux because..."]
-
----
-
-### 🔧 What Was Built
-
-[SPECIFIC description of components created, e.g., "Terraform modules for EKS cluster with...", "ArgoCD ApplicationSets for..."]
-
----
-
-### 📁 Project Structure
-
-[Brief description of the folder structure and what each major directory contains]
-
----
-
-### ✅ Tests & Validation
-
-[What specific tests were written and what they validate]
-
----
-
-### 🚀 Next Steps
-
-[SPECIFIC, actionable next steps for THIS task, not generic instructions. E.g., "1. Set AWS credentials: export AWS_PROFILE=...", "2. Initialize Terraform: cd terraform/environments/hub && terraform init"]
-
----
-
-### ⚠️ Important Notes
-
-[Any caveats, assumptions, or things the user should be aware of specific to this implementation]
-
-Post this summary using:
-\`\`\`bash
-gh issue comment ${ISSUE_NUMBER} --body "<your summary>"
-\`\`\``,
+          prompt: buildSummaryPrompt({
+            issueTitle: issue.title,
+            issueNumber: issue.number,
+            issueBody: issue.body,
+            design,
+            result,
+            fileList,
+            projectFolder,
+            commentIssueNumber: ISSUE_NUMBER,
+          }),
           options: {
             model: MODEL,
             cwd: CWD,

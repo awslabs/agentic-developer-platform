@@ -370,21 +370,11 @@ class TestBgAuthTrailingSlash:
         assert result.returncode == 0
         assert "bg-token" in result.stdout
 
-
-class TestInstallScript:
-    """Test install.sh script."""
-
-    def test_install_help(self, install_script: Path) -> None:
-        """Test install.sh --help shows usage."""
-        result = run_script(install_script, ["--help"])
-        assert result.returncode == 0
-        assert "Install Bedrock Gateway CLI tools" in result.stderr or "Install Bedrock Gateway CLI tools" in result.stdout
-
-    def test_install_version(self, install_script: Path) -> None:
-        """Test install.sh --version shows version."""
-        result = run_script(install_script, ["--version"])
-        assert result.returncode == 0
-        assert "v1.0.0" in result.stdout
+    # install.sh's own tests moved to tests/cli/test_adp_install.py in Issue
+    # #4852. It no longer installs bg-auth.sh (deprecated) — it installs the
+    # `adp` CLI — so its coverage no longer belongs in this legacy suite. The
+    # --help / --version assertions that lived here are now
+    # TestUsage::{test_help_describes_the_adp_cli,test_version_is_reported}.
 
 
 class TestClaudeSettingsExample:

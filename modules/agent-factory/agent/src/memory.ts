@@ -12,7 +12,7 @@
  *         └── agents/<persona>/run_issue-<N>_<timestamp>.md
  */
 
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import * as path from 'path';
 
 // ============================================================================
@@ -39,6 +39,9 @@ interface ContextFile {
 // ============================================================================
 
 const ADP_BRANCH = 'adp';
+// clone --depth implies a single-branch fetch mapping. Name the destination so
+// a successful fetch updates origin/adp rather than only FETCH_HEAD.
+const ADP_FETCH = `git fetch origin +refs/heads/${ADP_BRANCH}:refs/remotes/origin/${ADP_BRANCH}`;
 const CONTEXT_ROOT = 'agent_context';
 const DEFAULT_MAX_FILES = 5;
 
@@ -127,15 +130,13 @@ export function configureMemory(config: MemoryConfig): void {
 export async function ensureAdpBranch(): Promise<void> {
   const { cwd } = cfg();
 
-  // Try fetching the branch from origin
-  const fetched = run(`git fetch origin ${ADP_BRANCH}`, cwd);
-  if (fetched !== null) {
-    // Check if the remote branch ref exists after fetch
-    const refCheck = run(`git rev-parse --verify origin/${ADP_BRANCH}`, cwd);
-    if (refCheck !== null) {
-      log('INFO', 'adp branch exists on origin');
-      return;
-    }
+  // A failed lookup is not evidence of absence: never create an orphan branch
+  // just because the remote is unavailable or credentials could not fetch it.
+  const remote = runOrThrow(`git ls-remote --heads origin refs/heads/${ADP_BRANCH}`, cwd);
+  if (remote) {
+    runOrThrow(ADP_FETCH, cwd);
+    log('INFO', 'adp branch exists on origin');
+    return;
   }
 
   log('INFO', 'adp branch not found — creating orphan branch');
@@ -253,31 +254,44 @@ export async function writeAgentRecord(agentType: string, content: string): Prom
  * Read context files from a folder on the adp branch (via git show).
  * Never checks out the adp branch — reads objects directly.
  */
+function readGitObject(args: string[], cwd: string): string | null {
+  try {
+    return execFileSync('git', args, {
+      cwd, encoding: 'utf8', timeout: 30_000, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch {
+    return null;
+  }
+}
+
 async function readContextFolder(folderPath: string): Promise<string[]> {
   const { cwd, maxFilesPerFolder } = cfg();
   const maxFiles = maxFilesPerFolder ?? DEFAULT_MAX_FILES;
 
   // Ensure we have the latest
-  run(`git fetch origin ${ADP_BRANCH}`, cwd);
+  run(ADP_FETCH, cwd);
 
   // List files in the folder on origin/adp
-  const listing = run(`git ls-tree --name-only origin/${ADP_BRANCH}:${folderPath}`, cwd);
+  const listing = readGitObject(['ls-tree', '--name-only', '-z', `origin/${ADP_BRANCH}:${folderPath}`], cwd);
   if (!listing) {
     log('INFO', `No context files found at ${folderPath}`);
     return [];
   }
 
-  // Sort descending (newest first by filename convention) and limit
+  // Issue numbers are not chronological. Timestamped records precede legacy
+  // names, which retain deterministic reverse-lexical ordering.
   const files = listing
-    .split('\n')
+    .split('\0')
     .filter((f) => f.endsWith('.md'))
-    .sort()
-    .reverse()
+    .sort((a, b) => {
+      const stamp = (name: string) => name.match(/_(\d{4}-\d{2}-\d{2}T\d{2}-\d{2})\.md$/)?.[1] ?? '';
+      return stamp(b).localeCompare(stamp(a)) || b.localeCompare(a);
+    })
     .slice(0, maxFiles);
 
   const results: ContextFile[] = [];
   for (const file of files) {
-    const content = run(`git show "origin/${ADP_BRANCH}:${folderPath}/${file}"`, cwd);
+    const content = readGitObject(['show', `origin/${ADP_BRANCH}:${folderPath}/${file}`], cwd)?.trim();
     if (content) {
       results.push({ path: `${folderPath}/${file}`, content });
     }
@@ -297,7 +311,7 @@ async function writeToAdpBranch(filePath: string, content: string): Promise<void
 
   try {
     // Fetch latest
-    run(`git fetch origin ${ADP_BRANCH}`, cwd);
+    runOrThrow(ADP_FETCH, cwd);
 
     // Checkout adp branch
     runOrThrow(`git checkout origin/${ADP_BRANCH}`, cwd);

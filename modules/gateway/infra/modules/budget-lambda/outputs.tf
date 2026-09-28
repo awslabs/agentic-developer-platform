@@ -57,6 +57,40 @@ output "pricing_refresh_schedule_rule_arn" {
   value       = aws_cloudwatch_event_rule.pricing_refresh.arn
 }
 
+output "pricing_refresh_schedule_rule_name" {
+  value = aws_cloudwatch_event_rule.pricing_refresh.name
+}
+
+output "pricing_delivery_failure_queue" {
+  description = "EventBridge delivery failures; separate from Lambda execution failures."
+  value       = { arn = aws_sqs_queue.pricing_delivery_failure.arn, url = aws_sqs_queue.pricing_delivery_failure.url }
+}
+
+output "pricing_execution_failure_queue" {
+  description = "Lambda asynchronous execution failures."
+  value       = { arn = aws_sqs_queue.pricing_execution_failure.arn, url = aws_sqs_queue.pricing_execution_failure.url }
+}
+
+output "pricing_alarm_topic_arns" {
+  value = local.pricing_alarm_actions
+}
+
+output "pricing_alarm_inbox" {
+  description = "Default SNS-subscribed operational inbox; null when existing topics were supplied."
+  value = local.create_pricing_alarm_inbox ? {
+    arn              = aws_sqs_queue.pricing_alarm_inbox[0].arn
+    url              = aws_sqs_queue.pricing_alarm_inbox[0].url
+    subscription_arn = aws_sns_topic_subscription.pricing_alarm_inbox[0].arn
+    kms_key_arn      = aws_kms_key.pricing_alarms[0].arn
+  } : null
+}
+
+# CloudWatch Alarms
+output "unknown_model_pricing_alarm_arn" {
+  description = "ARN of the unknown-model-pricing alarm (model billed at default fallback rate — Issue #4592)"
+  value       = aws_cloudwatch_metric_alarm.unknown_model_pricing.arn
+}
+
 # Lambda Layer
 output "psycopg2_layer_arn" {
   description = "ARN of the psycopg2 Lambda Layer"

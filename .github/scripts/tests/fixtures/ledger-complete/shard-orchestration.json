@@ -1,0 +1,10 @@
+{
+  "schema_version": "1",
+  "run_date": "2026-08-30",
+  "stage": "orchestration",
+  "stage_type": "orchestration",
+  "generated_at": "2026-08-30T03:25:00Z",
+  "fields": {
+    "planned_sequence": [5003, 5002, 5004]
+  }
+}

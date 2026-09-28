@@ -1,0 +1,47 @@
+# Lint scope for the Superplane domain app — Issue #5326 (U22), EPIC #4910.
+#
+# `src/` holds the three Superplane components transferred into ADP ownership by U22
+# (superplane-api, superplane-controller, superplane-platform-monitor). It is excluded
+# from ADP's ruff gate, and that exclusion is deliberate rather than convenient.
+#
+# WHY EXCLUDED RATHER THAN REFORMATTED
+#
+# The transfer's evidence property is that every one of the 161 adopted files is
+# byte-identical to the pinned reference at ADP commit 8f01c1ed / upstream 5d543c95 —
+# verified by Git blob id, and recorded that way in `src/TRANSFER-MANIFEST.md`. Applying
+# ADP's conventions to it would destroy exactly the property that makes the transfer
+# auditable: a reviewer could no longer diff the maintained tree against upstream and get
+# an empty result.
+#
+# Measured, under the gateway's ruleset (`select = ["E", "F", "I", "N", "W", "UP"]`,
+# line-length 150) since that is what "ADP conventions" means in this repo:
+#
+#   ruff check   ->  116 findings across the 98 Python files
+#                    (64 I001 unsorted-imports, 49 UP017 datetime-timezone-utc,
+#                     2 UP035 deprecated-import, 1 N802 invalid-function-name)
+#   ruff format  ->  66 of 98 files would be rewritten
+#
+# Both numbers were wrong in an earlier version of this comment (213 and 98), which is
+# worth naming: they were quoted from a run that did not use this ruleset, and nobody can
+# check a justification whose numbers do not reproduce. The commands above are the ones to
+# re-run. Note that ruff's DEFAULT ruleset (E4/E7/E9/F, no I/N/UP) reports zero findings
+# and zero reformats here, so the size of this exclusion is entirely a function of which
+# rules ADP selects — not a claim that the code is broken.
+#
+# Those findings are upstream's existing style, not defects this story introduced, and
+# silencing them file-by-file with `# noqa` would be a large diff through code
+# U13/U14/U15 are about to change.
+#
+# WHAT GATES `src/` INSTEAD
+#
+# Its own tests, which came with it and now run in ADP CI (superplane-domain-ci.yml:
+# "Run transferred Superplane API tests", plus the Go lanes). That is the toolchain the
+# code was written against, so it is the one that can actually judge it.
+#
+# This is scoped to lint only. It does NOT exclude `src/` from CI, from path filters,
+# or from review — those all watch it, and the manifest records the commands.
+#
+# Removing this exclusion is a decision for whoever adopts ADP conventions into the
+# transferred tree wholesale. Doing it in the same commit as a behavioral fix would
+# bury that fix in a reformat.
+extend-exclude = ["src"]

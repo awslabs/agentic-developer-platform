@@ -1,0 +1,156 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: superplane-system
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: superplane-platform-monitor-config
+  namespace: superplane-system
+data:
+  POLL_INTERVAL: "30s"
+  HEARTBEAT_DEGRADED_THRESHOLD: "5m"
+  HEARTBEAT_UNREACHABLE_THRESHOLD: "30m"
+  COST_ANOMALY_MULTIPLIER: "2.0"
+  LOCK_TTL: "2m"
+  LOG_LEVEL: "info"
+  METRICS_ADDR: ":9090"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: superplane-platform-monitor
+  namespace: superplane-system
+  labels:
+    app: superplane-platform-monitor
+    component: control-plane
+spec:
+  replicas: 2  # HA: two replicas with distributed locking
+  selector:
+    matchLabels:
+      app: superplane-platform-monitor
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: superplane-platform-monitor
+        component: control-plane
+    spec:
+      serviceAccountName: superplane-platform-monitor
+      # Pod-level security context (#6105 — pod security reconciliation).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: platform-monitor
+          image: superplane-platform-monitor:latest
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: superplane-platform-monitor-config
+          env:
+            # Issue #5056 (U15): the monitor reaches cluster state through the
+            # API's authenticated observation contract, not through Aurora. There
+            # is deliberately no DATABASE_URL here — the pod holds no database
+            # credential, which is what makes withdrawing its table grant a no-op
+            # for this workload rather than an outage.
+            - name: OBSERVATION_API_URL
+              value: "http://superplane-api.superplane-system.svc.cluster.local:8000"
+            - name: OBSERVATION_CREDENTIAL
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-observation-submitter
+                  key: credential
+            - name: OBSERVATION_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-observation-submitter
+                  key: signing_key
+            # Distinguishes the two replicas so one cannot release the other's
+            # lease; the receiver namespaces the lease holder by this plus the
+            # authenticated submitter id.
+            - name: MONITOR_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: superplane-platform-monitor
+  namespace: superplane-system
+  annotations:
+    # IRSA. Since #5056 this role no longer needs Aurora data-API or IAM-auth
+    # access for the monitor's own reads and writes — those go through the API.
+    # The runbook (docs/runbooks/superplane-monitor-grant-withdrawal.md) sequences
+    # narrowing it against the in-database grant withdrawal; U23 (#5327) owns the
+    # deployment of both.
+    eks.amazonaws.com/role-arn: "arn:aws:iam::role/superplane-platform-monitor"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: superplane-platform-monitor
+  namespace: superplane-system
+  labels:
+    app: superplane-platform-monitor
+spec:
+  selector:
+    app: superplane-platform-monitor
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP

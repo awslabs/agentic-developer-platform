@@ -58,9 +58,63 @@ resource "kubernetes_role_binding" "runner_deploy_gateway" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# adp-gateway-evals: throwaway clean-room pods only
+# -----------------------------------------------------------------------------
+
+resource "kubernetes_role" "runner_gateway_evals" {
+  metadata {
+    name      = "adp-runner-evals"
+    namespace = "adp-gateway-evals"
+
+    labels = {
+      "app.kubernetes.io/managed-by" = "terraform"
+      "app.kubernetes.io/part-of"    = "adp-agent-factory"
+      "app.kubernetes.io/component"  = "runner-rbac"
+    }
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["pods"]
+    verbs      = ["get", "list", "watch", "create", "delete"]
+  }
+
+  rule {
+    api_groups = [""]
+    resources  = ["pods/exec", "pods/log"]
+    verbs      = ["get", "list", "create"]
+  }
+}
+
+resource "kubernetes_role_binding" "runner_gateway_evals" {
+  metadata {
+    name      = "adp-runner-evals"
+    namespace = "adp-gateway-evals"
+
+    labels = {
+      "app.kubernetes.io/managed-by" = "terraform"
+      "app.kubernetes.io/part-of"    = "adp-agent-factory"
+      "app.kubernetes.io/component"  = "runner-rbac"
+    }
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role.runner_gateway_evals.metadata[0].name
+  }
+
+  subject {
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -112,9 +166,9 @@ resource "kubernetes_role_binding" "runner_keda_manage_gateway_agents" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -165,9 +219,9 @@ resource "kubernetes_role_binding" "runner_readonly_arc_systems" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -218,9 +272,9 @@ resource "kubernetes_role_binding" "runner_deploy_agent_context" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -266,9 +320,9 @@ resource "kubernetes_role_binding" "runner_readonly_keda" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -292,7 +346,7 @@ resource "kubernetes_cluster_role" "runner_namespace_manage" {
     api_groups     = [""]
     resources      = ["namespaces"]
     resource_names = ["arc-runners", "adp-gateway-agents", "adp-agents", "adp-gateway", "agent-context", "keda"]
-    verbs          = ["get", "list", "create", "delete"]
+    verbs          = ["get", "list", "delete"]
   }
 }
 
@@ -314,8 +368,8 @@ resource "kubernetes_cluster_role_binding" "runner_namespace_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }

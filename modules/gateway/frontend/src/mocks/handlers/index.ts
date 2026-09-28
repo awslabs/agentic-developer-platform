@@ -1,3 +1,4 @@
+import { budgetOverviewHandlers } from './budgetOverview';
 import { authHandlers } from './auth';
 import { adminHandlers } from './admin';
 import { indexingHandlers } from './indexing'; // Issue #1424
@@ -96,6 +97,7 @@ export const handlers = [
   ...featuresHandlers, // Issue #3566
   ...runStatsHandlers, // Issue #3633
   ...poolHandlers,
+  ...budgetOverviewHandlers,
   ...budgetHandlers,
   ...ratelimitHandlers,
   ...logsHandlers,

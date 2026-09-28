@@ -1,0 +1,26 @@
+name: Superplane Read-only Discovery
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: superplane-readonly-discovery
+  cancel-in-progress: false
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    # Match the established ARC scale-set selector (observed runner group: Default).
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read selected deployment metadata with runner identity
+        run: python3 platform/scripts/superplane-readonly-discovery.py --output "$RUNNER_TEMP/superplane-readonly/metadata.json"
+      - name: Preserve sanitized metadata and authorization refusals
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: superplane-readonly-metadata
+          path: ${{ runner.temp }}/superplane-readonly/metadata.json
+          if-no-files-found: error
+          retention-days: 7

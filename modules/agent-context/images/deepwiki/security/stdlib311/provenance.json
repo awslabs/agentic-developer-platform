@@ -1,0 +1,20 @@
+{
+  "runtime": "CPython3.11.16 / Unicode14.0.0",
+  "upstream_tag": "v3.11.16",
+  "upstream_313_security_commits": [
+    "c28b121a4f0b975937c8b5a1b4934bb361d84296",
+    "a2773a34183b7d94a243bb98fd658926cc5348ce",
+    "c7979f3a819011a3222bd16e671264b1e34282cb",
+    "9c17bace90f88dfba6d0e2fe23c8e7ae35f83955",
+    "b8f23e307097552eaea2604383a12ab280520d0d"
+  ],
+  "port_notes": [
+    "Not represented as merged upstream3.11 backports.",
+    "stringprep generated with upstream generator on actual Python3.11/Unicode14.0 using retained RFC3454; never a changed Unicode assertion over3.13 tables.",
+    "urllib and two tar hunks retain upstream logic with3.11 line contexts.",
+    "hardlink realpath change adapted to3.11 branch which lacks the3.13 preceding unlink-if-existing block."
+  ],
+  "generator_sha256": "9793932ba0c3ea9fc56bc7d75efa952f7bc60223423c3dece5069b7effdf3974",
+  "rfc3454_sha256": "eb722fa698fb7e8823b835d9fd263e4cdb8f1c7b0d234edf7f0e3bd2ccbb2c79",
+  "rfc3454_url": "https://www.rfc-editor.org/rfc/rfc3454.txt"
+}

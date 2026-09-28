@@ -1,0 +1,84 @@
+# Horizontal Pod Autoscaler for the gateway.
+#
+# Why this exists: EKS Auto Mode scales NODES (it provisions capacity for
+# pods that cannot schedule) — it never changes a Deployment's replica count.
+# Without an HPA the gateway was pinned at 2 pods regardless of load: a
+# traffic surge would queue on 2 pods and a memory spike would OOM-kill a pod
+# rather than scale anything. The chain is HPA adds pods → Auto Mode adds
+# nodes if they don't fit.
+#
+# Metric choice: MEMORY leads. The gateway is an async proxy that spends its
+# life awaiting Bedrock — measured CPU under full agent traffic is 8-17m
+# (1-2% of the limit), so a CPU-based HPA would never trigger. Memory is what
+# actually climbs (streaming buffers + chat-logging copies across 4 uvicorn
+# workers; 769Mi observed under normal load). CPU is included anyway as a
+# cheap backstop against a future CPU-bound regression.
+#
+# Utilization targets are computed against REQUESTS (1.5Gi / 250m — see
+# deployment.yaml), not limits: memory 75% ≈ 1152Mi. The request must stay
+# comfortably ABOVE the idle baseline or this HPA inverts: when the 75% line
+# falls below baseline, idle reads as "over target" and the fleet pins at
+# maxReplicas doing nothing, with zero burst headroom left. That has bitten
+# twice — at a 1Gi request (768Mi line vs ~800Mi baseline, pinned at 4-5) and
+# at 1.25Gi (960Mi line vs a baseline grown to ~900Mi, pinned at 12/12 on
+# 2026-09-19 while CPU sat at 13%). At 1.5Gi the line is ~1152Mi against a
+# measured ~900Mi baseline, so idle settles toward minReplicas and scale-out
+# fires on genuine load-driven growth.
+#
+# This only holds while memory tracks LOAD. A memory leak makes this HPA
+# actively harmful: it reads the leak as demand, scales out, and adding pods
+# cannot reduce a per-pod leak, so it ratchets to the ceiling and stays there
+# while masking the underlying bug. If the fleet is at maxReplicas with low
+# CPU, suspect a leak before raising maxReplicas.
+#
+# maxReplicas raised 6 → 12 for 100+ concurrent-user headroom. The gateway is
+# async I/O-bound (CPU idles at 1-2%), so a pod holds many concurrent streams;
+# the binding constraint is memory, and 12 pods × 2Gi limit = 24Gi of ceiling
+# vs 6 pods × 2Gi = 12Gi. EKS Auto Mode provisions nodes to fit the extra pods.
+#
+# Requires the Metrics API: the metrics-server EKS addon (codified in
+# platform/infra/modules/eks/main.tf) must be installed or this HPA sits at
+# ScalingActive=False and does nothing.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: bedrockgateway
+  namespace: adp-gateway
+  labels:
+    app.kubernetes.io/name: bedrockgateway
+    app.kubernetes.io/part-of: bedrock-gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: bedrockgateway
+  minReplicas: 2
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Python workers rarely return memory to the OS, so a scaled-up fleet
+      # reads "high memory" long after the burst — don't flap on it.
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60

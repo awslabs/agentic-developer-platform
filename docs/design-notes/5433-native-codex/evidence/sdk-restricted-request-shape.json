@@ -1,0 +1,35 @@
+{
+  "sdk": "0.155.1",
+  "profile": "adp-restricted",
+  "model": "gpt-5-codex",
+  "method": "POST",
+  "path": "/v1/responses",
+  "bytes": 24886,
+  "fields": [
+    "client_metadata",
+    "include",
+    "input",
+    "instructions",
+    "model",
+    "parallel_tool_calls",
+    "prompt_cache_key",
+    "reasoning",
+    "store",
+    "stream",
+    "tool_choice",
+    "tools"
+  ],
+  "stream": true,
+  "inputItems": 3,
+  "tools": [
+    {
+      "type": "function",
+      "name": "request_user_input"
+    },
+    {
+      "type": "function",
+      "name": "view_image"
+    }
+  ],
+  "fitsCurrentTaskFrame": true
+}

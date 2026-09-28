@@ -27,7 +27,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .acl import CallerPrincipal, PostgresACLStore
+from .acl import (
+    CallerPrincipal,
+    PostgresACLStore,
+    _build_allowed_lookup,
+    _normalize_repo_name,
+    _repo_is_allowed,
+    record_acl_denial,
+)
 
 log = logging.getLogger(__name__)
 
@@ -570,17 +577,36 @@ def _filter_by_acl(
     caller: CallerPrincipal,
     acl_store: PostgresACLStore | None,
 ) -> list[AffectedTuple]:
-    """Filter findings to repos the caller can see. Fail-closed."""
+    """Filter findings to repos the caller can see. Fail-closed.
+
+    No ACL store means no results (#5658). This previously returned ``findings``
+    unfiltered "in dev mode", which disclosed every tenant's unpatched
+    dependency inventory in any environment without a database connection —
+    the state the shipped manifest produced.
+    """
     if not caller.is_resolved:
         return []
     if acl_store is None:
-        return findings  # dev-mode: no ACL store configured
+        log.warning("secure_backend: no ACL store available, returning empty (fail-closed)")
+        record_acl_denial(caller=caller, requested=[], reason="acl_store_unavailable")
+        return []
     try:
         allowed_repos = acl_store.get_allowed_repos(caller)
     except Exception:
         log.warning("secure_backend: ACL store raised, returning empty", exc_info=True)
         return []
-    return [f for f in findings if f.repo_name in allowed_repos]
+    # Normalise both sides so a domain-qualified finding matches the catalogue
+    # form, while a bare short name still fails to match another tenant's repo.
+    allowed_lookup = _build_allowed_lookup(allowed_repos)
+    permitted = [f for f in findings if _repo_is_allowed(f.repo_name, allowed_lookup)]
+    if len(permitted) < len(findings):
+        record_acl_denial(
+            caller=caller,
+            requested=sorted({f.repo_name or "<no-provenance>" for f in findings})[:10],
+            reason="secure_finding_repo_not_permitted",
+            allowed_sample=sorted(allowed_lookup)[:10],
+        )
+    return permitted
 
 
 def resolve_input(
@@ -1108,15 +1134,43 @@ def _expand_remediation(finding: dict[str, Any], cve: str, repo: str) -> dict[st
 # ---------------------------------------------------------------------------
 
 
+def _repo_not_found_response(
+    cve: str, repo: str, query_info: dict[str, Any], now_iso: str
+) -> dict[str, Any]:
+    """The single response for "you cannot see this repo" AND "no such repo".
+
+    These two cases MUST be byte-identical (#5658). Distinguishing them tells an
+    unauthorised caller whether a competitor's repository is indexed, which is
+    itself the confidentiality leak — before any dependency detail is reached.
+    """
+    return {
+        "summary": f"Repository {repo} not indexed",
+        "query": query_info,
+        "status": "unknown",
+        "details": {"reason": "repo_not_indexed", "repo_indexed": False},
+        "metadata": {"verified_at": now_iso},
+    }
+
+
 async def handle_verify(
     cve: str,
     repo: str,
     *,
     db_pool: Any | None = None,
+    caller: CallerPrincipal,
+    acl_store: PostgresACLStore | None,
 ) -> dict[str, Any]:
     """Post-fix re-check: is the CVE still present in this repo?
 
     Statuses: resolved, still_vulnerable, mitigated, unknown.
+
+    ``caller`` and ``acl_store`` are REQUIRED keyword arguments, deliberately
+    without defaults (#5658). This action previously took neither, so it
+    answered for any repository name any caller supplied — disclosing whether
+    that repository was indexed, how stale its inventory was, and which package
+    version it held, with no access check anywhere on the path. Making them
+    required means a future call site cannot omit authorisation by accident;
+    it is a TypeError instead.
     """
     query_info = {"cve": cve, "repo": repo, "action": "verify"}
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -1146,6 +1200,47 @@ async def handle_verify(
             "metadata": {"verified_at": now_iso},
         }
 
+    # Authorisation, before any lookup. Resolve the caller's permitted set and
+    # answer "not indexed" for anything outside it — same response as a
+    # genuinely unknown repo, so the two are indistinguishable.
+    if not caller.is_resolved:
+        return _repo_not_found_response(cve, repo, query_info, now_iso)
+    if acl_store is None:
+        # No ACL store → nothing is authorisable. Fail closed rather than
+        # falling back to an unfiltered answer.
+        log.warning("handle_verify: no ACL store available, denying (fail-closed)")
+        return _repo_not_found_response(cve, repo, query_info, now_iso)
+    try:
+        allowed_repos = acl_store.get_allowed_repos(caller)
+    except Exception:
+        log.warning("handle_verify: ACL store raised, denying (fail-closed)", exc_info=True)
+        return _repo_not_found_response(cve, repo, query_info, now_iso)
+
+    allowed_lookup = _build_allowed_lookup(allowed_repos)
+    if not _repo_is_allowed(repo, allowed_lookup):
+        record_acl_denial(
+            caller=caller,
+            requested=[repo],
+            reason="secure_verify_repo_not_permitted",
+            allowed_sample=sorted(allowed_lookup)[:10],
+        )
+        return _repo_not_found_response(cve, repo, query_info, now_iso)
+
+    # Resolve supported aliases to the exact catalogue name returned by the
+    # ACL store before the SQL equality check. Normalizing only the preliminary
+    # check would deny a legitimate domain-prefixed or differently cased caller.
+    candidates = [
+        name
+        for name in allowed_repos
+        if _normalize_repo_name(name).casefold() == _normalize_repo_name(repo).casefold()
+    ]
+    if repo in allowed_repos:
+        catalogue_repo = repo
+    elif len(candidates) == 1:
+        catalogue_repo = candidates[0]
+    else:
+        return _repo_not_found_response(cve, repo, query_info, now_iso)
+
     conn = None
     try:
         conn = db_pool.getconn()
@@ -1169,21 +1264,19 @@ async def handle_verify(
 
         package, _affected_versions, safe_version, _severity = row
 
-        # Check repository
+        # Check repository, scoped to the permitted set inside the query itself.
+        # The caller already passed the check above; restating the constraint in
+        # SQL means a repo outside the set yields no row even if the in-process
+        # check is later weakened, rather than returning catalogue metadata.
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, repo_name, indexed_at FROM repositories WHERE repo_name = %s",
-                (repo,),
+                "SELECT id, repo_name, indexed_at FROM repositories "
+                "WHERE repo_name = %s AND repo_name = ANY(%s)",
+                (catalogue_repo, sorted(allowed_repos)),
             )
             repo_row = cur.fetchone()
         if repo_row is None:
-            return {
-                "summary": f"Repository {repo} not indexed",
-                "query": query_info,
-                "status": "unknown",
-                "details": {"reason": "repo_not_indexed", "repo_indexed": False},
-                "metadata": {"verified_at": now_iso},
-            }
+            return _repo_not_found_response(cve, repo, query_info, now_iso)
 
         repo_id, _repo_name, indexed_at = repo_row
         sbom_age = None

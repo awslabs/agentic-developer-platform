@@ -1,0 +1,65 @@
+# pip constraints for the transferred Superplane API tests — Issue #5326 (U22), EPIC #4910.
+#
+# WHY THIS FILE EXISTS
+#
+# `src/superplane-api/pyproject.toml` declares `fastapi>=0.115.0` with no upper bound, and the
+# transfer preserved that file byte-for-byte (its 107 files are verified identical to the pinned
+# reference — see ../TRANSFER-MANIFEST.md). An unbounded floor means the suite's result depends
+# on the day it runs, which is not a reproducible lane. Resolving it today installs FastAPI
+# 0.141.1, and one test fails there.
+#
+# WHAT ACTUALLY BREAKS — AND WHAT DOES NOT
+#
+# FastAPI 0.137.0 changed what `app.routes` contains. Registering a router now leaves an
+# `_IncludedRouter` entry in that list instead of the flattened `Route` objects, so code that
+# walks `app.routes` looking for `.path` sees only the 4 built-in docs routes. The failing test
+# does exactly that:
+#
+#   tests/test_users.py::TestListUsersEndpoint::test_list_does_not_require_admin_role
+#   asserts `"/users" in [r.path for r in app.routes if hasattr(r, "path")]`
+#
+# The ROUTES THEMSELVES ARE FINE. This was verified rather than assumed, because the two
+# possibilities have opposite severity and look identical from the test output alone:
+#
+#   app.openapi()["paths"]  ->  43 paths, including /users and /accounts
+#   GET /users              ->  401  (route exists, authentication required)
+#   GET /accounts           ->  401
+#   GET /health             ->  200
+#
+# A dropped route returns 404. These do not. So this is a test coupled to a changed
+# introspection API, not an app that stopped serving.
+#
+# Recording that distinction is the point. An earlier draft of this file claimed
+# `include_router()` "registers NOTHING" and that an image built at the floor would serve 404
+# for every endpoint. That was wrong, and wrong in the expensive direction: it would have sent
+# U23 hunting a routing outage that does not exist, and it overstated the risk of shipping the
+# image. The bisect is recorded so the next reader does not have to redo it — 0.136.0 passes the
+# full 288, 0.137.0 fails this one test, and nothing else in the suite changes either way.
+#
+# INHERITED, not caused by the transfer: the unbounded floor and the introspection-coupled
+# assertion both predate this story and transferred unchanged with the files.
+#
+# SCOPE OF THIS FILE — CI resolution only
+#
+# Used by superplane-domain-ci.yml's transferred-API step so that lane is reproducible. It
+# deliberately does NOT edit the transferred pyproject.toml: byte-fidelity is what makes the
+# transfer auditable, and the durable fixes (tighten the floor, or rewrite the assertion against
+# `app.openapi()` which is stable across the change) belong to whoever owns that test.
+#
+# NOT APPLIED TO THE IMAGE. `src/superplane-api/Dockerfile` runs `pip install --prefix=/install .`
+# from the same unbounded pyproject, and this file does not reach the Docker build, so an image
+# built today resolves whatever FastAPI is current. On the evidence above that yields a working
+# app rather than a broken one — but an unpinned dependency floor still means two builds of the
+# same commit can ship different dependency trees, which is a reproducibility defect in its own
+# right. U23 owns the deployable release and should pin the floor for that reason, not because
+# routing is broken. Recorded in ../TRANSFER-MANIFEST.md under "Inherited findings".
+#
+# Pinned to the FastAPI/Starlette line the code was written against, which is also the last line
+# where the full suite passes unmodified.
+fastapi==0.115.6
+starlette==0.41.3
+
+# Shared credential consumer/renewal integration runs in the API dependency lane.
+# Exercise the SDK major used by workspace-provisioning[worker], not an unrelated
+# newest API-compatible version. This is CI resolution, not an image release.
+kubernetes==31.0.0

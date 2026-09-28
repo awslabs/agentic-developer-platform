@@ -1,0 +1,27 @@
+version: 0.2
+# Pre-existing approved Docker-capable CodeBuild project, never a Task provider session.
+env:
+  shell: bash
+phases:
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        [[ "${ADP_SOURCE_SHA:-}" =~ ^[a-f0-9]{40}$ ]]
+        [[ "${BUILD_MODE:-}" == plan || "${BUILD_MODE:-}" == apply ]]
+        [[ "$EXPECTED_AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+        [[ "$(aws sts get-caller-identity --query Account --output text)" == "$EXPECTED_AWS_ACCOUNT_ID" ]]
+        [[ "$LAMBDA_REPO" =~ ^${EXPECTED_AWS_ACCOUNT_ID}\.dkr\.ecr\.${AWS_REGION}\.amazonaws\.com/[a-zA-Z0-9_./-]+$ ]]
+        [[ "$BROWSER_REPO" =~ ^${EXPECTED_AWS_ACCOUNT_ID}\.dkr\.ecr\.${AWS_REGION}\.amazonaws\.com/[a-zA-Z0-9_./-]+$ ]]
+        if [[ "$BUILD_MODE" == apply ]]; then
+          lambda_ref=$(bash modules/tools/agentcore/infra/build-image.sh "$LAMBDA_REPO" --push | tail -1)
+          browser_ref=$(bash modules/tools/agentcore/infra/build-image.sh "$BROWSER_REPO" --browser --push | tail -1)
+          [[ "$lambda_ref" =~ @sha256:[a-f0-9]{64}$ && "$browser_ref" =~ @sha256:[a-f0-9]{64}$ ]]
+          [[ "$STATE_BUCKET" =~ ^[a-z0-9.-]+$ && "$ARTIFACT_KEY" =~ ^codebuild/artifacts/shared-agentcore-tools/[a-zA-Z0-9_.-]+\.env$ ]]
+          printf 'TF_VAR_image_uri=%s\nTF_VAR_browser_service_image=%s\n' "$lambda_ref" "$browser_ref" > /tmp/shared-tools-images.env
+          aws s3 cp /tmp/shared-tools-images.env "s3://$STATE_BUCKET/$ARTIFACT_KEY" --region "$AWS_REGION" >/dev/null
+          rm -f /tmp/shared-tools-images.env
+        else
+          bash modules/tools/agentcore/infra/build-image.sh "$LAMBDA_REPO"
+          bash modules/tools/agentcore/infra/build-image.sh "$BROWSER_REPO" --browser
+        fi

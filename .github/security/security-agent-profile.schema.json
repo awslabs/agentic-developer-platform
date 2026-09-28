@@ -1,0 +1,292 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "security-agent-profile.schema.json",
+  "title": "AWS Security Agent validated profile",
+  "description": "Machine-readable interface produced by the U0 live-validation spike (#4439). Downstream units assert against this file instead of copying literals out of prose.",
+  "type": "object",
+  "required": [
+    "profile_version",
+    "validated_against",
+    "runtime",
+    "agent_space",
+    "code_review",
+    "findings",
+    "target_domain",
+    "pentest",
+    "actor_matrix"
+  ],
+  "properties": {
+    "profile_version": { "type": "integer", "minimum": 1 },
+    "generated_by": { "type": "string", "minLength": 1 },
+
+    "validated_against": {
+      "type": "object",
+      "required": ["deploy_target", "api_version"],
+      "properties": {
+        "deploy_target": { "type": "string", "minLength": 1 },
+        "api_version": { "type": "string", "minLength": 1 },
+        "operation_count": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "runtime": {
+      "type": "object",
+      "required": [
+        "provisioning",
+        "observed",
+        "min_cli_version",
+        "min_botocore_version",
+        "preflight_assertion"
+      ],
+      "properties": {
+        "provisioning": {
+          "type": "string",
+          "enum": ["present", "self_upgradable", "image_rebuild_required"]
+        },
+        "install_command": { "type": "string" },
+        "min_cli_version": { "type": "string", "minLength": 1 },
+        "min_botocore_version": { "type": "string", "minLength": 1 },
+        "preflight_assertion": { "type": "string", "minLength": 1 },
+        "observed": {
+          "type": "object",
+          "required": ["aws_cli", "botocore", "python"],
+          "properties": {
+            "aws_cli": { "type": "string", "minLength": 1 },
+            "botocore": { "type": "string", "minLength": 1 },
+            "python": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "provisioning": { "const": "self_upgradable" } } },
+          "then": {
+            "required": ["install_command"],
+            "properties": { "install_command": { "type": "string", "minLength": 1 } }
+          }
+        }
+      ]
+    },
+
+    "agent_space": {
+      "type": "object",
+      "required": [
+        "service_role",
+        "service_role_terraform",
+        "service_role_terraform_output",
+        "staging_bucket"
+      ],
+      "properties": {
+        "service_role": {
+          "description": "Must be the Terraform-managed nightly role, so the reviewed least-privilege policy is the one actually in force (#4525). The pattern rejects the hand-made role the manual 2026-08-20 session created, which is defined in no Terraform in this repo.",
+          "type": "string",
+          "pattern": "^arn:aws:iam::[0-9]{12}:role/adp-[a-z0-9-]+-securityagent-nightly$"
+        },
+        "service_role_terraform": {
+          "description": "Repo-relative path to the Terraform that defines service_role, so a reviewer can get from this artifact to the governing policy.",
+          "type": "string",
+          "minLength": 1
+        },
+        "service_role_terraform_output": {
+          "description": "Name of the Terraform output that exports the role ARN.",
+          "type": "string",
+          "minLength": 1
+        },
+        "staging_bucket": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "code_review": {
+      "type": "object",
+      "required": ["verbs", "required_params", "pinned_modes", "title_charset"],
+      "properties": {
+        "verbs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "required_params": { "type": "object" },
+        "pinned_modes": {
+          "description": "The two settings whose permissive members change what the service DOES: SIMULATED validation exercises live endpoints, and AUTOMATIC remediation opens fix PRs against this repo. Both enums are single-valued on purpose (#4524) — the schema previously admitted the permissive member, so a schema-valid profile could still record a dangerous value. The driver pins these as constants and fails closed if this file disagrees; narrowing the enums makes the artifact itself unable to record the disagreement.",
+          "type": "object",
+          "required": ["validationMode", "codeRemediationStrategy"],
+          "properties": {
+            "validationMode": { "type": "string", "enum": ["DISABLED"] },
+            "codeRemediationStrategy": { "type": "string", "enum": ["DISABLED"] }
+          }
+        },
+        "title_charset": { "type": "string", "minLength": 1 },
+        "observed_job_durations": {
+          "description": "Measured created->terminal durations of code-review jobs that actually completed. The sole basis for the driver's poll bound; its gate asserts the bound exceeds the longest entry here.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["job_title", "scope", "duration_seconds"],
+            "properties": {
+              "job_title": { "type": "string", "minLength": 1 },
+              "scope": { "type": "string", "minLength": 1 },
+              "created_at": { "type": "string", "minLength": 1 },
+              "terminal_at": { "type": "string", "minLength": 1 },
+              "terminal_status": { "type": "string", "enum": ["COMPLETED"] },
+              "duration_seconds": { "type": "integer", "exclusiveMinimum": 0 }
+            }
+          }
+        }
+      }
+    },
+
+    "findings": {
+      "type": "object",
+      "required": [
+        "list_response_key",
+        "finding_id_stable",
+        "finding_id_stability_evidence",
+        "dedup_implication",
+        "schema_fields"
+      ],
+      "properties": {
+        "list_response_key": { "type": "string", "minLength": 1 },
+        "finding_id_stable": { "type": "boolean" },
+        "finding_id_stability_evidence": { "type": "string", "minLength": 1 },
+        "dedup_implication": { "type": "string", "minLength": 1 },
+        "risk_type_is_open_set": { "type": "boolean" },
+        "schema_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+
+    "target_domain": {
+      "type": "object",
+      "required": [
+        "verification_method",
+        "chosen_because",
+        "verification_artifact",
+        "bootstrap_owner",
+        "durability"
+      ],
+      "properties": {
+        "verification_method": {
+          "type": "string",
+          "enum": ["DNS_TXT", "HTTP_ROUTE", "PRIVATE_VPC"]
+        },
+        "chosen_because": { "type": "string", "minLength": 1 },
+        "verification_artifact": { "type": "string", "minLength": 1 },
+        "bootstrap_owner": { "type": "string", "minLength": 1 },
+        "durability": { "type": "string", "minLength": 1 },
+        "exists_today": { "type": "boolean" }
+      }
+    },
+
+    "pentest": {
+      "type": "object",
+      "required": [
+        "maxTaskHours",
+        "verbs",
+        "required_params",
+        "destructiveness_axis_exists",
+        "destructiveness_finding",
+        "excludeRiskTypes",
+        "request_shape",
+        "what_this_job_will_try_to_do",
+        "what_this_job_will_never_find"
+      ],
+      "properties": {
+        "maxTaskHours": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 },
+        "verbs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "required_params": { "type": "object" },
+        "destructiveness_axis_exists": { "type": "boolean" },
+        "destructiveness_finding": { "type": "string", "minLength": 1 },
+        "real_scope_levers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "excludeRiskTypes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["value", "classification", "coverage_cost"],
+            "properties": {
+              "value": { "type": "string", "minLength": 1 },
+              "classification": {
+                "type": "string",
+                "enum": ["destructive_action", "vulnerability_class"]
+              },
+              "coverage_cost": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "request_shape": {
+          "type": "object",
+          "required": ["title", "agentSpaceId", "assets", "excludeRiskTypes", "maxTaskHours"],
+          "properties": {
+            "title": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,100}$" },
+            "maxTaskHours": { "type": "number", "exclusiveMinimum": 0, "maximum": 2 },
+            "codeRemediationStrategy": { "type": "string", "enum": ["DISABLED"] },
+            "assets": {
+              "type": "object",
+              "required": ["endpoints", "actors"],
+              "properties": {
+                "endpoints": { "type": "array", "minItems": 1 },
+                "actors": { "type": "array", "minItems": 1 }
+              }
+            }
+          }
+        },
+        "what_this_job_will_try_to_do": { "type": "string", "minLength": 1 },
+        "what_this_job_will_never_find": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "actor_matrix": {
+      "type": "object",
+      "required": [
+        "decision",
+        "decision_rationale",
+        "required_identities",
+        "identities_that_exist_today",
+        "four_distinct_identities_in_two_orgs_exist",
+        "net_new_component_scope"
+      ],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["SECRETS_MANAGER", "AWS_LAMBDA", "AWS_IAM_ROLE", "AWS_INTERNAL"]
+        },
+        "decision_rationale": { "type": "string", "minLength": 1 },
+        "required_identities": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "identities_that_exist_today": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "four_distinct_identities_in_two_orgs_exist": { "type": "boolean" },
+        "coverage_reduction_accepted": { "type": "string" },
+        "net_new_component_scope": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "four_distinct_identities_in_two_orgs_exist": { "const": false } }
+          },
+          "then": {
+            "required": ["coverage_reduction_accepted"],
+            "properties": {
+              "coverage_reduction_accepted": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

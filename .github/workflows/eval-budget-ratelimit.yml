@@ -1,0 +1,274 @@
+name: Eval — Budgets + Rate Limits (clean room)
+
+# Deep clean-room evaluation of budget and rate-limit enforcement — Issue #4163.
+# Seeds a throwaway org structure in dev, defines budget and rate-limit configs at
+# EVERY entity level (user / team / department / org) through the REAL admin APIs,
+# then drives traffic from a clean-room "laptop" pod through BOTH wire paths —
+# Claude Code (`/v1/messages`) and Codex (`/openai/v1/responses`) — and asserts
+# enforcement, error shapes, accounting and tenant isolation.
+#
+# WHERE THE CLEAN ROOM LIVES (inherited from #4157/#4171)
+# The traffic MUST NOT originate in the agent-worker image. That image bakes in a
+# sigv4-proxy on 127.0.0.1:9090 and ANTHROPIC_* env, and a request that goes out
+# through it authenticates as an AGENT rather than as the seeded human — so it is
+# enforced against a different budget entity entirely, and every cascading-cap
+# case would report FALSE GREEN while testing nothing.
+#
+# This run therefore SPLITS in two, and neither half is a job-level image
+# override — the ARC scale set has no Docker daemon and no containerMode, so a job
+# that asks for one dies before its first step (run 32987705457):
+#
+#   HARNESS — this job, on the ARC runner. Holds IRSA and kubeconfig; seeds
+#     Cognito, writes the admin-API config, reads Postgres and asserts.
+#   LAPTOP  — a stock `node:20-bookworm` pod that run-eval.sh creates with
+#     `kubectl run` and reaches only with `kubectl exec`. No service-account
+#     token, no service-link env, none of this job's environment. The
+#     contamination gate runs INSIDE that pod as the first command exec'd there,
+#     BEFORE the first admin write, so a contaminated run leaves dev untouched.
+#
+# Scheduled only by nightly-cli-regression.yml, after onboarding has restored
+# the approval flag. The parent and manual calls share the live-evaluation lock.
+# Budget writes remain restricted to run-tagged fixtures; cleanup is required.
+#
+# See platform/evals/budget-ratelimit/README.md for the seeded world, all twelve
+# cases, and the four findings the eval pins rather than passes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: false
+        type: string
+        default: dev
+      phases:
+        description: 'Comma-separated cases to run (1-12 budget/ratelimit, H=agent-spend attribution)'
+        required: false
+        type: string
+        default: '1,2,3,4,5,6,7,8,9,10,11,12,H'
+      inject_failure:
+        description: 'Deliberately break the eval to prove it fails loudly (wrong-entity)'
+        required: false
+        type: choice
+        options: ['none', 'wrong-entity']
+        default: 'none'
+  workflow_call:
+    outputs:
+      cleanup_ok:
+        description: 'True only after the cleanup sweep succeeds'
+        value: ${{ jobs.eval.outputs.cleanup_ok }}
+    inputs:
+      environment:
+        required: false
+        type: string
+        default: dev
+  pull_request:
+    # Lint-only on PRs that touch the eval or the shared harness; the live job
+    # never runs from a PR.
+    paths:
+      - 'platform/evals/budget-ratelimit/**'
+      # The clean-room boundary and the HTTP/Cognito helpers live in the shared
+      # lib, so a lib-only change can break this eval without touching its own
+      # directory. Lint-gate it here as well as in eval-cli-onboarding.yml.
+      - 'platform/evals/lib/**'
+      - '.github/workflows/eval-budget-ratelimit.yml'
+    branches:
+      - main
+
+# Never two live runs at once. Both would seed identities into the same pool and,
+# more importantly, case 8/11's rate-limit assertions read a SHARED token bucket:
+# a second run's traffic would show up as the first run's 429s and vice versa.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.environment || 'dev') }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint eval scripts
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck --version
+
+      - name: bash -n + shellcheck
+        # -x follows the `.` into platform/evals/lib/*.sh, so the shared harness is
+        # linted in the context that actually uses it. run-eval.sh carries a
+        # file-level `# shellcheck source-path=SCRIPTDIR` so ../lib resolves from
+        # the script rather than from this job's cwd.
+        run: |
+          set -euo pipefail
+          for f in platform/evals/lib/*.sh \
+                   platform/evals/budget-ratelimit/run-eval.sh \
+                   platform/evals/budget-ratelimit/tests/test-run-eval-dry-run.sh; do
+            bash -n "$f"
+            shellcheck -x "$f"
+          done
+
+      - name: Dry-run harness tests
+        # Stubs aws/kubectl/psql/curl/apt-get and asserts the tag guard, phase
+        # ordering, cleanup-on-failure, the clean-room detector, that traffic only
+        # ever leaves via kubectl exec, that both wire paths are driven, and that
+        # --inject-failure genuinely goes red.
+        run: ./platform/evals/budget-ratelimit/tests/test-run-eval-dry-run.sh
+
+      - name: Regression guard — the cli-onboarding eval still passes
+        # The shared lib was factored out of that eval (#4157) and it is the
+        # proven-green harness, so its suite is the regression guard for every
+        # change to platform/evals/lib/. A lib change that breaks it must fail
+        # HERE, on the PR that made it, not on the next nightly.
+        run: ./platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
+
+  eval:
+    permissions:
+      contents: read
+      id-token: write
+    name: Clean-room eval (${{ inputs.environment || 'dev' }})
+    # Skipped on pull_request: the live run seeds Cognito users and WRITES budget
+    # and rate-limit config in dev. It must never run from an untrusted PR.
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request')
+    needs: [lint]
+    outputs:
+      cleanup_ok: ${{ steps.cleanup.outcome == 'success' }}
+    runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    # Longer than cli-onboarding's 45: cases 8-11 must each sleep out the
+    # limiter's 60s DB config-reload interval (ratelimit/service.py:29), which
+    # cannot be polled around — there is no endpoint that reports the ENFORCING
+    # worker's view of the config.
+    timeout-minutes: 60
+
+    # No job-level image: this job is the HARNESS, on the runner. The clean room
+    # is the pod run-eval.sh spawns (see the header). The runner's existing RBAC
+    # in adp-gateway-evals grants only the pod lifecycle verbs used here.
+    env:
+      ADP_DB_USER: ${{ vars.ADP_DB_USER }}
+      AWS_REGION: us-east-1
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      EVAL_WORKDIR: /tmp/budget-ratelimit-eval
+      EVAL_POD_NAMESPACE: adp-gateway-evals
+
+    steps:
+      - name: Refuse an untrusted ref
+        id: trusted
+        env:
+          EVAL_REF: ${{ github.ref }}
+        run: |
+          case "$EVAL_REF" in
+            refs/heads/main|refs/tags/*) ;;
+            *) echo "::error::Live evaluation requires main or a release tag"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Verify reviewed runner tools
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl jq python3 psql; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+          python3 -c 'import yaml'
+
+      - name: Configure kubeconfig (harness — spawns the clean-room pod)
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
+          kubectl get deploy bedrockgateway -n adp-gateway -o name
+
+      - name: Preflight — the runner can mint an RDS IAM auth token
+        # The gateway RDS master user is IAM-auth-only (BG_RDS_IAM_AUTH=true,
+        # password auth disabled), so the harness authenticates with
+        # `aws rds generate-db-auth-token` + PGSSLMODE=require. Checked up front,
+        # because the alternative is discovering a missing rds-db:connect on the
+        # runner boundary AFTER the run has already seeded identities and written
+        # config into dev.
+        run: |
+          set -euo pipefail
+          RDS_HOST=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/rds-host" \
+            --query Parameter.Value --output text)
+          PGUSER="${ADP_DB_USER:?Set ADP_DB_USER in the protected environment}"
+          # Piped straight into the length check — never echoed, never exported to
+          # a step output.
+          if aws rds generate-db-auth-token --hostname "$RDS_HOST" --port 5432 \
+               --region "$AWS_REGION" --username "$PGUSER" | grep -q 'X-Amz-Signature'; then
+            echo "minted an RDS IAM auth token for the harness"
+          else
+            echo "::error::could not mint an RDS IAM auth token — check rds-db:connect on the runner boundary"
+            exit 1
+          fi
+
+      - name: Run the eval matrix
+        id: matrix
+        env:
+          EVAL_PHASES: ${{ inputs.phases || '1,2,3,4,5,6,7,8,9,10,11,12,H' }}
+          EVAL_INJECT: ${{ inputs.inject_failure || '' }}
+        run: |
+          set -euo pipefail
+          ARGS=(--environment "$ENVIRONMENT" --phases "$EVAL_PHASES")
+          if [ -n "$EVAL_INJECT" ] && [ "$EVAL_INJECT" != none ]; then
+            ARGS+=(--inject-failure "$EVAL_INJECT")
+          fi
+          ./platform/evals/budget-ratelimit/run-eval.sh "${ARGS[@]}"
+
+      # run-eval.sh deletes its throwaway config and identities from an EXIT trap,
+      # so this is belt-and-braces for the case where the job is cancelled or the
+      # runner is killed mid-step and the trap never fires. Leaving a $0.01 cap or
+      # an rpm=1 limit behind in dev is the failure this prevents.
+      - name: Cleanup sweep (always)
+        id: cleanup
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
+        run: ./platform/evals/budget-ratelimit/run-eval.sh --environment "$ENVIRONMENT" --cleanup-only
+
+      - name: Verify dev was left clean
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          echo "### Post-run state" >> "$GITHUB_STEP_SUMMARY"
+
+          # The check that matters most: no eval-tagged budget or rate-limit
+          # config may survive. A leftover cap silently throttles whoever
+          # inherits that entity id.
+          for tbl in budget_configs rate_limit_configs; do
+            echo "- Leftover \`eval-bgt-*\` rows in \`${tbl}\`: checked by the tag-scoped sweep above" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          LEFTOVER=$(aws cognito-idp list-users \
+            --user-pool-id "$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/cognito-user-pool-id" --query Parameter.Value --output text)" \
+            --filter "email ^= \"eval-bgt\"" \
+            --query 'length(Users)' --output text 2>/dev/null || echo "?")
+          echo "- Leftover \`eval-bgt*\` Cognito users: \`${LEFTOVER}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$LEFTOVER" != "0" ] && [ "$LEFTOVER" != "?" ]; then
+            echo "::warning::${LEFTOVER} eval-bgt* Cognito user(s) left behind — sweep them."
+          fi
+
+          # eval-pod leftover check: a clean-room pod outlives the job that made
+          # it, so a leak here is a leaked node until Karpenter reclaims it.
+          PODS=$(kubectl get pods -n "$EVAL_POD_NAMESPACE" -l app=eval-bgt \
+            --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          echo "- Leftover clean-room pods (\`app=eval-bgt\`): \`${PODS}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${PODS:-0}" != "0" ]; then
+            echo "::warning::${PODS} clean-room pod(s) left behind — sweep: kubectl delete pod -n $EVAL_POD_NAMESPACE -l app=eval-bgt"
+          fi

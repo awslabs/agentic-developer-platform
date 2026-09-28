@@ -1,0 +1,142 @@
+{
+  "fixture_only": true,
+  "specification": {
+    "schema_version": 1,
+    "acceptance_mode": "machine",
+    "evidence_schema": "orchestration-evaluation/v1",
+    "runner": {
+      "adapter": "github-orchestration-harness-v1",
+      "repository": "example/repository",
+      "repository_id": 123,
+      "workflow_path": ".github/workflows/orchestration-live-tests.yml",
+      "harness_revision": "cccccccccccccccccccccccccccccccccccccccc"
+    },
+    "environment_connection_id": "connection",
+    "target": {
+      "provider": "aws",
+      "account_id": "123456789012",
+      "region": "us-east-1",
+      "resource_kind": "eks-namespace",
+      "resource_id": "cluster/namespace"
+    },
+    "fixtures": {
+      "fixture_set_id": "fixture-set",
+      "definition_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "org_refs": [
+        "org-a",
+        "org-b"
+      ],
+      "roles": [
+        "admin",
+        "member"
+      ],
+      "minimum_rows_per_org": 2
+    },
+    "criteria": [
+      {
+        "criterion_id": "API-1",
+        "required": true,
+        "kind": "api",
+        "baseline_hash": null
+      },
+      {
+        "criterion_id": "UI-1",
+        "required": true,
+        "kind": "visual",
+        "baseline_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    ],
+    "max_duration_seconds": 3600,
+    "max_age_seconds": 600
+  },
+  "receipt": {
+    "schema_version": 1,
+    "org_id": "org-a",
+    "flow_id": "flow",
+    "node_id": "eval",
+    "execution_id": "execution",
+    "cycle": 1,
+    "accepted_plan_version": 1,
+    "policy_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "claim_id": "claim",
+    "claim_generation": 1,
+    "deployment_operation_key": "deployment-proof",
+    "actual_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "harness_revision": "cccccccccccccccccccccccccccccccccccccccc",
+    "specification_hash": "e14d873442c6d0b5d40e2988f2343cfb315ef7d7d580f7d3520002f87d4cba92",
+    "target": {
+      "provider": "aws",
+      "account_id": "123456789012",
+      "region": "us-east-1",
+      "resource_kind": "eks-namespace",
+      "resource_id": "cluster/namespace"
+    },
+    "fixtures": {
+      "fixture_set_id": "fixture-set",
+      "definition_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "roles": [
+        "admin",
+        "member"
+      ],
+      "row_counts": {
+        "org-a": 3,
+        "org-b": 5
+      }
+    },
+    "producer": {
+      "repository_id": 123,
+      "workflow_path": ".github/workflows/orchestration-live-tests.yml",
+      "run_id": 42,
+      "run_attempt": 1,
+      "producer_id": "github-actions:123:42:1"
+    },
+    "criteria": [
+      {
+        "criterion_id": "API-1",
+        "outcome": "pass",
+        "artifact_paths": [
+          "api.json"
+        ],
+        "baseline_hash": null,
+        "detail": null
+      },
+      {
+        "criterion_id": "UI-1",
+        "outcome": "pass",
+        "artifact_paths": [
+          "visual.txt",
+          "api.json",
+          "data.json"
+        ],
+        "baseline_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "detail": null
+      }
+    ],
+    "artifacts": [
+      {
+        "path": "api.json",
+        "sha256": "c0d201ab2bd26894205a8d23fed7f6342f62c05086a27a5f2b3280afbca5573f",
+        "kind": "api"
+      },
+      {
+        "path": "data.json",
+        "sha256": "c0d201ab2bd26894205a8d23fed7f6342f62c05086a27a5f2b3280afbca5573f",
+        "kind": "data"
+      },
+      {
+        "path": "visual.txt",
+        "sha256": "403b34dc00fc0e57f2602ff262523867f736aba8259c1564a1d0f1cc5dc8a44a",
+        "kind": "visual"
+      }
+    ],
+    "started_at": "2026-01-01T00:00:00Z",
+    "completed_at": "2026-01-01T00:00:10Z",
+    "expires_at": "2026-01-01T00:10:10Z",
+    "live": true
+  },
+  "artifact_text": {
+    "api.json": "{\"actual_revision\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"invariant\": true, \"org_refs\": [\"org-a\", \"org-b\"], \"roles\": [\"admin\", \"member\"]}",
+    "data.json": "{\"actual_revision\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"invariant\": true, \"org_refs\": [\"org-a\", \"org-b\"], \"roles\": [\"admin\", \"member\"]}",
+    "visual.txt": "SYNTHETIC visual protocol fixture; not live acceptance"
+  }
+}

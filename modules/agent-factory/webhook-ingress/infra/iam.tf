@@ -28,6 +28,16 @@ resource "aws_iam_role_policy_attachment" "lambda_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# ENI management, only when the Lambda is VPC-attached. Without this the
+# function is created but every invocation fails to initialise, because Lambda
+# cannot create the ENI it needs — a failure that looks like a code problem in
+# the logs, not a permissions one.
+resource "aws_iam_role_policy_attachment" "lambda_vpc_access" {
+  count      = length(local.webhook_lambda_subnet_ids) > 0 ? 1 : 0
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 # SQS SendMessage
 resource "aws_iam_policy" "lambda_sqs" {
   name        = "${local.name_prefix}-webhook-lambda-sqs"
@@ -81,6 +91,7 @@ resource "aws_iam_policy" "lambda_dynamodb" {
         Sid    = "IdentityIndexReadWrite"
         Effect = "Allow"
         Action = [
+          "dynamodb:ConditionCheckItem",
           "dynamodb:GetItem",
           "dynamodb:Query",
           "dynamodb:PutItem"
@@ -288,5 +299,276 @@ resource "aws_iam_role_policy" "gateway_activity_read" {
         Resource = [aws_kms_key.dynamodb.arn]
       }
     ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Gateway access to the agent authority table (#5028)
+# -----------------------------------------------------------------------------
+# The gateway is the only reader on the authorization path: src/agentauth/store.py
+# loads execution state and grants, and reserves dispatch slots. Attached by
+# literal role name for the same reason as gateway_activity_read above — the role
+# is created in the platform stack, so this stack cannot reference it as a
+# resource, and PutRolePolicy is an upsert.
+#
+# Write actions are included because two of them ARE authorization enforcement
+# rather than provisioning:
+#   - UpdateItem backs reserve_dispatch, a conditional atomic ADD. A dispatch
+#     ceiling enforced by reading a count and then acting on it is a race: two
+#     callers both read 2-of-3 and both dispatch. The gateway must be able to
+#     claim the slot in the same operation it checks it.
+#   - UpdateItem also backs revoke_grant and set_execution_status, so revocation
+#     and cancellation take effect for in-flight credentials that are still
+#     cryptographically valid.
+# PutItem backs put_execution at dispatch. DeleteItem is deliberately NOT granted:
+# nothing in the store deletes, and revocation is a state transition precisely so
+# that it stays auditable. Granting delete would make "this authority was revoked"
+# and "this authority never existed" indistinguishable after the fact.
+#
+# No worker role appears here, and no worker statement names this table. That
+# absence is the boundary — see the comment on aws_dynamodb_table.agent_authority.
+# DynamoDB transactions authorize their constituent item actions;
+# TransactWriteItems is an API operation, not a valid IAM action.
+resource "aws_iam_role_policy" "lambda_agent_authority" {
+  name = "adp-${var.environment}-policy-ingress-agent-authority"
+  role = aws_iam_role.lambda_execution.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "TrustedIngressAuthorityWrites"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        # The legacy ingress role must not become a deputy for task records,
+        # including when one reserved key is hidden in a mixed batch/transaction.
+        Sid      = "DenyTaskRequestWrites"
+        Effect   = "Deny"
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
+        Resource = [aws_dynamodb_table.webhook_events.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = {
+            "dynamodb:LeadingKeys" = [
+              "TASK#*",
+              "TASK_RUN#*",
+              "TASK_EVENTS#*",
+              "TASK_COMMANDS#*",
+              "TASK_TURNS#*",
+              "TASK_OPS#*",
+              "TASK_IDEMP#*",
+              "TASK_WORK#*",
+              "TASK_REPORT#*",
+              "TASK_ARTIFACT#*",
+            ]
+          }
+        }
+      },
+      {
+        # Task work IDs are resolved and authorized by the gateway.  The shared
+        # ingress Lambda retains its pre-existing legacy authority writes, but it
+        # can neither create nor retarget a TASK_WORK_ID locator, including as
+        # one member of a future mixed batch/transaction.
+        Sid      = "DenyTaskWorkLocatorWrites"
+        Effect   = "Deny"
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] }
+        }
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "gateway_agent_authority" {
+  name = "adp-${var.environment}-policy-gateway-agent-authority"
+  role = "adp-${var.environment}-role-gateway-service"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AgentAuthorityReadWrite"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+        ]
+        # Authorization reads remain exact GetItem calls. Activity discovery
+        # has a separate tenant-partition Query grant below; its locators never
+        # grant authority without reauthorizing the canonical Task.
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        Sid      = "TaskActivityDiscovery"
+        Effect   = "Allow"
+        Action   = ["dynamodb:Query"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAllValues:StringLike" = {
+            "dynamodb:LeadingKeys" = ["TENANT#*"]
+          }
+          "Null" = {
+            "dynamodb:LeadingKeys" = "false"
+          }
+        }
+      },
+      {
+        # The table is encrypted with the customer-managed CMK, so the dynamodb
+        # action alone is not sufficient: without these the store's reads fail
+        # with a KMS AccessDeniedException. Since the policy fails closed on a
+        # store error, a missing KMS grant would refuse every delegated action
+        # rather than degrade quietly — noisy, but it would look like an
+        # authorization bug rather than a missing permission.
+        Sid    = "AgentAuthorityKMS"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
+      },
+    ]
+  })
+}
+
+# Task persistence spans the existing request and protected authority tables in
+# one transaction.  Lambda receives no corresponding task grant; the gateway is
+# the only principal that can bind a request-table envelope to a locator.
+resource "aws_iam_role_policy" "gateway_task_storage" {
+  name = "adp-${var.environment}-policy-gateway-task-storage"
+  role = "adp-${var.environment}-role-gateway-service"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "TaskRequestRecords"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:Query",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+        ]
+        Resource = [
+          aws_dynamodb_table.webhook_events.arn,
+          "${aws_dynamodb_table.webhook_events.arn}/index/task-work-index",
+        ]
+      },
+      {
+        Sid    = "TaskAuthorityRecords"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+        ]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+      },
+      {
+        Sid      = "TaskLocatorRetentionDelete"
+        Effect   = "Allow"
+        Action   = ["dynamodb:DeleteItem"]
+        Resource = [aws_dynamodb_table.agent_authority.arn]
+        Condition = {
+          "ForAnyValue:StringLike" = { "dynamodb:LeadingKeys" = ["TASK_WORK_ID#*"] }
+        }
+      },
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Gateway writes the worker's own status / control registration (#5028 AC4)
+# -----------------------------------------------------------------------------
+# The permission half of removing the worker's table-wide webhook-events write.
+# The worker held `dynamodb:UpdateItem` on `table/adp-*-webhook-events` with no
+# key or attribute condition, on a role EVERY agent worker shares, while the row
+# key (event_id, arrived_at) is caller-supplied — so any run could rewrite
+# another run's `control_address`/`control_token` and take over its control
+# channel. See the note on local.agent_worker_events_write in scaledjob-iam.tf
+# for why no condition key can fix that in place.
+#
+# It moves here because the gateway is the only place the write can be bounded:
+# src/agentauth/registration.py verifies the run credential and the presenting
+# pod, derives the row key from the protected authority table the worker cannot
+# write, and conditions the update on the live attempt. The worker sends field
+# values and no row key at all.
+#
+# Deliberately NOT gated on var.agent_authority_enabled, unlike the worker-side
+# grant it replaces. The gateway runs platform code rather than agent-authored
+# code, already holds Query/GetItem on this table for the Activity views, and
+# owns the authority table that decides these writes — so this adds no authority
+# an attacker could reach while the flag is off, and keeping it unconditional
+# means enabling the flag cannot half-apply into a worker that authenticates
+# fine and then 503s on every status write.
+#
+# GetItem rather than Query is load-bearing: the write must land on the ONE row
+# the verified credential names, and a Query can match a second row planted under
+# the same event_id. PutItem is not granted — the row is created by the ingress
+# Lambda and this path only ever SETs fields on an existing one, so PutItem could
+# only serve to fabricate a run. DeleteItem is not granted for the same reason it
+# is withheld on the authority table: a status history that can vanish is not an
+# audit trail. No /index/* — nothing on this path reads a GSI.
+#
+# Separate policy rather than another statement in gateway_activity_read: that
+# one is the read path for the Activity views and is named for it. A write grant
+# buried in a policy called "-activity-read" is the kind of thing a reviewer
+# scanning names would miss.
+resource "aws_iam_role_policy" "gateway_agent_self_write" {
+  name = "adp-${var.environment}-policy-gateway-agent-self-write"
+  role = "adp-${var.environment}-role-gateway-service"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "WebhookEventsSelfWrite"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+        ]
+        Resource = [aws_dynamodb_table.webhook_events.arn]
+      },
+      {
+        # Same CMK as the authority table. Without it every write fails with a KMS
+        # AccessDeniedException, which the route surfaces as a 503 — retryable, so
+        # a missing grant here would look like a gateway outage rather than a
+        # permission gap.
+        Sid    = "WebhookEventsSelfWriteKMS"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource = [aws_kms_key.dynamodb.arn]
+      },
+    ]
+  })
+}
+
+# Human service-policy approval compares the registered service row atomically
+# with its protected authority write. It cannot approve a different tenant/repo
+# while a concurrent identity-registration edit changes that mapping.
+resource "aws_iam_role_policy" "gateway_service_approval_read" {
+  name = "adp-${var.environment}-policy-gateway-service-approval"
+  role = "adp-${var.environment}-role-gateway-service"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem", "dynamodb:ConditionCheckItem"]
+      Resource = var.identity_index_table_arn != "" ? [var.identity_index_table_arn] : ["arn:aws:dynamodb:${var.aws_region}:${local.account_id}:table/adp-${var.environment}-identity-index"]
+    }]
   })
 }

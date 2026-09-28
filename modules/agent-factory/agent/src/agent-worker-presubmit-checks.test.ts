@@ -1,4 +1,3 @@
-import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -6,8 +5,12 @@ const SOURCE_PATH = path.join(__dirname, 'agent-worker.ts');
 const source = fs.readFileSync(SOURCE_PATH, 'utf-8');
 
 describe('agent-worker pre-submit checks contract', () => {
-  it('contains the "Pre-submit checks (MANDATORY before creating a PR)" heading', () => {
-    expect(source).toContain('## Pre-submit checks (MANDATORY before creating a PR)');
+  it('requires completed work before opening a PR, allowing branch checkpoints', () => {
+    expect(source).toContain('## Pre-submit checks (MANDATORY before requesting review)');
+    expect(source).toContain('Do not create draft PRs');
+    expect(source).toContain('before opening a ready PR or requesting review');
+    expect(source).toContain('Incomplete branch checkpoints may be pushed with check status disclosed');
+    expect(source).not.toContain('fix the underlying issue before pushing');
   });
 
   it('contains the ruff check command string', () => {
@@ -30,20 +33,13 @@ describe('agent-worker pre-submit checks contract', () => {
     expect(source).toContain("Don't clean up unrelated debt in the same PR");
   });
 
-  it('appears in the shared scaffolding, not inside per-agent-type conditionals', () => {
-    const presubmitIndex = source.indexOf('## Pre-submit checks (MANDATORY before creating a PR)');
-    expect(presubmitIndex).toBeGreaterThan(-1);
-
-    // Must appear after the shared Step 3 section
-    const step3Execute = source.indexOf('### Step 3: Execute Your Plan');
-    expect(step3Execute).toBeGreaterThan(-1);
-    expect(presubmitIndex).toBeGreaterThan(step3Execute);
-
-    // Must appear BEFORE the first per-agent AGENT_TYPE conditional
-    const instructionsStart = source.indexOf('## Instructions');
-    expect(instructionsStart).toBeGreaterThan(-1);
-    const firstConditional = source.indexOf("AGENT_TYPE === '", instructionsStart);
-    expect(firstConditional).toBeGreaterThan(-1);
-    expect(presubmitIndex).toBeLessThan(firstConditional);
+  it('gives developers a direct PR handoff while retaining review validation guidance', () => {
+    const start = source.indexOf("${AGENT_TYPE === 'developer' ? `## Developer delivery");
+    const end = source.indexOf('## Pre-submit checks (MANDATORY before requesting review)', start);
+    const developerGuidance = source.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(developerGuidance).toContain('Once that PR is open, stop developer work');
+    expect(developerGuidance).toContain('Codex owns review, additional validation, repairs and merge');
+    expect(developerGuidance).not.toContain('adp-validate verify');
   });
 });

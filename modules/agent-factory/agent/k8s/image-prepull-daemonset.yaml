@@ -30,6 +30,13 @@ metadata:
     app.kubernetes.io/part-of: agent-gateway
     app.kubernetes.io/component: prepull
 spec:
+  # These pods only cache an image; they serve no requests and own no work.
+  # Restart caches concurrently so a large runner fleet does not serialize one
+  # full image pull per node before a release can finish.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "100%"
   selector:
     matchLabels:
       app.kubernetes.io/name: chat-agent-image-prepull
@@ -42,9 +49,24 @@ spec:
       # control-plane / system taints so this lands everywhere.
       tolerations:
         - operator: Exists
+      # Pod-level security context (#6105 — pod security reconciliation).
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: prepull
           image: REPLACE_WITH_AGENT_IMAGE
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           # Override the agent ENTRYPOINT — we want the container to start,
           # keep the image cached, and do nothing else.
           command: ["/bin/sh", "-c", "while true; do sleep 3600; done"]

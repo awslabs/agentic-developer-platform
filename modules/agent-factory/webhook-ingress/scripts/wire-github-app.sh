@@ -73,6 +73,20 @@ warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 info() { echo -e "${BLUE}ℹ${NC} $1"; }
 
+# -----------------------------------------------------------------------------
+# Issue #4016: outcome tracking, so the closing verdict reports what ACTUALLY
+# happened instead of re-deriving it from the input flags.
+#
+# FAILURES holds critical steps that did not land. Operator INTENT
+# (--skip-login / --skip-gateway) is deliberately NOT a failure — it stays a
+# warning, so intentional partial runs still exit 0.
+# -----------------------------------------------------------------------------
+FAILURES=()
+LOGIN_WIRED=false
+GATEWAY_WIRED=false
+
+record_failure() { FAILURES+=("$1"); echo -e "${RED}✗${NC} $1"; }
+
 [ -n "$APP_SLUG" ] || fail "--app-slug is required (e.g. adp-agent-platform)"
 command -v aws &>/dev/null || fail "AWS CLI not installed"
 
@@ -101,8 +115,22 @@ ok "App credentials present: App ID $APP_ID, key ${KEY_LEN} bytes"
 # 1. Resolve OAuth client_id (for login). A GitHub App has its own client_id.
 # -----------------------------------------------------------------------------
 if [ -z "$CLIENT_ID" ] && command -v gh &>/dev/null; then
-  CLIENT_ID=$(gh api "/apps/${APP_SLUG}" --jq '.client_id' 2>/dev/null || echo "")
-  [ -n "$CLIENT_ID" ] && ok "Auto-fetched client_id from GitHub: $CLIENT_ID"
+  FETCHED=$(gh api "/apps/${APP_SLUG}" --jq '.client_id' 2>/dev/null || echo "")
+  # Issue #4016: validate the SHAPE before accepting it. On a 403/404 (e.g. the
+  # gh token cannot read this App) gh prints the JSON error body, and the old
+  # `[ -n ... ] && ok "Auto-fetched..."` reported a green tick while holding
+  # `{"message":"Resource not accessible by integration",...}`. That string then
+  # got written to the broker as the client_id, so GitHub login was dead and the
+  # script had said it succeeded — the exact bug class this issue closes.
+  # GitHub App client_ids are opaque but always of the form Iv<digits>.<alnum>.
+  if [[ "$FETCHED" =~ ^Iv[0-9]+\.[A-Za-z0-9]+$ ]]; then
+    CLIENT_ID="$FETCHED"
+    ok "Auto-fetched client_id from GitHub: $CLIENT_ID"
+  elif [ -n "$FETCHED" ]; then
+    warn "Could not auto-fetch a valid client_id for '${APP_SLUG}' (GitHub returned something that is not a client_id). Pass --client-id explicitly."
+  else
+    warn "Could not auto-fetch client_id for '${APP_SLUG}'. Pass --client-id explicitly if you need GitHub login."
+  fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -118,30 +146,57 @@ elif [ -z "$CLIENT_ID" ]; then
   warn "No client_id resolved (pass --client-id or install gh). Skipping login wiring."
 else
   # 2a. Store client_id + client_secret JSON in the broker's secret.
+  # Issue #4016: a failed write here means login is dead — record it as a
+  # failure instead of letting `set -e` kill the run mid-way with no summary.
+  OAUTH_STORED=false
   OAUTH_JSON=$(python3 -c 'import json,sys; print(json.dumps({"client_id":sys.argv[1],"client_secret":sys.argv[2]}))' "$CLIENT_ID" "$CLIENT_SECRET")
   if aws secretsmanager describe-secret --secret-id "$OAUTH_SECRET" --region "$AWS_REGION" &>/dev/null; then
-    aws secretsmanager put-secret-value --secret-id "$OAUTH_SECRET" --secret-string "$OAUTH_JSON" --region "$AWS_REGION" >/dev/null
+    if aws secretsmanager put-secret-value --secret-id "$OAUTH_SECRET" --secret-string "$OAUTH_JSON" --region "$AWS_REGION" >/dev/null 2>&1; then
+      OAUTH_STORED=true
+    fi
   else
-    aws secretsmanager create-secret --name "$OAUTH_SECRET" --secret-string "$OAUTH_JSON" --region "$AWS_REGION" >/dev/null
+    if aws secretsmanager create-secret --name "$OAUTH_SECRET" --secret-string "$OAUTH_JSON" --region "$AWS_REGION" >/dev/null 2>&1; then
+      OAUTH_STORED=true
+    fi
   fi
-  ok "Stored OAuth credentials in $OAUTH_SECRET (client_id=$CLIENT_ID)"
+  if [ "$OAUTH_STORED" = true ]; then
+    ok "Stored OAuth credentials in $OAUTH_SECRET (client_id=$CLIENT_ID)"
+  else
+    record_failure "Could not write OAuth credentials to $OAUTH_SECRET — GitHub login will not work."
+  fi
 
   # 2b. Resolve the OAuth callback URL the broker must advertise as redirect_uri
-  #     (handler.py uses CALLBACK_URL). It's the gateway API GW invoke URL +
-  #     /auth/github/callback. Terraform initializes broker CALLBACK_URL="" with
-  #     ignore_changes, expecting it set post-deploy — so we set it here.
-  #     This SAME value must be the app's "Callback URL" on GitHub.
+  #     (handler.py uses CALLBACK_URL). Terraform initializes broker
+  #     CALLBACK_URL="" with ignore_changes, expecting it set post-deploy — so we
+  #     set it here. This SAME value must be the app's "Callback URL" on GitHub.
+  #
+  #     Prefer the published broker URL over the API Gateway invoke URL. That
+  #     parameter already accounts for the broker being served through
+  #     CloudFront, and gateway-infra keeps it in lockstep with the broker's own
+  #     CALLBACK_URL — the two are a matched pair, because the OAuth state cookie
+  #     is host-scoped and a mismatch fails every login with missing_state. It is
+  #     also the only correct source once the broker is delivered by its own
+  #     function URL, where the API Gateway does not serve /auth/github at all.
+  #     The API Gateway fallback remains for a deployment whose broker is still
+  #     reachable only on the API.
   if [ -z "${CALLBACK_URL:-}" ]; then
-    APIGW_URL=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+    BROKER_URL=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/github-auth-broker-url" \
       --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-    [ -n "$APIGW_URL" ] && CALLBACK_URL="${APIGW_URL}/auth/github/callback"
+    if [ -n "$BROKER_URL" ] && [ "$BROKER_URL" != "None" ]; then
+      CALLBACK_URL="${BROKER_URL%/}/callback"
+    else
+      APIGW_URL=$(aws ssm get-parameter --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+        --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+      [ -n "$APIGW_URL" ] && [ "$APIGW_URL" != "None" ] && CALLBACK_URL="${APIGW_URL}/auth/github/callback"
+    fi
   fi
   if [ -n "${CALLBACK_URL:-}" ]; then
     ok "OAuth callback URL: $CALLBACK_URL"
     warn "  Ensure the GitHub App's 'Callback URL' field is set to EXACTLY this value."
   else
-    warn "Could not resolve callback URL (SSM /adp/${ENVIRONMENT}/gateway/apigw-invoke-url empty)."
-    warn "  Login will fail until the broker CALLBACK_URL + the app's Callback URL are set."
+    # Issue #4016: critical — the broker cannot complete an OAuth exchange
+    # without a redirect_uri, so login is broken. Was a warning.
+    record_failure "Could not resolve callback URL (both SSM /adp/${ENVIRONMENT}/gateway/github-auth-broker-url and /adp/${ENVIRONMENT}/gateway/apigw-invoke-url are empty) — login will fail until the broker CALLBACK_URL + the app's Callback URL are set."
   fi
 
   # 2c. The broker reads GITHUB_CLIENT_ID + CALLBACK_URL from its env (neither is
@@ -159,12 +214,17 @@ if cb:
 # bump a marker WITHOUT time-based nondeterminism issues — use the client_id prefix
 e["OAUTH_SECRET_REFRESH_AT"]=os.environ["CLIENT_ID"][:12]
 print(json.dumps({"Variables":e}))')
-    aws lambda update-function-configuration --function-name "$BROKER_FN" \
-      --environment "$NEW_ENV" --region "$AWS_REGION" >/dev/null \
-      && ok "Broker Lambda env updated (GITHUB_CLIENT_ID${CALLBACK_URL:+ + CALLBACK_URL} set; secret picked up on next cold start)" \
-      || warn "Could not update broker Lambda env (set GITHUB_CLIENT_ID=$CLIENT_ID manually)."
+    if aws lambda update-function-configuration --function-name "$BROKER_FN" \
+         --environment "$NEW_ENV" --region "$AWS_REGION" >/dev/null 2>&1; then
+      ok "Broker Lambda env updated (GITHUB_CLIENT_ID${CALLBACK_URL:+ + CALLBACK_URL} set; secret picked up on next cold start)"
+      # Issue #4016: login is only "wired" when the secret landed AND the broker
+      # env points at it. Set from the actual outcome, never from input flags.
+      [ "$OAUTH_STORED" = true ] && [ -n "${CALLBACK_URL:-}" ] && LOGIN_WIRED=true
+    else
+      record_failure "Could not update broker Lambda env (set GITHUB_CLIENT_ID=$CLIENT_ID manually) — GitHub login will not work."
+    fi
   else
-    warn "Broker Lambda $BROKER_FN not found — is gateway-infra deployed? Secret stored; env not set."
+    record_failure "Broker Lambda $BROKER_FN not found — is gateway-infra deployed? Secret stored; env NOT set, so GitHub login will not work."
   fi
 fi
 
@@ -200,9 +260,13 @@ print(json.dumps({"data":{"BG_GITHUB_APP_PRIVATE_KEY": base64.b64encode(pk.encod
   # private key must be exposed as an env var from the secret. If the deployment
   # does not already map BG_GITHUB_APP_PRIVATE_KEY from bedrockgateway-secrets,
   # add it (see k8s/deployment.yaml). Warn so the operator can verify.
+  # Issue #4016: promoted from warning to failure. Without this mapping the
+  # gateway cannot mint installation tokens, so the UI "Link GitHub" install
+  # flow is dead — the secret being present in k8s is not enough.
   if ! kubectl get deploy bedrockgateway -n "$GW_NAMESPACE" -o yaml | grep -q "BG_GITHUB_APP_PRIVATE_KEY"; then
-    warn "deployment does not yet reference BG_GITHUB_APP_PRIVATE_KEY from the secret."
-    warn "  Add an env entry mapping it from bedrockgateway-secrets, then it takes effect on rollout."
+    record_failure "Deployment does not reference BG_GITHUB_APP_PRIVATE_KEY from bedrockgateway-secrets — the UI 'Link GitHub' install flow cannot mint tokens. Add an env entry mapping it (see k8s/deployment.yaml), then re-run."
+  else
+    GATEWAY_WIRED=true
   fi
 
   # 3c. Restart so new config is picked up.
@@ -210,14 +274,50 @@ print(json.dumps({"data":{"BG_GITHUB_APP_PRIVATE_KEY": base64.b64encode(pk.encod
   ok "Gateway rollout restarted to pick up new GitHub App config"
 fi
 
+# -----------------------------------------------------------------------------
+# 4. Verdict — Issue #4016.
+#
+# The banner is now CONDITIONAL on the FAILURES array, and every line below
+# reports a real step outcome (LOGIN_WIRED / GATEWAY_WIRED) rather than being
+# re-derived from the input flags. Previously this block printed
+# "wiring complete" plus "GitHub login: wired" unconditionally, so a run in
+# which every wiring step failed still looked green and exited 0.
+# -----------------------------------------------------------------------------
 echo ""
-echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}GitHub App wiring complete${NC}"
-echo -e "${GREEN}=========================================${NC}"
+if [ ${#FAILURES[@]} -gt 0 ]; then
+  echo -e "${RED}=========================================${NC}"
+  echo -e "${RED}GitHub App wiring INCOMPLETE — ${#FAILURES[@]} critical step(s) failed${NC}"
+  echo -e "${RED}=========================================${NC}"
+  for f in "${FAILURES[@]}"; do
+    echo -e "  ${RED}✗${NC} $f"
+  done
+else
+  echo -e "${GREEN}=========================================${NC}"
+  echo -e "${GREEN}GitHub App wiring complete${NC}"
+  echo -e "${GREEN}=========================================${NC}"
+fi
 echo "  App slug:   $APP_SLUG  (App ID $APP_ID)"
 echo "  Webhook agent path: live (Lambda reads $ID_SECRET / $KEY_SECRET at runtime)"
-[ "$SKIP_LOGIN" = false ] && [ -n "$CLIENT_SECRET" ] && [ -n "$CLIENT_ID" ] && echo "  GitHub login: wired (client_id=$CLIENT_ID)" || echo "  GitHub login: NOT wired (re-run with --client-secret)"
-[ "$SKIP_GATEWAY" = false ] && echo "  UI 'Link GitHub' install: points at $APP_SLUG"
+if [ "$SKIP_LOGIN" = true ]; then
+  echo "  GitHub login: SKIPPED (--skip-login)"
+elif [ "$LOGIN_WIRED" = true ]; then
+  echo "  GitHub login: wired (client_id=$CLIENT_ID)"
+else
+  echo "  GitHub login: NOT wired — see the failures/warnings above"
+fi
+if [ "$SKIP_GATEWAY" = true ]; then
+  echo "  UI 'Link GitHub' install: SKIPPED (--skip-gateway)"
+elif [ "$GATEWAY_WIRED" = true ]; then
+  echo "  UI 'Link GitHub' install: points at $APP_SLUG"
+else
+  echo "  UI 'Link GitHub' install: NOT wired — see the failures/warnings above"
+fi
 echo ""
+
+if [ ${#FAILURES[@]} -gt 0 ]; then
+  echo "Fix the items above and re-run this script (it is idempotent)."
+  exit 1
+fi
+
 echo "Next: install the app on a repo → https://github.com/apps/${APP_SLUG}/installations/new"
 echo "Then @mention an agent in an issue/PR comment (e.g. @agent-developer ...)."

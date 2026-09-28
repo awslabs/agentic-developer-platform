@@ -42,15 +42,46 @@ resource "aws_dynamodb_table_item" "scaledjob_worker_agent" {
     scope            = { S = "internal" }
     budget_config_id = { S = "" }
     allowed_models   = { SS = ["*"] }
-    status           = { S = "active" }
-    description      = { S = "Hosted agent worker pods (webhook + chat ScaledJob). Authenticates via IRSA to /internal/v1/* endpoints." }
-    image_uri        = { S = "" }
-    code_repo        = { S = "" }
-    workflow_name    = { S = "" }
-    created_at       = { S = "2026-05-12T00:00:00Z" }
-    updated_at       = { S = "2026-05-12T00:00:00Z" }
+    # Issue #4131 (grant step): credential scopes granted to this agent, resolved
+    # server-side by the gateway instead of trusted from an X-Agent-Scopes header.
+    # Must stay in lockstep with the canonical copy in
+    # modules/gateway/infra/modules/lambda-authorizer/main.tf — the gateway test
+    # tests/auth/test_credential_scopes_seed.py asserts both roots agree.
+    credential_scopes = { SS = ["credential:raw-read"] }
+    status            = { S = "active" }
+    description       = { S = "Hosted agent worker pods (webhook + chat ScaledJob). Authenticates via IRSA to /internal/v1/* endpoints." }
+    image_uri         = { S = "" }
+    code_repo         = { S = "" }
+    workflow_name     = { S = "" }
+    created_at        = { S = "2026-05-12T00:00:00Z" }
+    updated_at        = { S = "2026-05-12T00:00:00Z" }
   })
 
+  lifecycle {
+    ignore_changes = [item]
+  }
+}
+
+# The conversational worker has its own IRSA role. It must be registered under
+# that role; the webhook worker's registry entry does not authenticate it.
+resource "aws_dynamodb_table_item" "chat_worker_agent" {
+  count      = var.gateway_deployed ? 1 : 0
+  table_name = data.aws_ssm_parameter.agent_registry_table.value
+  hash_key   = "agent_id"
+  item = jsonencode({
+    agent_id       = { S = "chat-worker" }
+    role_arn       = { S = aws_iam_role.gateway_agent.arn }
+    agent_name     = { S = "chat-worker" }
+    org_id         = { S = "__platform__" }
+    team_id        = { S = "__agents__" }
+    owner          = { S = "platform" }
+    scope          = { S = "internal" }
+    allowed_models = { SS = ["*"] }
+    status         = { S = "active" }
+    description    = { S = "Conversational worker; registered human runs supply destination and budget ownership." }
+    created_at     = { S = "2026-09-20T00:00:00Z" }
+    updated_at     = { S = "2026-09-20T00:00:00Z" }
+  })
   lifecycle {
     ignore_changes = [item]
   }

@@ -1,0 +1,18 @@
+{
+  "uid": 1000,
+  "ssh_sha256": "184f4b4c4fc1f6c747250d05e7fa5b601e76b7fd9485c6d5d6bcd3adf00ac74f",
+  "key_types": [
+    "ed25519",
+    "RSA PEM",
+    "ECDSA"
+  ],
+  "encrypted_key_and_invalid_key_refusal": "passed",
+  "ordinary_rekey": "passed",
+  "git_clone_fetch_push": "passed",
+  "scp_sftp_roundtrip": "passed",
+  "strict_known_host_refusal": "passed",
+  "invalid_config_refusal": "passed",
+  "network": "private loopback in network-none namespace",
+  "credentials": "new disposable synthetic keys only",
+  "live_acceptance": false
+}

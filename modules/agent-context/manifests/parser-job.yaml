@@ -1,0 +1,180 @@
+# Isolated SCIP parser Job template
+#
+# This Job runs the parser container with no credentials, no network,
+# no shared PVC, and strict security constraints.
+#
+# Key isolation properties:
+# - Dedicated service account with NO IRSA binding, NO secret access
+# - automountServiceAccountToken: false (no SA token projected)
+# - No envFrom or secretRef (no inherited secrets)
+# - No platform-data PVC (no shared storage)
+# - readOnlyRootFilesystem with bounded emptyDir scratch
+# - Non-root UID 10001, all capabilities dropped
+# - activeDeadlineSeconds for hard timeout
+# - Resource requests/limits for CPU and memory
+# - seccompProfile RuntimeDefault
+#
+# Network isolation:
+# - A NetworkPolicy (parser-deny-all below) denies all ingress/egress
+# - Production activation requires CNI enforcement verification; a
+#   NetworkPolicy object alone is not evidence of enforcement on
+#   EKS Auto Mode
+#
+# NOTE: This is a template. The runner generates concrete Jobs from this
+# with per-invocation identity (invocation_id, asset_id, attempt_id)
+# injected as annotations and volume content.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: isolated-parser-sa
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: isolated-parser
+    app.kubernetes.io/component: parser
+    app.kubernetes.io/part-of: agent-context
+  annotations:
+    # Explicitly NO eks.amazonaws.com/role-arn annotation.
+    # This SA has NO AWS IAM permissions.
+    adp.io/isolation: "credential-free"
+automountServiceAccountToken: false
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: parser-deny-all
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: isolated-parser
+    app.kubernetes.io/component: parser
+  annotations:
+    # CNI enforcement is a remaining acceptance gate.
+    # This policy must be verified against actual CNI agent enforcement
+    # before production activation. A NetworkPolicy object alone does
+    # not prove enforcement on EKS Auto Mode.
+    adp.io/enforcement-status: "pending-cni-verification"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: isolated-parser
+  policyTypes:
+    - Ingress
+    - Egress
+  # Empty ingress/egress = deny all
+  ingress: []
+  egress: []
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: parser-${INVOCATION_ID}
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: isolated-parser
+    app.kubernetes.io/component: parser
+    app.kubernetes.io/part-of: agent-context
+    adp.io/invocation-id: "${INVOCATION_ID}"
+    adp.io/asset-id: "${ASSET_ID}"
+  annotations:
+    adp.io/isolation: "credential-free"
+    adp.io/attempt-id: "${ATTEMPT_ID}"
+    adp.io/source-digest: "${SOURCE_DIGEST}"
+spec:
+  # Hard deadline — parser must complete within this time
+  activeDeadlineSeconds: 600
+  # Do not retry — the runner handles retries with fresh invocation IDs
+  backoffLimit: 0
+  # Clean up completed/failed Jobs after 1 hour
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: isolated-parser
+        app.kubernetes.io/component: parser
+      annotations:
+        adp.io/isolation: "credential-free"
+    spec:
+      serviceAccountName: isolated-parser-sa
+      automountServiceAccountToken: false
+      # No host-level access
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      # Pod security context
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Prevent scheduling on nodes with shared secrets
+      tolerations: []
+      containers:
+        - name: parser
+          image: ${PARSER_IMAGE}
+          # No envFrom — no inherited secrets/configmaps
+          env:
+            # Only non-sensitive parser configuration
+            - name: PARSER_INPUT_MANIFEST
+              value: /input/input_manifest.json
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            # Source code — read-only
+            - name: source
+              mountPath: /source
+              readOnly: true
+            # Input manifest — read-only
+            - name: input
+              mountPath: /input
+              readOnly: true
+            # Output — bounded writable space
+            - name: output
+              mountPath: /output
+            # Scratch — bounded writable tmp
+            - name: tmp
+              mountPath: /tmp
+            # Home — bounded writable home
+            - name: home
+              mountPath: /home/appuser
+      volumes:
+        # Source code: ephemeral volume populated by the runner
+        # (NOT the shared platform-data PVC)
+        - name: source
+          emptyDir:
+            sizeLimit: 2Gi
+        # Input manifest: populated by the runner before Job creation
+        - name: input
+          emptyDir:
+            sizeLimit: 1Mi
+        # Output: bounded space for .scip files and output manifest
+        - name: output
+          emptyDir:
+            sizeLimit: 512Mi
+        # Scratch: temporary working space
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        # Home: parser user home directory
+        - name: home
+          emptyDir:
+            sizeLimit: 512Mi
+      restartPolicy: Never
+      # Terminate after deadline
+      terminationGracePeriodSeconds: 10

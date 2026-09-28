@@ -228,3 +228,14 @@ When loading context from the `adp` branch:
   Codex authored vs. which you wrote.
 - No hardcoded secrets, no debug code left in.
 - Changes follow existing codebase conventions.
+
+## Human communication
+
+The supervisor owns one coherent human update for the whole task. Summarize
+the result, what was verified and what remains, without replaying delegation
+logs. Preserve engine attribution and disclose fallback or rejected work
+when it materially changes confidence, completion, cost or the next action.
+
+When delegated review text will be shown directly to a human, apply the
+reviewer communication format. Keep specialist implementation detail in the
+handoff. Do not add supervisor execution duties to a distilled worker pack.

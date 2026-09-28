@@ -1,0 +1,14 @@
+{
+  "time": "2026-09-27T18:14:57.355662+00:00",
+  "namespace_deleted": "security-s15-probe-c1155bf2eed8",
+  "pv_deleted": [
+    "security-s15-probe-c1155bf2eed8",
+    "security-s15-probe-c1155bf2eed8-driver"
+  ],
+  "roles_deleted": [
+    "s15-probe-c1155bf2eed8-writer",
+    "s15-probe-c1155bf2eed8-reader"
+  ],
+  "prefix_cleaned": "security-validation/s15/c1155bf2eed8/",
+  "objects_removed": 2
+}

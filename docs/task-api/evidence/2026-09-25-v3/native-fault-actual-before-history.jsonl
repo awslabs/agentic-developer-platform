@@ -1,0 +1,47 @@
+{"at": "2026-09-25T05:43:15.525579+00:00", "kind": "scope", "fixture_id": "195139d188a04e8e90503eeb661828aa", "request_table": "adp-dev-webhook-events", "authority_table": "adp-dev-agent-authority", "isolation": "nonproduction recovery shard; private FIFO queue; no worker/model/public credentials"}
+{"at": "2026-09-25T05:43:15.525670+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TENANT#task-v3-native-195139d188a04e8e90503eeb661828aa"}, "sk": {"S": "TASK_POLICY#fixture-195139d188a04e8e90503eeb661828aa"}}}
+{"at": "2026-09-25T05:43:15.595248+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TASK_CAPACITY#3872d02cb4fb1f928596523f4dae8b9d9b54f6f963fa6badd831049f156a8b51"}, "sk": {"S": "ACTIVE"}}}
+{"at": "2026-09-25T05:43:15.603850+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_IDEMP#32b6be0e405b1bd56d55ff870d42d524b3c06bc52ab4360f829263e5895927bf"}, "arrived_at": {"S": "META"}}}
+{"at": "2026-09-25T05:43:15.603900+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK#tsk_955072d8-6c41-42d9-86be-2b0b27708d30"}, "arrived_at": {"S": "META"}}}
+{"at": "2026-09-25T05:43:15.603917+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_RUN#tsk_955072d8-6c41-42d9-86be-2b0b27708d30"}, "arrived_at": {"S": "RUN#bd97d75f-b625-466c-87d5-36d5e9ef6b37#GEN#0000000001"}}}
+{"at": "2026-09-25T05:43:15.603930+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_EVENTS#tsk_955072d8-6c41-42d9-86be-2b0b27708d30"}, "arrived_at": {"S": "SEQ#00000000000000000001"}}}
+{"at": "2026-09-25T05:43:15.603942+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_WORK#tsk_955072d8-6c41-42d9-86be-2b0b27708d30"}, "arrived_at": {"S": "DISPATCH#4da62be6-c75c-45f0-9500-c5c7312ddba4"}}}
+{"at": "2026-09-25T05:43:15.603955+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TASK_WORK_ID#4da62be6-c75c-45f0-9500-c5c7312ddba4"}, "sk": {"S": "BINDING"}}}
+{"at": "2026-09-25T05:43:15.603968+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TENANT#task-v3-native-195139d188a04e8e90503eeb661828aa"}, "sk": {"S": "TASK#tsk_955072d8-6c41-42d9-86be-2b0b27708d30"}}}
+{"at": "2026-09-25T05:43:15.603984+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TENANT#task-v3-native-195139d188a04e8e90503eeb661828aa"}, "sk": {"S": "TASK_RUN#bd97d75f-b625-466c-87d5-36d5e9ef6b37#GEN#0000000001"}}}
+Task acceptance did not commit
+{"at": "2026-09-25T05:43:15.615771+00:00", "kind": "PASS", "check": "precommit failure is not accepted"}
+{"at": "2026-09-25T05:43:15.620479+00:00", "kind": "PASS", "check": "precommit leaves no task"}
+{"at": "2026-09-25T05:43:15.695898+00:00", "kind": "PASS", "check": "subsequent bounded acceptance succeeds"}
+{"at": "2026-09-25T05:43:15.697791+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_IDEMP#062d83c85212964452e5335cf9cdd0244e22c2c8470d420f310e439a650fc86e"}, "arrived_at": {"S": "META"}}}
+{"at": "2026-09-25T05:43:15.697832+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK#tsk_332d8ec2-c0ac-4f74-b060-9613f2aef6dc"}, "arrived_at": {"S": "META"}}}
+{"at": "2026-09-25T05:43:15.697847+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_RUN#tsk_332d8ec2-c0ac-4f74-b060-9613f2aef6dc"}, "arrived_at": {"S": "RUN#60048258-2e18-4861-9e5b-c9f604e567c1#GEN#0000000001"}}}
+{"at": "2026-09-25T05:43:15.697862+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_EVENTS#tsk_332d8ec2-c0ac-4f74-b060-9613f2aef6dc"}, "arrived_at": {"S": "SEQ#00000000000000000001"}}}
+{"at": "2026-09-25T05:43:15.697882+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_WORK#tsk_332d8ec2-c0ac-4f74-b060-9613f2aef6dc"}, "arrived_at": {"S": "DISPATCH#5d0158db-6790-4c9a-9b41-79961ad202ed"}}}
+{"at": "2026-09-25T05:43:15.697912+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TASK_WORK_ID#5d0158db-6790-4c9a-9b41-79961ad202ed"}, "sk": {"S": "BINDING"}}}
+{"at": "2026-09-25T05:43:15.697929+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TENANT#task-v3-native-195139d188a04e8e90503eeb661828aa"}, "sk": {"S": "TASK#tsk_332d8ec2-c0ac-4f74-b060-9613f2aef6dc"}}}
+{"at": "2026-09-25T05:43:15.697944+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TENANT#task-v3-native-195139d188a04e8e90503eeb661828aa"}, "sk": {"S": "TASK_RUN#60048258-2e18-4861-9e5b-c9f604e567c1#GEN#0000000001"}}}
+{"at": "2026-09-25T05:43:15.766139+00:00", "kind": "PASS", "check": "lost commit response resolves durable same task"}
+{"at": "2026-09-25T05:43:15.852233+00:00", "kind": "PASS", "check": "concurrent idempotency has one task"}
+{"at": "2026-09-25T05:43:15.951847+00:00", "kind": "PASS", "check": "native recovery lease acquired"}
+{"at": "2026-09-25T05:43:16.009283+00:00", "kind": "PASS", "check": "competing recovery lease denied"}
+{"at": "2026-09-25T05:43:16.116023+00:00", "kind": "PASS", "check": "competing publisher denied"}
+{"at": "2026-09-25T05:43:16.116110+00:00", "kind": "cleanup_queue_name", "queue_name": "task-v3-native-195139d188a04e8e90503eeb661828aa.fifo"}
+{"at": "2026-09-25T05:43:16.201405+00:00", "kind": "cleanup_queue", "queue": "https://sqs.us-east-1.amazonaws.com/879318057152/task-v3-native-195139d188a04e8e90503eeb661828aa.fifo"}
+{"at": "2026-09-25T05:43:16.268667+00:00", "kind": "PASS", "check": "expired publication lease reclaims identical envelope"}
+{"at": "2026-09-25T05:43:16.297006+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_EVENTS#tsk_332d8ec2-c0ac-4f74-b060-9613f2aef6dc"}, "arrived_at": {"S": "SEQ#00000000000000000002"}}}
+{"at": "2026-09-25T05:43:16.325340+00:00", "kind": "PASS", "check": "stale publisher cannot settle after lease takeover"}
+{"at": "2026-09-25T05:43:16.329869+00:00", "kind": "send_responses", "first_id": "58250035-8bba-4a12-b00b-16e036b97387", "retry_id": "58250035-8bba-4a12-b00b-16e036b97387"}
+{"at": "2026-09-25T05:43:16.397034+00:00", "kind": "PASS", "check": "confirmed publication durably queues same task"}
+{"at": "2026-09-25T05:43:16.403995+00:00", "kind": "PASS", "check": "duplicate sends yield single delivery"}
+{"at": "2026-09-25T05:43:16.418845+00:00", "kind": "PASS", "check": "unacknowledged delivery redelivers same message"}
+{"at": "2026-09-25T05:43:17.444126+00:00", "kind": "PASS", "check": "lost delete response does not fabricate another delivery"}
+{"at": "2026-09-25T05:43:17.456948+00:00", "kind": "cleanup_ledger", "table": "adp-dev-webhook-events", "key": {"event_id": {"S": "TASK_WORK#tsk_955072d8-6c41-42d9-86be-2b0b27708d30"}, "arrived_at": {"S": "RECONCILE"}}}
+{"at": "2026-09-25T05:43:17.457050+00:00", "kind": "cleanup_ledger", "table": "adp-dev-agent-authority", "key": {"pk": {"S": "TASK_WORK_ID#12d223be-443f-43e4-80d9-a443a74064bb"}, "sk": {"S": "BINDING"}}}
+{"at": "2026-09-25T05:43:17.530995+00:00", "kind": "PASS", "check": "replaced attempt cannot report"}
+{"at": "2026-09-25T05:43:17.534334+00:00", "kind": "PASS", "check": "replaced attempt cannot complete"}
+{"at": "2026-09-25T05:43:17.539507+00:00", "kind": "PASS", "check": "replaced attempt cannot acknowledge delivery"}
+{"at": "2026-09-25T05:43:17.545248+00:00", "kind": "PASS", "check": "attempt replacement preserves task and run identity"}
+{"at": "2026-09-25T05:43:17.545286+00:00", "kind": "summary", "status": "PASS", "checks": 18, "limitations": ["No production scheduled recovery wake-up or public identity qualification in this isolated lane", "No model effects dispatched", "Queue deletion fault is transport evidence, not runtime acknowledgment authority proof"]}
+{"at": "2026-09-25T05:43:17.590803+00:00", "kind": "queue_deleted", "queue": "https://sqs.us-east-1.amazonaws.com/879318057152/task-v3-native-195139d188a04e8e90503eeb661828aa.fifo"}
+{"at": "2026-09-25T05:43:17.788828+00:00", "kind": "cleanup", "keys": 21, "all_owned_keys_absent": true, "errors": []}

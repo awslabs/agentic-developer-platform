@@ -7,6 +7,7 @@ from unittest.mock import patch
 from src.shared.metrics import (
     emit_auth_exchange_count,
     emit_budget_utilization,
+    emit_caller_provenance_rejected,
     emit_cost,
     emit_error_count,
     emit_pool_health,
@@ -348,3 +349,23 @@ class TestMetricUnits:
         data = json.loads(captured.getvalue().strip())
         metrics = data["_aws"]["CloudWatchMetrics"][0]["Metrics"]
         assert metrics[0]["Unit"] == "Percent"
+
+
+class TestCallerProvenanceMetrics:
+    """Tests for caller provenance rejection metrics."""
+
+    def test_rejection_dimensions_are_not_declared_as_metrics(self):
+        captured = StringIO()
+        with patch("sys.stdout", captured):
+            emit_caller_provenance_rejected(
+                reason="missing_edge_marker",
+                environment="test",
+            )
+
+        data = json.loads(captured.getvalue().strip())
+        metric_definitions = data["_aws"]["CloudWatchMetrics"][0]["Metrics"]
+
+        assert metric_definitions == [{"Name": "CallerProvenanceRejected", "Unit": "Count"}]
+        assert all(isinstance(data[metric["Name"]], int | float) for metric in metric_definitions)
+        assert data["reason"] == "missing_edge_marker"
+        assert data["Environment"] == "test"

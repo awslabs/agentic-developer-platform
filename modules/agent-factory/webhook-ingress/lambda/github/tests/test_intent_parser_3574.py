@@ -216,8 +216,9 @@ class TestAwsLabelInIntent:
         assert result.persona == "developer"
         assert result.aws_label is None
 
-    def test_pr_event_does_not_have_aws_label(self):
+    def test_pr_event_does_not_have_aws_label(self, monkeypatch):
         """PR events don't parse /aws-label."""
+        monkeypatch.setenv("GITHUB_AUTO_PR_REVIEW_ENABLED", "true")
         payload = {
             "action": "opened",
             "pull_request": {
@@ -231,7 +232,7 @@ class TestAwsLabelInIntent:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.aws_label is None
 
 

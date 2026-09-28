@@ -1,0 +1,59 @@
+{
+  "checked_at": "2026-09-21T21:44:04.269993+00:00",
+  "account": "879318057152",
+  "profile": "embark1",
+  "region": "us-east-1",
+  "cluster": "adp-dev-cyber-eks",
+  "nodegroups": [],
+  "nodes": [
+    {
+      "name": "i-05c5bb10558aa926b",
+      "ready": true,
+      "compute_type": "auto",
+      "version": "v1.35.6-eks-bca9cf6"
+    }
+  ],
+  "node_access_type": "EC2",
+  "smoke": {
+    "artifact_id": "cyber-repair-final-20260921T213655Z",
+    "sample_sha256": "018fa0c2de0ae38b40e9695a5cef464d86a60cbb77de1c178e9ef1a78e551272",
+    "sample_s3_uri": "s3://adp-dev-cape-assets/smoke-test/cyber-repair-final-20260921T213655Z/sample.py"
+  },
+  "jobs": [
+    {
+      "name": "cyber-static-scaledjob-984pz",
+      "succeeded": 1,
+      "failed": 0,
+      "started": "2026-09-21T21:37:00Z",
+      "completed": "2026-09-21T21:37:16Z"
+    },
+    {
+      "name": "cyber-triage-scaledjob-brjmc",
+      "succeeded": 1,
+      "failed": 0,
+      "started": "2026-09-21T21:37:01Z",
+      "completed": "2026-09-21T21:37:21Z"
+    }
+  ],
+  "network_checks": {
+    "sqs.us-east-1.amazonaws.com": {
+      "reachable": true,
+      "expected": true
+    },
+    "sts.us-east-1.amazonaws.com": {
+      "reachable": true,
+      "expected": true
+    },
+    "example.com": {
+      "reachable": false,
+      "expected": false
+    }
+  },
+  "cape_target_health": "healthy",
+  "terraform_validation": {
+    "valid": true,
+    "error_count": 0,
+    "warning_count": 4
+  },
+  "temporary_admin_access_removed": true
+}

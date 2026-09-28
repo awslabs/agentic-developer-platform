@@ -1,0 +1,28 @@
+{
+  "$fixture": {
+    "description": "A finding asserted with no supporting evidence. The investigator reads only what the caller supplied, so an unsupported claim has no provenance at all -- the design routes it to uncertainties instead, which is the difference between a useful report and a confident guess.",
+    "schema": "results.schema.json#/$defs/investigator_report",
+    "expect": "invalid",
+    "reason": "each finding requires at least one evidence_ref; unsupported claims belong in uncertainties",
+    "violates": [
+      "results.schema.json#/$defs/finding"
+    ],
+    "owner": "T5",
+    "criteria": [
+      "T0-AC02",
+      "T5-AC04",
+      "V0-02"
+    ]
+  },
+  "summary": "The outage was caused by a bad deployment.",
+  "findings": [
+    {
+      "statement": "A deployment at 14:20 introduced the regression.",
+      "evidence_refs": [],
+      "confidence": "high"
+    }
+  ],
+  "uncertainties": [],
+  "recommendations": [],
+  "evidence_refs": []
+}

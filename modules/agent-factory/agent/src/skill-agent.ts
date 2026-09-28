@@ -7,10 +7,13 @@
  * Claude decides which skills to use based on the task.
  */
 /// <reference types="node" />
+import { randomUUID } from 'crypto';
+import { hasRepositoryWritePermission, parsePlanApproval } from './utils/comment-authority';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
+import { resolveAgentLogGroup } from './lib/logGroup';
 import { LiveStatusComment, createSkillAgentStages } from './github-comments';
 
 const REPO_OWNER = process.env.REPO_OWNER || '';
@@ -22,7 +25,7 @@ const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929';
 const GITHUB_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 
 // ── CloudWatch Logger ──────────────────────────────────────────────
-const LOG_GROUP = '/github-ccsdk-agent/logs';
+const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `skill-agent-issue-${ISSUE_NUMBER}-${Date.now()}`;
 const cwClient = new CloudWatchLogsClient({ region: process.env.AWS_REGION || 'us-east-1' });
 let cwBuffer: { timestamp: number; message: string }[] = [];
@@ -108,7 +111,7 @@ async function getLatestComments(count: number = 5): Promise<Array<{ body: strin
   }));
 }
 
-async function waitForApproval(): Promise<{ approved: boolean; feedback: string }> {
+async function waitForApproval(requestId: string): Promise<{ approved: boolean; feedback: string }> {
   console.log('\n⏳ Waiting for /approve or /reject on issue...');
   const waitStartTime = new Date().toISOString();
   const botAuthors = ['github-actions[bot]', 'gateway-dev-agent', 'BedrockGateway Agent', 'MCP Onboard Agent'];
@@ -121,16 +124,15 @@ async function waitForApproval(): Promise<{ approved: boolean; feedback: string 
       // Skip comments from the bot itself
       if (botAuthors.some(bot => comment.author.toLowerCase().includes(bot.toLowerCase()))) continue;
 
-      const lower = comment.body.toLowerCase().trim();
-      if (lower.includes('/approve') || lower === 'approved') {
-        console.log(`✅ Approval received from ${comment.author}!`);
-        return { approved: true, feedback: '' };
-      }
-      if (lower.includes('/reject')) {
-        const feedback = comment.body.replace(/\/reject\s*/i, '').trim();
-        console.log(`❌ Rejected by ${comment.author}: ${feedback.substring(0, 100)}`);
-        return { approved: false, feedback };
-      }
+      const decision = parsePlanApproval(comment.body, requestId);
+      if (!decision) continue;
+      const token = process.env.GITHUB_TOKEN || GITHUB_TOKEN;
+      if (!await hasRepositoryWritePermission(REPO_OWNER, REPO_NAME, comment.author, token)) continue;
+      const target = (process.env.TARGET_REPO || `${REPO_OWNER}/${REPO_NAME}`).split('/');
+      if (target.length !== 2) continue;
+      if (target.join('/') !== `${REPO_OWNER}/${REPO_NAME}` &&
+          !await hasRepositoryWritePermission(target[0], target[1], comment.author, token)) continue;
+      return decision;
     }
     console.log(`   Poll ${i + 1}/60 — waiting...`);
     await new Promise(r => setTimeout(r, 30000));
@@ -342,7 +344,7 @@ ${wrapUntrusted(issue.body)}
 ${commentsContext ? `
 ## Existing Discussion / Comments
 
-The following comments have been posted on this issue. Read them carefully - they may contain important context, decisions, research, or approvals from previous agents or users.
+The following comments have been posted on this issue. Read them carefully - they may contain important context or research from previous agents or users.
 
 ${wrapUntrusted(commentsContext)}
 
@@ -395,14 +397,15 @@ IMPORTANT: Actually read the skill files and codebase during planning. Use Read,
   const planText = planMatch ? planMatch[1].trim() : planResponse.substring(0, 2000);
 
   // Post plan for approval
-  const planComment = `## 🤖 Implementation Plan\n\n${planText}\n\n---\n**To approve:** Comment \`/approve\`\n**To reject:** Comment \`/reject <feedback>\``;
+  const approvalRequestId = randomUUID();
+  const planComment = `## 🤖 Implementation Plan\n\n${planText}\n\n---\n**To approve:** Comment \`/approve ${approvalRequestId}\`\n**To reject:** Comment \`/reject ${approvalRequestId} <feedback>\``;
   await postComment(planComment);
   console.log('\n📋 Plan posted. Waiting for approval...');
 
   // ========== PHASE 2: APPROVAL ==========
   liveComment.transition(0, 'complete', 'Plan posted');
   liveComment.transition(1, 'in_progress', 'Waiting for approval');
-  const approval = await waitForApproval();
+  const approval = await waitForApproval(approvalRequestId);
   if (!approval.approved) {
     liveComment.transition(1, 'complete');
     const reason = approval.feedback === 'Timeout waiting for approval' ? 'Timed out' : 'Rejected';
@@ -445,7 +448,7 @@ ${wrapUntrusted(issue.body)}
 ${commentsContext ? `
 ## Discussion Context
 
-Previous comments on this issue (may contain research, decisions, or approvals):
+Previous comments on this issue (may contain research or context):
 
 ${wrapUntrusted(commentsContext)}
 

@@ -128,7 +128,20 @@ export function RateLimitManagement() {
       key: 'entityId',
       header: 'Entity ID',
       render: (item: RateLimitListItem) => (
-        <span className="font-mono text-sm">{item.entityId}</span>
+        <div>
+          {item.entityDisplayName && (
+            <span className="text-sm text-gray-900 dark:text-white">{item.entityDisplayName}</span>
+          )}
+          <span className="font-mono text-sm block">{item.entityId}</span>
+          {/* Issue #4948: flagged, never hidden — see BudgetManagement. */}
+          {item.entityUnresolved && (
+            <span data-testid="entity-unresolved-badge">
+              <Badge variant="warning" size="sm">
+                Not enforced — no matching {formatEntityType(item.entityType).toLowerCase()}
+              </Badge>
+            </span>
+          )}
+        </div>
       ),
     },
     {

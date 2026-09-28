@@ -11,7 +11,14 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { FeatureGate } from '@/components/FeatureGate';
 import type { FeatureFlags } from '@/services/features';
 
-// Mock useFeatures
+// Mock useFeatures.
+//
+// Annotated `FeatureFlags` but only ever declared six of its keys, so the four
+// flags added since (#3566 logs, #3773 gitlab, #4209 orchestration_engine, #4402
+// budget_spend) were `undefined` here rather than `false`. That happens to gate
+// the same way, but it means this fixture silently stopped describing the real
+// payload. Completed while adding agent_control (#3960) so the annotation is true
+// again — tsconfig.json excludes `__tests__`, so `tsc` never reported the drift.
 const mockFeatures: FeatureFlags = {
   chat: true,
   knowledge: true,
@@ -19,10 +26,19 @@ const mockFeatures: FeatureFlags = {
   connections: true,
   credentials: true,
   system_dashboard: true,
+  logs: true,
+  gitlab: false,
+  orchestration_engine: false,
+  budget_spend: false,
+  agent_control: false,
+  new_ui: false,
+  superplane: false,
+  agent_models: false,
 };
 
 vi.mock('@/hooks/useFeatures', () => ({
   useFeatures: () => mockFeatures,
+  useFeaturesQuery: () => ({ data: mockFeatures, isPending: false }),
 }));
 
 function renderWithRouter(initialPath: string) {

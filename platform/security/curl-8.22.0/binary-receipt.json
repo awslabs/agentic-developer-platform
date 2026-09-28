@@ -1,0 +1,17 @@
+[
+  {
+    "package": "curl",
+    "binary": "usr/bin/curl",
+    "sha256": "26d03d5fa92694eb064c09c0587dcdfa1c66eaf579536d5125f7c53048db0edb"
+  },
+  {
+    "package": "libcurl4t64",
+    "binary": "usr/lib/x86_64-linux-gnu/libcurl.so.4.0.0",
+    "sha256": "fb10bb7154c25d2f0f6d51f1b629a400ae0b16ea12ad4e8de91d76f581c2ccb0"
+  },
+  {
+    "package": "libcurl3t64-gnutls",
+    "binary": "usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4.0.0",
+    "sha256": "d9a9de773281017f940c8a799146c864f81d0d686f25bd1e5aefe38d7e7b6146"
+  }
+]

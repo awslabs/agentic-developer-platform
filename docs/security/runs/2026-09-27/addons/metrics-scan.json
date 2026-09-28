@@ -1,0 +1,14 @@
+{
+  "image": "602401143452.dkr.ecr.us-east-1.amazonaws.com/eks/metrics-server:v0.9.0-eksbuild.11",
+  "docker_root_descriptor": "sha256:cc90a6c951a64fcef683759a3c562453cb315fbd137c4d2a82f2aae2f4d1b795",
+  "config_digest": "sha256:bb70ceada98135ed7ee65158a1deb35b0efeaada6563a3415c0b837ef3520fc6",
+  "time": "2026-09-27T09:16:41.974220+00:00",
+  "packages": 111,
+  "native_counts": {
+    "Low": 3,
+    "Unknown": 1
+  },
+  "sbom_sha256": "1d80dd55b11a24a1bf8df4412dcbd36f9d9c4f533fb8cf887320a0d84584e442",
+  "grype_sha256": "9641fda9da541b6f96e72f51107866efe61f507584f12229bf0ba1873dfd0779",
+  "archive_sha256": "b501f7dee65d3142f1c04ea5132c9a4a3bad7142cd7baa1fcae8b967b03d349b"
+}

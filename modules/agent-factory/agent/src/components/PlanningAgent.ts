@@ -246,7 +246,11 @@ Do NOT include blockers unless there are genuine technical blockers.`;
     }
   }
 
-  formatPlanComment(plan: Plan): string {
+  /**
+   * @param requestId Token the approver must name in their `/approve` comment
+   *   so the answer is bound to this specific plan (issue #4181).
+   */
+  formatPlanComment(plan: Plan, requestId: string): string {
     let comment = `## 🤖 Implementation Plan\n\n`;
     comment += `**Summary:** ${plan.summary}\n\n`;
     
@@ -263,9 +267,11 @@ Do NOT include blockers unless there are genuine technical blockers.`;
     }
     
     comment += `\n---\n`;
-    comment += `**To approve this plan:** Comment \`/approve\`\n`;
-    comment += `**To request changes:** Comment \`/reject <your feedback>\`\n`;
-    
+    comment += `**To approve this plan:** Comment \`/approve ${requestId}\`\n`;
+    comment += `**To request changes:** Comment \`/reject ${requestId} <your feedback>\`\n`;
+    comment += `\n_The request id is required — it ties your answer to this specific plan. `;
+    comment += `You need write access to this repository to approve._\n`;
+
     return comment;
   }
 }

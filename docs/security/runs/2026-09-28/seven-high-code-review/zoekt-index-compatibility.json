@@ -1,0 +1,7 @@
+{
+  "previous": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-zoekt@sha256:9526ea64a3d05fb90358d739474dd233780b61a3cadb063dd597c14b538d144f",
+  "new": "security28/zoekt:authenticated",
+  "indexer_sha256": "1a65ae530a89013e4785a90d49a0e469b07abf03f9a61406317d0d72c1d342a1",
+  "previous_indexer_sha256": "1a65ae530a89013e4785a90d49a0e469b07abf03f9a61406317d0d72c1d342a1",
+  "identical_indexer": true
+}

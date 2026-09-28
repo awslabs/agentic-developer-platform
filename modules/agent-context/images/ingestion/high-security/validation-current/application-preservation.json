@@ -1,0 +1,16 @@
+{
+  "base_reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:5c96c50f7bc2ed5d591bfcaba0f97c827c4e2d98cc3f3958c58757e5f5178ae8",
+  "candidate": "security27/ingestion:high-current",
+  "candidate_root_digest": "sha256:d62501bed8bd472e31d1cb804856985efe92b1d7e1a2cb730e28998867f7c356",
+  "application_trees": {
+    "/app": {
+      "files": 99,
+      "exact_hash_mode_symlink_match": true
+    },
+    "/opt/venv": {
+      "files": 0,
+      "exact_hash_mode_symlink_match": true
+    }
+  },
+  "config_changed_keys": []
+}

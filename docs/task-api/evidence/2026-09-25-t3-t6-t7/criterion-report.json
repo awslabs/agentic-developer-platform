@@ -1,0 +1,252 @@
+{
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "reviewer": "t3_integration operator; author of corrective patches (not independent of all code)",
+  "date_utc": "2026-09-25",
+  "tested_source_sha": "ee8dcdf899aa174f2b02315a31ebd24720bcf305",
+  "deployed_gateway_source": "a070f971a",
+  "deployed_gateway_image": "sha256:dc18d65636a9fb7e4724053bc2fc15b4fe83af84849723ec2c077e860f883b66",
+  "source_difference": "ee8dcdf89 adds only an event-contention test to deployed a070f971a runtime.",
+  "environment": "AWS account 879318057152, us-east-1, dev",
+  "task_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33",
+  "no_operator_repair_on_clean_task": false,
+  "tests": [
+    {
+      "artifact": "gateway-tests.xml",
+      "command": "cd modules/gateway && /tmp/adp-5911-venv/bin/python -m pytest tests/tasks tests/agentauth/test_task_*.py -q",
+      "exit_code": 0,
+      "tests": 721,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 122.65
+    },
+    {
+      "artifact": "publisher-tests.xml",
+      "command": "PYTHONPATH=modules/agent-factory/webhook-ingress/lambda /tmp/adp-5911-venv/bin/python -m pytest modules/agent-factory/webhook-ingress/lambda/common/tests/test_task_publisher.py modules/agent-factory/webhook-ingress/lambda/common/tests/test_task_dispatch.py -q",
+      "exit_code": 0,
+      "tests": 42,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 0.179
+    }
+  ],
+  "criteria": {
+    "T3-AC01": {
+      "status": "PASS",
+      "evidence": "Actual gateway-to-Lambda publisher seam tests, lost/unknown send retries and execution recovery tests. Live clean task dispatched and acknowledged without a second client request; historical no-send and child-exit defects are retained below.",
+      "test_files": [
+        "agentauth/test_task_dispatch_routes.py",
+        "agentauth/test_task_execution_recovery.py"
+      ]
+    },
+    "T3-AC02": {
+      "status": "PASS",
+      "evidence": "Canonical owner/attempt fencing and exact envelope transport identity tests; stale ack CAS refuses competing attempt. Clean task has one attempt and two immutable model turns.",
+      "test_files": [
+        "agentauth/test_task_delivery.py",
+        "agentauth/test_task_runtime.py"
+      ]
+    },
+    "T3-AC03": {
+      "status": "PASS",
+      "evidence": "Persona/model/budget/workload/credential restrictions and model uncertainty tests; live verified pricing and actual Redis settlement. Real worker-role direct table writes denied in the linked T1 IAM artifact.",
+      "test_files": [
+        "agentauth/test_task_runtime.py",
+        "agentauth/test_task_model.py",
+        "agentauth/test_task_model_binding.py"
+      ]
+    },
+    "T3-AC04": {
+      "status": "PASS",
+      "evidence": "Actual gateway separate dispatch/recovery allowlists and Lambda recovery alias-context tests reject public body selection.",
+      "test_files": [
+        "agentauth/test_task_dispatch_routes.py"
+      ]
+    },
+    "T3-AC05": {
+      "status": "PASS",
+      "evidence": "Real worker-role writes denied; legacy Codex and Claude returned useful results with native per-run usage evidence. PR6014 released execution slots automatically when held clarify3 completed on dda image; strong full-authority scan found zero positive capacity rows. Terminal fixture results remain discoverable.",
+      "test_files": [
+        "agentauth/test_task_delivery.py",
+        "agentauth/test_task_runtime.py"
+      ]
+    },
+    "T6-AC01": {
+      "status": "PASS",
+      "evidence": "Live two substantive progress events received 05:10:23.434914 and 05:10:30.464453 while child still running, before 05:10:44 completion; first two reports observed within approximately 1.5 seconds of durable event timestamps. Deterministic held-open streaming timing passes.",
+      "test_files": [
+        "tasks/test_streaming.py"
+      ]
+    },
+    "T6-AC02": {
+      "status": "PASS",
+      "evidence": "Deterministic subscribe-before-start, mid-run, completed replay, backend-store restart and many reconnects pass. Live clean stream has contiguous sequences 1..14. No claim of live process restart injection.",
+      "test_files": [
+        "tasks/test_streaming.py",
+        "tasks/test_dynamo_read_integration.py"
+      ]
+    },
+    "T6-AC03": {
+      "status": "PASS",
+      "evidence": "Deterministic expired/revoked stream termination, cross-owner/tenant read refusal, report injection and stale attempt fences pass. Actual HTTP nonowner denials are recorded in linked T1 evidence.",
+      "test_files": [
+        "tasks/test_report_routes.py",
+        "tasks/test_artifact_routes.py",
+        "tasks/test_streaming.py"
+      ]
+    },
+    "T6-AC04": {
+      "status": "PASS",
+      "evidence": "Deterministic slow consumer bounding, explicit storage-unavailable closure, history gaps and terminal evidence handling pass. Live final event precedes stream termination.",
+      "test_files": [
+        "tasks/test_streaming.py"
+      ]
+    },
+    "T6-AC05": {
+      "status": "PASS",
+      "evidence": "Clean Task snapshot, contiguous public events, and result artifact agree; scope tests pass. Parent observed useful completed legacy Codex invocation3fd3d414-29f6-4cfa-b295-98b7079c64e8 and Claude invocationd4efa9c6-5b10-4ca7-94a9-2d911490197e on the concurrent release; native per-run usage rows corroborate both existing model paths. Legacy rates are estimated, not verified cost evidence.",
+      "test_files": [
+        "tasks/test_dynamo_read_integration.py",
+        "tasks/test_report_routes.py",
+        "tasks/test_artifact_routes.py"
+      ]
+    },
+    "T7-AC01": {
+      "status": "PASS",
+      "evidence": "Clean public clarification accepted 05:10:31, consumed exactly once 05:10:33, handoff prepared then confirmed, completed 05:10:44 with 3 findings and reply cited by result. No operator mutation of the clean task.",
+      "test_files": [
+        "agentauth/test_task_runtime.py",
+        "agentauth/test_task_model.py",
+        "tasks/test_task_commands.py"
+      ]
+    },
+    "T7-AC02": {
+      "status": "PASS",
+      "evidence": "Stable command/turn/model replay and stale attempt refusal tests; concurrent report and input writes preserve exactly one upstream call and event sequence.",
+      "test_files": [
+        "agentauth/test_task_runtime.py",
+        "agentauth/test_task_model.py",
+        "tasks/test_task_commands.py"
+      ]
+    },
+    "T7-AC03": {
+      "status": "PASS",
+      "evidence": "Canonical pre-publication, running and completion-race cancellation and duplicate command tests pass. Live running cancel reached cancelled with confirmed child exit and zero settled spend; its historical queue ambiguity recovered through exact owned DLQ redrive.",
+      "test_files": [
+        "agentauth/test_task_cancel_before_start.py",
+        "tasks/test_task_commands.py",
+        "tasks/test_command_routes.py"
+      ]
+    },
+    "T7-AC04": {
+      "status": "PASS",
+      "evidence": "Typed exit evidence required; cancel-request/lost-heartbeat is not completion or success. Live original failure retains unknown child exit while native workload stop proof is separate; running cancellation records actual stop.",
+      "test_files": [
+        "tasks/test_command_routes.py",
+        "tasks/test_task_commands.py",
+        "agentauth/test_task_execution_recovery.py"
+      ]
+    },
+    "T7-AC05": {
+      "status": "PASS",
+      "evidence": "Gateway rejects missing scope, authority fields, duplicate JSON control keys, wrong owner and stale attempt; command text never alters model/grant identity.",
+      "test_files": [
+        "tasks/test_command_routes.py",
+        "tasks/test_task_commands.py"
+      ]
+    }
+  },
+  "scope": "Implementation-story evidence; does not independently close V1/V2/V3/V4/V5 or the EPIC. Historical cancellation DLQ redrive is operator recovery, not automatic proof.",
+  "artifacts": [
+    {
+      "path": "README.md",
+      "sha256": "2be10121fd619ffdf29c8cd99b03bcc72ca661a3fe15430251ad56058c6c18bd"
+    },
+    {
+      "path": "cancel-redrive.json",
+      "sha256": "a3fba869e30e316d01c066e0cce099517cc891bf7d63205b3502089dcc22d780"
+    },
+    {
+      "path": "capacity-regression.log",
+      "sha256": "248d7d4afc945a5c8cd0c8e43b669ce108daac58b6bffe8e4f157ba88ee5eb06"
+    },
+    {
+      "path": "clarify3-capacity-audit.json",
+      "sha256": "684ccb59b3f48a271c3d8ff4b589979cef7da99b63216fae08a8a69de6c42c29"
+    },
+    {
+      "path": "clarify3-final-events.ndjson",
+      "sha256": "63c3681e9ecd1092af614304d23ea3e0bc5fc8124509da66ebc2a87e84e42556"
+    },
+    {
+      "path": "clarify3-native-financial.json",
+      "sha256": "95b0ef05e1ff7c872745b360cf74e1ad37fb926f5e5d983dbe7ab691ea1338bb"
+    },
+    {
+      "path": "clarify3-result.json",
+      "sha256": "d5518a00498ba265fcd5bf4286fe0483c15a587a74d94271b1a4e33cc0768545"
+    },
+    {
+      "path": "gateway-tests.xml",
+      "sha256": "0de83c8c990732b0b87b1ba879efd76d3ef58943aa6b97f0b958bb78ae31c8c7"
+    },
+    {
+      "path": "legacy-usage-native.json",
+      "sha256": "d3fca8015e38800902eda41126656fc008d4f7d1dffa79e463e84d55559fe4f1"
+    },
+    {
+      "path": "legacy-usage-pricing-detail.json",
+      "sha256": "76f7259b7aaf5b74c8640d39517d2685d552cd8937b3e9d4b60bb36ac591d70c"
+    },
+    {
+      "path": "live-stream-revocation.json",
+      "sha256": "dcf13253543b7fb611c58ef46bad8c75fefd8c31463e67c0f4c75ff50588e2a3"
+    },
+    {
+      "path": "native-financial.json",
+      "sha256": "38fe8904a219e89a1c913509c0b65055deff524cab551ccd69fef4831912d2be"
+    },
+    {
+      "path": "public-events.ndjson",
+      "sha256": "2bd850b9c4cdeb19a4f963c31d76603d76e40ef42a6d670e7999f27ce30a433e"
+    },
+    {
+      "path": "public-result.json",
+      "sha256": "f24f0743b3d7bc09105abc738ccb005f381d2ea92ae0e59d396e4a27f3b10ae9"
+    },
+    {
+      "path": "publisher-tests.xml",
+      "sha256": "6318a6d87914fde7a6176c376689978f7df04b164cb2a87e1a0fcbd1d3ba257f"
+    },
+    {
+      "path": "result.json",
+      "sha256": "e7e993ac7ce632e264b7335cfad091dd5f4a4acb16acc884b5f5d05e8372e6cc"
+    },
+    {
+      "path": "s3-financial.json",
+      "sha256": "6819f211afb12f3b3dafcd73a3b731df69f7da6b5e676c6c8cc5dcac9f2d4a8d"
+    }
+  ],
+  "worker_image": "sha256:57d938b2dbf37dee4d3dae4f6a5042cfc8d96c8376e9dfd373e145993494f132",
+  "public_completion_without_operator_repair": true,
+  "post_completion_operator_cleanup": "Clarify2 predecessor slots required native operator settlement after its successful result. PR6014 fixes this; clarify3 later completed with automatic slot release and no operator completion cleanup.",
+  "legacy_usage_limit": "Recorded ledger costs: Codex0.279687USD and Claude0.942905USD. Both estimated; these are not independently verified provider charges or a V4 cost-efficiency verdict.",
+  "capacity_fix": {
+    "source_sha": "fe9396e67264029277a12499890a583c1d4a22e6",
+    "original_patch_sha": "3891cb40220b3119fe8809edf5a22eafc1caaf0a",
+    "merged_pr": 6014,
+    "gateway_image": "sha256:dda452b0e4d254e37f4753ac171e5fa81f0ad2fe0113237ea0256c1a8420bb4a",
+    "observed_pod": "bedrockgateway-7cd65cf9bf-424z9",
+    "task_id": "tsk_37ce236b-19a2-4d7c-a36d-b3609160b999",
+    "completed_at": "2026-09-25T05:29:43Z",
+    "queue_ack_status": "confirmed",
+    "execution_capacity_positive_rows_after_completion": 0,
+    "provider_cost_usd": "0.005807",
+    "pricing_confidence": "verified",
+    "native_redis_settlement_verified": true,
+    "operator_completion_repair": false,
+    "initial_fixture_limit": "The first client observation window timed out while the Task was intentionally held; this is not a Task failure or expiry."
+  },
+  "closure": "All T3, T6 and T7 implementation criteria pass. V3 native fault qualification and V4/V5 remain independent; these implementation closures do not assert their completion."
+}

@@ -1,0 +1,16 @@
+{
+  "lambda_errors": "0 in returned baseline and during datapoints",
+  "lambda_throttles": "0 in returned baseline and during datapoints",
+  "http_sample_count_per_phase": 10,
+  "baseline_http_max_ms": 5296.3334990199655,
+  "during_http_max_ms": 920.8057499781717,
+  "baseline_owned_table_read_max_ms": 65.60520597849973,
+  "during_owned_table_read_max_ms": 56.48704801569693,
+  "queue_age_interpretation": "During age tracks deliberately held clarify3 message published05:13:39, pending input until05:29:32. Native completion acknowledgment subsequently confirmed and actual queue0visible/0inflight/0delayed per independent integration audit. Age is not dispatch latency.",
+  "limitations": [
+    "Shared CloudWatch aggregates contain unrelated traffic.",
+    "Ten no-intent signed probes test ingress latency; useful Claude/Codex runs are recorded separately.",
+    "No claim of continuous simultaneous provider execution.",
+    "Both bound jobs have180-second deadlines and backoff0; earlier unbounded Claude observation is separate."
+  ]
+}

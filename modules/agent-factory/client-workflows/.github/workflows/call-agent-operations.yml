@@ -18,4 +18,3 @@ jobs:
       repo_owner: ${{ github.repository_owner }}
       repo_name: ${{ github.event.repository.name }}
       target_repo: ${{ github.repository }}
-    secrets: inherit

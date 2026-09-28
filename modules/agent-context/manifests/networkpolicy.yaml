@@ -1,0 +1,109 @@
+# Door (context-mcp) ingress restriction — issue #4073, finding #8.
+#
+# Why this file exists
+# --------------------
+# The Door reads caller identity from request headers (X-GitHub-Login,
+# X-GitHub-Teams, X-Tenant-Id, X-Owner-Sub) and scopes every ACL decision to it.
+# Three places in this module asserted that an in-cluster NetworkPolicy made
+# those headers trustworthy — door/acl.py, door/personal_context/identity.py and
+# README.md — but no NetworkPolicy existed anywhere in agent-context. The trust
+# boundary was documented and never enforced.
+#
+# Relationship to the shared secret
+# ---------------------------------
+# This policy is defence in depth, NOT the primary control. It restricts WHICH
+# PODS CAN CONNECT; door/auth.py's X-Internal-Api-Key check authenticates WHO IS
+# ASKING. Neither subsumes the other, and this one is deliberately the weaker of
+# the two:
+#
+#   - It admits whole namespaces. Every pod in adp-agents holds the same network
+#     position, so it cannot stop one agent pod from claiming another tenant's
+#     identity. Only the ACL layer (per-principal filtering) does that.
+#   - Enforcement depends on the CNI. This cluster runs EKS Auto Mode; if the
+#     network-policy agent is not active, the API server accepts this object and
+#     silently enforces nothing. `kubectl get networkpolicy` succeeding is NOT
+#     evidence that traffic is being filtered.
+#
+# Because of that second point, do not treat this manifest as the fix for #4073.
+# The authentication middleware is the control that holds regardless of CNI
+# behaviour; this narrows the blast radius if the key ever leaks.
+#
+# Egress is deliberately not restricted here: the Door must reach Zoekt,
+# LiteLLM, Postgres/RDS, S3, S3 Vectors, Neptune and Bedrock, and an
+# Egress-typed policy that missed one of those would break verbs at runtime for
+# no security gain (this finding is about inbound identity spoofing).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: context-mcp-ingress
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: context-mcp
+    app.kubernetes.io/part-of: agent-context-platform
+    app.kubernetes.io/component: mcp-server
+spec:
+  # Targets the Door pods only, via the label the Deployment and Service in
+  # manifests/context-mcp.yaml already select on.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: context-mcp
+  # Ingress only. Listing Egress here (even with an empty rule list) would deny
+  # ALL outbound traffic from the Door and break every verb.
+  policyTypes:
+    - Ingress
+  ingress:
+    # Known Door callers. Each entry is a real caller verified in-tree; adding a
+    # namespace here is granting it the ability to reach the verb surface, so it
+    # still needs the shared secret to get an answer.
+    - from:
+        # Protected workers use the gateway's authenticated run-service bridge.
+        # Both selectors belong to one peer: only gateway pods in this namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: adp-gateway
+          podSelector:
+            matchLabels:
+              app: bedrockgateway
+        # Agent workers: the KEDA ScaledJob pods and the warm pool.
+        # modules/agent-factory/agent/src/knowledge-layer-config.ts (POST /mcp/),
+        # experience-save-hook.ts (POST /call) and
+        # complex-task-chat/recall-at-task-start.ts (POST /tools/call).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: adp-agents
+        # ARC self-hosted runners: agent-context-verb-ops.yml drives the Door
+        # directly (POST /call) for operational verification.
+        #
+        # Templated, not hardcoded: ARC namespaces are per-repo
+        # (arc-runners-<repo>, see modules/agent-factory/runner-infra/README.md)
+        # and RUNNER_NAMESPACE is already the knob both delivery paths use for
+        # ingestion-rbac.yaml. Hardcoding "arc-runners" would silently drop
+        # verb-ops traffic on any deployment that overrides it.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ${RUNNER_NAMESPACE}
+        # Same-namespace pods: the ingestion ScaledJob, the personal-context
+        # synthesis CronJob, the repo-refresh CronJob and scripts/validate.sh's
+        # `kubectl exec deploy/context-mcp` health/tools probe.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ${NAMESPACE}
+      ports:
+        - port: 5100
+          protocol: TCP
+#
+# Kubelet probes
+# --------------
+# The readiness/liveness probes in context-mcp.yaml originate from the node, not
+# from a pod, so they match none of the selectors above. They are NOT listed as
+# an extra ingress rule on purpose: an ingress rule carrying only `ports` (with
+# `from` empty or omitted) matches EVERY source, which would re-open port 5100
+# cluster-wide and reduce this policy to decoration.
+#
+# The AWS VPC CNI network-policy agent exempts kubelet health-probe traffic from
+# policy evaluation, so probes keep working under this policy. If a future CNI
+# does not, the symptom is the context-mcp Deployment failing readiness and
+# CrashLooping shortly after this policy is applied — the fix then is an
+# `ipBlock` rule scoped to the node/VPC CIDR (10.0.0.0/16 in dev, see
+# environments/dev/platform.tfvars), never a blanket `from: []`.

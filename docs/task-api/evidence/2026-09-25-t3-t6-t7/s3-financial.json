@@ -1,0 +1,18 @@
+[
+  {
+    "key": "task-api-5792-isolation/7f737d62-4d1d-4b2a-acb3-8f677316291a/2026/09/25/9ded777d-2d92-49c7-8b9d-c7602b87a9c2.json",
+    "request_id": "9ded777d-2d92-49c7-8b9d-c7602b87a9c2",
+    "exact_cost_usd": "0.0019470000",
+    "input_tokens": 382,
+    "output_tokens": 313,
+    "pricing_confidence": "verified"
+  },
+  {
+    "key": "task-api-5792-isolation/7f737d62-4d1d-4b2a-acb3-8f677316291a/2026/09/25/da65ed73-ac58-4e60-bfee-da759605a5b3.json",
+    "request_id": "da65ed73-ac58-4e60-bfee-da759605a5b3",
+    "exact_cost_usd": "0.0040850000",
+    "input_tokens": 480,
+    "output_tokens": 721,
+    "pricing_confidence": "verified"
+  }
+]

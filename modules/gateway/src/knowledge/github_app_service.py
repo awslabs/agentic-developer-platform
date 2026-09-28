@@ -153,6 +153,143 @@ async def resolve_tenant_app_credentials(
 
 
 # ---------------------------------------------------------------------------
+# Reviewer identity (issue #5350)
+# ---------------------------------------------------------------------------
+
+# GitHub refuses APPROVE and REQUEST_CHANGES on a pull request opened by the same
+# identity ("Can not approve your own pull request", HTTP 422). Every PR the engine
+# opens is authored by the tenant's authoring App, and every reviewer the engine
+# dispatched authenticated as that same App — so no engine-authored PR could ever
+# receive a verdict, and `reviewDecision` stayed empty forever.
+#
+# The fix is a SECOND App whose installation reviews but never authors. Its
+# credentials live beside the authoring App's, with a `-review` suffix:
+#
+#     adp/<env>/tenants/<org_id>/github-app          <- authoring identity (existing)
+#     adp/<env>/tenants/<org_id>/github-app-review   <- reviewing identity (new)
+#
+# Note the deliberate choice of secret family. Issue #5350's Option A proposed a
+# `review` role under `adp/<org>/gh-app-<role>-{id,key}`, but that scheme belongs to
+# the GitHub Actions self-hosted-runner path (see
+# modules/agent-factory/infra/modules/secrets/main.tf), NOT the agent-pod token path
+# this endpoint serves. Following the convention of the path being fixed keeps the
+# tenant scoping that the pod path's two authz layers depend on, and it lands inside
+# the IAM grant that already exists for `adp/*/tenants/*/github-app*` (note the
+# trailing wildcard) — so no Terraform change is required to read it.
+#
+# The payload carries an installation_id, which the authoring secret does not need:
+# a distinct App has its OWN installation on the org, with a different id. Minting
+# the review App's key against the authoring App's installation id would simply fail
+# at GitHub, so the reviewer credential must name its own installation.
+REVIEW_IDENTITY = "review"
+DEFAULT_IDENTITY = "default"
+SUPPORTED_IDENTITIES = frozenset({DEFAULT_IDENTITY, REVIEW_IDENTITY})
+
+# The `Action.REVIEW` value, as a plain string. The internal plane selects the reviewer
+# identity on this and must NOT import `src.orchestration` to get it: agent pods can call
+# every internal route, so promotion state stays unreachable from there (enforced by
+# tests/orchestration/test_internal_plane_guard.py). `Action` is a `StrEnum`, and
+# test_review_action_value_matches_the_policy_enum pins this constant to it, so the two
+# cannot drift apart silently.
+REVIEW_ACTION_VALUE = "review"
+
+# The permission keys a reviewer mint may ask for. A review-only App is registered
+# with `pull_requests: write` (submit the review), `contents: read` (read the diff)
+# and `metadata: read` — deliberately NOT `issues: write` or `checks: write`, since an
+# identity that exists only to record verdicts should not be able to author anything.
+#
+# This is an intersection filter, not a grant: the run's authorized permission set is
+# computed for the AUTHORING App and is broader. GitHub refuses an access-token request
+# naming a permission its App was never granted, so a reviewer mint must be narrowed to
+# this set or a correctly configured reviewer App produces a failed mint.
+REVIEW_IDENTITY_PERMISSIONS = frozenset({"pull_requests", "contents", "metadata"})
+
+
+class ReviewerIdentityUnavailableError(Exception):
+    """No distinct reviewer App is configured for this tenant.
+
+    Not an error in itself: until the second App is registered this is the normal
+    state, and the caller is expected to fall back to the authoring identity AND
+    report that a formal verdict is therefore impossible. It is a distinct type so
+    "not configured" can never be confused with "configured but broken" — the
+    latter must NOT silently degrade to the authoring identity, because that would
+    hide a real misconfiguration behind the expected-fallback path.
+    """
+
+
+async def resolve_reviewer_app_credentials(
+    org_id: str,
+    *,
+    sm_client: Any | None = None,
+) -> tuple[str, str, int]:
+    """Resolve the tenant's distinct REVIEWER GitHub App credentials.
+
+    Returns ``(app_id, private_key_pem, installation_id)``.
+
+    Raises:
+        ReviewerIdentityUnavailableError: if no reviewer App secret exists. The caller
+            falls back to the authoring identity and reports the pending approval.
+        ValueError: if the secret exists but is unreadable or incomplete. This is a
+            real misconfiguration and deliberately does NOT degrade to a fallback.
+    """
+    import asyncio
+
+    import boto3
+
+    env = _get_environment()
+    secret_id = f"adp/{env}/tenants/{org_id}/github-app-review"
+
+    def _read_secret() -> dict[str, Any]:
+        client = sm_client or boto3.client(
+            "secretsmanager",
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+        resp = client.get_secret_value(SecretId=secret_id)
+        return json.loads(resp["SecretString"])
+
+    try:
+        creds = await asyncio.to_thread(_read_secret)
+    except Exception as exc:
+        error_code = _classify_boto3_error(exc)
+        if error_code == "ResourceNotFoundException":
+            # The expected state before the second App is registered.
+            logger.info(
+                "No distinct reviewer GitHub App configured for tenant %s (%s); "
+                "reviews will fall back to the authoring identity and cannot carry a verdict",
+                org_id,
+                secret_id,
+            )
+            raise ReviewerIdentityUnavailableError(f"No reviewer GitHub App configured for tenant '{org_id}'") from exc
+        logger.warning(
+            "Reviewer GitHub App credentials for tenant %s at %s unreadable: %s",
+            org_id,
+            secret_id,
+            type(exc).__name__,
+        )
+        if error_code == "AccessDeniedException":
+            raise ValueError(
+                f"Platform IAM policy does not permit reading reviewer App credentials for tenant '{org_id}' (secret: {secret_id})."
+            ) from exc
+        raise ValueError(f"Failed to resolve reviewer GitHub App credentials for tenant '{org_id}'.") from exc
+
+    app_id = str(creds.get("app_id") or "")
+    private_key = creds.get("private_key") or ""
+    raw_installation = creds.get("installation_id")
+
+    if not app_id or not private_key or raw_installation in (None, ""):
+        raise ValueError(
+            f"Reviewer GitHub App credentials incomplete for tenant '{org_id}' (secret: {secret_id}). Need app_id, private_key and installation_id."
+        )
+
+    try:
+        installation_id = int(raw_installation)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Reviewer GitHub App installation_id is not an integer for tenant '{org_id}' (secret: {secret_id}).") from exc
+
+    return app_id, private_key, installation_id
+
+
+# ---------------------------------------------------------------------------
 # Installation token minting
 # ---------------------------------------------------------------------------
 
@@ -187,6 +324,94 @@ async def mint_installation_token(
     finally:
         if http_client is None:
             await client.aclose()
+
+
+# Least-privilege default for agent runs (issue #4272). The GitHub App's full
+# permission set is much broader; an agent run needs to read/write code, open and
+# update pull requests, and comment on issues. Anything else (members, admin,
+# secrets, workflows...) is deliberately withheld so a hijacked run's live token
+# is narrower than the App that minted it.
+AGENT_RUN_PERMISSIONS: dict[str, str] = {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "write",
+    "checks": "write",
+    "metadata": "read",
+}
+
+
+async def mint_installation_token_with_expiry(
+    app_id: str,
+    private_key_pem: str,
+    installation_id: int,
+    *,
+    repositories: list[str] | None = None,
+    permissions: dict[str, str] | None = None,
+    http_client: httpx.AsyncClient | None = None,
+) -> tuple[str, str]:
+    """Mint an installation access token and return ``(token, expires_at)``.
+
+    Sibling of :func:`mint_installation_token`, which returns a bare string and
+    discards GitHub's ``expires_at``. Callers that must schedule their own
+    refresh (the agent worker's TokenManager, issue #4272) need the real expiry
+    — a local ``now + 1h`` guess drifts and the run dies mid-flight. The
+    existing function's signature is left alone because its caller in
+    ``list_accessible_repos`` depends on the string return.
+
+    ``repositories`` and ``permissions`` narrow the token below the
+    installation's own grant (issue #4272 least-privilege note). GitHub already
+    scopes a token to one org — one installation is one org — so this is
+    defence-in-depth: a run assigned one repo gets a token good for that repo
+    only, with only the verbs it needs. Omitting either falls back to GitHub's
+    default (all repos / the App's full permission set), so callers acting on
+    behalf of an agent run should always pass both.
+
+    Returns:
+        ``(token, expires_at)`` where ``expires_at`` is GitHub's own ISO-8601
+        string, passed through verbatim.
+
+    Raises:
+        httpx.HTTPStatusError: on a non-2xx response from GitHub.
+        ValueError: if GitHub returns a 2xx without a token or an expiry — a
+            token we cannot schedule a refresh for is not usable, so this fails
+            loudly rather than handing back a value that expires unpredictably.
+    """
+    jwt_token = _mint_app_jwt(app_id, private_key_pem)
+    client = http_client or httpx.AsyncClient(
+        base_url=GITHUB_API_BASE,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=10.0,
+    )
+
+    body: dict[str, Any] = {}
+    if repositories:
+        body["repositories"] = repositories
+    if permissions:
+        body["permissions"] = permissions
+
+    try:
+        resp = await client.post(
+            f"/app/installations/{installation_id}/access_tokens",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            json=body,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    finally:
+        if http_client is None:
+            await client.aclose()
+
+    token = payload.get("token") or ""
+    expires_at = payload.get("expires_at") or ""
+    if not token:
+        raise ValueError(f"GitHub returned no token for installation {installation_id}")
+    if not expires_at:
+        raise ValueError(f"GitHub returned no expires_at for installation {installation_id}; cannot schedule refresh")
+
+    return token, expires_at
 
 
 # ---------------------------------------------------------------------------
@@ -471,28 +696,41 @@ async def verify_installation_ownership(
 ) -> bool:
     """Verify that an installation_id belongs to the given tenant.
 
-    Queries channel_tenant_map using metadata->>'installation_id' to confirm
-    the installation was registered under the caller's tenant. This closes the
-    cross-tenant hole: the global App JWT can resolve ANY tenant's installation,
-    so registration must verify the resolved installation belongs to the caller.
+    Closes the cross-tenant hole: the global App JWT can resolve ANY tenant's
+    installation, so registration must verify the resolved installation belongs
+    to the caller.
 
-    Uses metadata JSON extraction (NOT provider_scope_id, which is the GitHub
-    numeric account id). Handles both org and personal installs (both write
-    channel_tenant_map rows).
+    Issue #4070 (·A0): this is now a thin delegate to the canonical resolver in
+    ``src.admin.installations.resolver``. It used to run its own
+    ``metadata->>'installation_id'`` query, which made it a *second* notion of
+    ownership alongside the admin/connections plane's — the divergence ·A0 exists
+    to remove. Behaviour is preserved for existing callers (bool in, bool out),
+    with two deliberate improvements that follow from the shared rule:
+
+    * an installation claimed by more than one tenant now returns False for
+      *everyone* (fail closed) instead of True for whoever asked first;
+    * the lookup is a portable indexed-column comparison, so it works on both
+      Postgres and the SQLite used by the test suite. The old ``->>`` was
+      Postgres-only, which is why its own test could only assert on the SQL
+      string rather than on the access decision.
+
+    Read-path check: no GitHub call (``attest=False``). Writes that BIND an
+    installation to a tenant should call ``assert_installation_owned_by`` with
+    ``attest=True`` instead.
 
     Returns:
-        True if the installation belongs to the tenant, False otherwise.
+        True if the installation provably belongs to the tenant, False otherwise.
     """
-    result = await db.execute(
-        text("""
-            SELECT 1 FROM channel_tenant_map
-            WHERE provider = 'github'
-              AND org_id = :tenant_id
-              AND metadata->>'installation_id' = :installation_id
-        """),
-        {"tenant_id": tenant_id, "installation_id": str(installation_id)},
+    from src.admin.installations.resolver import (
+        InstallationOwnershipError,
+        assert_installation_owned_by,
     )
-    return result.fetchone() is not None
+
+    try:
+        await assert_installation_owned_by(tenant_id, installation_id, db=db)
+    except InstallationOwnershipError:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------

@@ -65,6 +65,8 @@ function makeItem(overrides: Partial<InvocationItem> = {}): InvocationItem {
     correlation_id: 'corr-abc12345',
     run_id: '81286554630',
     error_message: null,
+    skip_reason: null,
+    stop_reason: null,
     ...overrides,
   };
 }
@@ -264,6 +266,155 @@ describe('InvocationDetail', () => {
 
       expect(lineageIdx).toBeGreaterThanOrEqual(0);
       expect(invocationIdIdx).toBeGreaterThan(lineageIdx);
+    });
+  });
+
+  // Issue #4020: the "why didn't anything run" row
+  describe('skip reason row (Issue #4020)', () => {
+    it.each([
+      ['no_op' as const, 'no_mention', /No agent was mentioned/],
+      ['blocked' as const, 'self_re_trigger', /infinite loop/],
+      ['skipped' as const, 'idempotency_merged_pr', /already exists/],
+    ])('explains the reason for %s runs', (status, skipReason, expected) => {
+      const item = makeItem({ status, skip_reason: skipReason, summary: null });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.getByText('Reason')).toBeInTheDocument();
+      expect(screen.getByText(expected)).toBeInTheDocument();
+    });
+
+    it('also shows the raw enum so it can be searched in CloudWatch', () => {
+      // The enum is the exact term that appears in the Lambda's logs and
+      // metrics, which is where an operator goes next after reading the prose.
+      const item = makeItem({ status: 'no_op', skip_reason: 'label_unmapped' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.getByText('label_unmapped')).toBeInTheDocument();
+    });
+
+    it('humanizes a reason this build does not know about', () => {
+      // The Lambda deploys independently of the SPA, so an unmapped enum is
+      // expected. Falling back to a blank row would recreate the original bug.
+      const item = makeItem({ status: 'blocked', skip_reason: 'some_future_guard' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.getByText('Some future guard')).toBeInTheDocument();
+    });
+
+    it('says so explicitly when a pre-existing row has no reason', () => {
+      // DDB is schemaless and there was no backfill, so rows written before this
+      // change carry nothing. Saying "we don't know" beats an absent row, which
+      // would be indistinguishable from the old unexplained badge.
+      const item = makeItem({ status: 'no_op', skip_reason: null });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.getByText(/predates reason tracking/)).toBeInTheDocument();
+    });
+
+    it('is not styled as an error', () => {
+      // A stopped loop or a deduplicated redelivery is the guard working
+      // correctly. Rendering it through the red ErrorDisplay would report a
+      // correct decision as a fault and send operators chasing a non-incident.
+      const item = makeItem({ status: 'blocked', skip_reason: 'chain_depth_exceeded' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+      expect(labels).toContain('Reason');
+      expect(labels).not.toContain('Error');
+    });
+
+    it('appears immediately after status so it is the first thing read', () => {
+      const item = makeItem({ status: 'no_op', skip_reason: 'no_mention' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+      expect(labels.indexOf('Reason')).toBe(labels.indexOf('Status') + 1);
+    });
+
+    it('is absent for statuses where something actually ran', () => {
+      // Regression: a reason beside "Complete" would describe why nothing ran on
+      // a row where something did.
+      for (const status of ['complete', 'in_progress', 'failed', 'rate_limited'] as const) {
+        const { unmount } = renderWithClient(
+          <InvocationDetail
+            item={makeItem({ status, skip_reason: 'no_mention' })}
+            isOpen={true}
+            onClose={() => {}}
+          />,
+        );
+        expect(screen.queryByText('Reason')).not.toBeInTheDocument();
+        unmount();
+      }
+    });
+
+    it('derives a duration for blocked/skipped runs instead of "Active"', () => {
+      // Both are terminal — the row will never transition again. Without them in
+      // the terminal set the modal claimed the run was still active forever.
+      const item = makeItem({ status: 'skipped', skip_reason: 'idempotency_merged_pr' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.queryByText(/Active — not yet terminal/)).not.toBeInTheDocument();
+    });
+  });
+
+  // Issue #4187: the "why did this stop early" row
+  describe('stop reason row (Issue #4187)', () => {
+    it('names the cap that stopped the run', () => {
+      const item = makeItem({ status: 'budget_stopped', stop_reason: 'run_cap_exceeded' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.getByText('Stopped because')).toBeInTheDocument();
+      expect(screen.getByText(/per-run spend cap/i)).toBeInTheDocument();
+      // The enum is the term that appears in the gateway's logs and metrics.
+      expect(screen.getByText('run_cap_exceeded')).toBeInTheDocument();
+    });
+
+    it('humanizes a cap this build does not know about', () => {
+      // The agent image and the SPA deploy independently, so an unmapped enum is
+      // expected rather than exceptional.
+      const item = makeItem({ status: 'budget_stopped', stop_reason: 'some_future_cap' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.getByText('Some future cap')).toBeInTheDocument();
+    });
+
+    it('still explains itself when no specific cap was recorded', () => {
+      const item = makeItem({ status: 'budget_stopped', stop_reason: null });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.getByText(/no specific cap was recorded/)).toBeInTheDocument();
+    });
+
+    it('is not styled as an error', () => {
+      // A cap firing is the control working. Routing it through the red
+      // ErrorDisplay would send an operator to debug a run that behaved
+      // correctly — the budget decision is the actual next step.
+      const item = makeItem({ status: 'budget_stopped', stop_reason: 'run_cap_exceeded' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      const dl = document.querySelector('dl')!;
+      const labels = Array.from(dl.querySelectorAll('dt')).map((dt) => dt.textContent);
+      expect(labels).toContain('Stopped because');
+      expect(labels).not.toContain('Error');
+    });
+
+    it('is absent for runs no cap stopped', () => {
+      // Regression: a stale stop_reason must not render beside "Complete".
+      const item = makeItem({ status: 'complete', stop_reason: 'run_cap_exceeded' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.queryByText('Stopped because')).not.toBeInTheDocument();
+    });
+
+    it('is terminal, so the modal does not claim the run is still active', () => {
+      // Without budget_stopped in the terminal set the modal would report a run
+      // that will never transition again as running forever.
+      const item = makeItem({ status: 'budget_stopped', stop_reason: 'chain_cap_exceeded' });
+      renderWithClient(<InvocationDetail item={item} isOpen={true} onClose={() => {}} />);
+
+      expect(screen.queryByText(/Active — not yet terminal/)).not.toBeInTheDocument();
     });
   });
 

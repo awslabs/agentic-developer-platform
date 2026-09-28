@@ -1,0 +1,16 @@
+{
+    "Traces": [
+        {
+            "Id": "1-6ab92fd2-7307ea9faefd09ede71b2cab",
+            "Duration": 0.001,
+            "LimitExceeded": false,
+            "Segments": [
+                {
+                    "Id": "90a8c53b429321b7",
+                    "Document": "{\"id\":\"90a8c53b429321b7\",\"name\":\"adp-security-acceptance\",\"start_time\":1.7905212984245584E9,\"trace_id\":\"1-6ab92fd2-7307ea9faefd09ede71b2cab\",\"end_time\":1.7905212984255586E9,\"fault\":false,\"error\":false,\"throttle\":false,\"aws\":{\"xray\":{\"auto_instrumentation\":false}},\"metadata\":{\"default\":{\"otel.resource.service.name\":\"adp-security-acceptance\"}}}"
+                }
+            ]
+        }
+    ],
+    "UnprocessedTraceIds": []
+}

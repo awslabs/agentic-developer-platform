@@ -70,33 +70,75 @@ export class AgentOrchestrator {
     try {
       await this.handlePlanning(repoDir);
       
-      // Approval loop with revision support
+      // Approval loop with revision support.
+      // Fail-closed (issue #4181): only 'allowed-once' proceeds. An approver
+      // rejection with feedback is actionable (revise and re-ask); every other
+      // outcome — expiry, an unanswered wait, a cancelled request, or an
+      // unreachable GitHub — ends the run rather than looping.
       let revisionCount = 0;
       let approved = false;
-      
+
       while (!approved && revisionCount < MAX_PLAN_REVISIONS) {
-        console.log('\n⏳ Waiting for /approve or /reject command on GitHub issue...');
-        const approval = await this.waitForApproval();
-        
-        if (approval.approved) {
-          approved = true;
-          console.log('\n✅ Approval received! Starting code generation...\n');
-        } else if (approval.rejected && approval.feedback) {
-          revisionCount++;
-          console.log(`\n🔄 Plan rejected (revision ${revisionCount}/${MAX_PLAN_REVISIONS})`);
-          console.log(`   Feedback: ${approval.feedback.substring(0, 100)}...`);
-          
-          // Notify user we're revising
-          await this.githubClient.createComment(
-            issueContext.issueNumber,
-            `🤖 Understood! Revising plan based on your feedback (revision ${revisionCount}/${MAX_PLAN_REVISIONS})...\n\n> ${approval.feedback.substring(0, 200)}${approval.feedback.length > 200 ? '...' : ''}`
-          );
-          
-          // Regenerate plan with feedback
-          await this.handlePlanRevision(repoDir, approval.feedback);
+        console.log(`\n⏳ Waiting for approval — comment \`/approve ${this.approvalRequestId(revisionCount)}\` on the issue...`);
+        const approval = await this.waitForApproval(revisionCount);
+
+        switch (approval.outcome) {
+          case 'allowed-once':
+            approved = true;
+            console.log(`\n✅ Approved by ${approval.approver ?? 'approver'}! Starting code generation...\n`);
+            break;
+
+          case 'rejected': {
+            // A rejection carrying feedback is a human asking for changes.
+            // A rejection without it is the deny-on-expiry default — stop.
+            if (!approval.feedback || !approval.approver) {
+              console.log(`\n❌ No approval received — denying by default.\n`);
+              await this.githubClient.createComment(
+                issueContext.issueNumber,
+                `## ⏰ Approval Not Received\n\n${approval.feedback || 'The approval request expired.'}\n\nNo changes were made. Re-trigger the agent when someone is available to approve.`
+              );
+              return;
+            }
+            revisionCount++;
+            console.log(`\n🔄 Plan rejected by ${approval.approver} (revision ${revisionCount}/${MAX_PLAN_REVISIONS})`);
+            console.log(`   Feedback: ${approval.feedback.substring(0, 100)}...`);
+
+            if (revisionCount >= MAX_PLAN_REVISIONS) break;
+
+            await this.githubClient.createComment(
+              issueContext.issueNumber,
+              `🤖 Understood! Revising plan based on your feedback (revision ${revisionCount}/${MAX_PLAN_REVISIONS})...\n\n> ${approval.feedback.substring(0, 200)}${approval.feedback.length > 200 ? '...' : ''}`
+            );
+
+            await this.handlePlanRevision(repoDir, approval.feedback, revisionCount);
+            break;
+          }
+
+          case 'cancelled':
+            console.log('\n🚫 Approval request cancelled — stopping.\n');
+            await this.githubClient.createComment(
+              issueContext.issueNumber,
+              `## 🚫 Approval Cancelled\n\nThe approval request was cancelled. No changes were made.`
+            );
+            return;
+
+          case 'unavailable':
+            // Distinct from a human denial: we could not ask at all.
+            console.log('\n⚠️  Could not reach GitHub to request approval — stopping.\n');
+            this.logger.error('Approval unavailable — ending run without changes', undefined, {
+              component: 'AgentOrchestrator',
+              issueNumber: issueContext.issueNumber,
+            });
+            return;
+
+          default: {
+            // Exhaustiveness guard: a new outcome value must be handled here.
+            const unhandled: never = approval.outcome;
+            throw new Error(`Unhandled approval outcome: ${String(unhandled)}`);
+          }
         }
       }
-      
+
       if (!approved) {
         console.log(`\n❌ Max revisions (${MAX_PLAN_REVISIONS}) reached without approval.`);
         await this.githubClient.createComment(
@@ -105,7 +147,7 @@ export class AgentOrchestrator {
         );
         return;
       }
-      
+
       await this.handleCodeGeneration(repoDir);
       
       console.log('\n📤 Creating pull request...');
@@ -148,10 +190,10 @@ export class AgentOrchestrator {
       this.logger.info('Detected MCP onboarding issue — using MCPOnboardPlanningAgent with skills', { component: 'AgentOrchestrator' });
       console.log('🔌 MCP onboarding detected — using skill-enabled planning agent');
       plan = await this.mcpOnboardAgent.generatePlan(this.state!.issueContext, repoDir);
-      planComment = this.mcpOnboardAgent.formatPlanComment(plan);
+      planComment = this.mcpOnboardAgent.formatPlanComment(plan, this.approvalRequestId(0));
     } else {
       plan = await this.planningAgent.generatePlan(this.state!.issueContext, repoDir);
-      planComment = this.planningAgent.formatPlanComment(plan);
+      planComment = this.planningAgent.formatPlanComment(plan, this.approvalRequestId(0));
     }
     
     this.state!.plan = plan;
@@ -167,7 +209,7 @@ export class AgentOrchestrator {
     await this.stateManager.saveState(this.state!);
   }
 
-  private async handlePlanRevision(repoDir: string, feedback: string): Promise<void> {
+  private async handlePlanRevision(repoDir: string, feedback: string, revision: number): Promise<void> {
     this.logger.info('Revising plan based on feedback', { component: 'AgentOrchestrator' });
     
     const previousPlan = this.state!.plan!;
@@ -180,7 +222,9 @@ export class AgentOrchestrator {
     this.state!.plan = revisedPlan;
 
     // Post revised plan
-    const planComment = `## 🔄 Revised Implementation Plan\n\n` + this.planningAgent.formatPlanComment(revisedPlan);
+    const planComment =
+      `## 🔄 Revised Implementation Plan\n\n` +
+      this.planningAgent.formatPlanComment(revisedPlan, this.approvalRequestId(revision));
     this.state!.planCommentId = await this.githubClient.createComment(
       this.state!.issueContext.issueNumber,
       planComment
@@ -189,13 +233,23 @@ export class AgentOrchestrator {
     await this.stateManager.saveState(this.state!);
   }
 
-  private async waitForApproval(): Promise<ApprovalResult> {
-    this.logger.info('Waiting for approval', { component: 'AgentOrchestrator' });
+  /**
+   * Token naming the approval request for a specific plan revision. Revision
+   * number is part of it so an approval of revision N cannot authorize
+   * revision N+1 (issue #4181 — named, not positional).
+   */
+  private approvalRequestId(revision: number): string {
+    return `plan-${this.state!.issueContext.issueNumber}-r${revision}`;
+  }
+
+  private async waitForApproval(revision: number): Promise<ApprovalResult> {
+    this.logger.info('Waiting for approval', { component: 'AgentOrchestrator', revision });
     const result = await this.approvalService.pollForApproval(
       this.state!.issueContext.issueNumber,
-      new Date()
+      new Date(),
+      this.approvalRequestId(revision)
     );
-    if (result.approved) {
+    if (result.outcome === 'allowed-once') {
       await this.progressTracker.updateChecklistItem(1, true);
     }
     return result;

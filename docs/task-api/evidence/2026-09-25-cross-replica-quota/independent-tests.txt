@@ -1,0 +1,41 @@
+........................................................................ [ 76%]
+......................                                                   [100%]
+=============================== warnings summary ===============================
+modules/gateway/src/auth/schemas.py:13
+  /home/ubuntu/task-delivery/stream-global-leases/modules/gateway/src/auth/schemas.py:13: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountCreate(BaseModel):
+
+modules/gateway/src/auth/schemas.py:32
+  /home/ubuntu/task-delivery/stream-global-leases/modules/gateway/src/auth/schemas.py:32: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountUpdate(BaseModel):
+
+modules/gateway/src/auth/schemas.py:44
+  /home/ubuntu/task-delivery/stream-global-leases/modules/gateway/src/auth/schemas.py:44: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountResponse(BaseModel):
+
+modules/gateway/src/auth/schemas.py:69
+  /home/ubuntu/task-delivery/stream-global-leases/modules/gateway/src/auth/schemas.py:69: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TenantInfo(BaseModel):
+
+modules/gateway/src/auth/schemas.py:94
+  /home/ubuntu/task-delivery/stream-global-leases/modules/gateway/src/auth/schemas.py:94: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class TokenClaims(BaseModel):
+
+modules/gateway/src/auth/schemas.py:123
+  /home/ubuntu/task-delivery/stream-global-leases/modules/gateway/src/auth/schemas.py:123: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AWSCallerIdentity(BaseModel):
+
+modules/gateway/src/auth/schemas.py:136
+  /home/ubuntu/task-delivery/stream-global-leases/modules/gateway/src/auth/schemas.py:136: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ServiceAccountListResponse(BaseModel):
+
+../../../../tmp/adp-5911-venv/lib/python3.12/site-packages/passlib/utils/__init__.py:854
+  /tmp/adp-5911-venv/lib/python3.12/site-packages/passlib/utils/__init__.py:854: DeprecationWarning: 'crypt' is deprecated and slated for removal in Python 3.13
+    from crypt import crypt as _crypt
+
+../../../../tmp/adp-5911-venv/lib/python3.12/site-packages/botocore/utils.py:670
+  /tmp/adp-5911-venv/lib/python3.12/site-packages/botocore/utils.py:670: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    current_time = datetime.datetime.utcnow()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+94 passed, 9 warnings in 4.65s

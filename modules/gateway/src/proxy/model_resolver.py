@@ -7,6 +7,7 @@ import fnmatch
 import logging
 from typing import Any
 
+from src.shared.config import Settings, get_settings
 from src.shared.exceptions import ModelNotAllowedError
 from src.shared.schemas.auth import TokenContext
 
@@ -15,16 +16,20 @@ logger = logging.getLogger(__name__)
 
 # Default model alias mappings
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
+    "global.moonshotai.kimi-k3": "global.moonshotai.kimi-k3",
+    "us.moonshotai.kimi-k3": "us.moonshotai.kimi-k3",
     # Version-pinned /model aliases: <family><major><minor>, compact, no
     # separators (e.g. opus48, sonnet46, haiku45). Each → an invocable
     # inference-profile ID (global. prefix), verified ACTIVE + invokable
     # (issues #2279/#2300). Bare opus/sonnet/haiku removed: a /model choice
     # must name an explicit version so it can't silently drift.
+    "opus55": "global.anthropic.claude-opus-5-5",
     "opus5": "global.anthropic.claude-opus-5",
     "opus48": "global.anthropic.claude-opus-4-8",
     "opus47": "global.anthropic.claude-opus-4-7",
     "opus46": "global.anthropic.claude-opus-4-6-v1",
     "opus45": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "sonnet5": "global.anthropic.claude-sonnet-5",
     "sonnet46": "global.anthropic.claude-sonnet-4-6",
     "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -97,6 +102,8 @@ DEFAULT_ALLOWED_PATTERNS: list[str] = [
     # for this path is the route-level gate (mantle_allowed_models) plus the
     # Step-2 IAM Deny — this default only unblocks the metered gateway path.
     "openai.*",
+    "global.moonshotai.kimi-k3",
+    "us.moonshotai.kimi-k3",
 ]
 
 
@@ -208,6 +215,24 @@ class ModelResolver:
         """
         return self._get_allowed_patterns(context)
 
+    def get_configured_allowed_models(
+        self,
+        context: TokenContext,
+    ) -> tuple[list[str] | None, str]:
+        """Return the explicit org/team policy or ``None`` for inheritance.
+
+        Persona admission must distinguish an absent policy from an explicit
+        empty list: absent inherits its versioned compatibility baseline while
+        empty denies all.  The general proxy API keeps using
+        :meth:`get_allowed_models`, whose absent-policy baseline is broader.
+        """
+        team_key = f"{context.org_id}:{context.team_id}"
+        if team_key in self._allowed_models_config:
+            return list(self._allowed_models_config[team_key]), f"team:{team_key}"
+        if context.org_id in self._allowed_models_config:
+            return list(self._allowed_models_config[context.org_id]), f"org:{context.org_id}"
+        return None, "platform-baseline"
+
     def get_available_models(self, context: TokenContext) -> list[dict[str, Any]]:
         """Get list of available models for the given context.
 
@@ -254,17 +279,8 @@ class ModelResolver:
         Returns:
             List of allowed model patterns
         """
-        # Check team-specific config
-        team_key = f"{context.org_id}:{context.team_id}"
-        if team_key in self._allowed_models_config:
-            return self._allowed_models_config[team_key]
-
-        # Check org-specific config
-        if context.org_id in self._allowed_models_config:
-            return self._allowed_models_config[context.org_id]
-
-        # Return defaults
-        return DEFAULT_ALLOWED_PATTERNS
+        configured, _source = self.get_configured_allowed_models(context)
+        return configured if configured is not None else DEFAULT_ALLOWED_PATTERNS
 
     def _get_model_owner(self, bedrock_model_id: str) -> str:
         """Extract the model owner from the Bedrock model ID.
@@ -329,3 +345,16 @@ class ModelResolver:
             Dictionary mapping aliases to Bedrock model IDs
         """
         return dict(self._aliases)
+
+
+def production_model_resolver(settings: Settings | None = None) -> ModelResolver:
+    """Build the resolver from the deployed org/team policy source.
+
+    Production supplies ``BG_MODEL_ALLOWED_MODELS_CONFIG`` through the gateway
+    ConfigMap rendered from SSM.  Keeping construction here gives proxy routes
+    and trusted bootstrap one source instead of an unconfigured route-local
+    instance.  Settings validation errors intentionally propagate so callers
+    fail closed rather than silently falling back to unrestricted defaults.
+    """
+    active_settings = settings or get_settings()
+    return ModelResolver(allowed_models_config={scope: list(patterns) for scope, patterns in active_settings.model_allowed_models_config.items()})

@@ -1,0 +1,208 @@
+# Account Factory dependency lock — Issue #5530 (w6-07), EPIC #4910.
+#
+# WHAT THIS FILE IS FOR
+#
+# The legacy Account Factory could not say what it deployed. Two mechanisms caused that,
+# and both are closed here.
+#
+# 1. It fetched the resource graph definitions it applied by cloning a third party's
+#    MOVING branch at deploy time:
+#
+#        git clone --depth 1 https://github.com/kubernetes-sigs/kro.git /tmp/kro
+#        kubectl apply -f /tmp/kro/examples/aws/aws-accounts-factory/01-network-stack.yaml
+#
+#    `--depth 1` of a default branch is whatever that branch held at the moment the clone
+#    ran. Two runs a week apart could apply different graphs and neither could name what
+#    it applied. Worse, `03-deploy-rgds.sh` reused `/tmp/kro` if the directory already
+#    existed, so on a reused runner the applied graph was whatever a PREVIOUS run had
+#    left on disk.
+#
+# 2. It resolved controller chart versions by asking GitHub for "latest" at deploy time:
+#
+#        RELEASE_VERSION=$(curl -sL ".../releases/latest" | ... ['tag_name'] ...)
+#
+#    and — the part that makes this a correctness bug rather than a style one — on failure
+#    it fell through to `|| echo ""`, then SKIPPED that controller with a WARNING and kept
+#    going. A transient network error therefore produced a partially installed control
+#    plane that the script reported as success.
+#
+# So every dependency here is recorded at a fixed version WITH a content digest, and
+# `dependencies.py` refuses any entry that carries only a mutable tag. An unpinned
+# dependency fails a test instead of silently changing a deploy.
+#
+# WHY DIGESTS AND NOT JUST VERSIONS
+#
+# Same reasoning as ../../releases/superplane.lock.yaml, which pins images by digest for
+# this module: a version string is a label someone can move, a digest is the content. The
+# versions are recorded too, for auditability, but the digest is the pin.
+#
+# HOW TO RE-RESOLVE (what produced these values)
+#
+# The OCI registries differ in whether they return the digest in a header, so the method
+# is recorded per source below. `registry.k8s.io` returns `docker-content-digest`.
+# `public.ecr.aws` does not return that header for these chart artifacts, so the digest is
+# the SHA-256 of the returned manifest body — which is what a content digest IS, and is
+# reproducible (verified by requesting twice and comparing).
+#
+# WHAT THIS FILE DOES NOT ESTABLISH
+#
+# Recording a digest is not evidence that the chart was installed, that it reconciles, or
+# that any account was provisioned. This is a statement about WHICH artifact a reviewed
+# install operation would use. Installing shared cluster controllers is an explicit
+# operator act (see `render.py`'s prerequisite plan), never a side effect of provisioning
+# a workspace.
+
+schema_version: 1
+
+# ── Resource graph definitions (vendored, not fetched) ───────────────────────────────
+#
+# Stored in-repository under `vendor/kro-account-factory/` so rendering is offline and the
+# applied graph is reviewable in a diff. Apache-2.0; the upstream LICENSE is vendored
+# alongside the files. `dependencies.py` recomputes these checksums against the files on
+# disk, so an edit to a vendored file without updating this lock fails a test — the
+# vendored copy cannot silently diverge from what this file claims it is.
+resource_graph_definitions:
+  upstream:
+    repository: https://github.com/kubernetes-sigs/kro
+    # A commit, not a branch. This is the defect above, closed.
+    revision: 3b6e8c5170f5df1a9ffa9411170ae443f7da722d
+    path: examples/aws/aws-accounts-factory
+    license: Apache-2.0
+    license_file: vendor/kro-account-factory/LICENSE
+    role: >-
+      upstream origin of the vendored graphs; recorded for provenance. The vendored copies
+      under vendor/ are what rendering reads.
+  files:
+    01-network-stack.yaml:
+      sha256: 9fa49e2a9ee2a9b2347201c1e2af72f4c13719488c149ef342ccb6885ffb813f
+      declares: NetworkStack
+    02-eks-cluster-stack.yaml:
+      sha256: 75e5977fab662e3d3f8e9aac47d93300633382e1468688664a9b9ebfa415a2ad
+      declares: EKSClusterStack
+    03-full-account-infrastructure.yaml:
+      sha256: 58b838d4d106aed5858c157836101633c0b2f13e5cae793a802fe6fe2b6ea70d
+      declares: FullAccountInfrastructure
+      # Retained as vendored evidence and as the source of the network → cluster wiring the
+      # maintained graphs reproduce. NOT instantiated by any mode: it makes the AWS `Account`
+      # a child of the same object that owns the VPC and cluster, so deleting it to remove
+      # infrastructure closes the account, and keeping it to protect the account keeps the
+      # infrastructure's declaration alive for a controller to rebuild. See
+      # `manifests/adp-account-ownership.yaml` for why that single fact required splitting
+      # ownership into two graphs.
+      instantiated: false
+
+# ── ADP-maintained resource graph definitions ────────────────────────────────────────
+#
+# ADP's own graphs, under `manifests/`. They are listed here so rendering can refuse to
+# instantiate a kind whose definition is missing, and so the maintained/vendored split is
+# recorded in one place rather than inferred from a directory name.
+#
+# No checksums, deliberately. A vendored file's checksum answers "is this still the
+# third-party content we reviewed"; a file ADP authors has no such question — an edit to it
+# IS reviewed, in the diff. Recording a hash for our own file would make every intentional
+# change a two-place update whose only failure mode is forgetting the second place. They are
+# still required to exist and to parse, and their declared kind must match what is recorded
+# here.
+maintained_resource_graph_definitions:
+  directory: manifests
+  files:
+    adp-account-ownership.yaml:
+      declares: AccountOwnership
+      role: >-
+        records which AWS account a workspace owns and declares the cross-account role
+        reference into it, and nothing else — so a workspace teardown can remove
+        infrastructure without closing the account, and retaining the account does not retain
+        the infrastructure's declaration. Per #5531 it no longer declares an ACK `Account`:
+        creating the account is the fenced, durably-recorded operation in
+        `account-provisioning/account_provisioning/creation_runner.py`, and this graph binds
+        to the id that path recorded. A graph that cannot create an account cannot create a
+        duplicate one
+    adp-workspace-infrastructure.yaml:
+      declares: WorkspaceInfrastructure
+      role: >-
+        owns the VPC and the cluster, wiring the network's subnet ids and security group into
+        the cluster's required inputs. A separate root object from the account, which is what
+        lets a teardown converge instead of being reconciled back into existence
+
+# ── Controller charts (shared cluster prerequisites) ─────────────────────────────────
+#
+# These are CLUSTER-WIDE installs on the management cluster, which is why they are not
+# rendered as part of a workspace's object set: one workspace's provisioning request must
+# not install a cluster-scoped controller as a side effect. `render.py` emits them as an
+# explicit prerequisite plan for an operator to review and run.
+charts:
+  kro:
+    registry: registry.k8s.io
+    repository: kro/charts/kro
+    version: 0.9.4
+    digest: sha256:4e8de4d34b7e2c3cede958e140e26cd6d34a377062e63caf355a636d2bf4a67c
+    resolved_by: >-
+      GET /v2/kro/charts/kro/manifests/0.9.4 with the OCI manifest Accept headers,
+      following the 307; docker-content-digest response header
+    namespace: kro-system
+    # The reference README recorded this, and it is a real constraint on which install
+    # path is usable, so it is kept rather than dropped in the adoption:
+    #   "kro EKS Capability v0.8.4 does not reconcile RGDs reliably"
+    # The pinned chart above is the self-managed install, which is the path that works.
+    selected_because: >-
+      self-managed install; the EKS Capability build of kro was recorded upstream as not
+      reconciling ResourceGraphDefinitions reliably
+  ack-organizations:
+    registry: public.ecr.aws
+    repository: aws-controllers-k8s/organizations-chart
+    version: 1.5.1
+    digest: sha256:031a600a9d30d6dea73b837a3e5e93f7e872f7a2077c9c8ef6b14dd7806a947d
+    resolved_by: >-
+      SHA-256 of the manifest body returned by GET
+      /v2/aws-controllers-k8s/organizations-chart/manifests/1.5.1 (public.ecr.aws does not
+      return docker-content-digest for this artifact); reproducible across requests
+    namespace: ack-system
+    # Kept from the reference's own findings table, because it determines whether the
+    # managed-capability path alone is sufficient: it is not.
+    selected_because: >-
+      AWS Organizations is not included in the ACK EKS Capability, so the controller that
+      creates accounts must be installed separately regardless of install path
+  ack-ec2:
+    registry: public.ecr.aws
+    repository: aws-controllers-k8s/ec2-chart
+    version: 1.21.2
+    digest: sha256:149e541ee2d92cdb579d024114b83528af2ec5bfae3ea5b953293745c7813fdf
+    resolved_by: SHA-256 of the manifest body (as above)
+    namespace: ack-system
+  ack-eks:
+    registry: public.ecr.aws
+    repository: aws-controllers-k8s/eks-chart
+    version: 1.23.1
+    digest: sha256:cf8f405ea3567a00e190073f05aa4a58b937761e3b21c0a8f16d48f07c172d59
+    resolved_by: SHA-256 of the manifest body (as above)
+    namespace: ack-system
+  ack-iam:
+    registry: public.ecr.aws
+    repository: aws-controllers-k8s/iam-chart
+    version: 1.9.1
+    digest: sha256:1a7c3feaf06fa65158828d19ef93a21479d05b005d1b8a975459d7078687f396
+    resolved_by: SHA-256 of the manifest body (as above)
+    namespace: ack-system
+
+# ── Deliberately absent ──────────────────────────────────────────────────────────────
+#
+# No account id, no management cluster name, no child-account email. The legacy
+# `config.env` carried all three as DEFAULTS — management account 605440105851, cluster
+# `github-arc-runner-eks`, and a named individual's address as the child account email —
+# so a run that supplied nothing still acted on a specific real target that was not ADP's.
+# They are supplied per request instead (see `config.example.yaml`), and
+# `tests/test_no_legacy_targets.py` asserts these exact values do not reappear anywhere in
+# this directory.
+#
+# Live target selection and spend limits remain unresolved and are the EPIC A supervisor's
+# to settle before any live operation. Recording a placeholder here would look like an
+# answer.
+target:
+  status: unresolved
+  supplied_per_request:
+    - organization id and management account id
+    - management cluster name and region
+    - workspace identifier
+    - child account email (new-account-managed mode only)
+  note: >-
+    Not defaulted. A default target is how a run acts on an account nobody chose.

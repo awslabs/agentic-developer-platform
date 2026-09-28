@@ -1,0 +1,62 @@
+{
+  "measurements": [
+    {
+      "report_id": "f0fe004d-86fa-42ee-b12a-b5c53b314f26",
+      "event_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33:4",
+      "sequence": 4,
+      "type": "progress.updated",
+      "emitted_at": "2026-09-25T05:10:22.030+00:00",
+      "received_at": "2026-09-25T05:10:23.434914+00:00",
+      "seconds": 1.404914
+    },
+    {
+      "report_id": "32ab85ab-0da7-4d72-8445-62328629099c",
+      "event_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33:5",
+      "sequence": 5,
+      "type": "progress.updated",
+      "emitted_at": "2026-09-25T05:10:29.268+00:00",
+      "received_at": "2026-09-25T05:10:30.464453+00:00",
+      "seconds": 1.196453
+    },
+    {
+      "report_id": "a98264a0-5f3b-4645-bb3c-6033c9fc79a6",
+      "event_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33:6",
+      "sequence": 6,
+      "type": "progress.updated",
+      "emitted_at": "2026-09-25T05:10:30.294+00:00",
+      "received_at": "2026-09-25T05:10:31.468972+00:00",
+      "seconds": 1.174972
+    },
+    {
+      "report_id": "25cb0b25-1ea3-40a1-8286-a20302e69fce",
+      "event_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33:7",
+      "sequence": 7,
+      "type": "input.required",
+      "emitted_at": "2026-09-25T05:10:30.712+00:00",
+      "received_at": "2026-09-25T05:10:31.469637+00:00",
+      "seconds": 0.757637
+    },
+    {
+      "report_id": "07667132-3fd6-4f00-b8f6-2552a4274edf",
+      "event_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33:12",
+      "sequence": 12,
+      "type": "progress.updated",
+      "emitted_at": "2026-09-25T05:10:42.506+00:00",
+      "received_at": "2026-09-25T05:10:43.592983+00:00",
+      "seconds": 1.086983
+    },
+    {
+      "report_id": "ee1c6016-4bb7-4bc5-9898-80d21e2a6a1b",
+      "event_id": "tsk_866578d0-a044-420a-9d76-ff4869432f33:13",
+      "sequence": 13,
+      "type": "progress.updated",
+      "emitted_at": "2026-09-25T05:10:43.126+00:00",
+      "received_at": "2026-09-25T05:10:43.593903+00:00",
+      "seconds": 0.467903
+    }
+  ],
+  "clock_skew_correction_seconds": 0,
+  "clock_skew_independently_measured": false,
+  "held_open_fixture": false,
+  "terminal_received_at": "2026-09-25T05:10:44.598015+00:00"
+}

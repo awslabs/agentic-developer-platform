@@ -24,10 +24,18 @@ export class BedrockSummarizer implements Summarizer {
   private readonly client: BedrockRuntimeClient;
 
   constructor(
-    private readonly model: string = 'global.anthropic.claude-sonnet-4-6',
+    private readonly model: string = 'global.anthropic.claude-sonnet-5',
     region: string = 'us-east-1',
   ) {
-    this.client = new BedrockRuntimeClient({ region });
+    const endpoint = process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    if (!endpoint) throw new Error('Bedrock summarization requires the run routing proxy.');
+    this.client = new BedrockRuntimeClient({
+      region,
+      endpoint,
+      // The loopback proxy replaces this signature with the pod's gateway
+      // identity; the gateway selects and signs with the owner's destination.
+      credentials: { accessKeyId: 'local-proxy', secretAccessKey: 'local-proxy' },
+    });
   }
 
   async summarize(input: {

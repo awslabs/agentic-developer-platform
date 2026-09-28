@@ -121,9 +121,9 @@ class HealthChecker:
 
         start_time = time.time()
         try:
-            import redis.asyncio as redis
+            from src.shared.redis_client import create_redis_client
 
-            client = redis.from_url(settings.redis_url)
+            client = create_redis_client(settings.redis_url)
             await client.ping()
             await client.close()
             latency_ms = int((time.time() - start_time) * 1000)

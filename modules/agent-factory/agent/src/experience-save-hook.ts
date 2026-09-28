@@ -20,6 +20,8 @@
  */
 
 import { PersonalContextHeaders } from './complex-task-chat/personal-context-headers';
+import { getDoorBaseUrl, getDoorHeaders } from './lib/doorAuth';
+import { isProtectedKnowledgeRun } from './lib/knowledgeBridge';
 
 // ============================================================================
 // Configuration (read at call time for testability)
@@ -37,7 +39,7 @@ export function getMaxLearningsPerTask(): number {
 
 /** URL of the Context MCP Server. */
 function getContextMcpServerUrl(): string {
-  return process.env.CONTEXT_MCP_SERVER_URL ?? '';
+  return getDoorBaseUrl(process.env.CONTEXT_MCP_SERVER_URL ?? '');
 }
 
 // ============================================================================
@@ -104,7 +106,7 @@ export async function saveExperienceLearnings(config: ExperienceSaveConfig): Pro
   }
 
   // Gate 2: identity must be present (fail-closed)
-  if (!identityHeaders) {
+  if (!identityHeaders && !isProtectedKnowledgeRun()) {
     log?.('WARN', '[experience-save] No identity headers — skipping save (fail-closed)');
     return result;
   }
@@ -144,7 +146,7 @@ export async function saveExperienceLearnings(config: ExperienceSaveConfig): Pro
       await callExperienceSave({
         content: learning,
         persona,
-        identityHeaders,
+        identityHeaders: identityHeaders ?? { 'X-Owner-Sub': '', 'X-Tenant-Id': '' },
         context: taskContext,
         serverUrl,
       });
@@ -247,8 +249,9 @@ async function callExperienceSave(payload: ExperienceSavePayload): Promise<void>
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Owner-Sub': identityHeaders['X-Owner-Sub'],
-      'X-Tenant-Id': identityHeaders['X-Tenant-Id'],
+      // Authenticate to the Door before it will honour the identity headers
+      // below (#4073 finding #8). Missing key => 401 => the save throws below.
+      ...getDoorHeaders({ ...identityHeaders }),
     },
     body,
   });

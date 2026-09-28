@@ -1,0 +1,71 @@
+name: HITL Ticket Contract Tests
+
+# Issue #4178: `modules/harness/contracts/README.md` has listed eleven planned
+# schemas since it was written and zero existed. This workflow exists so the
+# first one that does exist cannot quietly stop being true.
+#
+# The contract:
+#   contracts/hitl-ticket/v1/models.py                — normative validator
+#   contracts/hitl-ticket/v1/hitl-ticket.golden.json  — accepted docs + rejected variants
+#
+# A golden fixture prevents nothing if nothing executes it — the failure mode
+# provenance-contract-tests.yml:11 calls out by name. This job is that contract's
+# answer to it: change the models and the fixture must follow, change the fixture
+# and the models must follow, and neither can drift silently.
+#
+# NOTE ON PATHS: this contract has no consumer yet, on purpose (the contract
+# lands before the implementations that adopt it). So the filter below covers
+# only the contract itself. When the first consumer ships, add its source and
+# test paths here — an unreferenced fixture drifts, which is precisely what this
+# workflow is here to prevent.
+
+on:
+  pull_request:
+    paths:
+      - 'contracts/hitl-ticket/**'
+      - '.github/workflows/hitl-ticket-contract-tests.yml'
+    branches:
+      - main
+  push:
+    paths:
+      - 'contracts/hitl-ticket/**'
+      - '.github/workflows/hitl-ticket-contract-tests.yml'
+    branches:
+      - main
+
+concurrency:
+  group: hitl-ticket-contract-tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Golden Fixture vs. Normative Models
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # The contracts directory has no pyproject.toml and must not grow one —
+      # `contracts/README.md:76` ("Not implementations") keeps this directory to
+      # schemas and their documentation. pydantic is the only dependency, and it
+      # is already a gateway dependency, so this pins no new library on the repo.
+      - name: Install dependencies
+        run: pip install pytest pytest-timeout ruff 'pydantic>=2,<3'
+
+      # No ruff config governs contracts/ (there is no pyproject.toml here and
+      # the root has none), so the rule set is pinned inline. It mirrors
+      # modules/gateway/pyproject.toml's select list at a narrower line length.
+      # Stated here so the next written contract inherits the same settings
+      # instead of picking its own.
+      - name: Lint
+        run: |
+          python3 -m ruff check --select E,F,I,N,W,UP --line-length 100 \
+            --target-version py312 contracts/hitl-ticket/v1/
+          python3 -m ruff format --check --line-length 100 contracts/hitl-ticket/v1/
+
+      - name: Execute the golden fixture against the contract models
+        run: python3 -m pytest contracts/hitl-ticket/v1/ -v --tb=short --timeout=60

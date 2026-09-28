@@ -40,6 +40,11 @@ on:
 
 jobs:
   verb-ops:
+    if: github.ref == 'refs/heads/main'
+    environment: adp-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
     runs-on: arc-runner-org
     timeout-minutes: 60
     env:
@@ -48,6 +53,20 @@ jobs:
       NEPTUNE_ENDPOINT: adp-dev-eks-cluster-graphrag.cluster-civhekhiupfe.us-east-1.neptune.amazonaws.com
       S3_FILES_BUCKET: agent-context-platform-data-879318057152
     steps:
+      - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Account guard
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -55,8 +74,6 @@ jobs:
           if [ "$ACCOUNT_ID" != "879318057152" ]; then
             echo "FATAL: expected 879318057152 (embark1), got $ACCOUNT_ID"; exit 1
           fi
-
-      - uses: actions/checkout@v7
 
       - name: Configure kubectl
         run: |
@@ -70,12 +87,29 @@ jobs:
       - name: Door verb verification
         if: ${{ inputs.door_verify }}
         run: |
+          # The Door authenticates every caller (#4073 finding #8) — without this
+          # key every call below returns 401 instead of exercising a verb. Read
+          # from the same SM secret the Door mounts as DOOR_API_KEY. Passed via
+          # env (not interpolated into the heredoc) so it is never written to a
+          # file on the runner or echoed into the log.
+          DOOR_API_KEY=$(aws secretsmanager get-secret-value \
+            --secret-id "adp/dev/gateway/internal-api-key" \
+            --query SecretString --output text 2>/dev/null || echo "")
+          if [ -z "$DOOR_API_KEY" ]; then
+            echo "::error::Could not read adp/dev/gateway/internal-api-key; the Door will reject every verb with 401."
+            exit 1
+          fi
+          export DOOR_API_KEY
+
           cat > /tmp/door_verify.py <<'PYEOF'
-          import json, urllib.request
+          import json, os, urllib.request
 
           MCP = "http://context-mcp.agent-context.svc.cluster.local:5100"
           HEADERS = {
               "Content-Type": "application/json",
+              # Shared secret; the identity headers below are only honoured once
+              # the caller is authenticated (#4073 finding #8).
+              "X-Internal-Api-Key": os.environ["DOOR_API_KEY"],
               "X-GitHub-Login": "ops-verify",
               "X-GitHub-Teams": "platform-team",
           }
@@ -240,11 +274,15 @@ jobs:
       # -----------------------------------------------------------------
       - name: Neptune backfill
         if: ${{ inputs.backfill != 'skip' }}
+        env:
+          ADP_INPUT_C27AA2207B: ${{ inputs.backfill }}
+          ADP_INPUT_5360141334: ${{ inputs.backfill_repo }}
         run: |
-          ARGS=""
-          if [ "${{ inputs.backfill }}" = "apply" ]; then ARGS="--apply"; fi
-          if [ -n "${{ inputs.backfill_repo }}" ]; then ARGS="$ARGS --repo ${{ inputs.backfill_repo }}"; fi
-          echo "Running backfill with args: $ARGS"
+          ARGS=()
+          if [ "${ADP_INPUT_C27AA2207B}" = "apply" ]; then ARGS=(--apply); fi
+          if [ -n "${ADP_INPUT_5360141334}" ]; then ARGS+=("--repo=${ADP_INPUT_5360141334}"); fi
+          printf 'Running backfill with args: %q ' "${ARGS[@]}"
+          echo
           kubectl run backfill-2493-wf-$(date +%s) \
             --image="$INGESTION_IMAGE" --restart=Never --rm -i \
             --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
@@ -253,19 +291,21 @@ jobs:
             --env="NEPTUNE_ENDPOINT=$NEPTUNE_ENDPOINT" \
             --env="NEPTUNE_PORT=8182" \
             --env="AWS_REGION=us-east-1" \
-            -n "$NS" --command -- python3 - $ARGS \
+            -n "$NS" --command -- python3 - "${ARGS[@]}" \
             < modules/agent-context/scripts/backfill_neptune_from_s3.py
-
       # -----------------------------------------------------------------
       # Corrupt-row cleanup (#2864)
       # -----------------------------------------------------------------
       - name: Corrupt repo_id cleanup
         if: ${{ inputs.cleanup != 'skip' }}
+        env:
+          ADP_INPUT_50DCB3B191: ${{ inputs.cleanup }}
         run: |
-          ARGS=""
-          if [ "${{ inputs.cleanup }}" = "apply" ]; then ARGS="--apply"; fi
-          if [ "${{ inputs.cleanup }}" = "verify" ]; then ARGS="--verify"; fi
-          echo "Running cleanup with args: $ARGS"
+          ARGS=()
+          if [ "${ADP_INPUT_50DCB3B191}" = "apply" ]; then ARGS=(--apply); fi
+          if [ "${ADP_INPUT_50DCB3B191}" = "verify" ]; then ARGS=(--verify); fi
+          printf 'Running cleanup with args: %q ' "${ARGS[@]}"
+          echo
           kubectl run cleanup-2864-$(date +%s) \
             --image="$INGESTION_IMAGE" --restart=Never --rm -i \
             --overrides='{"spec":{"serviceAccountName":"agent-context-sa"}}' \
@@ -276,9 +316,8 @@ jobs:
             --env="DB_USER=agent_context_svc" \
             --env="DB_USE_IAM_AUTH=true" \
             --env="AWS_REGION=us-east-1" \
-            -n "$NS" --command -- python3 - $ARGS \
+            -n "$NS" --command -- python3 - "${ARGS[@]}" \
             < modules/agent-context/scripts/cleanup_corrupt_repo_ids.py
-
       # -----------------------------------------------------------------
       # QA verb eval (#2487)
       # -----------------------------------------------------------------

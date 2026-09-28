@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "story": 5427,
+  "epic": 5417,
+  "candidate_default": {
+    "compatibility_class": "claude-agent-sdk",
+    "model_id": "us.anthropic.claude-sonnet-4-6",
+    "activation_requires_live_probe": true
+  },
+  "required_shadow_paths": [
+    "github_mention",
+    "gitlab",
+    "label_dispatch",
+    "chat_ui",
+    "cli",
+    "arc_workflow",
+    "orchestration_loop",
+    "agent_to_agent",
+    "scheduled_service_account"
+  ],
+  "cells": [
+    {"id":"L1","acceptance":["AC-04"],"evidence_kinds":["A"],"principal":"human","surface":"ui","summary":"Human self: three persona mappings invoke three models"},
+    {"id":"L2","acceptance":["AC-04"],"evidence_kinds":["A"],"principal":"human","surface":"cli","summary":"Human self through CLI resolves the same mappings"},
+    {"id":"L3","acceptance":["AC-05"],"evidence_kinds":["A","C"],"principal":"human_admin","surface":"ui","summary":"Human admin writes a discovered canonical machine principal"},
+    {"id":"L4","acceptance":["AC-05"],"evidence_kinds":["A","C"],"principal":"human_admin","surface":"cli","summary":"Human admin writes a tenant-checked machine mapping through CLI"},
+    {"id":"L5","acceptance":["AC-05"],"evidence_kinds":["A"],"principal":"service_sigv4","surface":"m2m","summary":"SigV4 service principal resolves its own mapping"},
+    {"id":"L6","acceptance":["AC-05"],"evidence_kinds":["A"],"principal":"service_cognito_m2m","surface":"m2m","summary":"Cognito M2M alias resolves the same canonical service principal"},
+    {"id":"L7","acceptance":["AC-05","AC-07"],"evidence_kinds":["B"],"principal":"human_admin","surface":"ui_and_cli","reason_code":"cross_tenant_denied","summary":"Cross-tenant administration is refused without target disclosure"},
+    {"id":"L8","acceptance":["AC-04"],"evidence_kinds":["B"],"principal":"human","surface":"ui","summary":"UI omits the scope selector when no principals are manageable"},
+    {"id":"L9","acceptance":["AC-08"],"evidence_kinds":["A","C"],"principal":"human","surface":"ui_to_cli","summary":"UI save is visible to CLI explain with identical source"},
+    {"id":"L10","acceptance":["AC-08"],"evidence_kinds":["A","C"],"principal":"human","surface":"cli_to_ui","summary":"CLI save is visible in UI without a cache clear"},
+    {"id":"L11","acceptance":["AC-07","AC-08"],"evidence_kinds":["B"],"principal":"human","surface":"ui_and_cli","reason_code":"unknown_model","summary":"UI and CLI expose the same refusal code"},
+    {"id":"L12","acceptance":["AC-07"],"evidence_kinds":["B"],"principal":"human","surface":"dispatch","reason_code":"unknown_model","summary":"Unknown model refuses before billable work"},
+    {"id":"L13","acceptance":["AC-07"],"evidence_kinds":["B"],"principal":"human","surface":"dispatch","reason_code":"not_permitted","summary":"Organization-disallowed model refuses without substitution"},
+    {"id":"L14","acceptance":["AC-07"],"evidence_kinds":["B"],"principal":"human","surface":"dispatch","reason_code":"retired","summary":"Retired model refuses even if technically invocable"},
+    {"id":"L15","acceptance":["AC-07"],"evidence_kinds":["B"],"principal":"human","surface":"dispatch","reason_code":"evidence_stale","summary":"Stale invocability evidence refuses validation"},
+    {"id":"L16","acceptance":["AC-07"],"evidence_kinds":["B"],"principal":"human","surface":"dispatch","reason_code":"harness_incompatible","summary":"Cross-harness model refuses without fallback"},
+    {"id":"L17","acceptance":["AC-06"],"evidence_kinds":["A"],"principal":"human","surface":"chain","summary":"Human-rooted chain keeps one snapshot digest across persona-specific hops"},
+    {"id":"L18","acceptance":["AC-06"],"evidence_kinds":["A"],"principal":"service_sigv4","surface":"chain","summary":"Service-rooted chain keeps service policy ownership and one digest"},
+    {"id":"L19","acceptance":["AC-06"],"evidence_kinds":["A"],"principal":"human_via_arc","surface":"arc_workflow","summary":"ARC run preserves canonical human root, bot is attribution only"},
+    {"id":"L20","acceptance":["AC-05","AC-06"],"evidence_kinds":["A"],"principal":"scheduled_service","surface":"scheduled","summary":"Unattended run uses a registered tenant-bound service principal"},
+    {"id":"L21","acceptance":["AC-06"],"evidence_kinds":["A"],"principal":"human","surface":"chain","summary":"Direct override applies to root hop only"},
+    {"id":"L22","acceptance":["AC-03"],"evidence_kinds":["D"],"principal":"mixed","surface":"shadow","summary":"Every dispatch path meets the explained-divergence baseline"},
+    {"id":"L23","acceptance":["AC-09"],"evidence_kinds":["A"],"principal":"human","surface":"posture","summary":"Authorized enforcing posture makes a selection difference binding"},
+    {"id":"L24","acceptance":["AC-09"],"evidence_kinds":["A"],"principal":"human","surface":"posture","summary":"Rollback is demonstrated with measured recovery time"},
+    {"id":"L25","acceptance":["AC-05","AC-08"],"evidence_kinds":["A","C"],"principal":"service_sigv4","surface":"cli","summary":"CLI detects machine identity and never bearer-fallbacks or impersonates"}
+  ]
+}

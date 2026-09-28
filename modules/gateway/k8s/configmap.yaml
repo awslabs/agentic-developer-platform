@@ -22,6 +22,15 @@ data:
 
   # Environment (dev, test, prod)
   BG_ENVIRONMENT: "__ENVIRONMENT__"
+  # Cyber admission owns sample authorization and broker-only queue delivery.
+  CYBER_SAMPLE_BUCKET: "adp-__ENVIRONMENT__-chat-artifacts-__CYBER_ACCOUNT_ID__"
+  CYBER_TRIAGE_QUEUE: "https://sqs.__AWS_REGION__.amazonaws.com/__CYBER_ACCOUNT_ID__/adp-__ENVIRONMENT__-cyber-triage-tasks.fifo"
+  CYBER_STATIC_QUEUE: "https://sqs.__AWS_REGION__.amazonaws.com/__CYBER_ACCOUNT_ID__/adp-__ENVIRONMENT__-cyber-static-tasks.fifo"
+  CYBER_RESULTS_TABLE: "adp-__ENVIRONMENT__-cyber-analysis-results"
+
+
+  # Conditional domain route registration; the gateway reads only its route object.
+  BG_SUPERPLANE_ROUTE_BUCKET: "adp-terraform-state-__PLATFORM_BEDROCK_ACCOUNT_ID__"
 
   # RDS Database Configuration - IAM authentication (passwordless)
   BG_RDS_IAM_AUTH: "true"
@@ -34,10 +43,29 @@ data:
   BG_DATABASE_URL: "postgresql+asyncpg://__DB_USER__@__DB_HOST__:5432/__DB_NAME__"
 
   # Redis / ElastiCache Configuration
+  # The URL is host/port/TLS only — IAM auth means there is no password to embed.
+  # The username + short-lived token are supplied per connection by
+  # src/shared/redis_client.py (Issue #4342).
+  RATELIMIT_SECURITY_PROFILE: "production"
+  RATELIMIT_BACKEND_TYPE: "redis"
+  RATELIMIT_ALLOW_MEMORY_BACKEND: "false"
   BG_REDIS_URL: "rediss://__REDIS_HOST__:__REDIS_PORT__/0"
+  BG_REDIS_IAM_AUTH: "__REDIS_IAM_AUTH__"
+  BG_REDIS_USERNAME: "__REDIS_IAM_USERNAME__"
+  # Replication group id, NOT the endpoint host — the connect token is signed
+  # against the group id and ElastiCache rejects a token signed for the host.
+  BG_REDIS_CACHE_NAME: "__REDIS_CACHE_NAME__"
 
   # Cognito OAuth Configuration
   BG_COGNITO_USER_POOL_ID: "__COGNITO_USER_POOL_ID__"
+  # CLI app client for web CLI login (/auth/cli). Empty until the Terraform
+  # that creates the client applies — endpoints answer 503 until then.
+  BG_COGNITO_CLI_CLIENT_ID: "__COGNITO_CLI_CLIENT_ID__"
+  BG_COGNITO_AGENT_CLIENT_ID: "__COGNITO_AGENT_CLIENT_ID__"
+  BG_COGNITO_GITLAB_CLIENT_ID: "__COGNITO_GITLAB_CLIENT_ID__"
+  # Dev-only pentest actor client. Empty outside dev or before agent-factory applies.
+  BG_COGNITO_PENTEST_CLIENT_ID: "__COGNITO_PENTEST_CLIENT_ID__"
+  BG_AGENT_CLIENTS_TABLE: "__AGENT_CLIENTS_TABLE__"
   BG_COGNITO_CLIENT_ID: "__COGNITO_CLIENT_ID__"
   BG_COGNITO_DOMAIN: "__COGNITO_DOMAIN__"
 
@@ -88,6 +116,19 @@ data:
   BG_VAULT_PROXY_HOST_ALLOWLIST: "__VAULT_PROXY_HOST_ALLOWLIST__"
   BG_VAULT_PROXY_REQUIRE_HTTPS: "true"
 
+  # =============================================================================
+  # Issue #4076: Credential -> host egress binding
+  # =============================================================================
+  # The allowlist above says which hosts we may talk to; this says which hosts a
+  # GIVEN service's credential may be sent to (a github credential must not go
+  # to slack.com). The service -> host map is a code constant, see
+  # src/internal/credential_egress.py.
+  # "false" = shadow mode (violations WARN-logged, allowed) — the default, so
+  # coverage gaps surface in logs first. "true" = enforce (403 + audit row).
+  # Flip via SSM: /adp/{env}/gateway/vault-enforce-credential-host-binding
+  # =============================================================================
+  BG_VAULT_ENFORCE_CREDENTIAL_HOST_BINDING: "__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__"
+
   # Logging Configuration
   BG_LOG_LEVEL: "INFO"
 
@@ -100,7 +141,16 @@ data:
   # Scrub levels:
   # - off: No scrubbing (debugging only, not for production)
   # - basic: Headers + regex patterns (fast, no AWS API calls)
-  # - standard: Headers + regex + Amazon Comprehend PII detection (recommended)
+  # - standard: Headers + regex + Amazon Comprehend PII detection (DEFAULT)
+  #
+  # #5672: the deploy pipeline used to substitute the literal "basic" here,
+  # overriding the application default in every environment, so personal data in
+  # prompts was stored as typed. The value now comes from
+  # /adp/<env>/gateway/chat-logging-scrub-level and defaults to "standard" when
+  # that parameter is unset. Do not hard-code a weaker level in this file or in a
+  # deploy script — a weaker level must be a per-environment, reviewed choice.
+  # An unset or unrecognised value resolves UP to "standard" in the app
+  # (src/chat_logging/config.py), so a typo cannot silently downgrade redaction.
   # =============================================================================
   BG_CHAT_LOGGING_ENABLED: "__CHAT_LOGGING_ENABLED__"
   BG_CHAT_LOGGING_BUCKET: "__CHAT_LOGGING_BUCKET__"
@@ -136,6 +186,23 @@ data:
   # Read directly via os.environ in connections/service.py (NOT BG_-prefixed).
   # When "true", registering a GitHub Organization connection automatically
   # creates an org-tenant shell so members can later auto-join.
+  #
+  # Issue #2724: creating a shell no longer implies TRUSTING it. Shells created
+  # by the unauthenticated no-nonce install callback are stamped
+  # created_via="install_autocreate", and the webhook-ingress Lambda reads its
+  # own ORG_TENANT_AUTO_CREATE (same name, terraform var org_tenant_auto_create,
+  # default false) to decide whether such a shell counts as a real tenant for
+  # agent dispatch and per-tenant GitHub App credential seeding. Set that one
+  # true as well only for deliberately-open deployments (hackathons, demos).
+  #
+  # So "true" HERE does not mean "trust whoever installs". It means only "let
+  # the unauthenticated install callback create a shell so the install UI
+  # works". The gateway refuses to promote such a shell itself — no per-tenant
+  # App credentials, no routable identity-index row (see
+  # _promotion_allowed_for_provenance in connections/service.py) — and leaves
+  # promotion entirely to the webhook Lambda's gate. It must stay "true"
+  # because the nonce-authenticated install path also relies on it to onboard a
+  # signed-in user's not-yet-known org.
   # =============================================================================
   ORG_TENANT_AUTO_CREATE: "true"
 
@@ -150,6 +217,8 @@ data:
   # =============================================================================
   AGENT_CONTEXT_ENABLED: "true"
   INGESTION_QUEUE_URL: "__INGESTION_QUEUE_URL__"
+  # Same existing bucket as agent-context/terraform; no new storage.
+  AGENT_CONTEXT_S3_BUCKET: "agent-context-platform-data-__PLATFORM_BEDROCK_ACCOUNT_ID__"
   BG_AGENT_CONTEXT_DBNAME: "agent_context"
 
   # =============================================================================
@@ -171,18 +240,132 @@ data:
   # Kill switch: set BG_MANTLE_ENABLED "false" and redeploy; route returns 503.
   BG_MANTLE_ENABLED: "true"
   BG_MANTLE_REGION: "us-east-1"
+  # AWS Bedrock's OpenAI-compatible endpoint (same host family as native
+  # bedrock-runtime). Replaces the earlier preview host bedrock-mantle.*.api.aws,
+  # which never served newer models (gpt-6-astra → 404). {region} is substituted.
+  BG_MANTLE_BASE_URL: "https://bedrock-runtime.{region}.amazonaws.com"
+  # bedrock-runtime serves the flagship OpenAI families ONLY via inference
+  # profiles, so the route rewrites the forwarded body's model to "<prefix>.<model>"
+  # (openai.gpt-6-astra → us.openai.gpt-6-astra). Must match the geo of
+  # BG_MANTLE_REGION (us|eu|apac|global). Set "" to disable the rewrite. Bare
+  # caller ids stay unchanged.
+  BG_MANTLE_INFERENCE_PROFILE_PREFIX: "us"
+  # On-demand OpenAI models (bare id, no inference profile) — exempted from the
+  # prefix rewrite above. gpt-oss is on-demand; gpt-5.6/gpt-6 are profile-only.
+  BG_MANTLE_ON_DEMAND_MODELS: "openai.gpt-oss*"
 
   # =============================================================================
-  # Credential-authorization binding (EPIC #3172, S9 #3182).
+  # Approval (org-assignment) enforcement on the inference path (Issue #4144)
   # =============================================================================
-  # When "true", credential endpoints ENFORCE registry-based user resolution:
-  # missing invocation_id or empty authorized_user_id → 403.
-  # When "false" (default), shadow mode: resolve from registry, compare to body,
-  # emit drift/fallback metrics, but never block.
-  # Flipped via credential-binding-flip.yml (gated workflow_dispatch) — NOT
-  # editable manually. Reads from SSM: /adp/{env}/gateway/enforce-credential-binding
+  # When "true", a human caller with no org assignment is rejected with a 409
+  # ({"detail": {"error": "user_not_assigned_to_org", ...}}) on the enforced spend
+  # paths — so platform-admin approval actually gates Bedrock spend, not just the
+  # browser dashboard. Exempt: platform admins (avoids the approver locking
+  # themselves out) and agents / service accounts (IAM/SigV4).
+  #
+  # "Approved" is resolved from Postgres users.org_id keyed on cognito_sub, with
+  # the JWT claim only as a fast path. Do NOT "simplify" this to the claim alone:
+  # the login-time auto-match approval path never syncs Cognito attributes, so
+  # approved users routinely hold tokens with no org_id and would all be locked
+  # out.
+  #
+  # #5666 (A11): default flipped to "true". Shipping "false" meant the only
+  # server-side proof of approval on the paid paths was switched off by default, so
+  # a fresh environment billed un-approved callers while the SPA showed them a
+  # "request access" screen — a client-side screen a direct curl/SDK caller never
+  # sees.
+  #
+  # Fails CLOSED on a DB error as of #5666: an indeterminate lookup returns a
+  # RETRYABLE 503 ({"detail": {"error": "approval_check_unavailable", ...}}) with
+  # Retry-After, not a 409, and not an admit. Because every exemption is evaluated
+  # before the DB read, a database blip cannot lock out platform admins, agents, or
+  # any human whose token carries an org — the 503 reaches only callers whose
+  # approval cannot be confirmed without the database. BG_APPROVAL_FAIL_OPEN="true"
+  # is the conscious break-glass if an incident calls for availability over the
+  # gate.
+  #
+  # When "false", the middleware is inert — it still runs, but returns early.
+  # Rollback is a value flip + `kubectl rollout restart`; the flag is read
+  # per-request via get_settings(), so no image rebuild is needed.
   # =============================================================================
-  BG_ENFORCE_CREDENTIAL_BINDING: "__ENFORCE_CREDENTIAL_BINDING__"
+  BG_ENFORCE_ORG_ASSIGNMENT: "true"
+
+  # Break-glass for the fail-closed approval check above (#5666 / A11). "true"
+  # admits requests whose approval lookup raised, restoring the pre-#5666
+  # behaviour. Logged + metered as ApprovalCheckFailedFailOpen so it is visible
+  # while active. Leave "false" outside an incident.
+  BG_APPROVAL_FAIL_OPEN: "false"
+
+  # =============================================================================
+  # Per-principal Bedrock account routing — SHADOW MODE (Issue #4743, #4692)
+  # =============================================================================
+  # When "true", the resolution ladder (user > team > org > platform) runs on the
+  # settlement path and its answer is recorded in usage_logs.bedrock_account_id.
+  # It does NOT change where any request goes: by the time it runs the call has
+  # already been signed and sent with the gateway's ambient IRSA credentials, the
+  # same as before. Enforcement is #4744.
+  #
+  # Leave "true". The captured column is the evidence #4744 is gated on — an
+  # operator has to be able to see what routing WOULD do before being asked to
+  # let it happen — and with zero mappings authored a 60s existence gate makes it
+  # cost zero queries per model call. Set the SSM param
+  # /adp/{env}/gateway/bedrock-routing-shadow-mode to "false" +
+  # `kubectl rollout restart` to stop observing; read per-request via
+  # get_settings(), so no image rebuild is needed.
+  #
+  # PLATFORM_BEDROCK_ACCOUNT_ID is the account the gateway's own IRSA credentials
+  # belong to — the answer for the platform rung, i.e. every call today. It is
+  # substituted by gateway-deploy.yml rather than discovered at runtime, because a
+  # live sts:get_caller_identity on the settlement path would add a network hop to
+  # every request that resolves to platform (before any mapping exists, all of
+  # them). If this is ever left EMPTY the platform rung still resolves but the
+  # column stays NULL — which reads as "not captured" and makes shadow mode
+  # silently unobservable, so it is wired here deliberately rather than defaulted.
+  # =============================================================================
+  BG_BEDROCK_ROUTING_SHADOW_MODE: "__BEDROCK_ROUTING_SHADOW_MODE__"
+
+  # PMM-03 (#5420): faithful Claude Agent SDK invocability probing. These are
+  # deliberately literal fail-closed values, not permissive placeholders.
+  # PMM-09 owns the separately reviewed deployment that may enable them after
+  # the destination account and spend ceiling are explicitly approved.
+  BG_MODEL_PROBE_ENABLED: "false"
+  BG_MODEL_PROBE_MAX_SLOTS_PER_CYCLE: "0"
+  BG_MODEL_PROBE_BUDGET_USD_PER_CYCLE: "0"
+  BG_MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT: "0"
+  BG_PLATFORM_BEDROCK_ACCOUNT_ID: "__PLATFORM_BEDROCK_ACCOUNT_ID__"
+
+  # PMM-03 / D3: active organization/team model-access constraints.  JSON is
+  # keyed by org ID or "org_id:team_id"; the team key wins.  Empty JSON means
+  # no explicit tenant policy and therefore the versioned platform baseline.
+  # A configured scope with [] is an intentional deny-all policy.
+  PERSONA_MODEL_MAPPING_ENABLED: "__PERSONA_MODEL_MAPPING_ENABLED__"
+  BG_MODEL_ALLOWED_MODELS_CONFIG: >-
+    __MODEL_ALLOWED_MODELS_CONFIG__
+
+  # Saved Bedrock account mappings are always enforced. There is no rollout toggle.
+
+  # =============================================================================
+  # Budget enforcement fail mode (Issue #4075)
+  # =============================================================================
+  # What happens when the budget CHECK itself fails (DB/IAM error), as opposed
+  # to a request genuinely exceeding its cap:
+  #   closed (default) — deny. A failed ledger read must not admit the request,
+  #                      because that is uncapped model spend no cap will stop.
+  #                      A bounded, alarmed grace window (30s of CONSECUTIVE
+  #                      failures, shared via Redis) keeps a transient RDS
+  #                      IAM-token blip from hard-downing all inference.
+  #   open             — allow. This is the ROLLBACK lever, not a normal state.
+  #
+  # Note the doubled BUDGET: budget/config.py sets env_prefix = "BG_BUDGET_",
+  # so the field budget_fail_mode reads BG_BUDGET_BUDGET_FAIL_MODE.
+  #
+  # Read once at container start (module-level singleton, envFrom), and there is
+  # no checksum/config annotation on the Deployment — so a configmap-only
+  # `kubectl apply` does NOT change a running pod. Changing this requires
+  # SSM put + `kubectl rollout restart` (or a redeploy).
+  # Reads from SSM: /adp/{env}/gateway/budget-fail-mode
+  # =============================================================================
+  BG_BUDGET_BUDGET_FAIL_MODE: "__BUDGET_FAIL_MODE__"
 
   # =============================================================================
   # Identity Index DynamoDB tables (Issue #375, #537)
@@ -197,3 +380,118 @@ data:
   IDENTITY_INDEX_TABLE: "adp-__ENVIRONMENT__-identity-index"
   USER_IDENTITY_INDEX_TABLE: "adp-__ENVIRONMENT__-user-identity-index"
   USER_IDENTITY_INDEX_V2_WRITE: "true"
+
+  # =============================================================================
+  # Live agent run control (Issue #3960)
+  # =============================================================================
+  # The authenticated control path: gateway proxy -> in-pod control listener. All
+  # four verbs (pause/resume/steer/abort) are UNSUPPORTED in this story — an
+  # authorized caller on a live run gets 501 — so turning this on does not make any
+  # control action work. What it turns on is the route surface, the ping/state read
+  # path, and the capability report (all verbs false).
+  #
+  # Read directly via os.environ in activity/control_service.py, NOT BG_-prefixed,
+  # matching the sibling activity settings (AGENT_RUN_LOGS_BUCKET,
+  # WEBHOOK_EVENTS_TABLE) rather than the Pydantic settings model.
+  #
+  # The flag itself is NOT here — it lives in k8s/deployment.yaml as the
+  # __FEATURE_AGENT_CONTROL_ENABLED__ placeholder, rendered per environment by
+  # gateway-deploy.yml from /adp/<env>/gateway/feature-agent-control (default
+  # "false"), exactly like FEATURE_ORCHESTRATION_ENGINE_ENABLED (#4209 / D-R20).
+  #
+  # This file is applied verbatim to whichever environment the workflow targets, so
+  # a literal here would arm EVERY environment at once. It also matters for how the
+  # flag gets turned on: the one legitimate "true" is an operator-created isolated
+  # fixture (evaluation #3967), and that has to be an `aws ssm put-parameter`
+  # against one environment — not an edit to a committed file that the next deploy
+  # of every other environment would pick up.
+  #
+  # The reader is STRICT (features/routes.py::_is_enabled_strict): absent or any
+  # value other than "true" means off. Note the worker reads its own
+  # FEATURE_AGENT_CONTROL_ENABLED byte-exactly and independently — neither this
+  # namespace nor the gateway's copy can start a listener in an agent pod.
+
+  # The single port the gateway dials and the worker binds. It must equal
+  # var.agent_control_port in modules/agent-factory/webhook-ingress/infra — the same
+  # value is also the only port the control-listener ingress NetworkPolicy admits,
+  # so a mismatch here is not a fallback: every control request becomes a 409
+  # "unavailable" while the pod sits there listening on the other port.
+  AGENT_CONTROL_PORT: "8770"
+
+  # Comma-separated CIDRs the gateway will dial a control listener inside. This is
+  # the SSRF boundary for a proxy that, unlike every other outbound path here,
+  # deliberately targets PRIVATE addresses — so the usual "reject private IPs"
+  # validator (internal/credential_routes.py) is the mirror image of what is needed
+  # and must not be reused.
+  #
+  # FAIL-CLOSED: empty or unset denies every control request (409, "not
+  # configured"). That is why this is not defaulted to a convenient wide range —
+  # an operator who forgets it gets a clear misconfiguration rather than a gateway
+  # willing to dial any private address, including link-local metadata.
+  #
+  # Substituted by gateway-deploy.yml from the cluster's pod CIDR. Loopback,
+  # unspecified, multicast, reserved, link-local/IMDS and global addresses are
+  # rejected in code regardless of what is listed here.
+  AGENT_CONTROL_CLUSTER_POD_CIDRS: "__AGENT_CONTROL_CLUSTER_POD_CIDRS__"
+  AGENT_AUTHORITY_ENABLED: "__AGENT_AUTHORITY_ENABLED__"
+  ADP_WORK_CLAIMS_ENABLED: "__ADP_WORK_CLAIMS_ENABLED__"
+  ADP_WORK_CLAIM_PRODUCER_ROLES: "__ADP_WORK_CLAIM_PRODUCER_ROLES__"
+  AGENT_AUTHORITY_TABLE: "__AGENT_AUTHORITY_TABLE__"
+  WEBHOOK_EVENTS_TABLE: "__WEBHOOK_EVENTS_TABLE__"
+  # Task API preparation remains default-off until a qualified pilot is enabled.
+  ADP_TASK_API_ADMISSION_ENABLED: "__ADP_TASK_API_ADMISSION_ENABLED__"
+  ADP_TASK_API_READ_ENABLED: "__ADP_TASK_API_READ_ENABLED__"
+  ADP_TASK_API_WORKER_ENABLED: "__ADP_TASK_API_WORKER_ENABLED__"
+  ADP_TASK_API_RECOVERY_ENABLED: "__ADP_TASK_API_RECOVERY_ENABLED__"
+  TASK_ARTIFACT_BUCKET_NAME: "__TASK_ARTIFACT_BUCKET_NAME__"
+  ADP_TASK_API_QUEUE_URL: "__ADP_TASK_API_QUEUE_URL__"
+  ADP_TASK_ADMISSION_PRODUCER_ROLES: "__ADP_TASK_ADMISSION_PRODUCER_ROLES__"
+  ADP_TASK_DISPATCH_PRODUCER_ROLES: "__ADP_TASK_DISPATCH_PRODUCER_ROLES__"
+  ADP_TASK_RECOVERY_PRODUCER_ROLES: "__ADP_TASK_RECOVERY_PRODUCER_ROLES__"
+  ADP_TASK_QUALIFICATION_ID: "__ADP_TASK_QUALIFICATION_ID__"
+  ADP_TASK_WORKER_IMAGE_DIGESTS: "__ADP_TASK_WORKER_IMAGE_DIGESTS__"
+  ADP_TASK_WORKER_SERVICE_ACCOUNT: "__ADP_TASK_WORKER_SERVICE_ACCOUNT__"
+  AGENT_DISPATCH_QUEUE_URL: "__AGENT_DISPATCH_QUEUE_URL__"
+  # Same queue; this URL does not enable the unrelated legacy migration gate.
+  ADP_RUN_TASK_QUEUE_URL: "__AGENT_DISPATCH_QUEUE_URL__"
+  BG_ORCH_DISPATCH_REPO: "__BG_ORCH_DISPATCH_REPO__"
+  AGENT_WORKER_IMAGE_DIGESTS: "__AGENT_WORKER_IMAGE_DIGESTS__"
+  AGENT_CONTROL_ENVELOPE_KEY_ID: "__AGENT_AUTHORITY_KEY_ID__"
+  # Disabled until the original worker principal is isolated from all platform
+  # Kubernetes access through the approved scoped rollout. Checked on each mint.
+  AGENT_TASK_SOURCE_ROLE_ARN: "__AGENT_TASK_SOURCE_ROLE_ARN__"
+  AGENT_TASK_SOURCE_EKS_CLUSTER: "__AGENT_TASK_SOURCE_EKS_CLUSTER__"
+  AGENT_TASK_SOURCE_ISOLATION_CONFIRMED: "__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__"
+  # --- Conversational intake for `adp flow start` (#5331, EPIC #4191) ---
+  # All three name agent-factory resources and are published to SSM by that stack
+  # (modules/agent-factory/infra/gateway-intake-access.tf), which also grants this
+  # role the reads and the InvokeFunction. Substituted by gateway-deploy.yml.
+  #
+  # Each is INDEPENDENTLY optional, and unset is a supported state rather than an
+  # error: the gateway builds an unconfigured reader/dispatcher that answers
+  # "unavailable" on every intake verb (503; the CLI maps it to its documented
+  # `unavailable` exit code). Raising at import instead would stop a gateway that
+  # merely cannot PLAN from also proxying, approving gates and serving the
+  # dashboard.
+  #
+  # The split is deliberate: with only the context table unset, a conversation is
+  # still readable — transcript, issue, in-flight state — and just the draft comes
+  # back flagged `draft_available: false`. Folding the two together would 503 a
+  # readback that mostly works.
+  BG_INTAKE_SESSIONS_TABLE: "__BG_INTAKE_SESSIONS_TABLE__"
+  BG_INTAKE_CONTEXT_TABLE: "__BG_INTAKE_CONTEXT_TABLE__"
+  # A Lambda FUNCTION NAME, not a queue URL. The turn enters through the ingest
+  # Lambda so it gets the session row, the thread, the transcript and the
+  # registered run a browser turn gets. `BG_INTAKE_QUEUE_URL` is deliberately not
+  # read as a fallback anywhere, so a stale deployment reports unavailable rather
+  # than resuming the queue shortcut this replaced.
+  BG_INTAKE_INGEST_FUNCTION: "__BG_INTAKE_INGEST_FUNCTION__"
+
+
+  # PMM-07 producer and ARC registrations are operator-owned deployment data.
+  # Empty registrations refuse these paths; rollout does not activate defaults.
+  ADP_MODEL_ROOT_BINDINGS: "__ADP_MODEL_ROOT_BINDINGS__"
+  ADP_ARC_MODEL_BINDINGS: "__ADP_ARC_MODEL_BINDINGS__"
+  ADP_CHAT_WORKER_IMAGE_DIGESTS: "__ADP_CHAT_WORKER_IMAGE_DIGESTS__"
+  ADP_CHAT_WORKER_NAMESPACE: "adp-gateway-agents"
+  ADP_CHAT_WORKER_SERVICE_ACCOUNT: "adp-agent"

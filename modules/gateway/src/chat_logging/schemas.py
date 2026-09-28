@@ -32,10 +32,12 @@ class UsageInfo(BaseModel):
     Lambda can price cached traffic correctly.
     """
 
-    input_tokens: int = Field(default=0, description="Number of input tokens")
-    output_tokens: int = Field(default=0, description="Number of output tokens")
-    cache_read_input_tokens: int = Field(default=0, description="Tokens served from prompt cache")
-    cache_creation_input_tokens: int = Field(default=0, description="Tokens written to prompt cache")
+    input_tokens: int | None = Field(default=None, description="Number of input tokens")
+    output_tokens: int | None = Field(default=None, description="Number of output tokens")
+    cache_read_input_tokens: int | None = Field(default=None, description="Tokens served from prompt cache")
+    cache_creation_input_tokens: int | None = Field(default=None, description="Tokens written to prompt cache")
+
+    cache_creation: dict[str, Any] | None = Field(default=None, description="Raw cache-write usage by duration")
 
 
 class ChatLogResponse(BaseModel):
@@ -61,6 +63,19 @@ class ScrubbingMetadata(BaseModel):
     pii_types_found: list[str] = Field(default_factory=list, description="Types of PII detected and redacted")
     regex_patterns_matched: list[str] = Field(default_factory=list, description="Regex patterns that matched")
     headers_scrubbed: list[str] = Field(default_factory=list, description="Headers that were scrubbed")
+    # Issue #5672: `level` records what was CONFIGURED. When Comprehend is
+    # unavailable the record would otherwise claim "standard" without recording
+    # that transcript content was replaced by fail-closed placeholders. This flag
+    # makes the record self-describing, so a downstream audit of the transcript
+    # store can tell protected records from degraded ones without correlating
+    # against application logs that may have already aged out.
+    pii_detection_failed: bool = Field(
+        default=False,
+        description=(
+            "True when scrub level was 'standard' but Comprehend PII detection could not run, "
+            "so affected content was replaced by fail-closed placeholders"
+        ),
+    )
 
 
 class ChatLog(BaseModel):
@@ -68,6 +83,10 @@ class ChatLog(BaseModel):
 
     Contains all metadata and the scrubbed request/response.
     """
+
+    # New producers opt into the shared receipt protocol. Historical objects
+    # have no marker and must never be debited again after rollout.
+    settlement_version: Literal[1] = 1
 
     # Identifiers
     request_id: str = Field(description="Unique request identifier (UUID)")
@@ -77,6 +96,16 @@ class ChatLog(BaseModel):
     org_id: str = Field(description="Organization ID from auth context")
     user_id: str | None = Field(default=None, description="User ID from auth context")
     team_id: str | None = Field(default=None, description="Team ID from auth context")
+    department_id: str | None = Field(default=None, description="Department from verified auth context")
+    # Issue #4300: the human who set this agent chain in motion, as a canonical
+    # `users.id`. Resolved server-side from the run's registry row, never from a
+    # header. The budget-usage-tracker Lambda reads this to write the cumulative
+    # `root_user` settled ledger row, so a chain's spend debits the initiating
+    # person's budget rather than only the agent service account's.
+    #
+    # Empty for non-human-rooted requests, which is the common case. The Lambda
+    # writes NO row when it is empty — never a $0 row keyed on "".
+    root_human_id: str = Field(default="", description="Root human (users.id) who initiated this agent chain; empty if not human-rooted")
     account_type: Literal["human", "service"] = Field(description="Account type: human or service")
 
     # Request metadata
@@ -87,6 +116,9 @@ class ChatLog(BaseModel):
     # Scrubbed content
     request: ChatLogRequest = Field(description="Scrubbed request body")
     response: ChatLogResponse = Field(description="Scrubbed response body")
+
+    # Set only by the gateway completion path, never extracted from client JSON.
+    pricing_decision: dict[str, Any] | None = Field(default=None, description="Server-produced durable pricing decision")
 
     # Scrubbing info
     scrubbing: ScrubbingMetadata = Field(description="Information about scrubbing applied")

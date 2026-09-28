@@ -44,6 +44,7 @@ describe('execWithFreshToken — shell injection prevention (#1163)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedExecFileSync.mockReset();
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_APP_TOKEN;
@@ -160,7 +161,7 @@ describe('execWithFreshToken — shell injection prevention (#1163)', () => {
         .mockImplementationOnce(() => { throw error401; })
         .mockReturnValueOnce('success after retry\n');
 
-      const result = await execWithFreshToken('gh', ['pr', 'view', '99']);
+      const result = await execWithFreshToken('gh', ['pr', 'view', '99'], { retryOnAuthFailure: true });
 
       expect(result).toBe('success after retry');
       expect(mockedExecFileSync).toHaveBeenCalledTimes(2);
@@ -177,10 +178,16 @@ describe('execWithFreshToken — shell injection prevention (#1163)', () => {
         .mockImplementationOnce(() => { throw error401; })
         .mockReturnValueOnce('retried output\n');
 
-      const result = await execWithFreshToken('gh', ['api', '/repos']);
+      const result = await execWithFreshToken('gh', ['api', '/repos'], { retryOnAuthFailure: true });
 
       expect(result).toBe('retried output');
       expect(mockedExecFileSync).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not replay a composite command after a later request fails authorization', async () => {
+      mockedExecFileSync.mockImplementationOnce(() => { throw new Error('HTTP 401 after partial write'); });
+      await expect(execWithFreshToken('workflow', ['publish'])).rejects.toThrow('401');
+      expect(mockedExecFileSync).toHaveBeenCalledTimes(1);
     });
 
     it('does not retry on non-401 errors', async () => {
