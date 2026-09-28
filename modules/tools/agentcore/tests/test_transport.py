@@ -67,8 +67,8 @@ class Provider:
     def invoke_code_interpreter(self, **kwargs):
         self.calls.append((kwargs["name"], kwargs))
         result = {"startCommandExecution": {"taskId": "private-task-id"},
-                  "getTask": {"status": "completed", "output": "5\n"},
-                  "readFiles": {"content": "table,5\n"}}[kwargs["name"]]
+                  "getTask": {"taskStatus": "completed", "stdout": "5\n", "exitCode": 0},
+                  "executeCommand": {"content": "table,5\n"}}[kwargs["name"]]
         return {"stream": iter([{"result": {"structuredContent": result}}])}
 
     def stop_code_interpreter_session(self, **kwargs):
@@ -197,7 +197,7 @@ def test_non_cyber_task_uses_all_three_host_transport_and_artifact_integrity(tra
     pending = invoke(transport, "code_interpreter.execute", {"session_id": session, "code": "print(5)", "language": "python"}, identifier=execution)
     assert pending["operation_status"] == "pending"
     result = invoke(transport, "code_interpreter.result", {"session_id": session, "execution_id": execution})
-    assert result["result"]["output"] == "5\n"
+    assert result["result"]["stdout"] == "5\n"
     file = invoke(transport, "code_interpreter.file", {"session_id": session, "path": "/tmp/table.csv"})
     assert file["operation_status"] == "confirmed"
     closed = invoke(transport, "code_interpreter.close", {"session_id": session})

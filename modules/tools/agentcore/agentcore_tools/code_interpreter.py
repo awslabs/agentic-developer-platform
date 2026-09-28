@@ -244,6 +244,9 @@ class CodeInterpreter:
             result = self.invoke(session["provider_id"], "getTask", {"taskId": execution["provider_task_id"]})
             data = self.safe_result(result)
             data.pop("taskId", None)
+            # AgentCore getTask uses taskStatus; expose the stable tool status.
+            if "taskStatus" in data:
+                data["status"] = data.pop("taskStatus")
             if data.get("status") not in {"completed", "failed", "cancelled", "running", "pending", "submitted"}:
                 raise HTTPException(502, "Unexpected provider task status")
             if data.get("status") not in {"completed", "failed", "cancelled"}:
@@ -256,7 +259,17 @@ class CodeInterpreter:
             if not fresh:
                 return prior.get("receipt") or self.receipt(identity, operation_id, "unknown", {"status": "unknown"})
             self.task(identity)
-            result = self.invoke(session["provider_id"], "readFiles", {"paths": [payload["path"]]})
+            # readFiles is restricted to the provider workspace and rejects /tmp.
+            # Read the API's bounded /tmp file through the command runtime instead.
+            code = (
+                "import base64,json,os,stat; "
+                f"fd=os.open({payload['path']!r},os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK); "
+                "assert stat.S_ISREG(os.fstat(fd).st_mode), 'Not a regular file'; "
+                "data=os.read(fd,8193); os.close(fd); "
+                "assert len(data)<=8192, 'File exceeds 8192 bytes'; "
+                "print(json.dumps({'encoding':'base64','data':base64.b64encode(data).decode()}))"
+            )
+            result = self.invoke(session["provider_id"], "executeCommand", {"command": "python -c " + shlex.quote(code)})
             receipt = self.evidence(identity, operation_id, {"path": payload["path"], "contents": result})
             self.update(identity, "OP#" + operation_id, "SET receipt = :receipt", {":receipt": receipt})
             return receipt
