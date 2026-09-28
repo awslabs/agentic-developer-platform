@@ -76,7 +76,7 @@ def test_reviewer_repairs_require_trusted_continuation_capability():
         "orchestration_review_repairs": {"BOOL": True},
     }
     node = SimpleNamespace(kind="story", attempts=1)
-    assert runtime_action(execution, node) is Action.REPAIR
+    assert runtime_action(execution, node) is Action.REVIEW
     execution["orchestration_review_repairs"] = {"S": "true"}
     assert runtime_action(execution, node) is Action.REVIEW
     execution["review_cycle_input"] = {"allow_story_repairs": True}
@@ -722,3 +722,27 @@ class TestAnUnrecognizedAuthorityIsRefusedHere:
             authority=AuthorityReference(kind, "approval", APPROVER, assignment.grant.tenant_id),
         )
         assert (await check(session, assignment)).permitted
+
+
+async def test_repair_enabled_reviewer_can_mint_both_identities(session, assignment, broker_client):
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
+    plan.plan_document = {
+        **plan.plan_document,
+        "execution_policy": {**plan.plan_document["execution_policy"], "allowed_actions": ["review", "repair", "merge"]},
+    }
+    await session.flush()
+    assignment.execution.update(
+        persona={"S": "agent-codex-reviewer"},
+        orchestration_continuation_receipt={"S": "committed"},
+        orchestration_continuation_action={"S": "review"},
+        orchestration_review_repairs={"BOOL": True},
+    )
+    response = await broker_client.client.post(GITHUB, json=broker_client.body)
+    assert response.status_code == 200, response.text
+    assert broker_client.mint.await_args.kwargs["permissions"]["contents"] == "write"
+    broker_client.reviewer.assert_not_awaited()
+    response = await broker_client.client.post(GITHUB, json={**broker_client.body, "identity": "review"})
+    assert response.status_code == 200, response.text
+    assert response.json()["identity"] == "review"
+    broker_client.reviewer.assert_awaited_once_with(ORG_A)
+    assert broker_client.mint.await_args.kwargs["permissions"] == {"contents": "read", "pull_requests": "write", "metadata": "read"}

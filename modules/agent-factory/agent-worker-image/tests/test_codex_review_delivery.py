@@ -88,7 +88,7 @@ def test_published_partial_repair_retains_distinct_followup_review(setup, monkey
     register = Mock()
     monkeypatch.setattr(finalizer.pr_binding, "register_pull_request", register)
     assert "repair delivered" in finish(setup)
-    register.assert_called_once_with(repo="org/repo", pr_number=77)
+    register.assert_not_called()
     setup.submit.assert_not_called()
 
 

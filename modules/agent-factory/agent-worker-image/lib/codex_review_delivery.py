@@ -44,10 +44,9 @@ def finish_engine_review(output: str, *, envelope: dict, delivery, run, cwd) -> 
         owns_delivery = cycle.get("reviewer_owned_delivery") is True and delivery is not None
         if not owns_delivery and head == cycle["head_sha"] and report.get("verdict") != "approve":
             raise RuntimeError("Codex story repair remains blocked; no commit was published")
-        # Owned repairs retain the story's implementation binding, as ordinary
-        # review-and-fix runs do. Only legacy authoring runs register a new author.
+        # Engine repairs already target a bound PR. Keep that implementation
+        # binding: the controller observes its live head and requests fresh review.
         if not owns_delivery:
-            pr_binding.register_pull_request(repo=cycle["repo"], pr_number=cycle["pr_number"])
             return ("Codex story repair delivered to the existing PR" if base
                     else "Codex verified the existing PR; no repair was needed")
     if delivery is None:
