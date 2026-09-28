@@ -19,7 +19,7 @@ from src.shared.models.base import utcnow
 from src.shared.models.persona_models import PersonaModelPolicySetting, PersonaPlatformDefault
 from src.shared.schemas.auth import TokenContext
 
-from .catalogue import PLATFORM_MODEL_CATALOGUE, compatibility_class_harness_contract_revision
+from .catalogue import PLATFORM_MODEL_CATALOGUE, compatibility_class_harness_contract_revision, persona_harness_contract_revision
 from .default_routes import _promotion_evidence, refused
 from .operation_receipts import begin_operation, finish_operation
 from .posture_service import PLATFORM_AUDIT_ORG, resolve_posture_actor_id
@@ -107,13 +107,16 @@ async def set_persona_default(
             raise refused("default_revision_conflict", 409)
         evidence_details = {}
         compatibility = persona["compatibility_class"]
-        revision = compatibility_class_harness_contract_revision(compatibility)
+        revision = persona_harness_contract_revision(persona_key)
         if request.canonical_model_id is not None:
-            model, revision, account, region, shape, evidence = await _promotion_evidence(db, compatibility, request.canonical_model_id)
+            model, revision, account, region, shape, evidence = await _promotion_evidence(
+                db, compatibility, request.canonical_model_id, persona_key=persona_key
+            )
             evidence_details = {
                 "account_id": account,
                 "region": region,
                 "request_shape_sha256": shape,
+                "harness_contract_revision": revision,
                 "provider_request_id": evidence.provider_request_id,
                 "evidence_verified_at": evidence.verified_at_utc.isoformat(),
             }

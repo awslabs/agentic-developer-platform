@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
@@ -31,8 +31,15 @@ class StrictBody(BaseModel):
 
 
 class ClaimRequest(StrictBody):
-    task_persona: Literal["agent-task-investigator", "agent-task-cyber", "agent-task-claude-developer", "agent-task-codex-developer"] | None = None
+    task_persona: str | None = Field(default=None, max_length=128)
     trigger: Literal["scheduled", "manual", "change"] = "scheduled"
+
+    @field_validator("task_persona")
+    @classmethod
+    def registered_task_profile(cls, value):
+        if value is not None and value not in TASK_PERSONAS:
+            raise ValueError("Unknown Task probe profile")
+        return value
 
 
 class ClaimResponse(BaseModel):

@@ -165,3 +165,48 @@ async def test_codex_missing_contract_is_audited_refusal(session, prepared):
     assert await session.get(PersonaPlatformDefault, "agent-codex-developer") is None
     audit = await session.scalar(select(AuditLog).where(AuditLog.event_type == "persona_platform_default_rejected"))
     assert audit.details["reason"] == "probe_contract_unavailable"
+
+
+@pytest.mark.parametrize("persona", ["agent-task-gpt-developer", "agent-task-gpt-architect", "agent-task-cyber"])
+async def test_persona_default_requires_exact_profile_evidence(session, prepared, persona):
+    from src.tasks.personas import TASK_PERSONAS
+
+    profile = TASK_PERSONAS[persona]
+    model_id = "openai.gpt-6-sol" if profile.compatibility_class == "codex-sdk" else MODEL
+    now = datetime.now(UTC)
+    proof = ModelInvocabilityEvidence(
+        account_id="111111111111",
+        region="us-east-1",
+        canonical_model_id=model_id,
+        compatibility_class=profile.compatibility_class,
+        harness_contract_revision="wrong-profile",
+        request_shape_sha256=profile.request_shape_sha256,
+        outcome="proven",
+        provider_request_id="profile-provider-receipt",
+        verified_at=now,
+        expires_at=now + timedelta(hours=1),
+        updated_at=now,
+    )
+    session.add(proof)
+    await session.commit()
+    path = "/admin/persona-defaults/" + persona
+    body = {**BODY, "canonical_model_id": model_id}
+    async with client(session) as http:
+        refused = await http.put(path, json=body)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"]["reason"] == "model_unproven"
+        await session.refresh(proof)
+        proof.harness_contract_revision = profile.harness_contract_revision
+        await session.commit()
+        accepted = await http.put(path, json=body)
+        assert accepted.status_code == 200, accepted.text
+    row = await session.get(PersonaPlatformDefault, persona)
+    assert row.harness_contract_revision == profile.harness_contract_revision
+    audit = await session.scalar(select(AuditLog).where(AuditLog.event_type == "persona_platform_default_changed"))
+    assert audit.details["harness_contract_revision"] == profile.harness_contract_revision
+    assert audit.details["request_shape_sha256"] == profile.request_shape_sha256
+    if profile.compatibility_class == "codex-sdk":
+        async with client(session) as http:
+            native = await http.put("/admin/persona-defaults/agent-codex-developer", json=body)
+            assert native.status_code == 422
+            assert native.json()["detail"]["reason"] == "probe_contract_unavailable"

@@ -22,8 +22,8 @@ from src.shared.models.persona_model_catalogue import ModelInvocabilityEvidence
 from src.shared.models.persona_models import PersonaModelPolicySetting
 from src.shared.schemas.auth import TokenContext
 
-from .catalogue import catalogue_lookup, compatibility_class_harness_contract_revision
-from .catalogue_service import ProbeContractUnavailableError, compute_request_shape_sha256
+from .catalogue import catalogue_lookup, compatibility_class_harness_contract_revision, persona_harness_contract_revision
+from .catalogue_service import ProbeContractUnavailableError, compute_request_shape_sha256, model_for_persona
 from .operation_receipts import begin_operation, finish_operation
 from .posture_service import PLATFORM_AUDIT_ORG, PostureMutationError, get_posture_setting, resolve_posture_actor_id
 
@@ -152,11 +152,14 @@ async def set_class_default(
         raise
 
 
-async def _promotion_evidence(db, compatibility_class: str, canonical_model_id: str):
+async def _promotion_evidence(db, compatibility_class: str, canonical_model_id: str, *, persona_key: str | None = None):
     model = catalogue_lookup(canonical_model_id)
     revision = compatibility_class_harness_contract_revision(compatibility_class)
     if model is None or model.canonical_model_id != canonical_model_id:
         raise refused("unknown_model")
+    if persona_key is not None:
+        model = model_for_persona(model, persona_key)
+        revision = persona_harness_contract_revision(persona_key)
     if model.compatibility_class != compatibility_class or model.harness_contract_revision != revision:
         raise refused("harness_incompatible")
     if model.lifecycle == "retired":
@@ -183,7 +186,7 @@ async def _promotion_evidence(db, compatibility_class: str, canonical_model_id: 
     if destination is None:
         raise refused("platform_destination_unavailable")
     try:
-        shape = compute_request_shape_sha256(model.canonical_model_id)
+        shape = compute_request_shape_sha256(model.canonical_model_id, persona_key)
     except ProbeContractUnavailableError as exc:
         raise refused("probe_contract_unavailable") from exc
     evidence = await db.scalar(

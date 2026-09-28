@@ -115,7 +115,10 @@ def compute_request_shape_sha256(model_id: str, persona_key: str | None = None) 
 def model_for_persona(model: CatalogueModel, persona_key: str) -> CatalogueModel:
     """Task transport metadata never changes the actual provider model identity."""
     profile = TASK_PERSONAS.get(persona_key)
-    if profile and ".anthropic." in model.canonical_model_id:
+    if profile and (
+        (profile.compatibility_class == "codex-sdk" and model.compatibility_class == "codex-sdk")
+        or (profile.compatibility_class == "anthropic_messages" and model.compatibility_class == COMPATIBILITY_CLASS_CLAUDE)
+    ):
         return replace(model, compatibility_class=profile.compatibility_class, harness_contract_revision=profile.harness_contract_revision)
     return model
 

@@ -624,7 +624,18 @@ async def test_task_probe_exact_profile_and_deduplication(db_session, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_claim_route_explicit_task_profile_returns_exact_body(db_session, monkeypatch):
+@pytest.mark.parametrize(
+    "persona",
+    [
+        "agent-task-cyber",
+        "agent-task-gpt-developer",
+        "agent-task-gpt-architect",
+        "agent-task-gpt-product",
+        "agent-task-gpt-pm",
+        "agent-task-gpt-intent-refinement",
+    ],
+)
+async def test_claim_route_explicit_task_profile_returns_exact_body(db_session, monkeypatch, persona):
     from src.tasks.personas import TASK_PERSONAS
 
     _enable(monkeypatch)
@@ -640,10 +651,10 @@ async def test_claim_route_explicit_task_profile_returns_exact_body(db_session, 
     app.dependency_overrides[verify_model_probe_irsa] = lambda: None
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         rejected = await client.post("/internal/v1/persona-model-probes/claim", json={"task_persona": "unknown"})
-        response = await client.post("/internal/v1/persona-model-probes/claim", json={"task_persona": "agent-task-cyber"})
+        response = await client.post("/internal/v1/persona-model-probes/claim", json={"task_persona": persona})
     assert rejected.status_code == 422
     assert response.status_code == 200
-    assert response.json()["task_probe_json"] == TASK_PERSONAS["agent-task-cyber"].probe_json
+    assert response.json()["task_probe_json"] == TASK_PERSONAS[persona].probe_json
 
 
 @pytest.mark.asyncio
