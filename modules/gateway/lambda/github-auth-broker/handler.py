@@ -4,8 +4,18 @@ GitHub Auth Broker Lambda — converts GitHub OAuth flow into Cognito sessions.
 Issue #520: Replaces the failed Cognito-OIDC approach from #518/#519.
 
 Endpoints:
-  GET /start    — returns redirect URL to GitHub OAuth authorize
-  GET /callback — handles GitHub callback, provisions Cognito user, returns tokens
+  GET  /start    — returns redirect URL to GitHub OAuth authorize
+  GET  /callback — handles GitHub callback, provisions Cognito user, redirects to
+                   the SPA with a single-use exchange code (never with tokens)
+  POST /exchange — swaps that code for the Cognito tokens in a JSON body
+
+Issue #4133: /callback used to hand the SPA its session tokens as *query
+parameters*, so a working session leaked into browser history, the Referer
+header, and every CDN/proxy access log on the path. The hand-off was also
+unbound from the login attempt the user actually started, making login CSRF /
+session fixation trivial. Tokens now move in a POST response body, keyed by a
+short-lived single-use code that is itself bound to a nonce the SPA generated
+before login started.
 
 Environment variables:
   GITHUB_CLIENT_ID        — GitHub OAuth App client ID (fallback; the OAuth
@@ -18,16 +28,32 @@ Environment variables:
                             when unset it is derived from the request context
                             (domainName + stage) at runtime (#2708).
   FRONTEND_URL            — Frontend origin (e.g., https://d1g6cal2ts4iis.cloudfront.net)
-  ALLOWLIST_MODE          — "org" (default), "open", or "explicit". Anything
-                            other than "org" denies sign-in; see #3986.
+  ALLOWLIST_MODE          — "org" (default), "platform", "open", or "explicit".
+                            "org" gates on GitHub org membership; "platform"
+                            gates on platform org membership (#4844). Anything
+                            that does not explicitly grant denies; see #3986.
   ALLOWED_ORGS            — Comma-separated list of allowed GitHub orgs.
                             Required for ALLOWLIST_MODE=org; empty denies.
   ALLOW_OPEN_SIGNUP       — "true" to honour ALLOWLIST_MODE=open. Without it,
                             "open" is treated as a misconfiguration and denied.
   GITHUB_TOKEN_SECRET_ARN — Secrets Manager ARN for org-check GitHub token
+  AUTH_CODE_TABLE         — DynamoDB table holding pending exchange codes
+                            (#4133). When UNSET the broker falls back to the
+                            legacy tokens-in-URL redirect; see
+                            _emit_session_handoff for why that fallback exists.
+  IDENTITY_INDEX_TABLE    — Identity-index table carrying the member_org_ids
+                            projection (#4849). Read-only. Under
+                            ALLOWLIST_MODE=platform this is the authority for
+                            sign-in eligibility (#4844) and MUST be set: unset ⇒
+                            the read reports UNAVAILABLE ⇒ every sign-in is
+                            denied. Under every other mode the read is SHADOW
+                            MODE (logged, never enforced) and unset is harmless.
+  USER_IDENTITY_INDEX_TABLE   — v2 identity-index table for the same read (#537).
+  USER_IDENTITY_INDEX_V2_READ — "true" to read v2 first, legacy as fallback.
   LOG_LEVEL               — Logging level (default: INFO)
 """
 
+import base64
 import hashlib
 import hmac
 import json
@@ -61,9 +87,16 @@ ALLOWLIST_MODE = os.environ.get("ALLOWLIST_MODE", "org")
 ALLOWED_ORGS = os.environ.get("ALLOWED_ORGS", "")
 ALLOW_OPEN_SIGNUP = os.environ.get("ALLOW_OPEN_SIGNUP", "").lower() == "true"
 GITHUB_TOKEN_SECRET_ARN = os.environ.get("GITHUB_TOKEN_SECRET_ARN", "")
+# Issue #4133: DynamoDB table for single-use session-handoff codes.
+AUTH_CODE_TABLE = os.environ.get("AUTH_CODE_TABLE", "")
 
 # State signing key (derived from client secret for HMAC)
 STATE_TTL_SECONDS = 600  # 10 minutes
+
+# Issue #4133: an exchange code is redeemed by the SPA within milliseconds of the
+# redirect landing. Two minutes covers a slow page load with room to spare while
+# keeping the window a leaked code is useful in very small.
+AUTH_CODE_TTL_SECONDS = 120
 
 # Terraform seeds the OAuth secret with this literal before real credentials
 # are wired (gateway-infra-apply.yml). It must never be treated as a real value.
@@ -153,11 +186,22 @@ def _get_github_org_token() -> str:
         return ""
 
 
-def _generate_state() -> str:
-    """Generate a signed state parameter with timestamp for CSRF protection."""
+def _generate_state(app_state: str = "") -> str:
+    """Generate a signed state parameter with timestamp for CSRF protection.
+
+    Issue #4133: ``app_state`` is a nonce the SPA generated and stored in its own
+    sessionStorage before starting login. Folding it into the *signed* payload
+    lets the broker echo it back to the SPA at the end of the flow without a
+    server-side session, and lets the SPA prove the callback belongs to the login
+    attempt it started. It is signed rather than merely passed through so an
+    attacker cannot swap in a nonce of their own choosing mid-flight.
+
+    The serialised form is ``nonce.timestamp[.app_state].signature``. ``app_state``
+    is validated by the caller to exclude "." so the field split stays unambiguous.
+    """
     nonce = secrets.token_urlsafe(24)
     timestamp = str(int(time.time()))
-    payload = f"{nonce}.{timestamp}"
+    payload = f"{nonce}.{timestamp}.{app_state}" if app_state else f"{nonce}.{timestamp}"
     secret = _get_github_client_secret()
     signature = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:16]
     return f"{payload}.{signature}"
@@ -167,11 +211,13 @@ def _verify_state(state: str) -> bool:
     """Verify the state parameter's signature and freshness."""
     try:
         parts = state.split(".")
-        if len(parts) != 3:
+        # 3 parts = no app_state (legacy / SPA that predates #4133), 4 = with it.
+        if len(parts) not in (3, 4):
             return False
 
-        nonce, timestamp_str, signature = parts
-        payload = f"{nonce}.{timestamp_str}"
+        *payload_parts, signature = parts
+        payload = ".".join(payload_parts)
+        timestamp_str = payload_parts[1]
 
         # Verify signature
         secret = _get_github_client_secret()
@@ -190,6 +236,27 @@ def _verify_state(state: str) -> bool:
     except (ValueError, TypeError) as e:
         logger.warning("State verification error: %s", e)
         return False
+
+
+def _extract_app_state(state: str) -> str:
+    """Pull the SPA-supplied nonce back out of a verified state token (#4133).
+
+    Returns "" when the state carries no app_state (a login started by a SPA
+    build that predates #4133). Only ever call this on a state that
+    ``_verify_state`` has already accepted — the value is trusted downstream.
+    """
+    parts = state.split(".")
+    return parts[2] if len(parts) == 4 else ""
+
+
+def _is_valid_app_state(app_state: str) -> bool:
+    """Bound the SPA nonce to an unambiguous, non-abusable shape (#4133).
+
+    "." is excluded because it is the state token's field separator: allowing it
+    would let a crafted nonce forge extra fields. The length cap keeps a hostile
+    caller from inflating the state token (and the GitHub authorize URL with it).
+    """
+    return bool(app_state) and len(app_state) <= 128 and all(c.isalnum() or c in "-_~" for c in app_state)
 
 
 def _derive_callback_url(event: dict) -> str:
@@ -223,17 +290,32 @@ def handler(event: dict, context) -> dict:
     """
     Lambda handler — routes to /start or /callback based on path.
 
-    Expects API Gateway v2 (HTTP API) or Lambda Function URL event format.
+    Accepts both API Gateway payload shapes. In production this broker is
+    fronted by the REST (v1) API — /auth/github/{proxy+} with an aws_proxy
+    integration — which sends `path` and a top-level `httpMethod`. The v2
+    (HTTP API / Function URL) shape sends `rawPath` and
+    `requestContext.http.method`. Read both, always.
     """
     raw_path = event.get("rawPath", "") or event.get("path", "")
-    http_method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
+    # A v1 proxy event has NO requestContext.http, so reading only the v2
+    # location would resolve to the "GET" default for every real request and
+    # silently drop the OPTIONS preflight into path routing (#4133).
+    http_method = (event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method") or "GET").upper()
 
     logger.info("Request: %s %s", http_method, raw_path)
+
+    # Issue #4133: /exchange is the only POST route, and browsers preflight it
+    # because the SPA (CloudFront) and this broker (API Gateway) are different
+    # origins. Answer OPTIONS before any routing work.
+    if http_method == "OPTIONS":
+        return _cors_preflight_response()
 
     if raw_path.endswith("/start"):
         return _handle_start(event)
     elif raw_path.endswith("/callback"):
         return _handle_callback(event)
+    elif raw_path.endswith("/exchange"):
+        return _handle_exchange(event)
     else:
         return _response(404, {"error": "Not found"})
 
@@ -244,7 +326,17 @@ def _handle_start(event: dict) -> dict:
 
     Sets a state cookie for CSRF verification on callback.
     """
-    state = _generate_state()
+    # Issue #4133: bind this login attempt to the nonce the SPA stored before
+    # navigating here. An absent/malformed app_state is NOT fatal — a SPA build
+    # that predates #4133 sends none, and failing closed here would take out
+    # every login during the rollout skew (the #3999 lockout class).
+    params = event.get("queryStringParameters") or {}
+    app_state = (params.get("app_state") or "").strip()
+    if app_state and not _is_valid_app_state(app_state):
+        logger.warning("Ignoring malformed app_state on /start")
+        app_state = ""
+
+    state = _generate_state(app_state)
 
     params = urllib.parse.urlencode(
         {
@@ -265,24 +357,42 @@ def _handle_start(event: dict) -> dict:
             "Location": authorize_url,
             "Set-Cookie": cookie,
             "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
         },
         "body": "",
     }
 
 
-def _check_allowlist(github_login: str, github_token: str) -> str | None:
+def _check_allowlist(github_login: str, github_token: str, github_id: str = "") -> str | None:
     """Decide whether a GitHub user may sign in.
 
-    Issue #3986: fail closed. Only ``org`` mode grants access; every other mode
-    — including an unset, typo'd, or explicitly ``open`` ALLOWLIST_MODE — denies,
-    mirroring the pre-signup trigger's unknown-mode→deny behaviour.
+    Issue #3986: fail closed. Every mode that does not explicitly grant — an
+    unset, typo'd, or misconfigured ALLOWLIST_MODE — denies, mirroring the
+    pre-signup trigger's unknown-mode→deny behaviour.
+
+    Granting modes are ``org`` (GitHub org membership) and, since #4844,
+    ``platform`` (at least one platform org membership; GitHub only proves *who*
+    you are, it no longer decides *whether you belong*).
+
+    Args:
+        github_login: GitHub login, used by ``org`` mode's GitHub API check.
+        github_token: The signing-in user's OAuth token, used as the org-check
+            fallback when no org token is configured.
+        github_id: The GitHub numeric account id, used by ``platform`` mode. The
+            membership projection is keyed on the **id**, not the login, because
+            logins are renameable — passing a login here would look up the wrong
+            user (or nobody) rather than fail.
 
     Returns None when the user is allowed, otherwise the error code to redirect
-    with. ``org_check_unavailable`` distinguishes "we could not verify" from
-    ``not_authorized`` ("verified, not a member") so a missing org token or an
-    unapproved OAuth App doesn't look like a legitimate denial.
+    with. The "could not verify" codes (``org_check_unavailable``,
+    ``membership_check_unavailable``) are distinct from ``not_authorized``
+    ("verified, not a member") so a missing org token, an unapproved OAuth App,
+    or an unreachable projection table doesn't look like a legitimate denial.
     """
     mode = ALLOWLIST_MODE.strip().lower()
+
+    if mode == "platform":
+        return _check_platform_membership_mode(github_id, github_login)
 
     if mode == "org":
         orgs = [o.strip() for o in ALLOWED_ORGS.split(",") if o.strip()]
@@ -317,6 +427,93 @@ def _check_allowlist(github_login: str, github_token: str) -> str | None:
     return "not_authorized"
 
 
+def _check_platform_membership_mode(github_id: str, github_login: str) -> str | None:
+    """``ALLOWLIST_MODE=platform``: eligibility from platform membership (#4844).
+
+    Implements C6 of ``docs/design-notes/4828-platform-native-org-team-user.md``.
+    Allow iff the GitHub identity resolves to a user holding at least one platform
+    org membership. GitHub stays the way you prove who you are; it stops deciding
+    whether you belong. That is what lets an admin-created org's members sign in
+    with no GitHub-org relationship at all, and it is the shape directory sync
+    will feed later.
+
+    The predicate is **row existence**, not ``is_active``: that flag marks which
+    single workspace a user currently has selected, so filtering on it would deny
+    every member whose selected workspace is a different org (and everyone with
+    no selection). The projection this reads is built without an ``is_active``
+    filter for exactly that reason (``src/admin/memberships.py`` ::
+    ``project_member_org_ids``).
+
+    Fail-CLOSED, unlike the #4849 shadow wrapper below. An unavailable membership
+    source denies; it does not fall through to another mode. A raising read also
+    denies: swallowing the exception was correct while the verdict was inert, but
+    once it is authoritative, swallowing is fail-*open* — precisely the class of
+    bug that makes a login path grant access it cannot justify.
+    """
+    try:
+        from membership_eligibility import ELIGIBLE, NOT_ELIGIBLE, check_platform_membership
+
+        verdict = check_platform_membership(str(github_id))
+    except Exception as e:
+        # Includes ImportError: if the shared reader is missing from the zip, the
+        # mode cannot be enforced, so it must not appear to pass. See
+        # infra/modules/cognito/pre_signup.tf and scripts/deploy-broker.sh for the
+        # packaging that must keep it present.
+        logger.exception("ALLOWLIST_MODE=platform: membership read raised for github_id=%s; denying sign-in: %s", github_id, e)
+        return "membership_check_unavailable"
+
+    if verdict == ELIGIBLE:
+        logger.info("ALLOWLIST_MODE=platform: %s (id=%s) holds a platform membership; allowing", github_login, github_id)
+        return None
+
+    if verdict == NOT_ELIGIBLE:
+        logger.warning("ALLOWLIST_MODE=platform: %s (id=%s) holds no platform membership; denying", github_login, github_id)
+        return "not_authorized"
+
+    # UNAVAILABLE (or any verdict this code does not recognise): the read did not
+    # complete, so nothing has been proven. Deny, but attributably — collapsing
+    # this into not_authorized is the exact ambiguity #3986 was filed to fix.
+    logger.error(
+        "ALLOWLIST_MODE=platform: membership source unavailable for %s (id=%s) (verdict=%r); denying",
+        github_login,
+        github_id,
+        verdict,
+    )
+    return "membership_check_unavailable"
+
+
+def _log_membership_eligibility_shadow(github_id, github_login: str, denial: str | None) -> None:
+    """Log what the membership-eligibility read would decide (Issue #4849).
+
+    Shadow only — never changes the sign-in outcome. Wrapped so that a fault in
+    the new read path cannot break login: this Lambda is the single enforcement
+    point for GitHub sign-in, and an exception here would be a total outage for a
+    code path that is not even supposed to have an opinion yet.
+
+    Issue #4844: skipped under ``ALLOWLIST_MODE=platform``, where the same read is
+    the live decision and has already been logged with its real outcome. Shadowing
+    an enforcing read would double every DynamoDB call inside Cognito's
+    non-negotiable trigger budget and log a "would_agree" line that can only ever
+    say True.
+    """
+    if ALLOWLIST_MODE.strip().lower() == "platform":
+        return
+    try:
+        from membership_eligibility import check_platform_membership
+
+        verdict = check_platform_membership(str(github_id))
+        logger.info(
+            "membership-eligibility SHADOW: github_id=%s login=%s verdict=%s live_outcome=%s would_agree=%s",
+            github_id,
+            github_login,
+            verdict,
+            "denied" if denial else "allowed",
+            (verdict == "eligible") == (denial is None),
+        )
+    except Exception as e:
+        logger.warning("membership-eligibility SHADOW: read raised (ignored): %s", e)
+
+
 def _handle_callback(event: dict) -> dict:
     """
     Handle GitHub OAuth callback:
@@ -325,7 +522,7 @@ def _handle_callback(event: dict) -> dict:
     3. Fetch GitHub user info
     4. Allowlist check
     5. Provision Cognito user
-    6. Return tokens via redirect with URL fragment
+    6. Redirect to the SPA with a single-use exchange code (#4133 — never tokens)
     """
     # Extract query parameters
     params = event.get("queryStringParameters") or {}
@@ -335,6 +532,25 @@ def _handle_callback(event: dict) -> dict:
 
     if error:
         error_desc = params.get("error_description", error)
+
+        # Issue #4017: redirect_uri_mismatch is the ONLY signal that the App's
+        # callback URL has drifted. GitHub exposes no API to read an App's
+        # callback URL back, so this error path is the sole place a mismatch
+        # becomes observable — every other check would be guesswork.
+        #
+        # We log the callback we actually sent so an operator can compare it
+        # against the App's settings page. We deliberately do NOT write the
+        # derived value into CALLBACK_URL or any other env: that would reverse
+        # #2708's runtime derivation and pin a value that goes stale silently.
+        if error == "redirect_uri_mismatch":
+            logger.error(
+                "event=oauth_callback_drift error=redirect_uri_mismatch sent_redirect_uri=%s detail=%s "
+                "remediation=update the GitHub App's Callback URL to match sent_redirect_uri",
+                _derive_callback_url(event) or "<unresolved>",
+                error_desc,
+            )
+            return _redirect_with_error("redirect_uri_mismatch")
+
         logger.error("GitHub returned error: %s", error_desc)
         return _redirect_with_error(f"github_error: {error_desc}")
 
@@ -369,7 +585,15 @@ def _handle_callback(event: dict) -> dict:
         # not fire PreSignUp_ExternalProvider, and the pre-signup trigger
         # deliberately passes PreSignUp_AdminCreateUser through, so the broker is
         # the only enforcement point for GitHub sign-in (#3986).
-        denial = _check_allowlist(github_user["login"], github_token)
+        denial = _check_allowlist(github_user["login"], github_token, str(github_user["id"]))
+
+        # Issue #4849, SHADOW MODE: exercise the membership-eligibility read and
+        # log what it *would* decide. Deliberately does not affect `denial` —
+        # T5 (#4844) is what makes this authoritative, behind a new ALLOWLIST_MODE.
+        # Keeping the read live but inert is what lets the projection's accuracy be
+        # measured against real sign-ins before it can lock anyone out.
+        _log_membership_eligibility_shadow(github_user["id"], github_user["login"], denial)
+
         if denial:
             return _redirect_with_error(denial)
 
@@ -384,8 +608,39 @@ def _handle_callback(event: dict) -> dict:
             avatar_url=github_user["avatar_url"],
         )
 
-        # Redirect to frontend callback with tokens in query params
-        # The frontend's AuthCallback page will read and store them
+        return _emit_session_handoff(tokens, _extract_app_state(state))
+
+    except ValueError as e:
+        logger.error("Auth broker error: %s", e)
+        return _redirect_with_error("auth_failed")
+    except Exception as e:
+        logger.exception("Unexpected error in auth broker: %s", e)
+        return _redirect_with_error("internal_error")
+
+
+def _hash_app_state(app_state: str) -> str:
+    """Hash the SPA nonce before storing it beside the tokens (#4133).
+
+    The stored row is the one durable artifact of an in-flight login. Keeping only
+    a digest means a read of the table does not yield the value an attacker would
+    need to redeem the code.
+    """
+    return hashlib.sha256(app_state.encode()).hexdigest()
+
+
+def _emit_session_handoff(tokens: dict, app_state: str) -> dict:
+    """Redirect to the SPA with a single-use exchange code instead of tokens (#4133).
+
+    Falls back to the legacy tokens-in-query redirect when AUTH_CODE_TABLE is
+    unset. That fallback is deliberate rollout safety, not an oversight: this
+    Lambda's code ships via github-auth-broker-deploy.yml while the table ships
+    via gateway-infra-apply.yml, so there is a window where new code runs without
+    its table. Failing closed there would be a *total* login outage — exactly the
+    #3999 code-before-config lockout. Degrading to today's behaviour instead is
+    strictly no worse than main, and self-heals the moment terraform applies.
+    """
+    if not AUTH_CODE_TABLE:
+        logger.warning("AUTH_CODE_TABLE is not configured; falling back to the legacy tokens-in-URL redirect (see #4133)")
         callback_params = urllib.parse.urlencode(
             {
                 "id_token": tokens["id_token"],
@@ -396,27 +651,170 @@ def _handle_callback(event: dict) -> dict:
                 "source": "github_broker",
             }
         )
-        redirect_url = f"{FRONTEND_URL}/auth/callback?{callback_params}"
+        return _spa_redirect(f"{FRONTEND_URL}/auth/callback?{callback_params}")
 
-        # Clear the state cookie
-        clear_cookie = "gh_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"
+    code = secrets.token_urlsafe(32)
+    try:
+        _put_auth_code(code, tokens, app_state)
+    except Exception:
+        # Do NOT fall back to the URL transport here: the table exists, so this is
+        # a real fault (throttle/IAM/outage), not a rollout gap. Leaking tokens
+        # into the URL to paper over it would reintroduce the vulnerability.
+        logger.exception("Failed to persist exchange code")
+        return _redirect_with_error("handoff_failed")
 
-        return {
-            "statusCode": 302,
-            "headers": {
-                "Location": redirect_url,
-                "Set-Cookie": clear_cookie,
-                "Cache-Control": "no-store",
-            },
-            "body": "",
-        }
+    callback_params = urllib.parse.urlencode({"code": code, "state": app_state, "source": "github_broker"})
+    return _spa_redirect(f"{FRONTEND_URL}/auth/callback?{callback_params}")
 
-    except ValueError as e:
-        logger.error("Auth broker error: %s", e)
-        return _redirect_with_error("auth_failed")
-    except Exception as e:
-        logger.exception("Unexpected error in auth broker: %s", e)
-        return _redirect_with_error("internal_error")
+
+def _spa_redirect(redirect_url: str) -> dict:
+    """302 to the SPA, clearing the OAuth state cookie."""
+    return {
+        "statusCode": 302,
+        "headers": {
+            "Location": redirect_url,
+            # Clear the state cookie — this login attempt is finished.
+            "Set-Cookie": "gh_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+            "Cache-Control": "no-store",
+            # #4133 defence-in-depth: keep the callback URL out of the Referer
+            # header sent by the landing page's subresource requests.
+            "Referrer-Policy": "no-referrer",
+        },
+        "body": "",
+    }
+
+
+def _put_auth_code(code: str, tokens: dict, app_state: str) -> None:
+    """Store the pending session under a single-use code (#4133)."""
+    boto3.client("dynamodb").put_item(
+        TableName=AUTH_CODE_TABLE,
+        Item={
+            "code": {"S": code},
+            "id_token": {"S": tokens["id_token"]},
+            "access_token": {"S": tokens["access_token"]},
+            "refresh_token": {"S": tokens.get("refresh_token") or ""},
+            "expires_in": {"N": str(tokens["expires_in"])},
+            "app_state_hash": {"S": _hash_app_state(app_state)},
+            # DynamoDB TTL reclaims rows lazily (minutes to hours), so it is a
+            # storage-hygiene mechanism only. _handle_exchange enforces the real
+            # deadline against expires_at on read.
+            "expires_at": {"N": str(int(time.time()) + AUTH_CODE_TTL_SECONDS)},
+            "ttl": {"N": str(int(time.time()) + 3600)},
+        },
+    )
+
+
+def _handle_exchange(event: dict) -> dict:
+    """Swap a single-use code for the Cognito tokens (#4133).
+
+    Consumes the code with an atomic delete_item(ReturnValues="ALL_OLD"): the
+    delete IS the read, so a code cannot be redeemed twice even under concurrent
+    requests. A read-then-delete would leave a replay window.
+    """
+    if not AUTH_CODE_TABLE:
+        logger.error("Exchange requested but AUTH_CODE_TABLE is not configured")
+        return _json_response(503, {"error": "exchange_unavailable"})
+
+    try:
+        raw_body = event.get("body") or "{}"
+        # API Gateway may hand the body over base64-encoded depending on the
+        # integration's content handling; decode before parsing.
+        if event.get("isBase64Encoded"):
+            raw_body = base64.b64decode(raw_body).decode()
+        body = json.loads(raw_body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return _json_response(400, {"error": "invalid_body"})
+
+    # A valid JSON document need not be an object ("[]", '"x"', "5" all parse).
+    if not isinstance(body, dict):
+        return _json_response(400, {"error": "invalid_body"})
+
+    code = body.get("code") or ""
+    app_state = body.get("app_state") or ""
+    if not code:
+        return _json_response(400, {"error": "missing_code"})
+
+    try:
+        result = boto3.client("dynamodb").delete_item(
+            TableName=AUTH_CODE_TABLE,
+            Key={"code": {"S": code}},
+            ReturnValues="ALL_OLD",
+        )
+    except Exception:
+        logger.exception("Failed to consume exchange code")
+        return _json_response(500, {"error": "exchange_failed"})
+
+    item = result.get("Attributes")
+    if not item:
+        # Unknown, already-redeemed, or TTL-reaped code.
+        logger.warning("Exchange code not found or already used")
+        return _json_response(400, {"error": "invalid_code"})
+
+    if int(item.get("expires_at", {}).get("N", "0")) < time.time():
+        logger.warning("Exchange code expired")
+        return _json_response(400, {"error": "expired_code"})
+
+    # A row minted for an empty app_state carries sha256("") — a publicly known
+    # constant, so its nonce binding is vacuous and anyone holding the code could
+    # redeem it. Nothing legitimate ever redeems one either: a login that sent no
+    # app_state came from an SPA build that predates /exchange. Refuse outright
+    # rather than honour an unbound code.
+    expected_hash = item.get("app_state_hash", {}).get("S", "")
+    if hmac.compare_digest(expected_hash, _hash_app_state("")):
+        logger.warning("Exchange code was minted without an app_state nonce; refusing")
+        return _json_response(400, {"error": "state_mismatch"})
+
+    # Bind the code to the login attempt: a code lifted from history or a proxy
+    # log is useless without the nonce in the victim's sessionStorage.
+    if not hmac.compare_digest(expected_hash, _hash_app_state(app_state)):
+        logger.warning("Exchange app_state mismatch")
+        return _json_response(400, {"error": "state_mismatch"})
+
+    return _json_response(
+        200,
+        {
+            "id_token": item["id_token"]["S"],
+            "access_token": item["access_token"]["S"],
+            "refresh_token": item.get("refresh_token", {}).get("S", ""),
+            "expires_in": int(item["expires_in"]["N"]),
+            "token_type": "Bearer",
+        },
+    )
+
+
+def _cors_headers() -> dict[str, str]:
+    """CORS headers for the SPA→broker exchange call (#4133).
+
+    Scoped to FRONTEND_URL rather than "*", and deliberately WITHOUT
+    Allow-Credentials: the exchange authenticates with the code in the request
+    body, so no cookie ever needs to ride along.
+    """
+    return {
+        "Access-Control-Allow-Origin": FRONTEND_URL or "null",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+
+
+def _cors_preflight_response() -> dict:
+    """Answer the browser's preflight for POST /exchange (#4133)."""
+    return {"statusCode": 204, "headers": {**_cors_headers(), "Cache-Control": "no-store"}, "body": ""}
+
+
+def _json_response(status_code: int, body: dict) -> dict:
+    """JSON response carrying tokens or an error to the SPA (#4133)."""
+    return {
+        "statusCode": status_code,
+        "headers": {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            **_cors_headers(),
+        },
+        "body": json.dumps(body),
+    }
 
 
 def _parse_cookies(event: dict) -> dict[str, str]:
@@ -451,6 +849,7 @@ def _redirect_with_error(error: str) -> dict:
         "headers": {
             "Location": redirect_url,
             "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
         },
         "body": "",
     }

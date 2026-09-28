@@ -1,0 +1,215 @@
+name: Superplane Infra Apply
+
+# Terraform apply for the Superplane control plane.
+# Issue #5042 (U3), EPIC #4910. Mirrors cyber-infra-apply.yml.
+#
+# APPLY IS `workflow_dispatch`-ONLY, BY DESIGN.
+#
+# There is no `push` trigger, and its absence is a requirement rather than an omission:
+# merging a PR to main deploys nothing. An operator reviews the plan comment that
+# superplane-infra-plan.yml posted, then triggers this workflow from Actions →
+# Superplane Infra Apply → Run workflow.
+#
+# The reason is that this module's plan output is the only evidence anyone has about what an
+# apply will do to a shared account. A push-triggered apply would act on that evidence
+# before a human read it, and — because the destroy-safety gate below looks up the label on
+# the merged PR — would do so at the one moment nobody could still add the label.
+#
+# WHAT THIS LANE DOES NOT DO
+#
+# It does not roll out Kubernetes objects (superplane-k8s-deploy.yml) and it does not run
+# migrations (superplane-migrate.yml). Both are deliberately separate, and the migration lane
+# is separate in a stronger sense: the schema chain is not yet single-head, so that lane
+# refuses to run at all until U13 (#5045) repairs it.
+#
+# It also does not apply platform/infra, bootstrap state, or redeploy the gateway, frontend
+# or Agent Factory. That is the platform-isolation requirement (2026-09-16): a domain-app
+# apply must not touch core platform resources as a side effect. `deploy-all.sh
+# --superplane-only` does NOT have that property — it runs the platform phases too — which is
+# precisely why this dedicated lane exists. See modules/domain-apps/superplane/infra/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "superplane" to confirm you intend to apply this domain module'
+        required: true
+        type: string
+
+concurrency:
+  group: tf-apply-superplane
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_VAR_environment: dev
+  MODULE_NAME: superplane
+  TF_WORKING_DIR: modules/domain-apps/superplane/infra/control-plane
+  BACKEND_CONFIG: environments/dev/modules/superplane-backend.tfvars
+  VAR_FILE: environments/dev/modules/superplane.tfvars
+
+jobs:
+  apply:
+    name: Terraform Apply
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    environment: adp-deploy-dev
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Confirm intent
+        # A typed confirmation, matching the typed-account-ID gate undeploy.sh uses. The
+        # dispatch UI lists every workflow in the repo; this makes "applied the wrong module"
+        # take a deliberate keystroke rather than a misclick.
+        env:
+          SP_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$SP_CONFIRM" != "superplane" ]; then
+            echo "::error::Confirmation mismatch. Type 'superplane' to apply this module. Nothing was applied."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          # The destroy-safety gate resolves the merged PR for this commit, which needs
+          # history rather than a shallow clone.
+          fetch-depth: 0
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Install required CLI tools
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+      - name: Resolve the target account into tfvars
+        # See the equivalent step in superplane-infra-plan.yml. The account comes from this
+        # runner's own identity, never from a committed literal, so an apply cannot target an
+        # account nobody chose. The 12-digit validation on var.account_id means an
+        # unsubstituted placeholder stops the plan rather than creating misnamed resources.
+        id: account
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "account_id=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
+          echo "Applying into account ${ACCOUNT_ID}"
+          sed -i "s/ACCOUNT_ID/${ACCOUNT_ID}/g" \
+            "${{ env.VAR_FILE }}" \
+            "${{ env.BACKEND_CONFIG }}"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init -backend-config="../../../../../${{ env.BACKEND_CONFIG }}" -input=false
+
+      - name: Terraform Plan (destroy-safety check)
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        # `-detailed-exitcode`: 0 = no changes, 1 = error, 2 = changes present. The apply
+        # below runs the saved plan, so what is applied is exactly what was gated here.
+        run: |
+          set -e
+          set -o pipefail
+          EXIT_CODE=0
+          terraform plan -var-file="../../../../../${{ env.VAR_FILE }}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          if [ "$EXIT_CODE" -eq 1 ]; then
+            echo "::error::Terraform plan failed."
+            exit 1
+          fi
+
+      - name: Render the plan as JSON
+        # `terraform show -json` on the SAVED plan file, so what is gated below is exactly
+        # what gets applied — not a re-plan that could differ.
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -euo pipefail
+          terraform show -json tfplan > /tmp/plan.json
+          test -s /tmp/plan.json
+
+      - name: Plan-safety gate (destructive approval + domain ownership)
+        # Replaces two inline shell steps that BOTH failed open (PR #5283 review, findings
+        # 1 and 3). Keeping the reasoning here because the failures were subtle:
+        #
+        #   Finding 1. `DESTROYS=$(grep -c 'will be destroyed' ... || echo "0")` produced
+        #   the two-line value "0\n0", because `grep -c` prints 0 and also exits 1. The
+        #   following `[ "$DESTROYS" -gt 0 ]` then raised "integer expression expected" —
+        #   and a command that fails inside an `if` CONDITION is exempt from `set -e`, so
+        #   the shell fell through to `else` and printed "Proceeding". A plan destroying an
+        #   ECR repository was approved with only an `enhancement` label on the PR. A plan
+        #   containing a REPLACEMENT was additionally missed, because "must be replaced" is
+        #   not the string "will be destroyed".
+        #
+        #   Finding 3. The isolation guard matched plan TEXT for type prefixes, which
+        #   accepted `module.core.aws_vpc.main will be destroyed` (the type sits behind
+        #   `module.`, so the anchored regex never saw it) and `aws_iam_role.gateway will be
+        #   destroyed` (the type is one this module legitimately creates; the instance is
+        #   the gateway's).
+        #
+        # The replacement decides on `terraform show -json` structure: deletion comes from
+        # `change.actions` containing "delete" (covering both replacement orderings), and
+        # ownership from the resource's identifying values, account and environment. Every
+        # parse or lookup failure denies. The behavioural regression suite
+        # (control-plane/tests/test_plan_safety_guard.py) executes THIS script against the
+        # reproduced cases with a stub `gh`.
+        #
+        # `--repository` and `--base-ref` are what bind the approval to THIS merge. A later
+        # checkpoint review found the guard resolving the approving PR with
+        # `gh pr list --search <SHA>` — a full-text search, so a merged PR that only mentions
+        # the SHA in its body was accepted and its label approved a destroy of a different
+        # revision. The guard now reads the commit's associated PR and requires that PR's
+        # repository, base branch and merge commit to match what was dispatched, so these two
+        # inputs must be supplied for the check to be able to compare anything.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Declared here, not interpolated into the script below. An earlier revision of this
+          # step referenced $SP_ACCOUNT_ID without declaring it: under `set -u` the step aborts,
+          # so the guard fails closed — but it never runs, which is not the same as passing.
+          SP_ACCOUNT_ID: ${{ steps.account.outputs.account_id }}
+        run: |
+          set -euo pipefail
+          python3 modules/domain-apps/superplane/infra/scripts/check_plan_safety.py \
+            --plan-json /tmp/plan.json \
+            --commit-sha "${GITHUB_SHA}" \
+            --account-id "$SP_ACCOUNT_ID" \
+            --environment "${TF_VAR_environment}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --base-ref "${GITHUB_REF_NAME}"
+
+      - name: Terraform Apply
+        id: apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply tfplan
+
+      - name: Summary
+        if: always()
+        env:
+          SP_ACCOUNT_ID: ${{ steps.account.outputs.account_id }}
+          SP_OUTCOME: ${{ steps.apply.outcome == 'success' && 'applied' || 'failed' }}
+        run: |
+          {
+            echo "## Terraform Apply -- ${{ env.MODULE_NAME }}"
+            echo "- **Module**: ${{ env.MODULE_NAME }} (domain app)"
+            echo "- **Account**: ${SP_ACCOUNT_ID}"
+            echo "- **Status**: ${SP_OUTCOME}"
+            echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}"
+            echo ""
+            echo "Not performed by this lane: Kubernetes rollout (\`superplane-k8s-deploy.yml\`),"
+            echo "schema migrations (\`superplane-migrate.yml\` — blocked on #5045), and any"
+            echo "platform/gateway/Agent-Factory change."
+          } >> "$GITHUB_STEP_SUMMARY"

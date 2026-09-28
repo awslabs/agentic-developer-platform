@@ -25,7 +25,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from tests.conftest import mock_apigw_event
+from tests.conftest import mock_apigw_event, start_webchat_session
 
 # ---------------------------------------------------------------------------
 # Helpers to import the handler with mocked env / boto3
@@ -54,6 +54,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("AWS_REGION_NAME", "us-east-1")
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "")
     monkeypatch.setenv("SLACK_BOT_USER_ID", "")
+    monkeypatch.setenv("WEBHOOK_EVENTS_TABLE", "adp-dev-webhook-events")
 
 
 @pytest.fixture
@@ -85,6 +86,12 @@ def mocked_aws_services(mock_env):
             BillingMode="PAY_PER_REQUEST",
         )
 
+        ddb.create_table(
+            TableName="adp-dev-webhook-events",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}, {"AttributeName": "arrived_at", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
         sqs_client = boto3.client("sqs", region_name="us-east-1")
         sqs_client.create_queue(QueueName="adp-dev-agent-gateway-tasks")
         sqs_client.create_queue(
@@ -100,7 +107,7 @@ def _import_fresh(mock_bedrock=None):
     for mod_name in list(sys.modules.keys()):
         if mod_name in ("handler", "classifier", "channels", "channels.base",
                         "channels.webchat", "channels.slack", "github_dispatch",
-                        "user_resolver"):
+                        "user_resolver", "invocation_logger"):
             del sys.modules[mod_name]
 
     import handler
@@ -135,7 +142,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -167,7 +174,7 @@ class TestResolverModule:
             fp=io.BytesIO(error_body),
         )
 
-        with patch("user_resolver.urllib.request.urlopen", side_effect=http_error):
+        with patch("user_resolver._open_resolver", side_effect=http_error):
             result = user_resolver.resolve_user("slack", "T01ABC:U999")
 
         assert isinstance(result, user_resolver.UnresolvedUser)
@@ -187,7 +194,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -217,7 +224,7 @@ class TestResolverModule:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -368,14 +375,14 @@ class TestHandlerResolverIntegration:
             "is_shadow": False,
         }).encode()
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        handler = _import_fresh(mock_bedrock=mock_bedrock)
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = resolver_response
             mock_resp.__enter__ = MagicMock(return_value=mock_resp)
             mock_resp.__exit__ = MagicMock(return_value=False)
             mock_urlopen.return_value = mock_resp
 
-            handler = _import_fresh(mock_bedrock=mock_bedrock)
             # Force module-level flag on after fresh import
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
@@ -421,6 +428,10 @@ class TestHandlerResolverIntegration:
         assert task["user_id"] == "internal-user-42"
         assert task["org_id"] == "org-resolved"
         assert task["team_id"] == "team-resolved"
+        assert task["tenant_id"] == "org-resolved"
+        row = mocked_aws_services["ddb"].Table("adp-dev-webhook-events").scan()["Items"][0]
+        assert row["root_human_id"] == "internal-user-42"
+        assert row["tenant_id"] == task["tenant_id"]
 
     def test_unresolved_user_returns_magic_link_no_enqueue(self, mocked_aws_services, mock_env_with_resolver):
         """Unresolved user gets magic-link response, message is NOT enqueued."""
@@ -435,8 +446,8 @@ class TestHandlerResolverIntegration:
             fp=io.BytesIO(error_body),
         )
 
-        with patch("user_resolver.urllib.request.urlopen", side_effect=http_error):
-            handler = _import_fresh()
+        handler = _import_fresh()
+        with patch("user_resolver._open_resolver", side_effect=http_error):
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
             user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
@@ -488,18 +499,24 @@ class TestHandlerResolverIntegration:
             "reasoning": "Greeting",
         })
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             handler = _import_fresh(mock_bedrock=mock_bedrock)
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = True
             user_resolver.RESOLVER_BASE_URL = "http://gateway.internal:8080"
             user_resolver.cache_clear()
 
+            claims = {
+                "sub": "cognito-user-1", "email": "u@e.com",
+                "custom:tenant_id": "test-tenant",
+            }
+            # #5615: the server issues the session id; a browser cannot invent one.
+            session_id = start_webchat_session(handler, claims, connection_id="conn-wc")
             event = mock_apigw_event(
                 route_key="$default",
-                body={"action": "message", "text": "Hello!", "session_id": "sess-wc"},
+                body={"action": "message", "text": "Hello!", "session_id": session_id},
                 connection_id="conn-wc",
-                authorizer_claims={"sub": "cognito-user-1", "email": "u@e.com"},
+                authorizer_claims=claims,
             )
             result = handler.lambda_handler(event, None)
 
@@ -510,7 +527,7 @@ class TestHandlerResolverIntegration:
         mock_urlopen.assert_not_called()
 
     def test_feature_flag_off_skips_resolver(self, mocked_aws_services, mock_env):
-        """When ENABLE_USER_IDENTITIES is off, Slack messages proceed without resolver."""
+        """Skipping resolution cannot dispatch a run without a verified owner and tenant."""
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.return_value = _make_bedrock_response({
             "path": "long_running",
@@ -520,7 +537,7 @@ class TestHandlerResolverIntegration:
             "reasoning": "Work",
         })
 
-        with patch("user_resolver.urllib.request.urlopen") as mock_urlopen:
+        with patch("user_resolver._open_resolver") as mock_urlopen:
             handler = _import_fresh(mock_bedrock=mock_bedrock)
             import user_resolver
             user_resolver.ENABLE_USER_IDENTITIES = False
@@ -546,8 +563,9 @@ class TestHandlerResolverIntegration:
             handler.ADAPTERS["slack"].verify_request = lambda *a, **kw: True
             result = handler.lambda_handler(event, None)
 
-        assert result["statusCode"] == 200
-        body = json.loads(result["body"])
-        assert body["status"] == "processing"
+        assert result["statusCode"] == 503
+        sqs = mocked_aws_services["sqs"]
+        queued = sqs.receive_message(QueueUrl="https://sqs.us-east-1.amazonaws.com/123/adp-dev-agent-gateway-tasks")
+        assert not queued.get("Messages")
         # Resolver was NOT called
         mock_urlopen.assert_not_called()

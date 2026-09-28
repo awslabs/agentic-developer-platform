@@ -1,0 +1,15 @@
+{
+  "image": "security27-high/terraform-artifact:grpc1832",
+  "docker_root_descriptor": "sha256:b9d6895da41693a41fbf682f2ca05456490109abee1ff503b085c1c0743a8d17",
+  "config_digest": "sha256:d44252a59fe1b55e930b2adefa00236c5c195632bbf06ea590e8f3172137b9f0",
+  "time": "2026-09-27T20:35:52.112856+00:00",
+  "packages": 253,
+  "native_counts": {
+    "Medium": 1,
+    "Low": 4,
+    "Unknown": 2
+  },
+  "sbom_sha256": "ee11a90894693e156177ae4defedcc629009fc54a7b781c8dd2fa512a57b5f02",
+  "grype_sha256": "b0cce140e1b84436f3f84fe17e2a0e1608526ed3b96fa4ffd5de732a98bf97b3",
+  "archive_sha256": "2bc23e4b04eafc351361e1d942cbcca019d588b87c47c68f2103bf0c8dd975ee"
+}

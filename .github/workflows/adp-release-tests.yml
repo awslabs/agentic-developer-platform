@@ -1,0 +1,30 @@
+name: ADP Release Tests
+on:
+  pull_request:
+    paths:
+      - 'platform/scripts/release/**'
+      - 'platform/scripts/tests/test_release*.py'
+      - 'platform/release-infra/**'
+      - 'platform/infra/main.tf'
+      - 'codebuild/bs-*.yml'
+      - 'modules/gateway/frontend/**'
+      - '.github/workflows/adp-release*.yml'
+      - '.github/actions/release-tools/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release-contracts:
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/release-tools
+      - run: python -m unittest discover -s platform/scripts/tests -p 'test_release*.py'
+      - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py'
+      - run: terraform -chdir=platform/release-infra init -backend=false -input=false
+      - run: terraform -chdir=platform/release-infra validate
+      - name: Build portable Lambda/layer/frontend packages without AWS credentials
+        run: python platform/scripts/release/build.py --packages-only --directory "$RUNNER_TEMP/packages" --release-id validation
+      - name: Frontend authentication, chat and runtime configuration
+        working-directory: modules/gateway/frontend
+        run: npm test -- --run src/__tests__/config/runtime.test.ts src/__tests__/hooks/useAgentChat.test.ts src/__tests__/hooks/useAgUiEvents.test.ts src/__tests__/services/auth.test.ts

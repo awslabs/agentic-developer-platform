@@ -9,23 +9,18 @@
  * collapsible "More" section.
  */
 
+import { LiveStreamLink } from './LiveStreamLink';
 import { useState, useCallback } from 'react';
-import type { InvocationItem, InvocationStatus, TriggerKind } from '@/types/activity';
+import type { InvocationItem, TriggerKind } from '@/types/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
-
-// ---------------------------------------------------------------------------
-// Status rendering (mirrors AgentActivity.tsx STATUS_CONFIG)
-// ---------------------------------------------------------------------------
-
-const STATUS_CONFIG: Record<InvocationStatus, { glyph: string; label: string; colorClass: string }> = {
-  webhook_received: { glyph: '∘', label: 'Webhook recv', colorClass: 'text-gray-500 dark:text-gray-400' },
-  in_progress: { glyph: '●', label: 'In progress', colorClass: 'text-blue-600 dark:text-blue-400' },
-  complete: { glyph: '✓', label: 'Complete', colorClass: 'text-green-600 dark:text-green-400' },
-  failed: { glyph: '✗', label: 'Failed', colorClass: 'text-red-600 dark:text-red-400' },
-  rejected: { glyph: '✗', label: 'Rejected', colorClass: 'text-orange-600 dark:text-orange-400' },
-  rate_limited: { glyph: '✗', label: 'Rate limited', colorClass: 'text-yellow-600 dark:text-yellow-400' },
-  no_op: { glyph: '✗', label: 'No-op', colorClass: 'text-gray-500 dark:text-gray-400' },
-};
+// Issue #4207: the local formatCost closed over item.status; formatRunCost takes
+// it as an argument so the same no-data/pending policy is shared, not copied.
+import { formatRunCost } from '@/utils/cost';
+// Issue #4400: this card carried the second of three copies of STATUS_CONFIG.
+// `compact` is the card's variant — the same short labels the table uses.
+import { describeStatus } from '@/utils/status';
+import { describeSkipReason, isNonRunStatus } from '@/utils/skipReason';
+import { LivenessBadge } from '@/components/activity/LivenessBadge';
 
 const TRIGGER_CONFIG: Record<TriggerKind, { label: string; icon: string }> = {
   human: { label: 'Started by you', icon: '👤' },
@@ -39,6 +34,7 @@ const TRIGGER_CONFIG: Record<TriggerKind, { label: string; icon: string }> = {
 
 export interface ActivityCardProps {
   item: InvocationItem;
+  liveStreamEnabled?: boolean;
   onDetailClick: (item: InvocationItem) => void;
   onTranscriptClick: (invocationId: string) => void;
 }
@@ -47,10 +43,13 @@ export interface ActivityCardProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export function ActivityCard({ item, onDetailClick, onTranscriptClick }: ActivityCardProps) {
+export function ActivityCard({ item, onDetailClick, onTranscriptClick, liveStreamEnabled }: ActivityCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const statusConfig = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.no_op;
+  const statusConfig = describeStatus(item.status);
+  // Issue #4020: on a non-run the reason is the only informative thing on the
+  // card, so it goes in the always-visible area rather than behind "More".
+  const skipReasonText = isNonRunStatus(item.status) ? describeSkipReason(item.skip_reason) : null;
   const triggerKind: TriggerKind = item.trigger_kind || 'human';
   const triggerConfig = TRIGGER_CONFIG[triggerKind];
 
@@ -81,13 +80,6 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
     [onTranscriptClick, item.invocation_id],
   );
 
-  // Format cost
-  const formatCost = (cost: number | null | undefined): string => {
-    if (cost === null || cost === undefined) return '—';
-    if (cost === 0 && item.status === 'in_progress') return 'pending';
-    return cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
-  };
-
   // Source link label
   const sourceLabel =
     item.repo && item.issue_number
@@ -98,12 +90,18 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
 
   return (
     <div
-      className="border-b border-gray-200 dark:border-gray-700 last:border-b-0 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
+      className="activity-run-card border-b border-gray-200 dark:border-gray-700 last:border-b-0 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer transition-colors"
       onClick={handleCardClick}
       onKeyDown={handleCardKeyDown}
       tabIndex={0}
       role="button"
-      aria-label={`Run: ${item.topic || 'untitled'}, Status: ${statusConfig.label}, ${formatRelativeTime(item.invoked_at)}`}
+      aria-label={`Run: ${item.topic || 'untitled'}, Status: ${statusConfig.label}${
+        skipReasonText ? ` (${skipReasonText})` : ''
+      }${
+        /* Issue #4176: an unverifiable run must be announced as such — the
+           badge alone would leave a screen-reader user reading it as healthy. */
+        item.liveness === 'unverifiable' ? ', Liveness: unverifiable' : ''
+      }, ${formatRelativeTime(item.invoked_at)}`}
       data-testid={`activity-card-${item.invocation_id}`}
     >
       {/* Primary row: Topic + Status badge */}
@@ -111,13 +109,34 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
         <h3 className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1 min-w-0">
           {item.topic || <span className="italic text-gray-400">untitled</span>}
         </h3>
-        <span
-          className={`inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${statusConfig.colorClass}`}
-        >
-          <span aria-hidden="true">{statusConfig.glyph}</span>
-          <span>{statusConfig.label}</span>
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          <span
+            className={`activity-status-badge inline-flex items-center gap-1 text-xs font-medium whitespace-nowrap ${statusConfig.colorClass}`}
+            data-status={item.status}
+          >
+            <span aria-hidden="true">{statusConfig.glyph}</span>
+            <span>{statusConfig.label}</span>
+          </span>
+          {/* Issue #4176: attentionOnly — a card is narrow, so only the verdict
+              that changes the operator's reading of the status earns the space. */}
+          <LivenessBadge
+            verdict={item.liveness}
+            attentionOnly
+            testIdSuffix={item.invocation_id}
+          />
+        </div>
       </div>
+
+      {/* Issue #4020: reason line for non-runs — replaces the card's previously
+          unexplained "✗ No-op" badge with the actual cause. */}
+      {skipReasonText && (
+        <p
+          className="mt-1 text-xs text-gray-500 dark:text-gray-400"
+          data-testid={`activity-card-skip-reason-${item.invocation_id}`}
+        >
+          {skipReasonText}
+        </p>
+      )}
 
       {/* Secondary row: Time, Source, Cost */}
       <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500 dark:text-gray-400">
@@ -138,9 +157,11 @@ export function ActivityCard({ item, onDetailClick, onTranscriptClick }: Activit
         )}
 
         <span className="ml-auto font-mono text-gray-700 dark:text-gray-300">
-          {formatCost(item.total_cost_usd)}
+          {formatRunCost(item.total_cost_usd, item.status)}
         </span>
       </div>
+
+      <LiveStreamLink enabled={liveStreamEnabled} status={item.status} onOpen={() => onDetailClick(item)} />
 
       {/* Expand/collapse toggle */}
       <button

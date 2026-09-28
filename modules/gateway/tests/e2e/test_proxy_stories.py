@@ -395,7 +395,7 @@ class TestProxyHTTPIntegration:
         assert response.status_code in self._REJECT_CODES
 
     async def test_request_id_propagation(self, api_client):
-        """Client-sent X-Request-ID is echoed in the response."""
+        """Each response carries a server-owned request identity."""
         import uuid
 
         req_id = str(uuid.uuid4())
@@ -409,8 +409,8 @@ class TestProxyHTTPIntegration:
             },
         )
         resp_req_id = response.headers.get("x-request-id", "")
-        if resp_req_id:
-            assert resp_req_id == req_id
+        assert str(uuid.UUID(resp_req_id)) == resp_req_id
+        assert resp_req_id != req_id
 
 
 # =============================================================================
@@ -481,7 +481,7 @@ class TestLiveBedrockProxyOAuth:
         assert 400 <= response.status_code < 500, f"Expected 4xx for inaccessible model, got {response.status_code}"
 
     async def test_request_id_propagation_live(self, api_client, jwt_for_user):
-        """Client-sent X-Request-ID is echoed in a successful response."""
+        """Successful responses carry a server-owned request identity."""
         import uuid
 
         req_id = str(uuid.uuid4())
@@ -501,8 +501,8 @@ class TestLiveBedrockProxyOAuth:
         )
         if response.status_code == 200:
             resp_req_id = response.headers.get("x-request-id", "")
-            if resp_req_id:
-                assert resp_req_id == req_id
+            assert str(uuid.UUID(resp_req_id)) == resp_req_id
+            assert resp_req_id != req_id
 
     async def test_agent_jwt_bedrock_completion(self, api_client, jwt_for_agent):
         """Agent M2M JWT can invoke Bedrock via /v1/messages."""
@@ -593,7 +593,7 @@ class TestLiveBedrockProxyIAM:
         )
 
     async def test_iam_request_id_propagation(self, iam_signed_client):
-        """X-Request-ID is echoed in IAM-authed responses."""
+        """IAM-authenticated responses carry a server-owned request identity."""
         import uuid
 
         req_id = str(uuid.uuid4())
@@ -609,5 +609,5 @@ class TestLiveBedrockProxyIAM:
         )
         if response.status_code == 200:
             resp_req_id = response.headers.get("x-request-id", "")
-            if resp_req_id:
-                assert resp_req_id == req_id
+            assert str(uuid.UUID(resp_req_id)) == resp_req_id
+            assert resp_req_id != req_id

@@ -1,0 +1,125 @@
+name: Agent Reporting Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'modules/domain-apps/*/ci/**'
+      - 'modules/agent-factory/agent/**'
+      - 'modules/agent-factory/agent-worker-image/**'
+      - 'modules/agent-factory/rules/personas/**'
+      - 'modules/agent-factory/skills/codex-bridge/**'
+      - 'modules/agent-factory/skills/aidlc-emit-issues/**'
+      - 'modules/agent-factory/gateway/**'
+      - 'modules/agent-factory/tests/**'
+      - 'platform/scripts/render-model-root-config.py'
+      - 'platform/scripts/tests/test_model_root_config.py'
+      # The /model end-to-end test imports the real webhook-ingress handler,
+      # intent parser, resolvers and envelope builder, so a change to any of them
+      # can break it without touching a path above.
+      - 'modules/agent-factory/webhook-ingress/lambda/github/**'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/**'
+      - '.github/workflows/agent-reporting-tests.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-reporting-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  node-reporting:
+    name: Agent explanations and GitHub reporting
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: modules/agent-factory/agent
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/agent/package-lock.json
+      - run: npm ci --include=dev
+      - run: npm run build -- --noEmit
+      - name: Verify explanation capture, bounded publication and independent archival
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          src/reporting-text.test.ts
+          src/components/checkRunStreamer.test.ts
+          src/components/checkRunStreamer.token-rotation.test.ts
+          src/github-comments.test.ts
+          src/human-communication.test.ts
+          src/operations-prompt.test.ts
+          src/aidlc-presentation.test.ts
+          src/aidlc-communication.test.ts
+          src/aidlc-gate-enforcer.test.ts
+          src/agent-worker-aidlc-gating.test.ts
+          src/agent-worker-prompt-order.test.ts
+      - name: Verify memory reads and writes from shallow clones
+        run: npm test -- --runInBand --runTestsByPath src/memory.test.ts
+      - name: Verify requester-facing model-policy feedback is safe, truthful and authenticated
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          src/model-policy-feedback.test.ts
+          src/agent-worker-model-feedback-wiring.test.ts
+          src/model-policy-runtime.test.ts
+          src/complex-task-chat/bedrock-routing.test.ts
+
+  python-reporting:
+    name: Transcript handoff and shared instructions
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest boto3 requests 'PyJWT[crypto]' pyyaml 'moto[dynamodb]>=5.0'
+      - name: Verify complete explanation uploads, fallback and packaged prompts
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/agent-worker-image/tests/test_transcript_upload.py
+          modules/agent-factory/agent-worker-image/tests/test_communication_reporting.py
+          modules/agent-factory/agent-worker-image/tests/test_gateway_communication_policy.py
+          modules/agent-factory/agent-worker-image/tests/test_stage_personas.py
+          modules/agent-factory/agent-worker-image/tests/test_run_codex.py
+      - name: Verify repeat-run branch setup and final push from shallow clones
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/agent-worker-image/tests/test_shallow_work_branch.py
+          modules/agent-factory/agent-worker-image/tests/test_bootstrap_failure_status.py
+      - name: Verify AIDLC delivery deduplication and worker retry behavior
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/agent-worker-image/tests/test_invocation_completion.py
+          modules/agent-factory/agent-worker-image/tests/test_entrypoint.py
+          modules/agent-factory/agent-worker-image/tests/test_retryable_exit_no_ack.py
+      # PMM-07: drives a signed webhook delivery through the real github handler,
+      # intent parser, resolvers and envelope builder into the real worker
+      # entrypoint, and asserts the model the Node agent would actually start
+      # with. It was written to pin a silent substitution and had no CI gate at
+      # all, so nothing stopped that defect from returning. Its only dependency
+      # beyond this job's installs is boto3, already present above.
+      - name: Verify a /model directive reaches the agent process unchanged
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/agent-worker-image/tests/test_model_directive_end_to_end.py
+
+      - name: Verify external root publication and runtime inventory
+        env:
+          PYTHONPATH: modules/agent-factory
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/tests/unit/test_model_root_client.py
+          modules/agent-factory/tests/unit/test_legacy_model_guard.py
+          modules/agent-factory/tests/unit/test_persona_model_runtime_inventory.py
+          modules/agent-factory/tests/lambda/test_ingest_persona_pinning.py
+
+      - name: Verify model authority deployment rendering
+        run: python -m pytest -q platform/scripts/tests/test_model_root_config.py

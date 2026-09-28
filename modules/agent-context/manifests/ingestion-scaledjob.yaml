@@ -33,10 +33,33 @@ spec:
       spec:
         serviceAccountName: ${SERVICE_ACCOUNT}
         restartPolicy: Never
+        # Pod-level security context (#6038 — S15 non-root hardening).
+        # runAsUser/runAsGroup match the image's appuser (UID/GID 10001).
+        # fsGroup:10001 makes PVC files group-writable without chmod 777.
+        securityContext:
+          runAsUser: 10001
+          runAsGroup: 10001
+          fsGroup: 10001
+          fsGroupChangePolicy: OnRootMismatch
+          seccompProfile:
+            type: RuntimeDefault
         containers:
           - name: worker
             image: ${INGESTION_IMAGE}
             command: ["python3", "/app/sqs-worker.py"]
+            # Defence in depth for ingestion of untrusted repositories (#5614,
+            # finding #4720). The primary control is in scip_indexer.py, which
+            # refuses to execute repository-authored build logic at all; this
+            # limits the damage if any execution path is ever reintroduced.
+            # readOnlyRootFilesystem: writable scratch via emptyDir mounts.
+            # runAsNonRoot: image declares USER appuser (UID 10001) (#6038).
+            securityContext:
+              runAsNonRoot: true
+              readOnlyRootFilesystem: true
+              allowPrivilegeEscalation: false
+              privileged: false
+              capabilities:
+                drop: ["ALL"]
             envFrom:
               - configMapRef:
                   name: agent-context-config
@@ -88,6 +111,8 @@ spec:
                 mountPath: /platform-data
               - name: tmp
                 mountPath: /tmp
+              - name: home
+                mountPath: /home/appuser
         volumes:
           - name: platform-data
             persistentVolumeClaim:
@@ -95,6 +120,9 @@ spec:
           - name: tmp
             emptyDir:
               sizeLimit: 10Gi
+          - name: home
+            emptyDir:
+              sizeLimit: 512Mi
   pollingInterval: 10
   maxReplicaCount: 50
   successfulJobsHistoryLimit: 3

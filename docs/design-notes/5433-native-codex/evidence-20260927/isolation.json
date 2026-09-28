@@ -1,0 +1,139 @@
+{
+  "runId": "q-03900584f500",
+  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
+  "startedAt": "2026-09-27T13:13:01.894512+00:00",
+  "passed": true,
+  "cleanup": [
+    {
+      "namespace": "adp-validation-control-q-03900584f500",
+      "name": "control",
+      "uid": "3d32628f-0b52-4e3f-8562-cc92eabc184c",
+      "containers": [
+        {
+          "allocatedResources": {
+            "cpu": "100m",
+            "memory": "128Mi"
+          },
+          "containerID": "containerd://049335a1360f7194a2e1c8838081fe09e134e873adee4a82e2483e6b70fcc041",
+          "image": "sha256:fa7ffdada64b5fca60920b34492ec998d69f667e3ac4ba7b1ff0ec292cd3db2a",
+          "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
+          "lastState": {},
+          "name": "probe",
+          "ready": false,
+          "resources": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "256Mi"
+            },
+            "requests": {
+              "cpu": "100m",
+              "memory": "128Mi"
+            }
+          },
+          "restartCount": 0,
+          "started": false,
+          "state": {
+            "terminated": {
+              "containerID": "containerd://049335a1360f7194a2e1c8838081fe09e134e873adee4a82e2483e6b70fcc041",
+              "exitCode": 137,
+              "finishedAt": "2026-09-27T13:14:24Z",
+              "reason": "Error",
+              "startedAt": "2026-09-27T13:14:03Z"
+            }
+          },
+          "user": {
+            "linux": {
+              "gid": 65534,
+              "supplementalGroups": [
+                65534
+              ],
+              "uid": 65534
+            }
+          },
+          "volumeMounts": [
+            {
+              "mountPath": "/tmp",
+              "name": "tmp"
+            }
+          ]
+        }
+      ],
+      "observedTermination": true
+    },
+    {
+      "namespace": "adp-codex-validation",
+      "name": "q-03900584f500",
+      "uid": "4d18cbc7-94fb-4b9e-be12-c814a5e7d5f5",
+      "containers": [
+        {
+          "allocatedResources": {
+            "cpu": "100m",
+            "memory": "128Mi"
+          },
+          "containerID": "containerd://b03563a0eacdda2336fc6015e7d9e04072b6fb35fc9a5f3326c6a8f1a147c547",
+          "image": "sha256:fa7ffdada64b5fca60920b34492ec998d69f667e3ac4ba7b1ff0ec292cd3db2a",
+          "imageID": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-codex-validation@sha256:d2eaac78208a936fc29f598fc12c9512746e0e4091c1bea809847da1e50b733e",
+          "lastState": {},
+          "name": "probe",
+          "ready": false,
+          "resources": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "256Mi"
+            },
+            "requests": {
+              "cpu": "100m",
+              "memory": "128Mi"
+            }
+          },
+          "restartCount": 0,
+          "started": false,
+          "state": {
+            "terminated": {
+              "containerID": "containerd://b03563a0eacdda2336fc6015e7d9e04072b6fb35fc9a5f3326c6a8f1a147c547",
+              "exitCode": 137,
+              "finishedAt": "2026-09-27T13:14:52Z",
+              "reason": "Error",
+              "startedAt": "2026-09-27T13:14:03Z"
+            }
+          },
+          "user": {
+            "linux": {
+              "gid": 65534,
+              "supplementalGroups": [
+                65534
+              ],
+              "uid": 65534
+            }
+          },
+          "volumeMounts": [
+            {
+              "mountPath": "/tmp",
+              "name": "tmp"
+            }
+          ]
+        }
+      ],
+      "observedTermination": true
+    }
+  ],
+  "node": "i-0a678a5cd0fb732e1",
+  "nodeUid": "5dccc0d9-1e67-4ae2-a280-67b7afbe8bac",
+  "podPidsLimit": 128,
+  "control": {
+    "reachableControl": true
+  },
+  "q-03900584f500": {
+    "isolationPassed": true,
+    "spawnedChildren": 126,
+    "credentialFree": true,
+    "readOnlyRoot": true,
+    "networkDenied": true,
+    "seccomp": 2,
+    "effectiveCapabilities": 0
+  },
+  "ingress": {
+    "ingressDenied": true
+  },
+  "probesPassed": true
+}

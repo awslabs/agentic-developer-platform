@@ -13,9 +13,11 @@ import { buildArtifactStore } from './artifacts/factory';
 import { getChannelDirective, getChannelEffort } from './channel-profiles';
 import { loadPersona, composeSystemPrompt } from './persona-loader';
 import { runQuery } from './run-query';
-import { SqsClient, TaskPayload, AgUiEventEnvelope } from './sqs-client';
+import { SqsClient, TaskPayload, AgUiEventEnvelope, deliveryRoutingForTask } from './sqs-client';
+import { withChatBedrockRouting } from './bedrock-routing';
 import { AgentTool } from './context/types';
 import { ArtifactRef } from './artifacts/port';
+import { ArtifactSpillStore } from '../utils/spill/artifact-store-adapter';
 import {
   AgUiEventType,
   agUiTimestamp,
@@ -24,6 +26,9 @@ import {
 } from './ag-ui-events';
 import { Scrubber } from './context/scrubber';
 import { vaultToolsForTurn } from './vault/tools';
+import { buildToolSanitizers } from './tool-sanitizers';
+import { draftToolsForTurn } from './draft/tools';
+import { buildDraftStore } from './draft/dynamo-draft-store';
 import { VaultGatewayClient } from './vault/gateway-client';
 import { createCredsInjector, CredsInjector } from '../aws-creds-injector';
 import { buildPersonalContextIdentity, getPersonalContextEnvVars } from './personal-context-headers';
@@ -62,9 +67,6 @@ function estimateTokens(text: string): number {
 async function main(): Promise<void> {
   console.log('[chat-agent] Starting complex-task-chat-agent');
 
-  const context = buildContextManager();
-  const memory = buildMemoryProvider();
-  const artifacts = buildArtifactStore();
   const sqs = new SqsClient();
 
   // KEDA ScaledJob: process one message and exit
@@ -75,7 +77,14 @@ async function main(): Promise<void> {
   }
 
   for (const msg of messages) {
-    await processOne(msg, { context, memory, artifacts, sqs });
+    const task: TaskPayload = JSON.parse(msg.Body ?? '{}');
+    await withChatBedrockRouting(task, async () => {
+      const context = buildContextManager();
+      const memory = buildMemoryProvider();
+      const artifacts = buildArtifactStore();
+      const draftStore = buildDraftStore();
+      await processOne(msg, { context, memory, artifacts, draftStore, sqs });
+    }, msg.Body);
   }
 }
 
@@ -85,6 +94,8 @@ async function processOne(
     context: ReturnType<typeof buildContextManager>;
     memory: ReturnType<typeof buildMemoryProvider>;
     artifacts: ReturnType<typeof buildArtifactStore>;
+    /** Issue #4208: persistence for the intent-intake draft panel. */
+    draftStore: ReturnType<typeof buildDraftStore>;
     sqs: SqsClient;
   },
 ): Promise<void> {
@@ -108,11 +119,10 @@ async function processOne(
     // Delivery routing — echoed into every sendResponse() so the response
     // Lambda knows which channel/connection to deliver to. Missing any of
     // these caused WS replies to silently fall back to REST polling.
-    thread_id,
     connection_id,
     channel,
-    platform_data,
   } = task;
+  const deliveryRouting = deliveryRoutingForTask(task);
 
   // Stage A (#184): log full identity context at INFO for audit trail.
   console.log(
@@ -132,10 +142,7 @@ async function processOne(
         status: 'ag_ui',
         ag_ui_event: true,
         event,
-        thread_id,
-        connection_id,
-        channel,
-        channel_metadata: platform_data,
+        ...deliveryRouting,
       };
       await deps.sqs.sendAgUiEvent(envelope);
     } catch (err) {
@@ -350,22 +357,58 @@ async function processOne(
       identity: org_id ? { orgId: org_id, teamId: team_id, userId: user_id } : undefined,
     });
 
+    // Issue #4179: oversized tool output spills into the SAME artifact store as
+    // everything else this turn publishes, so it inherits that store's session +
+    // team scoping instead of landing somewhere cross-run readable.
+    const spillStore = new ArtifactSpillStore(
+      deps.artifacts,
+      {
+        sessionId: session_id,
+        taskId: task_id,
+        identity: org_id ? { orgId: org_id, teamId: team_id, userId: user_id } : undefined,
+      },
+      { log: msg => console.log(msg) },
+    );
+
+    // Issue #4208: per-turn draft tools closed over the session, mirroring the
+    // artifact-tools pattern above. `update_draft` writes the intake draft and
+    // the onUpdate callback streams it to the browser's draft panel as a
+    // top-level STATE_DELTA patch. Emitted mid-turn (not batched to the end) —
+    // the whole point is that the user watches the draft fill in while they
+    // talk. The patch path is top-level `/draft` on purpose: the frontend
+    // resolves nested pointers now, but a single whole-object op keeps the
+    // panel consistent with the "always send the complete draft" contract.
+    const draftTools = draftToolsForTurn(deps.draftStore, {
+      sessionId: session_id,
+      onUpdate: async draft => {
+        await emitAgUi({
+          event_type: AgUiEventType.STATE_DELTA,
+          delta: [{ op: 'replace', path: '/draft', value: draft }],
+          timestamp: agUiTimestamp(),
+        });
+      },
+    });
+
     const tools: AgentTool[] = [
       ...deps.context.tools(),
-      ...deps.memory.tools(),
+      // #4074: closure-inject the authenticated scope so the model cannot
+      // choose the memory partition it reads/writes. `user`/`tenant` are
+      // JWT-derived; `persona.name` is the allowlist-sanitized name from
+      // loadPersona — NOT raw `agent_type`, which the Bedrock classifier
+      // derives from the user's own message.
+      ...deps.memory.tools({ user: user_id, tenant: tenant_id, persona: persona.name }),
       ...artifactTools,
       ...vaultTools,
+      ...draftTools,
     ];
 
     // Build per-tool input sanitizers for AG-UI event sanitization (#137).
     // Vault tools declare inputSummarySanitizer to strip credential-bearing fields.
-    const toolSanitizers = new Map<string, (input: Record<string, unknown>) => Record<string, unknown>>();
-    for (const t of vaultTools) {
-      const sanitizable = t as { inputSummarySanitizer?: (input: Record<string, unknown>) => Record<string, unknown> };
-      if (sanitizable.inputSummarySanitizer) {
-        toolSanitizers.set(t.name, sanitizable.inputSummarySanitizer);
-      }
-    }
+    //
+    // Issue #4208: built from the FULL tool list, not just vaultTools. The old
+    // loop only saw vault tools, so a sanitizer declared by any other tool was
+    // silently ignored and its args went unsanitized into TOOL_CALL_ARGS.
+    const toolSanitizers = buildToolSanitizers(tools);
 
     // Issue #586: Get scoped env for the agent's bash subshells. This env has
     // pod-IRSA stripped and user's assumed-role creds injected. When no injector
@@ -393,10 +436,12 @@ async function processOne(
       userMessage: message,
       tools,
       toolSanitizers: toolSanitizers.size > 0 ? toolSanitizers : undefined,
-      model: persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
+      model: task.model_resolved ?? persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
       cwd: '/tmp/workspace',
       env: scopedEnv,
       effort: getChannelEffort(channel ?? ''),
+      // Issue #4179: spill oversized tool results to the artifact store.
+      spillStore,
       // Issue #1592: Knowledge Layer MCP — mount Door as HTTP MCP server.
       ...(KNOWLEDGE_LAYER_ENABLED ? {
         additionalMcpServers: { [KNOWLEDGE_LAYER_SERVER_NAME]: getKnowledgeLayerMcpConfig() },
@@ -422,10 +467,7 @@ async function processOne(
           kind: event.type,
           text,
           turn: event.turn,
-          thread_id,
-          connection_id,
-          channel,
-          channel_metadata: platform_data,
+          ...deliveryRouting,
         });
 
         // AG-UI events
@@ -523,10 +565,7 @@ async function processOne(
       tokens: result.tokens,
       status: 'completed',
       artifacts: publishedRefs,
-      thread_id,
-      connection_id,
-      channel,
-      channel_metadata: platform_data,
+      ...deliveryRouting,
     });
 
     if (msg.ReceiptHandle) {
@@ -551,10 +590,7 @@ async function processOne(
       session_id,
       text: `error: ${(err as Error).message}`,
       status: 'failed',
-      thread_id,
-      connection_id,
-      channel,
-      channel_metadata: platform_data,
+      ...deliveryRouting,
     });
 
     // Do not delete — DLQ policy applies

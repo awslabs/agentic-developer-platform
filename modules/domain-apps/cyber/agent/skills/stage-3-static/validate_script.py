@@ -95,6 +95,74 @@ def find_similar(name: str, allowed: set[str]) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Capability restrictions (issue #5616 / finding #4729)
+# ---------------------------------------------------------------------------
+# The manifest check above answers "is this tool present in the image?", which
+# is a compatibility question, not a safety one. On its own it accepts
+# `import requests; requests.get(...)`, `os.system(...)`, `eval(...)` and
+# direct `boto3` use of the worker's own credentials — all of which pass
+# because those packages are legitimately in the image. A Stage-3 script's job
+# is to read one local sample path and print JSON, so these capabilities are
+# denied outright regardless of manifest presence.
+
+# Modules that give a script network or cloud-credential reach.
+DENIED_IMPORTS = frozenset(
+    [
+        "boto3",
+        "botocore",
+        "ftplib",
+        "http",
+        "httplib",
+        "requests",
+        "smtplib",
+        "socket",
+        "ssl",
+        "telnetlib",
+        "urllib",
+        "urllib2",
+        "urllib3",
+        "xmlrpc",
+    ]
+)
+
+# Builtins that turn caller-supplied bytes into executable code, defeating any
+# static review of what the script does.
+DENIED_BUILTINS = frozenset(["eval", "exec", "compile", "__import__"])
+
+# Module-qualified calls that spawn processes outside the validated subprocess
+# surface, or load code dynamically.
+DENIED_CALLS = frozenset(
+    [
+        "os.system",
+        "os.popen",
+        "os.execv",
+        "os.execve",
+        "os.execvp",
+        "os.spawnl",
+        "os.spawnv",
+        "os.fork",
+        "os.forkpty",
+        "pty.spawn",
+        "importlib.import_module",
+        "marshal.loads",
+        "pickle.load",
+        "pickle.loads",
+    ]
+)
+
+
+def _dotted_name(node: ast.AST) -> str:
+    """Render an attribute/name chain as a dotted string ('os.system')."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
 def validate_script(script_path: str, manifest: dict) -> list[str]:
     """Validate a script against the manifest. Returns list of violation messages."""
     source = Path(script_path).read_text()
@@ -112,7 +180,12 @@ def validate_script(script_path: str, manifest: dict) -> list[str]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 top_module = alias.name.split(".")[0]
-                if top_module not in allowed_imports:
+                if top_module in DENIED_IMPORTS:
+                    violations.append(
+                        f"line {node.lineno}: 'import {alias.name}' — network and "
+                        "cloud-credential access are not permitted in analysis scripts"
+                    )
+                elif top_module not in allowed_imports:
                     suggestion = find_similar(top_module, allowed_imports)
                     msg = f"line {node.lineno}: 'import {alias.name}' — not in worker image"
                     if suggestion:
@@ -122,7 +195,12 @@ def validate_script(script_path: str, manifest: dict) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 top_module = node.module.split(".")[0]
-                if top_module not in allowed_imports:
+                if top_module in DENIED_IMPORTS:
+                    violations.append(
+                        f"line {node.lineno}: 'from {node.module} import ...' — network "
+                        "and cloud-credential access are not permitted in analysis scripts"
+                    )
+                elif top_module not in allowed_imports:
                     suggestion = find_similar(top_module, allowed_imports)
                     msg = f"line {node.lineno}: 'from {node.module} import ...' — not in worker image"
                     if suggestion:
@@ -132,6 +210,22 @@ def validate_script(script_path: str, manifest: dict) -> list[str]:
         # Check subprocess calls with literal command strings
         elif isinstance(node, ast.Call):
             func = node.func
+
+            # Dynamic code evaluation — defeats static review of the script.
+            if isinstance(func, ast.Name) and func.id in DENIED_BUILTINS:
+                violations.append(
+                    f"line {node.lineno}: '{func.id}(...)' — dynamic code "
+                    "evaluation is not permitted in analysis scripts"
+                )
+
+            # Process spawning / dynamic loading outside the validated surface.
+            dotted = _dotted_name(func)
+            if dotted in DENIED_CALLS:
+                violations.append(
+                    f"line {node.lineno}: '{dotted}(...)' — not permitted in "
+                    "analysis scripts"
+                )
+
             # Match subprocess.run([...]) or subprocess.Popen([...])
             if (
                 isinstance(func, ast.Attribute)

@@ -28,11 +28,15 @@ resource "helm_release" "arc_controller" {
   namespace  = kubernetes_namespace.arc_system.metadata[0].name
   repository = "oci://ghcr.io/actions/actions-runner-controller-charts"
   chart      = "gha-runner-scale-set-controller"
-  version    = "0.13.1"
+  version    = "0.14.2"
 
   values = [
     yamlencode({
       replicaCount = 1
+      image = {
+        repository = split("@", var.controller_image)[0]
+        tag        = "0.14.2@${split("@", var.controller_image)[1]}"
+      }
     })
   ]
 }
@@ -69,17 +73,36 @@ resource "helm_release" "arc_runner_set" {
   namespace  = kubernetes_namespace.arc_runners.metadata[0].name
   repository = "oci://ghcr.io/actions/actions-runner-controller-charts"
   chart      = "gha-runner-scale-set"
-  version    = "0.13.1"
+  version    = "0.14.2"
 
   values = [
     yamlencode({
       githubConfigUrl    = var.github_repo != "" ? "https://github.com/${var.github_org}/${var.github_repo}" : "https://github.com/${var.github_org}"
       githubConfigSecret = kubernetes_secret.arc_runner.metadata[0].name
-      # 20: deploy + security-scan + agent runs contend for the pool; at 10 the
-      # deploy pipeline sat queued behind Security Scan bursts (live-patched
-      # 2026-07-03, codified here so the next apply doesn't revert it).
-      maxRunners         = 20
-      minRunners         = 0
+      # 10 -> 20 (2026-07-03): deploy + security-scan + agent runs contend for the
+      # pool; at 10 the deploy pipeline sat queued behind Security Scan bursts
+      # (live-patched then, codified here so the next apply doesn't revert it).
+      #
+      # 20 -> 40 (2026-09-23): 20 was oversubscribed at ordinary concurrency once
+      # Gateway CI was sharded. Measured over 58 Gateway CI runs, overlapping runs
+      # were 3-5 typical and 11 at peak; each run needs its shards plus 4 other
+      # jobs, so three concurrent runs at 4 shards already wanted 24 runners
+      # against a ceiling of 20. That queueing is why shards measuring 4m19s in
+      # isolation were completing in 7m24s, and it is the contention that showed
+      # up as a 1.75x throughput drop between a quiet and a busy cluster.
+      # Gateway CI moves to 8 shards in the same change, taking one run to 12
+      # runners, so the ceiling has to move with it or the extra shards just
+      # convert test time into queue time.
+      #
+      # Cost: minRunners = 0, so idle capacity is free and this only bills during
+      # bursts. But combined with the cpu=4 request below, a full burst now
+      # provisions up to 40 x 4 = 160 vCPU where it previously asked for 40. That
+      # is the deliberate trade -- compute during bursts instead of every
+      # developer waiting in a queue. Raise deliberately, not reflexively: past
+      # ~40 the per-shard overhead floor (~46s of checkout + pip install) means
+      # more runners stop buying wall clock.
+      maxRunners = 40
+      minRunners = 0
       # Pod template. Always supply the full container spec (image, command,
       # resources) — the chart has no image-only override and overriding
       # `containers` without setting `command` would make pods run the
@@ -93,20 +116,57 @@ resource "helm_release" "arc_runner_set" {
         # packs multiple runners onto a single c6a.large; their concurrent
         # npm ci / setup-node bursts saturate the node's gp3 EBS IOPS
         # baseline (3000), stalling processes in D-state and causing 5+ min
-        # "hangs". Mirrors AISuperPlane's sizing — requests push Karpenter
-        # to right-size the node, limits prevent one runner starving others.
+        # "hangs". Requests push Karpenter to right-size the node, limits
+        # prevent one runner starving others.
         #
-        # cpu=1 request is KEPT deliberately: it is the runner-density guard
-        # (≈ one runner per vCPU) that prevents the EBS-IOPS-saturation hang
-        # described above. Do not lower it.
+        # Sizing history — two data-driven revisions, keep both in mind:
         #
-        # memory request lowered 4Gi -> 1Gi: observed steady-state usage is
-        # ~16-140Mi (peak ~3.5% of the old 4Gi reservation, via Container
-        # Insights over 2h). At 4Gi, memory was the binding constraint that
-        # forced ~2 runners/xlarge (7.5Gi) and inflated node count; at 1Gi,
-        # cpu=1 becomes the density cap (~4 runners/xlarge) — the intended
-        # IOPS guard — while freeing ~3Gi of phantom reservation per runner.
-        # Limit stays 8Gi so a heavy build can still burst without OOM.
+        # 1) 2026-07: memory request lowered 4Gi -> 1Gi because observed
+        #    steady-state usage was ~16-140Mi (Container Insights, 2h window)
+        #    and 4Gi phantom reservation inflated node count. cpu=1 request
+        #    kept as the density guard (≈ one runner per vCPU) against the
+        #    EBS-IOPS hang above.
+        #
+        # 2) 2026-08-30: that 2h window turned out to miss the heavy jobs.
+        #    Measured under real CI load: one runner at 3.7 cores, another at
+        #    2.7Gi; three runners packed on one node drove it to 104% CPU and
+        #    a second node to 97% memory, and a job died with "runner lost
+        #    communication ... starves it for CPU/Memory" (PR #4476 npm
+        #    audit). Requests raised to cpu=2 / memory=4Gi so scheduling
+        #    reflects real burst usage: density drops to ~2 runners per
+        #    4-vCPU node by CPU and memory overcommit is bounded at 2x
+        #    (limit 8Gi vs 4Gi request) instead of 8x. This STRENGTHENS the
+        #    IOPS density guard — do not lower either request below this
+        #    without node-level CPU/memory data over a window that includes
+        #    heavy workflows (full pytest suites, security scans, npm audit).
+        #
+        # 3) 2026-09-21: cpu request 2 -> 4, matching the limit. Gateway CI was
+        #    sharded 4 ways with `pytest -n 4` (#5550), so one Gateway CI run is
+        #    now FOUR runners that each genuinely want 4 cores, and runs overlap
+        #    routinely (3 concurrent observed on 09-21). At a cpu=2 request the
+        #    scheduler placed twice as many runners as the node could actually
+        #    feed — the same overbooking revision 2 diagnosed, but now hit on
+        #    every gateway PR rather than occasionally. Symptoms measured on
+        #    identical code and config: shard throughput fell from 18.2 to 10.4
+        #    tests/s between a quiet and a busy cluster (1.75x), node CPU peaked
+        #    at 94%, and a timing-sensitive test
+        #    (tests/budget/test_pricing_read_timeout.py) flaked under contention.
+        #    Revision 2 already measured a runner at 3.7 cores, so cpu=4 is the
+        #    honest figure, not a guess.
+        #
+        #    request == limit for CPU is deliberate: it removes CPU
+        #    oversubscription entirely rather than bounding it, so a runner
+        #    cannot be starved by a co-tenant mid-test. Density halves (~8
+        #    runners per 32-vCPU node instead of ~16), which again STRENGTHENS
+        #    the IOPS density guard above. The cost is real: Karpenter will
+        #    provision more nodes instead of packing, so this trades AWS spend
+        #    for developer wall clock. Do not revert it to buy density back
+        #    without first re-measuring shard throughput on a BUSY cluster —
+        #    a quiet-cluster measurement will show no difference and will
+        #    mislead you.
+        #
+        # Memory is unchanged: revision 2 measured a peak of 2.7Gi against the
+        # 4Gi request, so that one is already honest. Limits stay 4 CPU / 8Gi.
         spec = {
           serviceAccountName = kubernetes_service_account.runner.metadata[0].name
           containers = [
@@ -114,8 +174,14 @@ resource "helm_release" "arc_runner_set" {
               name    = "runner"
               image   = var.runner_image == "" ? "ghcr.io/actions/actions-runner:latest" : var.runner_image
               command = ["/home/runner/run.sh"]
+              # Busy nodes can delay worker startup beyond the runner's 30s
+              # IPC default, killing it before tests start. Bound the startup
+              # handoff separately from workflow and test execution timeouts.
+              env = [
+                { name = "GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT", value = "120" }
+              ]
               resources = {
-                requests = { cpu = "1", memory = "1Gi" }
+                requests = { cpu = "4", memory = "4Gi" }
                 limits   = { cpu = "4", memory = "8Gi" }
               }
             }

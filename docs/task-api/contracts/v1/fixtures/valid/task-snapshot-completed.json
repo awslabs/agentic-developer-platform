@@ -1,0 +1,123 @@
+{
+  "$fixture": {
+    "description": "Terminal completed snapshot carrying the investigator report, its consumed input receipt and confirmed queue acknowledgement. Every finding names supporting evidence; what could not be determined appears under uncertainties.",
+    "schema": "public-api.schema.json#/$defs/task_snapshot",
+    "expect": "valid",
+    "owner": "T6",
+    "criteria": [
+      "T0-AC02",
+      "T5-AC02",
+      "T7-AC01",
+      "V0-02"
+    ]
+  },
+  "schema_version": "1.0",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+  "persona": "agent-task-investigator",
+  "status": "completed",
+  "version": 12,
+  "created_at": "2026-09-24T14:42:03Z",
+  "updated_at": "2026-09-24T14:49:31Z",
+  "deadline_at": "2026-09-24T15:12:03Z",
+  "latest_event_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:14",
+  "oldest_event_cursor": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20:1",
+  "generation": 1,
+  "runtime_attempt_id": "a1b2c3d4-e5f6-4718-9a2b-3c4d5e6f7081",
+  "execution_health": "stopped",
+  "recovery_required": false,
+  "external_reference": "incident-INC-2026-0924-0031",
+  "result": {
+    "schema_version": "1.0",
+    "outcome": "completed",
+    "report": {
+      "summary": "The 503 burst is most consistent with connection-pool exhaustion in checkout-api triggered by a slow upstream dependency, not with a capacity shortfall in checkout-api itself.",
+      "findings": [
+        {
+          "statement": "Pool acquisition timeouts precede every observed 503 by 2-4 seconds.",
+          "evidence_refs": [
+            "logs.txt:L118-L204"
+          ],
+          "confidence": "high"
+        },
+        {
+          "statement": "Upstream inventory-service p99 latency rose from 180ms to 6.2s at 14:08 UTC, two minutes before the first 503.",
+          "evidence_refs": [
+            "logs.txt:L61-L74",
+            "metrics.json#inventory_p99"
+          ],
+          "confidence": "high"
+        },
+        {
+          "statement": "Configured pool size of 20 with a 30-second upstream timeout permits total pool starvation under the observed latency.",
+          "evidence_refs": [
+            "config.json#pool.max",
+            "config.json#upstream.timeout_seconds"
+          ],
+          "confidence": "medium"
+        }
+      ],
+      "uncertainties": [
+        "No inventory-service logs were supplied, so the cause of its latency increase cannot be determined from this evidence.",
+        "Whether the error rate is still rising cannot be determined; the supplied window ends at 14:40 UTC."
+      ],
+      "recommendations": [
+        "Reduce the upstream timeout below the pool acquisition timeout so a slow dependency sheds load instead of exhausting the pool.",
+        "Collect inventory-service logs for the same window before concluding the root cause.",
+        "Treat a checkout-api capacity increase as a symptom mitigation only."
+      ],
+      "evidence_refs": [
+        {
+          "ref": "logs.txt",
+          "source": "artifact",
+          "artifact_id": "art_6f1b9c22-4a7d-4f1e-8b3a-2c9d5e7f1a04"
+        },
+        {
+          "ref": "config.json",
+          "source": "artifact",
+          "artifact_id": "art_7a2c0d33-5b8e-4021-9c4b-3d0e6f802b15"
+        },
+        {
+          "ref": "metrics.json",
+          "source": "artifact",
+          "artifact_id": "art_8b3d1e44-6c9f-4132-ad5c-4e1f7a913c26"
+        },
+        {
+          "ref": "incident_window",
+          "source": "inputs"
+        },
+        {
+          "ref": "primary-source clarification",
+          "source": "follow_up_input"
+        }
+      ]
+    },
+    "artifact_ids": [
+      "art_4b4ea33f-a811-451f-89cf-d6f4dcafc12e"
+    ],
+    "committed_at": "2026-09-24T14:49:31Z",
+    "process_exit_validated": true,
+    "turns_used": 3,
+    "total_usd": 0.07
+  },
+  "error": null,
+  "input_request": null,
+  "command_receipts": [
+    {
+      "schema_version": "1.0",
+      "command_id": "c3d4e5f6-0718-493a-bc4d-5e6f70819203",
+      "kind": "input",
+      "status": "consumed",
+      "handoff": "confirmed",
+      "command_sequence": 1,
+      "turn_id": "2048c8ca-b910-43c8-861e-a092beb53813",
+      "turn_number": 2,
+      "accepted_at": "2026-09-24T14:45:20Z",
+      "consumed_at": "2026-09-24T14:45:41Z",
+      "authority_expires_at": "2026-09-24T15:00:20Z",
+      "reason": null
+    }
+  ],
+  "queue_ack_status": "confirmed",
+  "request_id": "req-01JC9K7S9A2B"
+}

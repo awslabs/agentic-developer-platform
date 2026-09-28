@@ -31,7 +31,7 @@ export const DEFAULT_LCM_CONFIG: LcmConfig = {
   leafTargetTokens: 1200,
   summaryTimeoutMs: 60_000,
   maxTurnsPerCompaction: 1,
-  summaryModel: 'global.anthropic.claude-sonnet-4-6',
+  summaryModel: 'global.anthropic.claude-sonnet-5',
   summaryEndpoint: 'bedrock',
   sessionTtlSeconds: 90 * 86400, // 90 days
   // Phase 2+ (disabled in Phase 1)

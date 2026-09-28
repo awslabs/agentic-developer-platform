@@ -1,0 +1,33 @@
+{
+  "retained_manifests": [
+    {
+      "repository": "adp-dev-agent-context-ingestion",
+      "digest": "sha256:5c96c50f7bc2ed5d591bfcaba0f97c827c4e2d98cc3f3958c58757e5f5178ae8",
+      "tag": "security28-retained-input-5c96c50f"
+    },
+    {
+      "repository": "adp-superplane-api",
+      "digest": "sha256:9e194dfb5ac7189c304ce618597983c95eb487018a5bd3dd3e65fb1c2bf01466",
+      "tag": "security28-retained-input-9e194dfb"
+    }
+  ],
+  "executor_mirror": {
+    "registry": "public.ecr.aws/docker/library/python",
+    "unchanged_manifest_digest": "sha256:1aaa65a85fda306ffb8b910824d4e93bdce61e212c7e87168123ea3073b41a1a"
+  },
+  "signify_wheel": {
+    "filename": "signify-0.9.2-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/b0/21/8d4579d439b3c03ae5cf5fb5e0d9151d34b4d9e24a50876ea211c2f48d3b/signify-0.9.2-py3-none-any.whl",
+    "sha256": "9bbe43a2198dc8f21ae6c3c41227b695b4c3b7c242e2d2b19c3af7af4f29d2c5",
+    "bytes": 88353
+  },
+  "fixture_acceptance": {
+    "base": "docker.io/library/python@sha256:1aaa65a85fda306ffb8b910824d4e93bdce61e212c7e87168123ea3073b41a1a",
+    "acceptance_results": {
+      "expected": 0,
+      "changed": 1
+    },
+    "network": "none",
+    "read_only": true
+  }
+}

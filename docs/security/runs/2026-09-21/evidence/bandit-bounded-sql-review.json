@@ -1,0 +1,878 @@
+{
+  "issue": 6108,
+  "frozen_source": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+  "reviewed_source_revision": "bd31ddab4",
+  "reviewed_delta": 66,
+  "scope": "Exact SQL-injection observations only. This does not attest authorization, data correctness, deployment or all database behavior of these modules. No database migrations or operator cleanup were executed.",
+  "method": "Manually traced each interpolated expression to its concrete fixed/validated producer and bind consumer; all66 frozen statements match uniquely in reviewed source. The AST join is identity evidence, not the applicability decision.",
+  "focused_validation": [
+    "57 agent-context registry/cleanup/ACL placeholder and tenant-scope tests pass",
+    "7 common-crawl query/provider tests pass"
+  ],
+  "reviewed_records": [
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=415",
+      "file": "modules/agent-context/agent_context/api/assets_router.py",
+      "original_line": 335,
+      "current_line": 337,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "8029e9c4aeccc23972175c27ad12ccaf0baba4f6d6129c2eee703a8618ba236e",
+      "reviewed_source_hashes": {
+        "modules/agent-context/agent_context/api/assets_router.py": "76f8e026ad85c09ed7a658bb454d8309b1a901a4d54216c370f8155a748abd40"
+      },
+      "rationale": "list_assets builds conditions solely from fixed owner/tenant/type/status fragments. Authenticated and request values remain in the separate SQLAlchemy params mapping, including pagination; no user value is joined into SQL."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=416",
+      "file": "modules/agent-context/agent_context/api/assets_router.py",
+      "original_line": 347,
+      "current_line": 349,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "c13c4a1f0a4a50adb80855e6a95a1c252feb120bb55b7ad49fd32dfa0ae8e640",
+      "reviewed_source_hashes": {
+        "modules/agent-context/agent_context/api/assets_router.py": "76f8e026ad85c09ed7a658bb454d8309b1a901a4d54216c370f8155a748abd40"
+      },
+      "rationale": "list_assets builds conditions solely from fixed owner/tenant/type/status fragments. Authenticated and request values remain in the separate SQLAlchemy params mapping, including pagination; no user value is joined into SQL."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=418",
+      "file": "modules/agent-context/door/acl.py",
+      "original_line": 490,
+      "current_line": 489,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "6ed5d452ebc13fe54075859d3a5ec1e663df95aaaa83907306f07e65926f7eff",
+      "reviewed_source_hashes": {
+        "modules/agent-context/door/acl.py": "a811665d7c9024f6ef963976adbfa2b200d36dfac1e1a3bcf6dd8f3dc00cfe9e"
+      },
+      "rationale": "Scoped ACL query wraps a fixed inner query in a fixed run-tenant predicate. Tenant, principal, teams and owner values are psycopg parameters passed to cur.execute(query, params)."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=433",
+      "file": "modules/agent-context/images/ingestion/db.py",
+      "original_line": 271,
+      "current_line": 271,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "b3d1b0cd7b793377156f49b90054dfa725d48949dfc46f1a8405d4d8baffc454",
+      "reviewed_source_hashes": {
+        "modules/agent-context/images/ingestion/db.py": "d81a0885fad6a587ce4fe984d3aeb4b043d405de87448da0ccf8ddebfe17f2d7"
+      },
+      "rationale": "update_repo_sbom_status selects only fixed sbom_status, last_indexed_sha and updated_at fragments. Status/SHA/repository ID values are appended to the parameter list; cursor.execute receives SQL and params separately."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=512",
+      "file": "modules/agent-context/images/ingestion/registry_reader.py",
+      "original_line": 64,
+      "current_line": 64,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "8662e47d68ec8eaa995364916ca88f19bfa0f08c4766225f02993049be9ae1d2",
+      "reviewed_source_hashes": {
+        "modules/agent-context/images/ingestion/registry_reader.py": "383762e1f1a8201111759ede0d3d8ade26667573363d0ea01d821674a087cd2f"
+      },
+      "rationale": "The IN expression is generated only from the number of statuses using %s placeholders. Asset type and all statuses are separate parameters passed to cursor.execute."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=549",
+      "file": "modules/agent-context/scripts/cleanup_corrupt_repo_ids.py",
+      "original_line": 93,
+      "current_line": 92,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "a3afc00d9eb4f37ffee45fd837fb97ade19be826d6dac490547398d5f146f435",
+      "reviewed_source_hashes": {
+        "modules/agent-context/scripts/cleanup_corrupt_repo_ids.py": "d87747cff586ac69cf9dce3961d988cd434ba5ca17db6a7fec788be6f898456f"
+      },
+      "rationale": "CORRUPT_REPO_NAME_SQL is a module-local constant regular-expression predicate. No caller input reaches interpolated SQL. This SQL-injection disposition does not authorize executing the destructive cleanup."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=550",
+      "file": "modules/agent-context/scripts/cleanup_corrupt_repo_ids.py",
+      "original_line": 108,
+      "current_line": 107,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "2cf5a12d83e25605e34e1d409322ce9d3b7cd34321b2c9e657e383e4f69571de",
+      "reviewed_source_hashes": {
+        "modules/agent-context/scripts/cleanup_corrupt_repo_ids.py": "d87747cff586ac69cf9dce3961d988cd434ba5ca17db6a7fec788be6f898456f"
+      },
+      "rationale": "CORRUPT_SOURCE_REF_SQL is a module-local constant regular-expression predicate. No caller input reaches interpolated SQL. Operator approval and destructive cleanup semantics are outside this diagnostic."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=551",
+      "file": "modules/agent-context/scripts/cleanup_corrupt_repo_ids.py",
+      "original_line": 121,
+      "current_line": 121,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "96d4334b8eda709fbaf128ca610f96610cb503dd04a363f56e94a71dd6defd2b",
+      "reviewed_source_hashes": {
+        "modules/agent-context/scripts/cleanup_corrupt_repo_ids.py": "d87747cff586ac69cf9dce3961d988cd434ba5ca17db6a7fec788be6f898456f"
+      },
+      "rationale": "CORRUPT_REPO_NAME_SQL is a module-local constant regular-expression predicate. No caller input reaches interpolated SQL. This SQL-injection disposition does not authorize executing the destructive cleanup."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=552",
+      "file": "modules/agent-context/scripts/cleanup_corrupt_repo_ids.py",
+      "original_line": 124,
+      "current_line": 124,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "e6d49a161f14361bc26c801b3520a764da203a56053cfcad6b2639761cfc0521",
+      "reviewed_source_hashes": {
+        "modules/agent-context/scripts/cleanup_corrupt_repo_ids.py": "d87747cff586ac69cf9dce3961d988cd434ba5ca17db6a7fec788be6f898456f"
+      },
+      "rationale": "CORRUPT_SOURCE_REF_SQL is a module-local constant regular-expression predicate. No caller input reaches interpolated SQL. Operator approval and destructive cleanup semantics are outside this diagnostic."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=693",
+      "file": "modules/domain-apps/cyber/agent/skills/url-analysis/common_crawl.py",
+      "original_line": 134,
+      "current_line": 134,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "bcca2591af5e8cc80799a4ea67b6a7b9e6af46512d9b4c2698c5a3b331827bd4",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/cyber/agent/skills/url-analysis/common_crawl.py": "6cd5c5f48fff7c0f391a98e6f76f7d0ea5c22b5f5786883dcf71db1c013dc3f4"
+      },
+      "rationale": "query_for first validates catalog/table identifiers, crawl names and canonical domain. SQL identifiers use restricted identifier syntax, predicate fragments and MAX_ROWS are fixed, and placeholder count is generated from values length. The consumer passes returned values as Athena ExecutionParameters, with literal quotes escaped by the producer."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=719",
+      "file": "modules/domain-apps/superplane/executor/superplane_executor/deployment_registry.py",
+      "original_line": 194,
+      "current_line": 203,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "4db648d59927ac34f10c36b977290713504d3777717c6413fc0f4e667a0c1c1c",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/executor/superplane_executor/deployment_registry.py": "afb28734cd1681c0455d74bc3ef36241fab6784dbbf6c52ed65087293ef002ba"
+      },
+      "rationale": "registration_values returns a dictionary with fixed literal column keys after validating original admission. Only those keys generate INSERT identifiers; runtime identity values are separate positional asyncpg parameters."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=740",
+      "file": "modules/domain-apps/superplane/installation/config.py",
+      "original_line": 511,
+      "current_line": 514,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "3751d87add767d9d1bce40d21b89004d1526642b2d8db4972541c8bfa023aee3",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/installation/config.py": "69d1c4969e181136cc75e3f894a23713469a1d1617121ccf78993c378b187e9a"
+      },
+      "rationale": "Database bootstrap role/schema checks quote SQL literals by doubling single quotes and identifiers by doubling double quotes. The DO body is itself a quoted literal rather than an injectable dollar-delimited body. Schema/environment inputs are validated before rendering; no raw database name is inserted as SQL syntax."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=741",
+      "file": "modules/domain-apps/superplane/installation/config.py",
+      "original_line": 535,
+      "current_line": 538,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "57e08a9dff399f94df80bb520278442df6ebf8719e1f585672ee8fe5b862cedf",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/installation/config.py": "69d1c4969e181136cc75e3f894a23713469a1d1617121ccf78993c378b187e9a"
+      },
+      "rationale": "Database bootstrap role/schema checks quote SQL literals by doubling single quotes and identifiers by doubling double quotes. The DO body is itself a quoted literal rather than an injectable dollar-delimited body. Schema/environment inputs are validated before rendering; no raw database name is inserted as SQL syntax."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=742",
+      "file": "modules/domain-apps/superplane/installation/config.py",
+      "original_line": 566,
+      "current_line": 569,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "dac65108c94ddeb1226db1c9f91d564658b72bf2b9ae53e23eb6af95c1dede99",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/installation/config.py": "69d1c4969e181136cc75e3f894a23713469a1d1617121ccf78993c378b187e9a"
+      },
+      "rationale": "Database bootstrap role/schema checks quote SQL literals by doubling single quotes and identifiers by doubling double quotes. The DO body is itself a quoted literal rather than an injectable dollar-delimited body. Schema/environment inputs are validated before rendering; no raw database name is inserted as SQL syntax."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=750",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py",
+      "original_line": 303,
+      "current_line": 301,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "48adaa478ccd9c8c1c41b05d37ba0c3693146c44c3726e6dfa7fd3c2c0a13e2d",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py": "cde75f9ddb2c189ac5a08a5006842b0a7845b460391e3ec8576659880d7db85f"
+      },
+      "rationale": "Only fixed _TABLE=operation_budget_reservations is interpolated. All states, identities, limits and reasons use numbered placeholders; _execute/_fetchrow forward query and *args independently to asyncpg."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=751",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py",
+      "original_line": 384,
+      "current_line": 382,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "8a34b9a4df58354031075a91f48b37bb70f432ab6b22d9714e93cd46d0013d60",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py": "cde75f9ddb2c189ac5a08a5006842b0a7845b460391e3ec8576659880d7db85f"
+      },
+      "rationale": "Only fixed _TABLE=operation_budget_reservations is interpolated. All states, identities, limits and reasons use numbered placeholders; _execute/_fetchrow forward query and *args independently to asyncpg."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=752",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py",
+      "original_line": 424,
+      "current_line": 422,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "a96f304a8deea1b868fd6eadfeef9d76f8fa12619ad66632772ae4e46222e2df",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py": "cde75f9ddb2c189ac5a08a5006842b0a7845b460391e3ec8576659880d7db85f"
+      },
+      "rationale": "Only fixed _TABLE and generated numeric placeholder positions based on fixed COMMITTED_STATES are interpolated. Workspace, states and organization are separate asyncpg values through _fetchrow."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=753",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py",
+      "original_line": 476,
+      "current_line": 474,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "93c03e0dae12b219dbc69a970feeb81278896fecc23ec0f3127ef4433e19b98f",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py": "cde75f9ddb2c189ac5a08a5006842b0a7845b460391e3ec8576659880d7db85f"
+      },
+      "rationale": "Only fixed _TABLE=operation_budget_reservations is interpolated. All states, identities, limits and reasons use numbered placeholders; _execute/_fetchrow forward query and *args independently to asyncpg."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=754",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py",
+      "original_line": 501,
+      "current_line": 499,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "0d6fbf1b425077466720654d1c9587249b4d8ee4244e4ccc73b7366eda4c57cc",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_budget_ledger.py": "cde75f9ddb2c189ac5a08a5006842b0a7845b460391e3ec8576659880d7db85f"
+      },
+      "rationale": "Only fixed _TABLE=operation_budget_reservations is interpolated. All states, identities, limits and reasons use numbered placeholders; _execute/_fetchrow forward query and *args independently to asyncpg."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=755",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py",
+      "original_line": 41,
+      "current_line": 40,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "88afe783410b71ccc4e846f0d218dd3385d0baf48dbb99611a945cda78269c53",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py": "5d10998d19f96c1644c1a09e6fd48ef8af89e7ba7180595ad9436d927fdeea6c"
+      },
+      "rationale": "_REGISTERED is a module-local fixed SQL predicate. The concatenation never includes envelope values; the operation-specific query binds envelope.operation_id separately as $1."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=756",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py",
+      "original_line": 205,
+      "current_line": 204,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "931d42ecb1fea5e4ffee47363c3e984b473c24a9f7f7d73e58c4a1dd89527df4",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py": "5d10998d19f96c1644c1a09e6fd48ef8af89e7ba7180595ad9436d927fdeea6c"
+      },
+      "rationale": "_REGISTERED is a module-local fixed SQL predicate. The concatenation never includes envelope values; the operation-specific query binds envelope.operation_id separately as $1."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=757",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py",
+      "original_line": 333,
+      "current_line": 332,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "c690b63bd03342829c67d0c2a1f1a5308c1b8450cb4e686163ad02265c85ecfc",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/adapters/operation_dispatch.py": "5d10998d19f96c1644c1a09e6fd48ef8af89e7ba7180595ad9436d927fdeea6c"
+      },
+      "rationale": "_REGISTERED is a module-local fixed SQL predicate. The concatenation never includes envelope values; the operation-specific query binds envelope.operation_id separately as $1."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=759",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/installation.py",
+      "original_line": 186,
+      "current_line": 183,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "ac73acf998969e6f4d46d9f8447c2a68adc525c5201bd05330eac2dca82b1935",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/installation.py": "1c764b02338a54f734b127bc719631c947a4c2f4114c345720912e983b08f88d",
+        "modules/domain-apps/superplane/src/superplane-api/app/schema_boundary.py": "b86b586d3b959e6203ab45ae3f7b91883e95697e278fc7ab622e8046e8292b0d"
+      },
+      "rationale": "database_check obtains schema through schema_name, which accepts only [a-z][a-z0-9_]{0,62}, rejects reserved/public namespaces, and errors before query execution. The validated name is quoted as the sole interpolated identifier."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=760",
+      "file": "modules/domain-apps/superplane/src/superplane-api/app/routers/onboarding.py",
+      "original_line": 221,
+      "current_line": 219,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "9a55463991632d973a62b3c0279b3cc3a04d4d3f592b2f5f5bd221f1017af3ba",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/src/superplane-api/app/routers/onboarding.py": "76d9929de5d44c60f3538c33d664d8dc9e9cb46daaef51341010d95b20823a1c"
+      },
+      "rationale": "field is exactly idempotency_key or operation_id, selected by a boolean. Caller identity and organization remain $1/$2 values in connection.fetch."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=860",
+      "file": "modules/domain-apps/superplane/workspace_provisioning/artifacts.py",
+      "original_line": 99,
+      "current_line": 98,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "719416d40062a6a7a2c14fdf1160fed055c3df69164f40e67b97e705071413fc",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/workspace_provisioning/artifacts.py": "9f25d74d51aeb9575701e4eb026edbe9a11b6215e38b9c61a16822b5a3cbe8a4"
+      },
+      "rationale": "The values mapping is constructed using fixed literal column keys (including any update keyword keys); it does not merge caller-controlled key names. Only these keys and generated numeric placeholders form SQL. All dynamic metadata, identifiers and digests are independent asyncpg bind arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=861",
+      "file": "modules/domain-apps/superplane/workspace_provisioning/control_registry.py",
+      "original_line": 148,
+      "current_line": 147,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "b6ac19e338aded456c661d7f6d644e6575f0a81332dfc8c8beabee15bc7afc5d",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/workspace_provisioning/control_registry.py": "1a6470ecc6ae3b2a8583702feef5234f5b6a0f66100788a08eadae1760f08a7c"
+      },
+      "rationale": "The values mapping is constructed using fixed literal column keys (including any update keyword keys); it does not merge caller-controlled key names. Only these keys and generated numeric placeholders form SQL. All dynamic metadata, identifiers and digests are independent asyncpg bind arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=862",
+      "file": "modules/domain-apps/superplane/workspace_provisioning/effects.py",
+      "original_line": 153,
+      "current_line": 152,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "ce45650cd64177f4ad33fb8add998a9b24d24284a01f4672a0fe8ad0a937e863",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/workspace_provisioning/effects.py": "3ba56da604cad22771b8bfc29f57f3d1ab9f6b56e40c4d31aea9072d8297cbcf"
+      },
+      "rationale": "The values mapping is constructed using fixed literal column keys (including any update keyword keys); it does not merge caller-controlled key names. Only these keys and generated numeric placeholders form SQL. All dynamic metadata, identifiers and digests are independent asyncpg bind arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=865",
+      "file": "modules/domain-apps/superplane/workspace_provisioning/recovery_account_creation.py",
+      "original_line": 253,
+      "current_line": 252,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "719416d40062a6a7a2c14fdf1160fed055c3df69164f40e67b97e705071413fc",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/workspace_provisioning/recovery_account_creation.py": "028ce4ce172332375fc0fb0a7b54bb32543db988dc829ed81d46c9b318641248"
+      },
+      "rationale": "The values mapping is constructed using fixed literal column keys (including any update keyword keys); it does not merge caller-controlled key names. Only these keys and generated numeric placeholders form SQL. All dynamic metadata, identifiers and digests are independent asyncpg bind arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=866",
+      "file": "modules/domain-apps/superplane/workspace_provisioning/retirement_access_artifact.py",
+      "original_line": 183,
+      "current_line": 182,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "719416d40062a6a7a2c14fdf1160fed055c3df69164f40e67b97e705071413fc",
+      "reviewed_source_hashes": {
+        "modules/domain-apps/superplane/workspace_provisioning/retirement_access_artifact.py": "031be0538468a79bdc25001a59398180d4573ac9836864af1a44a5d68afb9b77"
+      },
+      "rationale": "The values mapping is constructed using fixed literal column keys (including any update keyword keys); it does not merge caller-controlled key names. Only these keys and generated numeric placeholders form SQL. All dynamic metadata, identifiers and digests are independent asyncpg bind arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=867",
+      "file": "modules/gateway/alembic/versions/021_tenant_memberships.py",
+      "original_line": 70,
+      "current_line": 68,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "e0b95aed53fb9caa55e023230315939f61955cac4a5a0e46ea6d1febb3c481be",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/021_tenant_memberships.py": "246ac7e97ee7bae6f8e3c4ab8ff769f837be267efc3a716cc37b90150e42fa77",
+        "modules/gateway/alembic/versions/040_team_memberships.py": "9b953cda634bf28db07c80133e811f0f204bf127b707601a2058228b7fd38027"
+      },
+      "rationale": "uuid_expr is selected from two hardcoded dialect-specific UUID expressions. No user string forms SQL syntax; remaining data is selected from database columns."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=868",
+      "file": "modules/gateway/alembic/versions/026_channel_tenant_map_installation_id.py",
+      "original_line": 117,
+      "current_line": 116,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "733054ee4d9ad8ddf522304fa01a2da2b99db41c2a3e89103b659b0d2177dd98",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/026_channel_tenant_map_installation_id.py": "621f83dd99bb024708f4c4c630de65aae54ef9b6650395907be2727635cb8872"
+      },
+      "rationale": "_installation_id_expr returns one of two hardcoded PostgreSQL/SQLite JSON extraction expressions, chosen by dialect. Metadata values are never string-interpolated."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=869",
+      "file": "modules/gateway/alembic/versions/026_channel_tenant_map_installation_id.py",
+      "original_line": 207,
+      "current_line": 205,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "05c237f9ce625adbaccc594494dd36a8ed91e10928418a2ba363ebe7b65529a1",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/026_channel_tenant_map_installation_id.py": "621f83dd99bb024708f4c4c630de65aae54ef9b6650395907be2727635cb8872"
+      },
+      "rationale": "uuid_expr is a hardcoded dialect expression. Installation ID, organization and source are bound by the separate SQLAlchemy parameter mapping."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=870",
+      "file": "modules/gateway/alembic/versions/040_team_memberships.py",
+      "original_line": 113,
+      "current_line": 111,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "f4afa18cd8f1fcfc1117cd4d7bcb9c0fc9ba5c8c08ad8caf4968f4d34ac521b7",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/021_tenant_memberships.py": "246ac7e97ee7bae6f8e3c4ab8ff769f837be267efc3a716cc37b90150e42fa77",
+        "modules/gateway/alembic/versions/040_team_memberships.py": "9b953cda634bf28db07c80133e811f0f204bf127b707601a2058228b7fd38027"
+      },
+      "rationale": "uuid_expr is selected from two hardcoded dialect-specific UUID expressions. No user string forms SQL syntax; remaining data is selected from database columns."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=871",
+      "file": "modules/gateway/alembic/versions/042_user_identity_primary.py",
+      "original_line": 114,
+      "current_line": 114,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "632f07799ad58eaca4518008c0acb7f9f198f001b9d184a3020f4db3668cea84",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/042_user_identity_primary.py": "cef9af56b1ad78dd5eabc4cf2302222e395f73c24426e832253447cc394ff8ca"
+      },
+      "rationale": "TABLE=user_identities and COLUMN=is_primary are module constants. The backfill includes no caller-driven identifiers or values in generated SQL."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=872",
+      "file": "modules/gateway/alembic/versions/043_person_anchor_namespace_rekey.py",
+      "original_line": 101,
+      "current_line": 101,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "fd0a9b4a283a422025509180f34941bd90a017d52da2e0ababb75384c20be2db",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/043_person_anchor_namespace_rekey.py": "ab1f3334a6d4c752b280e6af9c87a290554e856f03ebceff1f70152386b7a342"
+      },
+      "rationale": "CAP_TABLE=person_budget_configs and IDENTITY_TABLE=user_identities are fixed module constants. User/provider/namespace identifiers are separate SQLAlchemy named bind values when present."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=873",
+      "file": "modules/gateway/alembic/versions/043_person_anchor_namespace_rekey.py",
+      "original_line": 113,
+      "current_line": 112,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "19fcc7a5ee0ed211ffee624ed84b48288571975f00a3cfe15dc153de11b62045",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/043_person_anchor_namespace_rekey.py": "ab1f3334a6d4c752b280e6af9c87a290554e856f03ebceff1f70152386b7a342"
+      },
+      "rationale": "CAP_TABLE=person_budget_configs and IDENTITY_TABLE=user_identities are fixed module constants. User/provider/namespace identifiers are separate SQLAlchemy named bind values when present."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=874",
+      "file": "modules/gateway/alembic/versions/043_person_anchor_namespace_rekey.py",
+      "original_line": 157,
+      "current_line": 154,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "307457f7dac25c5343a8472e462aeea855f5131fe8849fb7249fb3e6feb7aa70",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/043_person_anchor_namespace_rekey.py": "ab1f3334a6d4c752b280e6af9c87a290554e856f03ebceff1f70152386b7a342"
+      },
+      "rationale": "CAP_TABLE=person_budget_configs and IDENTITY_TABLE=user_identities are fixed module constants. User/provider/namespace identifiers are separate SQLAlchemy named bind values when present."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=875",
+      "file": "modules/gateway/alembic/versions/048_team_integrity_gate.py",
+      "original_line": 67,
+      "current_line": 67,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "65317b04c6ae1b969ab69b8bb647e608136def4d3d5093c8f4a2bf7c34519a70",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/048_team_integrity_gate.py": "20209258dfbff4798c401ec3953d3f167c4cd643f4d5a4c60bb07c44637dd2a3"
+      },
+      "rationale": "sources is a fixed list organizations/users/teams with only the literal team_memberships optionally appended. Table names and source labels cannot come from caller text."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=876",
+      "file": "modules/gateway/alembic/versions/053_orchestration_flow_slug_unique.py",
+      "original_line": 69,
+      "current_line": 68,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "593f8bce6179a6f14e84aaa5f391d9609906968f8ee8c23c1307d424db7fb713",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/053_orchestration_flow_slug_unique.py": "f0443b1e1af2a311fe708658ffa1bb641d03e1f71ab4f6a10708b21cc28c841d"
+      },
+      "rationale": "TABLE=orchestration_flows is a fixed module constant; duplicate-group query has no caller-provided SQL fragments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=877",
+      "file": "modules/gateway/alembic/versions/056_persona_model_prefs.py",
+      "original_line": 210,
+      "current_line": 210,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "ff0e6dc2168b104e883a831c0daac6a2f98c651a27698f6972671e6a646fa29e",
+      "reviewed_source_hashes": {
+        "modules/gateway/alembic/versions/056_persona_model_prefs.py": "777e5d5843512ed95bd0ba1726f1a211332c32baa54c3f86a5fc0f63436f6c7e"
+      },
+      "rationale": "SETTINGS_TABLE=persona_model_policy_settings is a fixed module constant; inserted values are also fixed migration literals."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=934",
+      "file": "modules/gateway/lambda/pricing-refresh/publication.py",
+      "original_line": 40,
+      "current_line": 40,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "6693a99d9c4c87a9781317bd4c5bf790112c96d41fba255d7250c7766a7b757f",
+      "reviewed_source_hashes": {
+        "modules/gateway/lambda/pricing-refresh/publication.py": "412a772e3c4f849bc78c71fe0e0c1c346d3749f2fe30a9bc49ad931a03928f85"
+      },
+      "rationale": "lock controls only whether fixed FOR UPDATE syntax is appended; no text from callers enters the query."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=935",
+      "file": "modules/gateway/lambda/pricing-refresh/publication.py",
+      "original_line": 110,
+      "current_line": 110,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "3512fcceb1c5e711a11543379ba6cdf08712e869a2425be49ba5368a96852d20",
+      "reviewed_source_hashes": {
+        "modules/gateway/lambda/pricing-refresh/publication.py": "412a772e3c4f849bc78c71fe0e0c1c346d3749f2fe30a9bc49ad931a03928f85"
+      },
+      "rationale": "columns is a tuple of fixed pricing-column names. psycopg2.extras.execute_values performs value adaptation separately for all candidate data."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=937",
+      "file": "modules/gateway/pricing_policy/storage.py",
+      "original_line": 125,
+      "current_line": 125,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "959d5d9d3be64d2ac17600446835b8c6e4fbeaa696a02b76eacadc08efa7e2b3",
+      "reviewed_source_hashes": {
+        "modules/gateway/pricing_policy/storage.py": "b682876797c0548e3e49a62055180877a0e7244d24ec4360e331fd2cae7840e4"
+      },
+      "rationale": "RATE_COLUMNS is a fixed tuple of SQL identifiers, with one fixed excluded column. Generation ID remains a named psycopg bind placeholder."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=960",
+      "file": "modules/gateway/scripts/backfill_identity_provenance.py",
+      "original_line": 86,
+      "current_line": 85,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "a842c930713e4bd21e54467e7c4627a6811588c5577c8580c9e06910f5bbca51",
+      "reviewed_source_hashes": {
+        "modules/gateway/scripts/backfill_identity_provenance.py": "30176dfe13dd3f8e16aef65f58c761f007120329c80d0ad88b60e2caa0cfd599"
+      },
+      "rationale": "filter_sql is selected only from fixed GitHub identity/subquery fragments, and lock_sql is empty or FOR SHARE. Caller provider ID remains in the separate parameter mapping."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=961",
+      "file": "modules/gateway/scripts/backfill_member_org_ids.py",
+      "original_line": 121,
+      "current_line": 121,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "b149e92d8b75abc4132450d0dc71f4a074b7c79a206e9e45f5433e13933a962c",
+      "reviewed_source_hashes": {
+        "modules/gateway/scripts/backfill_member_org_ids.py": "f4c41cc728c4ed9c644be5d8d93943d4f752d90e66fe830ce2c7d0fcb80a5eff"
+      },
+      "rationale": "filter_sql is selected from fixed identity/subquery fragments. Provider ID and expanding proven_methods remain SQLAlchemy bound parameters."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1002",
+      "file": "modules/gateway/scripts/identity_snapshot_exporter.py",
+      "original_line": 203,
+      "current_line": 202,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "5ab0d8dea1255fa838617262d65091cedf967e2aef52a780f40fc96aff0e0160",
+      "reviewed_source_hashes": {
+        "modules/gateway/scripts/identity_snapshot_exporter.py": "23784ca688a3682e61a4f5eec6e2e6910967ec5645910c21bea6c8b7a0a886b0"
+      },
+      "rationale": "roles is a fixed recursive CTE over PostgreSQL role membership. Appended privilege checks are constant SQL; no runtime principal string is concatenated."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1003",
+      "file": "modules/gateway/scripts/identity_snapshot_exporter.py",
+      "original_line": 224,
+      "current_line": 223,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "4481808914f679a69734e769e41886109b706eee0b394409bbe8131565e14e2a",
+      "reviewed_source_hashes": {
+        "modules/gateway/scripts/identity_snapshot_exporter.py": "23784ca688a3682e61a4f5eec6e2e6910967ec5645910c21bea6c8b7a0a886b0"
+      },
+      "rationale": "roles is a fixed recursive CTE over PostgreSQL role membership. Appended privilege checks are constant SQL; no runtime principal string is concatenated."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1004",
+      "file": "modules/gateway/scripts/identity_snapshot_exporter.py",
+      "original_line": 304,
+      "current_line": 303,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "3f348be5589c849a25f10f4a6ad23c9022be016a26448d9a030604d4e4c8cd9b",
+      "reviewed_source_hashes": {
+        "modules/gateway/scripts/identity_snapshot_exporter.py": "23784ca688a3682e61a4f5eec6e2e6910967ec5645910c21bea6c8b7a0a886b0"
+      },
+      "rationale": "_table receives only the literal projection names organizations/identities/users/audit and uses fixed SCHEMA_NAME=s11_inventory. Tenant values are separate psycopg parameters where present."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1005",
+      "file": "modules/gateway/scripts/identity_snapshot_exporter.py",
+      "original_line": 341,
+      "current_line": 340,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "421f3c70637ac9761e9faa3db63b6f79a707fe7788e5e002a1d6fe99b4e2c0de",
+      "reviewed_source_hashes": {
+        "modules/gateway/scripts/identity_snapshot_exporter.py": "23784ca688a3682e61a4f5eec6e2e6910967ec5645910c21bea6c8b7a0a886b0"
+      },
+      "rationale": "_table receives only the literal projection names organizations/identities/users/audit and uses fixed SCHEMA_NAME=s11_inventory. Tenant values are separate psycopg parameters where present."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1006",
+      "file": "modules/gateway/scripts/identity_snapshot_exporter.py",
+      "original_line": 371,
+      "current_line": 370,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "27d4933a1f517cb542adf95dd6ffdf0dc6efd3b2a72449c794e7a1573056b758",
+      "reviewed_source_hashes": {
+        "modules/gateway/scripts/identity_snapshot_exporter.py": "23784ca688a3682e61a4f5eec6e2e6910967ec5645910c21bea6c8b7a0a886b0"
+      },
+      "rationale": "_table receives only the literal projection names organizations/identities/users/audit and uses fixed SCHEMA_NAME=s11_inventory. Tenant values are separate psycopg parameters where present."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1007",
+      "file": "modules/gateway/scripts/identity_snapshot_exporter.py",
+      "original_line": 401,
+      "current_line": 400,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "c7920b3a10e55a4a72ccbfd8fa21942e2a19bc8d0bb4eef5637864ed0c18bd55",
+      "reviewed_source_hashes": {
+        "modules/gateway/scripts/identity_snapshot_exporter.py": "23784ca688a3682e61a4f5eec6e2e6910967ec5645910c21bea6c8b7a0a886b0"
+      },
+      "rationale": "Projection schema/table names are fixed. IN placeholders are generated from fixed AUDIT_EVENT_ALLOWLIST length; tenant and event names are passed separately to cursor.execute."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1111",
+      "file": "modules/gateway/src/internal/status_callback_routes.py",
+      "original_line": 218,
+      "current_line": 217,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "fa2e80f77b1d7b7376f7cda72d8fb89781a51ec096b3c4f7a758eff4e66926b5",
+      "reviewed_source_hashes": {
+        "modules/gateway/src/internal/status_callback_routes.py": "b0b8662a4d7ca2b3ac7d499155c052f51ee08944fef743f7ca726475cefa3406"
+      },
+      "rationale": "tenant_clause is exactly AND tenant_id IS NULL or AND tenant_id = :tenant_id. Body status/detail/error, asset identity and verified callback grant/tenant facts remain SQLAlchemy bind values."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1112",
+      "file": "modules/gateway/src/internal/status_callback_routes.py",
+      "original_line": 246,
+      "current_line": 245,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "430389857a6108ba0549b434d92cc15fc7e6461c5ed99d4e1d5f2dd2c24d7d48",
+      "reviewed_source_hashes": {
+        "modules/gateway/src/internal/status_callback_routes.py": "b0b8662a4d7ca2b3ac7d499155c052f51ee08944fef743f7ca726475cefa3406"
+      },
+      "rationale": "tenant_clause is exactly AND tenant_id IS NULL or AND tenant_id = :tenant_id. Body status/detail/error, asset identity and verified callback grant/tenant facts remain SQLAlchemy bind values."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1147",
+      "file": "modules/harness/jobs/harness_jobs/admission.py",
+      "original_line": 1153,
+      "current_line": 1152,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "6cad213562e216155726cfca91d1497c6bb39765ee6ec8e669d37397207d88b5",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/admission.py": "c773b9dd6c2c5795ca699b8156063258521be10650ef0172a5cc0ead8f29cb03",
+        "modules/harness/jobs/harness_jobs/store.py": "14fbee3df78414cbfd42854e9c19cc9b159a2eba1ea986536ab2ee45ef69c326"
+      },
+      "rationale": "_COLUMNS is imported from harness_jobs.store as a fixed select-column string; operation ID remains the $1 bind argument."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1148",
+      "file": "modules/harness/jobs/harness_jobs/leases.py",
+      "original_line": 567,
+      "current_line": 566,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "cbc1d79251a9ced7de1b4e932a0d5b7bd8278e187d42107f27473a99e5e0d356",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/leases.py": "441c670658772b1b9b16bc926cda1b56da1c6d2a66f662d0b05f54f9d969932a"
+      },
+      "rationale": "Only fixed _LEASE_COLUMNS is interpolated. Lease identifiers, holder, fence and durations are positional asyncpg bind values; interval arithmetic operates on a parameter, not injected SQL text."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1149",
+      "file": "modules/harness/jobs/harness_jobs/leases.py",
+      "original_line": 684,
+      "current_line": 683,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "a1bcf711496aec2dfa3949d68a2bec2fd9d9e7792f2fe9f84da074889e26f2f2",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/leases.py": "441c670658772b1b9b16bc926cda1b56da1c6d2a66f662d0b05f54f9d969932a"
+      },
+      "rationale": "Only fixed _LEASE_COLUMNS is interpolated. Lease identifiers, holder, fence and durations are positional asyncpg bind values; interval arithmetic operates on a parameter, not injected SQL text."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1150",
+      "file": "modules/harness/jobs/harness_jobs/leases.py",
+      "original_line": 845,
+      "current_line": 844,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "074bd3cf0e7d8542875360d72a5a652eb7d4ce869bef0394c7385f1dd18565c3",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/leases.py": "441c670658772b1b9b16bc926cda1b56da1c6d2a66f662d0b05f54f9d969932a"
+      },
+      "rationale": "Only fixed _LEASE_COLUMNS is interpolated. Lease identifiers, holder, fence and durations are positional asyncpg bind values; interval arithmetic operates on a parameter, not injected SQL text."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1151",
+      "file": "modules/harness/jobs/harness_jobs/leases.py",
+      "original_line": 941,
+      "current_line": 940,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "ffc210d13f950c742fe6ecb812b8d8a40438d9dd92e830af434a5cec0e736857",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/leases.py": "441c670658772b1b9b16bc926cda1b56da1c6d2a66f662d0b05f54f9d969932a"
+      },
+      "rationale": "Only fixed _LEASE_COLUMNS is interpolated. Lease identifiers, holder, fence and durations are positional asyncpg bind values; interval arithmetic operates on a parameter, not injected SQL text."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1152",
+      "file": "modules/harness/jobs/harness_jobs/schema.py",
+      "original_line": 1478,
+      "current_line": 1478,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "213bd6b4c994917ab52123f72b2dfc5b883fc44eabf4550b26c6d5a87a6d761b",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/schema.py": "e05f9f29cd11bc9303f459d22f0414d2ae3e3a6928f44674a558ca475d4c43d3",
+        "modules/harness/jobs/harness_jobs/effects.py": "6f5a859591e133648331ee4151d9dc27a62bb37ffdda94b97e1aeb0f3e308c67"
+      },
+      "rationale": "DDL substitutions are generated from fixed _READ_ONLY_ACTIONS/_REMOVAL_ACTIONS provider/action allowlists, fixed allocation size and numeric Unicode whitespace codepoints. No operation/request value enters Python SQL construction. Runtime JSON fields are handled as PL/pgSQL values."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1153",
+      "file": "modules/harness/jobs/harness_jobs/schema.py",
+      "original_line": 1531,
+      "current_line": 1530,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "53e7a15e27c86a8f12712fc1649ae52bdef0c8ae7eab6d06904887c3f741a3c9",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/schema.py": "e05f9f29cd11bc9303f459d22f0414d2ae3e3a6928f44674a558ca475d4c43d3",
+        "modules/harness/jobs/harness_jobs/effects.py": "6f5a859591e133648331ee4151d9dc27a62bb37ffdda94b97e1aeb0f3e308c67"
+      },
+      "rationale": "DDL substitutions are generated from fixed _READ_ONLY_ACTIONS/_REMOVAL_ACTIONS provider/action allowlists, fixed allocation size and numeric Unicode whitespace codepoints. No operation/request value enters Python SQL construction. Runtime JSON fields are handled as PL/pgSQL values."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1154",
+      "file": "modules/harness/jobs/harness_jobs/store.py",
+      "original_line": 332,
+      "current_line": 331,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "00f4baaae5d36fd80e0a016938cf9db44173e0f6bbb5e716f4791b922ff787cf",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/store.py": "14fbee3df78414cbfd42854e9c19cc9b159a2eba1ea986536ab2ee45ef69c326"
+      },
+      "rationale": "Only fixed _COLUMNS is interpolated into INSERT/SELECT/UPDATE. All dynamic request, tenant/workspace, state, detail, idempotency, version and limit fields remain numbered asyncpg arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1155",
+      "file": "modules/harness/jobs/harness_jobs/store.py",
+      "original_line": 396,
+      "current_line": 395,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "3cc51582a2490b1b1ae06c057c0f6222f7410f22ddd366d0160c650ef56ae8dd",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/store.py": "14fbee3df78414cbfd42854e9c19cc9b159a2eba1ea986536ab2ee45ef69c326"
+      },
+      "rationale": "Only fixed _COLUMNS is interpolated into INSERT/SELECT/UPDATE. All dynamic request, tenant/workspace, state, detail, idempotency, version and limit fields remain numbered asyncpg arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1156",
+      "file": "modules/harness/jobs/harness_jobs/store.py",
+      "original_line": 456,
+      "current_line": 455,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "6ced3997ef9a23d89abcf3184adca5d73269901b7a41c71f15564a76a3ba15de",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/store.py": "14fbee3df78414cbfd42854e9c19cc9b159a2eba1ea986536ab2ee45ef69c326"
+      },
+      "rationale": "Only fixed _COLUMNS is interpolated into INSERT/SELECT/UPDATE. All dynamic request, tenant/workspace, state, detail, idempotency, version and limit fields remain numbered asyncpg arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1157",
+      "file": "modules/harness/jobs/harness_jobs/store.py",
+      "original_line": 479,
+      "current_line": 478,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "2cfdc374281db73b0640ea40d7293895c7219ac8d5abfc35718a4c465fd5cfd0",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/store.py": "14fbee3df78414cbfd42854e9c19cc9b159a2eba1ea986536ab2ee45ef69c326"
+      },
+      "rationale": "Only fixed _COLUMNS is interpolated into INSERT/SELECT/UPDATE. All dynamic request, tenant/workspace, state, detail, idempotency, version and limit fields remain numbered asyncpg arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1158",
+      "file": "modules/harness/jobs/harness_jobs/store.py",
+      "original_line": 504,
+      "current_line": 503,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "8d19f33e3dbe5cdab2f1ea4f416fbf91fde85fc617a51214aaedac8b79a7d0ac",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/store.py": "14fbee3df78414cbfd42854e9c19cc9b159a2eba1ea986536ab2ee45ef69c326"
+      },
+      "rationale": "Only fixed _COLUMNS is interpolated into INSERT/SELECT/UPDATE. All dynamic request, tenant/workspace, state, detail, idempotency, version and limit fields remain numbered asyncpg arguments."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1159",
+      "file": "modules/harness/jobs/harness_jobs/store.py",
+      "original_line": 546,
+      "current_line": 545,
+      "rule": "B608",
+      "severity": "MEDIUM",
+      "statement_ast_sha256": "334045dfed641b1872b9a4e66dbd9e1809844b1f5d23a58842dd5a92fcaf3835",
+      "reviewed_source_hashes": {
+        "modules/harness/jobs/harness_jobs/store.py": "14fbee3df78414cbfd42854e9c19cc9b159a2eba1ea986536ab2ee45ef69c326"
+      },
+      "rationale": "Only fixed _COLUMNS is interpolated into INSERT/SELECT/UPDATE. All dynamic request, tenant/workspace, state, detail, idempotency, version and limit fields remain numbered asyncpg arguments."
+    }
+  ]
+}

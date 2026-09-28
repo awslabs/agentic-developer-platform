@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "public-api.schema.json",
+  "title": "Task API public request and response contract v1",
+  "description": "The externally visible surface: what a registered service sends to POST /v1/tasks, /messages, /cancel and /v1/task-artifacts, and what it receives back. Every request object sets additionalProperties false, which is how the design's rule that public requests cannot specify tenant, owner, executable, model override, generation, attempt, queue, grant or transport credentials becomes mechanically checkable rather than a prose promise. Design revision b5761a4a2502aceaa9133afef552b567a19cb46e, design section 5.",
+  "$defs": {
+    "submit_request": {
+      "type": "object",
+      "description": "POST /v1/tasks body. Requires an Idempotency-Key header (1-128 printable ASCII), validated separately from this body.",
+      "additionalProperties": false,
+      "required": ["schema_version", "persona", "instructions"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "persona": { "$ref": "common.schema.json#/$defs/persona" },
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16000,
+          "description": "Nonempty. Limit from design section 10."
+        },
+        "inputs": {
+          "type": "object",
+          "description": "Free-form caller-supplied task content. Task content is not authority."
+        },
+        "artifact_ids": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/artifact_id" },
+          "description": "At most 4 input artifacts, each owned by the same principal and tenant. Digest and version are pinned at admission."
+        },
+        "external_reference": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Caller correlation data only. Never an idempotency or authority input."
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "description": "Caller acceptance criteria are task content, not authority."
+        }
+      }
+    },
+
+    "submit_response": {
+      "type": "object",
+      "description": "HTTP 202 durable acceptance receipt.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "invocation_id",
+        "status",
+        "created_at",
+        "deadline_at",
+        "status_url",
+        "events_url",
+        "request_id"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
+        "status": {
+          "enum": ["accepted", "queued"],
+          "description": "A 202 reports durable acceptance. It never reports running or a terminal state."
+        },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "status_url": { "type": "string", "pattern": "^/v1/tasks/tsk_[0-9a-f-]+$" },
+        "events_url": { "type": "string", "pattern": "^/v1/tasks/tsk_[0-9a-f-]+/events$" },
+        "request_id": { "$ref": "common.schema.json#/$defs/request_id" },
+        "idempotent_replay": {
+          "type": "boolean",
+          "description": "True when the same key and body returned the existing task rather than creating one."
+        }
+      }
+    },
+
+    "task_snapshot": {
+      "type": "object",
+      "description": "GET /v1/tasks/{task_id} strongly consistent snapshot. Unknown evidence is nullable, never zero or success.",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "task_id",
+        "invocation_id",
+        "persona",
+        "status",
+        "version",
+        "created_at",
+        "updated_at",
+        "deadline_at",
+        "latest_event_cursor",
+        "oldest_event_cursor",
+        "generation",
+        "runtime_attempt_id",
+        "execution_health",
+        "recovery_required",
+        "result",
+        "error",
+        "input_request",
+        "command_receipts",
+        "queue_ack_status",
+        "request_id"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "task_id": { "$ref": "common.schema.json#/$defs/task_id" },
+        "invocation_id": { "$ref": "common.schema.json#/$defs/invocation_id" },
+        "persona": { "$ref": "common.schema.json#/$defs/persona" },
+        "status": { "$ref": "common.schema.json#/$defs/task_status" },
+        "version": { "$ref": "common.schema.json#/$defs/task_version" },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "latest_event_cursor": { "$ref": "common.schema.json#/$defs/nullable_event_cursor" },
+        "oldest_event_cursor": { "$ref": "common.schema.json#/$defs/nullable_event_cursor" },
+        "generation": { "$ref": "common.schema.json#/$defs/generation" },
+        "runtime_attempt_id": { "$ref": "common.schema.json#/$defs/runtime_attempt_id" },
+        "execution_health": { "$ref": "common.schema.json#/$defs/execution_health" },
+        "recovery_required": { "type": "boolean" },
+        "external_reference": { "type": ["string", "null"], "maxLength": 256 },
+        "result": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "results.schema.json#/$defs/task_result" }
+          ],
+          "description": "Null until a terminal successful outcome commits."
+        },
+        "error": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "results.schema.json#/$defs/task_error" }
+          ]
+        },
+        "input_request": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "public-api.schema.json#/$defs/input_request" }
+          ],
+          "description": "Present while the task waits for follow-up input."
+        },
+        "command_receipts": {
+          "type": "array",
+          "items": { "$ref": "commands.schema.json#/$defs/command_receipt" }
+        },
+        "queue_ack_status": { "$ref": "common.schema.json#/$defs/queue_ack_status" },
+        "request_id": { "$ref": "common.schema.json#/$defs/request_id" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "error": {
+                "type": "object",
+                "required": [
+                  "runtime_not_started"
+                ],
+                "properties": {
+                  "runtime_not_started": {
+                    "const": true
+                  }
+                }
+              }
+            },
+            "required": [
+              "error"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "cancelled"
+              },
+              "runtime_attempt_id": {
+                "const": null
+              },
+              "recovery_required": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "description": "A completed task has a committed successful result, no error and no open input request.",
+          "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "result": { "$ref": "results.schema.json#/$defs/task_result" },
+              "error": { "type": "null" },
+              "input_request": { "type": "null" }
+            }
+          }
+        },
+        {
+          "description": "A failed task has a failed error receipt, no successful result and no open input request.",
+          "if": { "properties": { "status": { "const": "failed" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "result": { "type": "null" },
+              "error": {
+                "$ref": "results.schema.json#/$defs/task_error",
+                "properties": { "outcome": { "const": "failed" } }
+              },
+              "input_request": { "type": "null" }
+            }
+          }
+        },
+        {
+          "description": "A cancelled task has a cancelled error receipt, no successful result and no open input request.",
+          "if": { "properties": { "status": { "const": "cancelled" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "result": { "type": "null" },
+              "error": {
+                "$ref": "results.schema.json#/$defs/task_error",
+                "properties": { "outcome": { "const": "cancelled" } }
+              },
+              "input_request": { "type": "null" }
+            }
+          }
+        },
+        {
+          "description": "Only waiting_for_input carries an open clarification request.",
+          "if": { "properties": { "status": { "const": "waiting_for_input" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "result": { "type": "null" },
+              "error": { "type": "null" },
+              "input_request": { "$ref": "public-api.schema.json#/$defs/input_request" }
+            }
+          },
+          "else": { "properties": { "input_request": { "type": "null" } } }
+        },
+        {
+          "description": "Nonterminal states cannot carry terminal result or error receipts.",
+          "if": {
+            "properties": {
+              "status": { "enum": ["accepted", "queued", "running", "waiting_for_input", "cancel_requested"] }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "result": { "type": "null" },
+              "error": { "type": "null" }
+            }
+          }
+        }
+      ]
+    },
+
+    "input_request": {
+      "type": "object",
+      "description": "An open clarification request from the running agent.",
+      "additionalProperties": false,
+      "required": ["input_request_id", "prompt", "requested_at"],
+      "properties": {
+        "input_request_id": { "$ref": "common.schema.json#/$defs/uuid4" },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "requested_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+
+    "message_request": {
+      "type": "object",
+      "description": "POST /v1/tasks/{task_id}/messages body. Follow-up input. Ordinary input never grants another resource or approval.",
+      "additionalProperties": false,
+      "required": ["schema_version", "command_id", "text"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "command_id": { "$ref": "common.schema.json#/$defs/command_id" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "reply_to": {
+          "$ref": "common.schema.json#/$defs/uuid4",
+          "description": "Optional input-request UUID being answered. A stale reply_to conflicts."
+        }
+      }
+    },
+
+    "cancel_request": {
+      "type": "object",
+      "description": "POST /v1/tasks/{task_id}/cancel body. Same-intent retries keep the same command ID.",
+      "additionalProperties": false,
+      "required": ["schema_version", "command_id"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "command_id": { "$ref": "common.schema.json#/$defs/command_id" },
+        "reason": { "type": "string", "maxLength": 1000 }
+      }
+    },
+
+    "artifact_upload_request": {
+      "type": "object",
+      "description": "POST /v1/task-artifacts metadata. The gateway derives owner and storage location; the caller supplies no bucket, key or URL.",
+      "additionalProperties": false,
+      "required": ["schema_version", "content_type", "content_sha256", "content_length"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "content_type": { "$ref": "common.schema.json#/$defs/content_type" },
+        "content_sha256": { "$ref": "common.schema.json#/$defs/sha256_digest" },
+        "content_length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144,
+          "description": "At most 256 KiB per input artifact."
+        },
+        "filename": { "type": "string", "maxLength": 256 }
+      }
+    },
+
+    "artifact_upload_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "artifact_id",
+        "version",
+        "content_sha256",
+        "content_type",
+        "created_at",
+        "expires_at",
+        "request_id"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "artifact_id": { "$ref": "common.schema.json#/$defs/artifact_id" },
+        "version": { "type": "integer", "minimum": 1 },
+        "content_sha256": { "$ref": "common.schema.json#/$defs/sha256_digest" },
+        "content_type": { "$ref": "common.schema.json#/$defs/content_type" },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "expires_at": {
+          "$ref": "common.schema.json#/$defs/timestamp",
+          "description": "Unclaimed uploads expire after 24 hours. A referenced artifact receives the task's retention."
+        },
+        "request_id": { "$ref": "common.schema.json#/$defs/request_id" },
+        "download_url": {
+          "not": {},
+          "description": "Forbidden. No long-lived presigned download URL is issued; bytes stream through the gateway with periodic access checks."
+        }
+      }
+    }
+  }
+}

@@ -9,7 +9,10 @@ data/versioning model the monitoring (#1140) and upgrade (#1141) pillars build o
 **Scope of this doc:** the API-first contract, the multi-tenant data model, the
 version model, progress streaming, and how all of it composes with pipelines
 that **already exist** today. It does *not* re-specify the per-phase verification
-checks — those live in [`phase-verification.md`](./phase-verification.md).
+checks. Those live in code — `modules/platform-deploy-mgmt/platform_deploy_mgmt/checks/`
+(Phase 1 implemented today) — plus the per-phase `Verify` blocks in
+[`deploy-quickstart.md`](./deploy-quickstart.md). A consolidated whole-lifecycle
+check spec is tracked by #1138.
 
 ---
 
@@ -36,7 +39,7 @@ GitHub issue creation.
 |---|---|---|
 | Connect an AWS account (CFN quick-create → cross-account role) | `modules/gateway/src/auth/aws_connect_routes.py`, `ConnectAws.tsx` (#562) | ✅ ships |
 | Spawn a deploy-instance (parent + 11 phase children, sub-issue links) | `.github/workflows/spawn-deploy-instance.yml` | ✅ ships |
-| Cross-account credential assume for a phase pipeline | `.github/actions/load-deploy-config` → `assume-customer-creds.py` → gateway `/internal/v1/credential-assume-role` | ✅ ships |
+| Cross-account credential assume for a phase pipeline | Legacy `.github/actions/load-deploy-config` path | 🔴 disabled; customer-account inputs fail before plan/apply/destroy |
 | Phase apply pipelines | `platform-infra-apply.yml`, `gateway-infra-apply.yml`, `gateway-deploy.yml`, `webhook-ingress-deploy.yml`, … | ✅ ships |
 | Orchestrator agent | `@agent-operations` persona | ✅ ships |
 | Deterministic phase verification (Phase 1) | `platform-deploy-mgmt-verify.yml`, `modules/platform-deploy-mgmt/` | 🟡 Phase 1 only; 2–9 stubbed (#1137/#1138) |
@@ -681,8 +684,9 @@ The run history (`deployment_runs` ordered by `started_at`, each with
    (simplest, correct); revisit `NOTIFY` only if fan-out cost warrants.
 4. **Version catalog source** — start `platform_versions` as a checked-in
    manifest updated by release CI, or a table populated by a release workflow?
-5. **Deploy-capable IAM tier** — the current Connect-AWS role is `ReadOnlyAccess`;
-   a deploy needs write. Tracked separately (permission-tier decision deferred).
+5. **Deploy-capable IAM tier integration** — the scoped template contract ships,
+   but registration, Terraform boundary propagation, and live validation remain
+   required before hosted execution can be enabled.
 
 ---
 
@@ -692,9 +696,10 @@ The run history (`deployment_runs` ordered by `started_at`, each with
   #1137/#1138 (phase checks), #1139 (orchestrator rules), #1140 (monitor),
   #1141 (upgrade), #1142 (module + admin SPA), #1143 (one-click SPA), #1125
   (GitHub App orchestration).
-- [`phase-verification.md`](./phase-verification.md) — per-phase check spec.
+- `modules/platform-deploy-mgmt/platform_deploy_mgmt/checks/` — per-phase checks as
+  code (Phase 1 today); consolidated spec tracked by #1138.
 - Connect-AWS: `modules/gateway/src/auth/aws_connect_routes.py`, `ConnectAws.tsx` (#562).
-- Spawn + cross-account assume: `.github/workflows/spawn-deploy-instance.yml`,
-  `.github/actions/load-deploy-config`, `platform/scripts/assume-customer-creds.py`.
+- Legacy hosted path (disabled): `.github/workflows/spawn-deploy-instance.yml` and
+  `.github/actions/load-deploy-config`.
 - Evidence infra: `modules/platform-deploy-mgmt/infra/main.tf`.
 - Fresh-account reliability EPIC #2571; deploy-instance example #2899.

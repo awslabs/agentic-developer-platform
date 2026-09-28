@@ -1,7 +1,7 @@
 """Admin read-only endpoints for adversarial E2E and operational inspection.
 
 Issue #3462: The credential-binding adversarial E2E script needs to:
-  1. Verify sandbox tenant config (enable_user_credentials + enforce_credential_binding)
+  1. Verify sandbox tenant config (enable_user_credentials + authenticated run binding)
   2. Query audit entries by provenance_id to assert the boundary held
 
 Both are read-only, internal-only (X-Internal-Api-Key / IRSA dual-auth).
@@ -43,7 +43,7 @@ async def get_tenant_config(
     return {
         "tenant": tenant,
         "enable_user_credentials": settings.enable_user_credentials,
-        "enforce_credential_binding": settings.enforce_credential_binding,
+        "credential_binding_mode": "authenticated_run",
     }
 
 

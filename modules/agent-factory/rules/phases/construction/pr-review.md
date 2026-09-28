@@ -1,479 +1,160 @@
 # PR Review Workflow
 
-## Purpose
-Review pull requests, ensure quality, make fixes if needed, and merge to main.
+## Purpose and owner
 
-## Primary Agent
-@agent-reviewer
+The assigned reviewer owns **review → repair → verification → final report** for
+one existing PR. Fix concrete issues within the accepted scope and available
+authority instead of handing them back merely because they were found in review.
+The review task ends with a verified result or a specific blocker. The configured
+merge owner handles merging; review is not blanket merge/deployment authority.
+Apply `rules/personas/reviewer.md` for the complete repair and evidence contract.
 
----
+## 1. Verify the target and ownership
 
-## Step 1: Find the Associated PR
-
-When triggered on an issue, first find the PR:
-
-```bash
-# Find PR linked to this issue
-gh pr list --state open --json number,title,headRefName,body | \
-  jq -r ".[] | select(.body | contains(\"#$ISSUE_NUMBER\") or .headRefName | contains(\"issue-$ISSUE_NUMBER\"))"
-
-# Or by branch naming convention
-gh pr list --head "agent/issue-$ISSUE_NUMBER" --json number,title,url
-```
-
-If no PR found, check if one was recently merged or closed.
-
----
-
-## Step 2: Review the PR
-
-### 2.1 Get PR Details
-```bash
-PR_NUMBER=<from step 1>
-
-# View PR summary
-gh pr view $PR_NUMBER
-
-# View changed files
-gh pr diff $PR_NUMBER --name-only
-
-# View full diff
-gh pr diff $PR_NUMBER
-```
-
-### 2.2 Review Checklist
-
-**Code Quality:**
-- [ ] Code follows project conventions and style
-- [ ] No obvious bugs or logic errors
-- [ ] Error handling is appropriate
-- [ ] No hardcoded secrets or sensitive data
-- [ ] No unnecessary complexity
-
-**Completeness:**
-- [ ] All acceptance criteria from issue are met
-- [ ] Required files are created/modified
-- [ ] No missing pieces from the task description
-
-**Best Practices:**
-- [ ] DRY - no unnecessary duplication
-- [ ] SOLID principles followed (where applicable)
-- [ ] Appropriate comments for complex logic
-- [ ] No TODO or FIXME that should be addressed now
-
-**Security (for infrastructure/ops PRs):**
-- [ ] IAM policies follow least privilege
-- [ ] No overly permissive security groups
-- [ ] Secrets managed properly (not hardcoded)
-- [ ] Resource naming follows conventions
-
----
-
-## Step 2.5: Security Review (REQUIRED)
-
-**IMPORTANT**: Run security checks on EVERY PR before approving.
-
-### 2.5.1 Automated Security Scans
+Use the engine's bound PR or the explicitly assigned repository/PR. Read its issue,
+accepted design and applicable repository instructions. Verify the current state:
 
 ```bash
-# Check for secrets in code (gitleaks)
-if command -v gitleaks &>/dev/null; then
-  gitleaks detect --source . --no-git --redact -v
-fi
-
-# Check for hardcoded secrets patterns manually
-grep -rn --include="*.ts" --include="*.js" --include="*.py" --include="*.yaml" --include="*.yml" \
-  -E "(password|secret|api_key|apikey|token|credential).*[=:].*['\"][^'\"]{8,}" . || true
-
-# Check for AWS credentials
-grep -rn --include="*.ts" --include="*.js" --include="*.py" --include="*.yaml" \
-  -E "AKIA[0-9A-Z]{16}" . || true
-
-# NPM audit (for Node.js projects)
-if [ -f package.json ]; then
-  npm audit --audit-level=high 2>/dev/null || echo "NPM audit found issues"
-fi
-
-# Check for overly permissive permissions
-grep -rn --include="*.tf" --include="*.yaml" --include="*.yml" \
-  -E '(\*:\*|"Action": "\*"|0\.0\.0\.0/0|::/0)' . || true
+gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" \
+  --json number,state,isDraft,headRefName,headRefOid,baseRefName,body
 ```
 
-### 2.5.2 Manual Security Checklist
+Stop on a missing, ambiguous, closed or draft target. Do not choose a PR by title
+similarity, mark a draft ready, or create another PR to publish the review.
+Record the head SHA. Fetch and inspect that revision and its diff; do not review
+an unrelated checkout or trust the description as proof.
 
-**Secrets & Credentials:**
-- [ ] No hardcoded passwords, API keys, or tokens
-- [ ] No AWS access keys or secret keys in code
-- [ ] Secrets use environment variables or secret managers
-- [ ] .gitignore includes sensitive file patterns
+Before any repair, verify the current branch-writing owner/claim and run evidence.
+If another writer is active or ownership is uncertain, report that concrete hold.
+Do not race another developer/reviewer/supervisor, reset its work or force-push.
 
-**Input Validation:**
-- [ ] User inputs are validated and sanitized
-- [ ] SQL queries use parameterized statements (no string concat)
-- [ ] No eval() or exec() with user input
-- [ ] File paths are validated (no path traversal)
+## 2. Verify requirements and security
 
-**Authentication & Authorization:**
-- [ ] Auth checks on all protected endpoints
-- [ ] No auth bypass vulnerabilities
-- [ ] Proper session management
-- [ ] Least privilege access
+Extract the acceptance criteria, invariants and prohibited changes. Verify them
+against current implementation, including unchanged code, and appropriate tests.
+An absent diff line is not proof of missing functionality. Separate criteria due
+at code merge from explicitly deferred live/deployment acceptance.
 
-**Infrastructure Security:**
-- [ ] IAM roles follow least privilege
-- [ ] Security groups are restrictive
-- [ ] No public S3 buckets unless intended
-- [ ] Encryption enabled for data at rest/transit
+For each finding record:
 
-**Dependencies:**
-- [ ] No known vulnerable dependencies (npm audit, pip-audit)
-- [ ] Dependencies are from trusted sources
-- [ ] Lock files are committed
+- The violated requirement or demonstrated failure and its practical impact.
+- Reproduction/evidence, impact severity, confidence and approval impact.
+- Whether it is fixed, an unresolved blocker, or an optional follow-up.
 
-### 2.5.3 OWASP Top 10 Quick Check
+Block on real correctness/security defects, applicable unmet acceptance criteria
+and required checks. Do not turn preferences, speculative hardening or unrelated
+inherited debt into mandatory work. Follow the project's threat model and verify
+reachability and impact before calling inherited code an active vulnerability.
 
-| Vulnerability | Check |
-|--------------|-------|
-| Injection | No unsanitized input in queries/commands |
-| Broken Auth | Proper auth on all endpoints |
-| Sensitive Data | No secrets in code, encryption used |
-| XXE | XML parsing configured securely |
-| Broken Access | Authorization checks present |
-| Misconfig | Secure defaults, no debug in prod |
-| XSS | Output encoding, CSP headers |
-| Insecure Deserial | No untrusted deserialization |
-| Vulnerable Deps | npm audit / pip-audit clean |
-| Logging | No sensitive data in logs |
+Run `/security-review` before approving. Inspect affected authentication,
+authorization, input handling, secret exposure and dependency/configuration risks.
+Scanner output is input to investigation, not automatic proof. Changes to live
+permissions, credentials, resources or security policy need their existing
+explicit authority; do not perform them merely to clear a finding.
 
-### 2.5.4 Security Issues You CAN Fix
+## 3. Repair in the same review task
 
-**Secrets & Credentials:**
-- Hardcoded API keys → Replace with `process.env.API_KEY`
-- Hardcoded passwords → Replace with environment variable reference
-- AWS credentials in code → Remove and add to .env.example
+For confirmed in-scope defects with a clear solution, **make the correction on the
+existing PR branch**. Fix missing behavior, logic/configuration errors, failing
+tests and inaccurate required handoff evidence. Work size alone does not require
+a developer handoff if scope, ownership, authority and remaining budget allow it.
+Group related findings into a bounded repair batch; avoid unrelated cleanup.
 
-**Permissions & Access:**
-- Overly permissive IAM (`*`) → Scope to specific resources/actions
-- Open security groups (`0.0.0.0/0`) → Restrict to specific CIDRs
-- Public S3 buckets → Add `block_public_access = true`
+A read-only delegated review produces findings. The owning reviewer carries out
+the authorized corrections using its editing path; do not send the story back
+because that particular review tool is read-only. Respect an explicitly read-only
+parent task, unavailable write authority and any concurrent writer.
 
-**Input Validation:**
-- Missing input sanitization → Add validation function
-- SQL string concatenation → Convert to parameterized query
-- Path traversal risk → Add path validation
+Reproduce the defect and add a regression where it protects meaningful behavior.
+Inspect your repair diff. Stage only intended files, commit with the fix described,
+and push through the authorized path to the same PR branch. Verify the remote
+head has not changed before writing. If it has, reconcile the new work and
+ownership before proceeding; never overwrite it.
 
-**Dependencies:**
-- Vulnerable packages → Run `npm audit fix` or update versions
-- Outdated dependencies → Update to patched versions
+Do not manually dispatch a developer or another reviewer solely because you
+found or fixed an issue. Preserve the current action, lineage, claim and budget;
+cooperate with an existing engine-scheduled review and do not reset limits.
 
-**Configuration:**
-- Debug mode in prod → Set `DEBUG=false`
-- Missing security headers → Add helmet/security middleware
-- Insecure defaults → Set secure default values
+Handoff only when a concrete missing decision/scope, authority/input, active
+writer, external failure or exhausted limit prevents a verified repair. Complete
+independent authorized repairs first, then report the remaining blocker, why you
+cannot fix it, the owner and next action. A billing/runner outage is an external
+check failure, not a reason to ask the developer for arbitrary code changes.
 
-### 2.5.5 Security Issues That BLOCK PR
+## 4. Verify the repaired revision
 
-Do NOT merge if these are found and can't be fixed:
-- Authentication bypass vulnerabilities
-- Authorization flaws (privilege escalation)
-- Remote code execution risks
-- Unfixable critical CVEs
-- Business logic security decisions needed
-
-### 2.5.6 Log Review Findings (REQUIRED)
-
-**ALWAYS create a review log file** for tracking issues over time:
+Run affected tests, integrations and required checks with pinned tools. After a
+bounded repair, reuse identified evidence for unchanged areas and broaden testing
+only when the change, new failures or unresolved concerns justify it. Reassess
+security on the changed surface. Report absent tooling, skipped checks and missing
+live inputs honestly; they are not passes.
 
 ```bash
-# Create review log directory if needed
-mkdir -p data/code-review
-
-# Create review log file
-REVIEW_FILE="data/code-review/review-$(date +%Y%m%d)-pr-$PR_NUMBER.md"
+gh pr checks "$PR_NUMBER" --repo "$TARGET_REPO"
 ```
 
-**Review log format** (`data/code-review/review-YYYYMMDD-pr-NNN.md`):
-```markdown
-# Code Review Log
+For failed CI, read the job/step evidence. Repair failures caused by the change;
+report an external billing, runner or credential failure with its owner. Never
+suppress required checks or rerun an unchanged external failure indefinitely.
 
-**PR**: #[PR_NUMBER]
-**Issue**: #[ISSUE_NUMBER]
-**Reviewer**: @agent-reviewer
-**Date**: [YYYY-MM-DD]
-**Branch**: [branch-name]
+Re-read the remote head before publishing the final result. Changed code
+invalidates earlier approval: record fresh functional/security evidence for the
+final SHA. The reviewer is the author of its repair; preserve attribution and
+satisfy any independently required approval. Do not claim a self-review is that
+independent approval or launch a redundant reviewer to satisfy a made-up rule.
 
-## Summary
-- Files Reviewed: [N]
-- Issues Found: [N]
-- Issues Fixed: [N]
-- Security Issues: [N]
+## 5. Publish one clear final outcome
 
-## Findings
+During work, report actual phase/owner transitions: reviewing, reviewer fixing,
+verifying, or blocked on a named input/check. Mark interim findings provisional.
+Do not publish a final REQUEST CHANGES before attempting the repairs you own.
 
-### Security Issues
-| Severity | Category | File | Line | Description | Status |
-|----------|----------|------|------|-------------|--------|
-| HIGH | Hardcoded Secret | src/config.ts | 42 | API key in code | ✅ Fixed |
-| MEDIUM | Vulnerable Dep | package.json | - | lodash < 4.17.21 | ✅ Fixed |
+Use the existing structured review/artifact channel and the assigned PR. The
+report starts with:
 
-### Code Quality Issues
-| Category | File | Line | Description | Status |
-|----------|------|------|-------------|--------|
-| Error Handling | src/api.ts | 55 | Missing try/catch | ✅ Fixed |
-| Style | src/utils.ts | 12 | Inconsistent naming | ✅ Fixed |
+- Final verdict and verified head SHA.
+- Fixed findings, repair author and commit(s), with verification evidence.
+- Remaining blockers, check status and the next owner/action.
+- Optional follow-ups, clearly separate from required repairs.
 
-## Fixes Applied
-1. `src/config.ts:42` - Replaced hardcoded API key with `process.env.API_KEY`
-2. `package.json` - Updated lodash to 4.17.21
+Publish any required formal GitHub review with `adp-review submit`, the authorized
+path:
 
-## Verdict
-- [x] Code Quality: Passed
-- [x] Security: Passed
-- [x] Ready to Merge
+```
+adp-review submit --repo OWNER/NAME --pr N --event APPROVE --body-file FILE
 ```
 
-**Commit the review log to the PR branch:**
-```bash
-git add data/code-review/
-git commit -m "docs: Add code review log for PR #$PR_NUMBER"
-git push
-```
+It asks the gateway for the distinct reviewer identity, submits the real verdict, and
+if GitHub refuses it (the pull request's author and this reviewer are the same GitHub
+App — HTTP 422) it publishes the analysis with the pending human approval named
+instead of losing it. Exit `0` means the verdict is recorded; exit `3` means it was
+published but only a human can supply the formal approval — report that pending
+approval explicitly and do not call it approved. Do not substitute `--event COMMENT`,
+`gh pr review`, or a committed review document for a required approval; none of them
+set `reviewDecision`.
 
-This ensures review findings are tracked in the repo history.
+Follow with the complete criteria matrix and functional/security evidence. Keep
+engine attribution. A final REQUEST CHANGES identifies unresolved code defects
+that the reviewer could not repair and explains the handoff; BLOCK identifies the
+specific missing authority/input/check. Never report a fixed finding as still
+blocking. A process exit alone proves neither approval nor merge readiness.
 
-### 2.5.7 Post Security Summary to PR
+A local `data/code-review/review-YYYYMMDD-pr-NNN.md` may hold the report for
+publication, but is not an implementation change. Publish multiline comments
+using `--body-file`; do not commit review logs or create report-only PRs that
+trigger another review. Use the artifact service when available.
 
-After logging, post a summary comment to the PR:
+## 6. Leave merging to its authorized owner
 
-```bash
-gh pr comment $PR_NUMBER --body "## 🔒 Security Review Complete
-
-**Scans Run:**
-- [x] Secret detection
-- [x] Dependency audit
-- [x] Permission check
-- [x] OWASP quick check
-
-**Findings:** [N] issues found, [N] fixed
-
-| Severity | Count | Fixed |
-|----------|-------|-------|
-| Critical | 0 | - |
-| High | 1 | 1 |
-| Medium | 2 | 2 |
-| Low | 0 | - |
-
-**Review Log:** See \`data/code-review/review-YYYYMMDD-pr-$PR_NUMBER.md\`
-
-**Verdict:** ✅ Approved for merge"
-```
-
----
-
-## Step 3: Provide Review Feedback
-
-### 3.1 Post Review Comments
-```bash
-# Add line-specific comment
-gh api repos/{owner}/{repo}/pulls/$PR_NUMBER/comments \
-  -f body="Comment text" \
-  -f path="file/path.ts" \
-  -f line=42 \
-  -f side="RIGHT"
-
-# Add general PR comment
-gh pr comment $PR_NUMBER --body "## Review Summary
-...your review here..."
-```
-
-### 3.2 Review Outcomes
-
-**If issues found that you CAN fix:**
-- Checkout the PR branch
-- Make the fixes
-- Commit with clear message
-- Push to the PR branch
-- Document what you fixed
-
-**If issues found that need original author:**
-- Post detailed review comments
-- Request changes
-- Mark issue for re-review
-
-**If PR looks good:**
-- Proceed to merge
-
----
-
-## Step 4: Make Fixes (if needed)
-
-When fixing issues yourself:
+In an engine review action, publish the final evidence for the engine's merge
+phase. If the task explicitly authorizes the reviewer to merge, verify final-head
+checks, required independent approvals, no unresolved blockers and repository
+rules first. Merge only the verified head through the normal guarded path:
 
 ```bash
-# Checkout PR branch
-gh pr checkout $PR_NUMBER
-
-# Make your fixes
-# ... edit files ...
-
-# Commit fixes
-git add -A
-git commit -m "fix: Address review feedback
-
-- Fixed [issue 1]
-- Fixed [issue 2]
-
-Reviewed-by: @agent-reviewer"
-
-# Push to PR branch
-git push
+gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --squash \
+  --match-head-commit "$VERIFIED_HEAD"
 ```
 
-### What You CAN Fix:
-- Typos and formatting issues
-- Missing error handling
-- Configuration mistakes
-- Documentation gaps
-- Minor logic errors
-- Missing required fields
-- Style/convention violations
-
-### What Needs Human/Author:
-- Major architectural changes
-- Business logic questions
-- Security policy decisions
-- Breaking API changes
-
----
-
-## Step 4.5: Check CI Status (REQUIRED)
-
-Before approving, verify all CI checks pass:
-
-```bash
-# Check CI status on the PR
-gh pr checks $PR_NUMBER --repo $TARGET_REPO
-
-# If any checks failed, review the logs
-gh run list --branch $(gh pr view $PR_NUMBER --json headRefName --jq '.headRefName') --limit 5
-
-# View failed run logs
-gh run view <RUN_ID> --log-failed
-```
-
-**If CI checks are failing:**
-1. Review the CI failure logs carefully
-2. Checkout the PR branch and fix the issues (lint errors, test failures, type errors, build failures)
-3. Commit and push the fixes to the PR branch
-4. Wait for CI to re-run and pass
-5. Only then proceed to approve and merge
-
-**Do NOT merge with failing CI checks.** Fix them first.
-
----
-
-## Step 5: Approve and Merge
-
-### 5.1 Approve PR
-```bash
-gh pr review $PR_NUMBER --approve --body "## Approved
-
-Reviewed and verified:
-- [x] Code quality meets standards
-- [x] All acceptance criteria met
-- [x] No security issues found
-- [x] Ready for merge
-
-[List any fixes you made]"
-```
-
-### 5.2 Merge PR
-```bash
-# Merge with squash (preferred for clean history)
-gh pr merge $PR_NUMBER --squash --delete-branch
-
-# Or merge commit (preserves all commits)
-gh pr merge $PR_NUMBER --merge --delete-branch
-```
-
-### 5.3 Verify Merge
-```bash
-# Confirm merge succeeded
-gh pr view $PR_NUMBER --json state,mergedAt
-
-# Verify main branch has changes
-git fetch origin main
-git log origin/main --oneline -5
-```
-
----
-
-## Step 6: Document and Report
-
-Post completion summary to the issue:
-
-```markdown
-## @agent-reviewer Complete
-
-**PR**: #[PR_NUMBER]
-**Status**: Merged to main
-**Completed**: [timestamp]
-
-### Review Summary
-- Files reviewed: [N]
-- Issues found: [N]
-- Fixes applied: [list or "None needed"]
-
-### Changes Merged
-- [Brief description of what was merged]
-
-### Quality Checks
-- [x] Code quality verified
-- [x] Acceptance criteria met
-- [x] No security issues
-
-@agent-pm - PR merged, ready for next steps.
-```
-
----
-
-## Error Handling
-
-### PR Not Found
-If no PR exists for the issue:
-1. Check if task was supposed to create a PR
-2. Post comment asking for clarification
-3. Do not proceed without a PR to review
-
-### Merge Conflicts
-If PR has conflicts:
-1. Post comment noting conflicts
-2. Request original author to resolve
-3. Do not force-merge
-
-### CI Failures
-If CI checks are failing:
-1. Review CI logs
-2. If fixable, make fixes
-3. If not fixable, request author help
-
----
-
-## Quick Reference
-
-```bash
-# Find PR for issue
-gh pr list --head "agent/issue-$ISSUE_NUMBER"
-
-# View PR diff
-gh pr diff $PR_NUMBER
-
-# Checkout PR
-gh pr checkout $PR_NUMBER
-
-# Approve PR
-gh pr review $PR_NUMBER --approve
-
-# Merge PR (squash)
-gh pr merge $PR_NUMBER --squash --delete-branch
-```
+Verify the merge result and report it only after it exists. Do not bypass required
+checks, approve live gates or deploy as an incidental part of review.

@@ -29,8 +29,8 @@ resource "aws_ecr_repository" "main" {
   }
 
   encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.ecr.arn
+    encryption_type = contains(keys(var.repository_encryption), each.key) ? var.repository_encryption[each.key].encryption_type : "KMS"
+    kms_key         = contains(keys(var.repository_encryption), each.key) ? var.repository_encryption[each.key].kms_key : aws_kms_key.ecr.arn
   }
 
   tags = merge(var.common_tags, {
@@ -179,6 +179,7 @@ resource "aws_ecr_pull_through_cache_rule" "public_ecr" {
 
 # CloudWatch Log Group for ECR (one per repo)
 resource "aws_cloudwatch_log_group" "ecr_logs" {
+  #checkov:skip=CKV_AWS_338: ECR application logs use an explicitly bounded 30-day operational retention.
   for_each          = aws_ecr_repository.main
   name              = "/aws/ecr/${each.value.name}"
   retention_in_days = 30

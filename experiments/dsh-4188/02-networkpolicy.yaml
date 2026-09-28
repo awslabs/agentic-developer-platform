@@ -1,0 +1,120 @@
+# =============================================================================
+# dsh experiment — default-deny ingress + egress, minimal allow-list
+# =============================================================================
+# Issue #4188. Design: docs/spikes/spike-4188-dsh-experiment.md §3.3, §3.6, §5.
+#
+# NOT PRODUCTION INFRASTRUCTURE.
+#
+# Convention followed: the default-deny + narrow-allow pair in
+# modules/agent-factory/webhook-ingress/infra/scaledjob-netpol.tf:16-31 (there
+# expressed in Terraform; here in YAML because this is a hand-applied throwaway
+# environment, matching the YAML style of modules/agent-context/manifests/networkpolicy.yaml).
+#
+# ⚠️ READ THIS BEFORE TRUSTING THIS FILE
+# --------------------------------------
+# `kubectl get networkpolicy` succeeding is NOT evidence that traffic is being
+# filtered. This cluster runs EKS Auto Mode
+# (platform/infra/modules/eks/main.tf:53-58) and there is no vpc-cni addon, no
+# Cilium, and no enableNetworkPolicy setting anywhere in platform/ or
+# environments/. If no network-policy agent is active, the API server accepts
+# these objects and silently enforces nothing — the same caveat agent-context
+# documents about its own policy at manifests/networkpolicy.yaml:22-27.
+#
+# Therefore this file is DEFENCE IN DEPTH, NOT THE PRIMARY CONTROL. The primary
+# controls for this experiment are:
+#   1. gVisor (runtimeClassName: gvisor) — a syscall boundary that holds
+#      regardless of CNI behaviour. platform/infra/gvisor-runtime.tf:23-41.
+#   2. No AWS identity and no SA token on the harness container (01-serviceaccount.yaml).
+#   3. No long-lived provider credential in the pod (spike §3.4), so the
+#      plaintext-credential finding has nothing valuable to leak.
+#   4. Gate G2 in spike §5 — OBSERVE that telemetry egress is blocked, do not
+#      assume it. If G2 fails, the run does not proceed.
+#
+# Assessment §Q6 finding 3: DSH_TELEMETRY_DISABLED "does not suppress direct
+# feedback acknowledgement or the DeepSeek provider header", so the env var is
+# not the control. Not mounting dsh-llm-deepseek plus this egress restriction is.
+# =============================================================================
+---
+# Default-deny BOTH directions for every pod in the namespace.
+# Ingress is denied because the web profile's server has no TLS, auth, or origin
+# policy (§Q6 finding 1); the headless profile should open no port at all, and
+# this ensures nothing can reach one if it does.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: dsh-experiment
+  labels:
+    app.kubernetes.io/name: dsh-experiment
+    app.kubernetes.io/managed-by: manual
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress or egress rules = deny all in both directions.
+---
+# Minimal allow-list for the experiment pod.
+#
+# Note what is NOT here: no 443/TCP blanket egress. The production agent
+# ScaledJob allows that (scaledjob-netpol.tf:68-73) because agents need GitHub,
+# npm and PyPI. This experiment must not have general internet egress — that is
+# the path telemetry would take. Any package the harness needs must be baked into
+# the pinned image (spike §3.7).
+#
+# Model traffic needs no rule: the sigv4 sidecar is in the same pod, reached over
+# loopback (127.0.0.1:9090), and NetworkPolicy does not apply to loopback. The
+# sidecar's own egress to API Gateway is what the 443 rule below is scoped for.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dsh-experiment-egress
+  namespace: dsh-experiment
+  labels:
+    app.kubernetes.io/name: dsh-experiment
+    app.kubernetes.io/managed-by: manual
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dsh-experiment-runner
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (kube-dns). Required for the sidecar to resolve API Gateway.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # AWS API Gateway, for the sigv4 sidecar only (spike §3.4).
+    #
+    # ⚠️ This is the weakest rule in the file and the runner must know why: API
+    # Gateway is a public endpoint, so this cannot be narrowed to a namespace or
+    # pod selector, and an ipBlock for it would be a large, drifting CIDR set. A
+    # process in this pod that ignores the sidecar could in principle reach other
+    # HTTPS endpoints resolvable from the VPC.
+    #
+    # This is precisely why gate G2 observes real egress rather than trusting
+    # this rule, and why gVisor rather than NetworkPolicy is the primary boundary.
+    # If the run needs a tighter guarantee, put the sidecar in its own pod behind
+    # a ClusterIP and drop this rule from the harness pod entirely — at the cost
+    # of the loopback property that makes §3.4 simple.
+    - ports:
+        - port: 443
+          protocol: TCP
+
+    # agent-context Door — ONLY if test 4 is in scope for this run (spike §3.5).
+    # Delete this block if test 4 is dropped to `inconclusive`.
+    #
+    # The Door authenticates with x-internal-api-key (door/auth.py:52) and has NO
+    # read-only mode; 2 of its 7 verbs write (`remember`, `experience
+    # action=save`). Combined with headless's mandatory approval: 'never', only
+    # grant this if the tenant identity is disposable — see spike §3.5.
+    - ports:
+        - port: 5100
+          protocol: TCP
+      to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agent-context

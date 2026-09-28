@@ -1,0 +1,207 @@
+"""Release parity gates with AWS/Kubernetes calls replaced by controlled responses."""
+import importlib.util
+import json
+import re
+from pathlib import Path
+import subprocess
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[3]
+SPEC = importlib.util.spec_from_file_location('engine_sync', ROOT / 'modules/gateway/scripts/sync-gateway-engine.py')
+script = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(script)
+ACCOUNT = '123456789012'
+REGISTRY = f'{ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/adp-gateway'
+NEW = REGISTRY + '@sha256:' + 'a' * 64
+OLD = REGISTRY + '@sha256:' + 'b' * 64
+
+
+class SyncTests(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.engine = OLD
+        self.gateway = NEW
+        self.account = ACCOUNT
+        self.status = 'Successful'
+        self.fail_get = False
+        self.fail_update = False
+        self.race = False
+        self.gateway_env = {'AGENT_AUTHORITY_ENABLED': 'true', 'ADP_WORK_CLAIMS_ENABLED': 'true'}
+        self.engine_env = dict(self.gateway_env)
+        self.admission_race = False
+        self.rollout_fail_at = None
+        self.ready_pod = True
+
+    def command(self, args, timeout=360):
+        self.calls.append(args)
+        if args[:3] == ['aws', 'sts', 'get-caller-identity']:
+            return json.dumps({'Account': self.account})
+        if args[:3] == ['aws', 'ecr', 'describe-images']:
+            return json.dumps({'imageDetails': [{'imageDigest': NEW.split('@')[1]}]})
+        if args[:3] == ['kubectl', 'rollout', 'status']:
+            if self.rollout_fail_at == sum(c[:3] == ['kubectl', 'rollout', 'status'] for c in self.calls):
+                raise subprocess.CalledProcessError(1, args)
+            return ''
+        if args[:3] == ['kubectl', 'get', 'pods']:
+            return json.dumps({'items': [{'metadata': {'name': 'gateway-ready'},
+                                           'status': {'phase': 'Running', 'containerStatuses': [{
+                                               'name': 'bedrockgateway', 'ready': self.ready_pod,
+                                               'imageID': NEW}]}}]})
+        if args[:2] == ['kubectl', 'get']:
+            return json.dumps({'spec': {'selector': {'matchLabels': {'app': 'bedrockgateway'}},
+                                        'template': {'spec': {'containers': [
+                                            {'name': 'bedrockgateway', 'image': self.gateway}]}}}})
+        if args[:2] == ['kubectl', 'exec']:
+            return json.dumps(self.gateway_env)
+        if args[:3] == ['aws', 'lambda', 'get-function']:
+            if self.fail_get:
+                raise subprocess.CalledProcessError(254, args)
+            return json.dumps({'Code': {'ResolvedImageUri': self.engine}, 'Configuration': {
+                'RevisionId': 'observed-revision', 'State': 'Active', 'LastUpdateStatus': self.status,
+                'Environment': {'Variables': self.engine_env}}})
+        if args[:3] == ['aws', 'lambda', 'update-function-code']:
+            if self.fail_update:
+                raise subprocess.CalledProcessError(254, args)
+            self.engine = args[args.index('--image-uri') + 1]
+            if self.race:
+                self.gateway = OLD
+            if self.admission_race:
+                self.engine_env = {}
+            return '{}'
+        if args[:4] == ['aws', 'lambda', 'wait', 'function-updated-v2']:
+            return ''
+        self.fail(f'Unexpected command: {args}')
+
+    def sync(self, **kwargs):
+        with patch.object(script, 'command', self.command):
+            return script.synchronize(image=REGISTRY + ':release', account=ACCOUNT,
+                                      region='us-east-1', environment='dev', namespace='adp-gateway', **kwargs)
+
+    def updates(self):
+        return [c for c in self.calls if 'update-function-code' in c]
+
+    def test_update_is_pinned_and_revision_fenced(self):
+        self.assertEqual(self.sync()['image'], NEW)
+        update = self.updates()[0]
+        self.assertEqual(update[update.index('--revision-id') + 1], 'observed-revision')
+        self.assertEqual(update[update.index('--image-uri') + 1], NEW)
+        self.assertTrue(any('function-updated-v2' in c for c in self.calls))
+
+    def test_matching_release_is_idempotent(self):
+        self.engine = NEW
+        self.sync()
+        self.assertFalse(self.updates())
+
+    def test_initial_rollout_remains_required_before_lambda_update(self):
+        self.rollout_fail_at = 1
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.sync()
+        self.assertIn('--timeout=600s', next(c for c in self.calls if c[:3] == ['kubectl', 'rollout', 'status']))
+        self.assertFalse(self.updates())
+
+    def test_second_parity_check_does_not_wait_for_full_rollout_again(self):
+        self.rollout_fail_at = 2
+        self.assertEqual(self.sync()['status'], 'verified')
+        self.assertEqual(sum(c[:3] == ['kubectl', 'rollout', 'status'] for c in self.calls), 1)
+        self.assertEqual(sum(c[:3] == ['kubectl', 'get', 'pods'] for c in self.calls), 2)
+
+    def test_verify_only_checks_ready_pod_without_rollout_wait(self):
+        self.engine = NEW
+        self.rollout_fail_at = 1
+        self.assertEqual(self.sync(verify_only=True)['status'], 'verified')
+        self.assertFalse(any(c[:3] == ['kubectl', 'rollout', 'status'] for c in self.calls))
+
+    def test_parity_requires_a_ready_pod_on_the_release_digest(self):
+        self.ready_pod = False
+        with self.assertRaisesRegex(ValueError, 'No ready gateway pod'):
+            self.sync(verify_only=True)
+
+    def test_missing_tick_work_claim_flag_refuses_before_any_update(self):
+        self.engine_env.pop('ADP_WORK_CLAIMS_ENABLED')
+        with self.assertRaisesRegex(ValueError, 'work-claim admission differ'):
+            self.sync()
+        self.assertFalse(self.updates())
+
+    def test_gateway_internal_mismatch_refuses(self):
+        self.gateway_env['ADP_WORK_CLAIMS_ENABLED'] = 'false'
+        with self.assertRaisesRegex(ValueError, 'work-claim admission differ'):
+            self.sync(verify_only=True)
+        self.assertFalse(self.updates())
+
+    def test_cross_runtime_mismatch_refuses(self):
+        self.engine_env = {}
+        with self.assertRaisesRegex(ValueError, 'Gateway and engine admission settings differ'):
+            self.sync()
+        self.assertFalse(self.updates())
+
+    def test_prepared_but_disabled_environment_remains_supported(self):
+        self.engine_env = {}
+        self.gateway_env = {'AGENT_AUTHORITY_ENABLED': 'false', 'ADP_WORK_CLAIMS_ENABLED': 'false'}
+        self.assertEqual(self.sync()['status'], 'verified')
+
+    def test_admission_change_during_release_cannot_report_success(self):
+        self.admission_race = True
+        with self.assertRaisesRegex(ValueError, 'Admission settings changed'):
+            self.sync()
+
+    def test_all_producers_derive_claims_and_authority_from_same_rollout_input(self):
+        paths = ['modules/gateway/infra/modules/orchestration-tick/main.tf',
+                 'modules/agent-factory/webhook-ingress/infra/worker-gateway-config.tf',
+                 'modules/agent-factory/webhook-ingress/infra/lambdas.tf']
+        for path in paths:
+            source = (ROOT / path).read_text()
+            for setting in ['AGENT_AUTHORITY_ENABLED', 'ADP_WORK_CLAIMS_ENABLED']:
+                self.assertRegex(source, re.escape(setting) + r'\s*=\s*tostring\(var\.agent_authority_enabled\)', path)
+
+    def test_verify_only_detects_drift_without_mutation(self):
+        with self.assertRaisesRegex(ValueError, 'Engine release incomplete'):
+            self.sync(verify_only=True)
+        self.assertFalse(self.updates())
+
+    def test_wrong_account_stops_before_mutation(self):
+        self.account = '999999999999'
+        with self.assertRaisesRegex(ValueError, 'AWS account'):
+            self.sync()
+        self.assertFalse(self.updates())
+
+    def test_wrong_gateway_stops_before_mutation(self):
+        self.gateway = OLD
+        with self.assertRaisesRegex(ValueError, 'Gateway changed'):
+            self.sync()
+        self.assertFalse(self.updates())
+
+    def test_missing_or_inaccessible_function_fails(self):
+        self.fail_get = True
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.sync()
+        self.assertFalse(self.updates())
+
+    def test_failed_update_cannot_report_success(self):
+        self.fail_update = True
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.sync()
+
+    def test_unsuccessful_lambda_state_fails_even_with_matching_digest(self):
+        self.engine = NEW
+        self.status = 'Failed'
+        with self.assertRaisesRegex(ValueError, 'Engine release incomplete'):
+            self.sync()
+
+    def test_concurrent_gateway_change_is_detected(self):
+        self.race = True
+        with self.assertRaisesRegex(ValueError, 'Gateway changed'):
+            self.sync()
+
+    def test_both_entrypoints_require_sync_and_final_verification(self):
+        for path in ['platform/scripts/deploy-all.sh', '.github/workflows/gateway-deploy.yml']:
+            source = (ROOT / path).read_text()
+            self.assertIn('scripts/sync-gateway-engine.py', source)
+            self.assertIn('--verify-only --image', source)
+        workflow = (ROOT / '.github/workflows/gateway-deploy.yml').read_text()
+        self.assertLess(workflow.index('Verify gateway and engine release parity'),
+                        workflow.index('Record gateway-backend build evidence'))
+
+
+if __name__ == '__main__':
+    unittest.main()

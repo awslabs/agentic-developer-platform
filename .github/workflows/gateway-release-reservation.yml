@@ -1,0 +1,22 @@
+name: Gateway Release Reservation
+on:
+  workflow_dispatch:
+concurrency:
+  group: gateway-release-dev
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  reserve:
+    if: github.ref == 'refs/heads/main'
+    runs-on: arc-runner-org
+    timeout-minutes: 21
+    steps:
+      - name: Reserve release lane for guarded external maintenance
+        run: |
+          echo 'Release lane reserved. No cloud identity or deployment commands run here.'
+          echo 'Cancel this reservation after the guarded maintenance finishes.'
+          for minute in $(seq 1 20); do
+            sleep 60
+            echo "Release reservation minute $minute of 20"
+          done

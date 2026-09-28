@@ -1,0 +1,357 @@
+diff --git a/dict.c b/dict.c
+index a238cd9..5b9b31f 100644
+--- a/dict.c
++++ b/dict.c
+@@ -227,10 +227,21 @@ xmlDictAddQString(xmlDictPtr dict, const xmlChar *prefix, unsigned int plen,
+             return(NULL);
+         }
+ 
+-        if (size == 0) size = 1000;
+-	else size *= 4; /* exponential growth */
+-        if (size < 4 * (namelen + plen + 1))
+-	    size = 4 * (namelen + plen + 1); /* just in case ! */
++        if (size == 0) {
++            size = 1000;
++        } else {
++            if (size < (SIZE_MAX - sizeof(xmlDictStrings)) / 4)
++                size *= 4; /* exponential growth */
++            else
++                size = SIZE_MAX - sizeof(xmlDictStrings);
++        }
++        if (size / 4 < namelen + plen + 1) {
++            if ((size_t) namelen + plen + 1 <
++                    (SIZE_MAX - sizeof(xmlDictStrings)) / 4)
++                size = 4 * ((size_t) namelen + plen + 1); /* just in case ! */
++            else
++                return(NULL);
++        }
+ 	pool = (xmlDictStringsPtr) xmlMalloc(sizeof(xmlDictStrings) + size);
+ 	if (pool == NULL)
+ 	    return(NULL);
+diff --git a/result/XInclude/issue1120-1.xml b/result/XInclude/issue1120-1.xml
+new file mode 100644
+index 0000000..5d83cc9
+--- /dev/null
++++ b/result/XInclude/issue1120-1.xml
+@@ -0,0 +1,4 @@
++<?xml version="1.0"?>
++<doc xmlns:xi="http://www.w3.org/2001/XInclude">
++  Network access is not allowed
++</doc>
+diff --git a/result/XInclude/issue1120-1.xml.err b/result/XInclude/issue1120-1.xml.err
+new file mode 100644
+index 0000000..c134bed
+--- /dev/null
++++ b/result/XInclude/issue1120-1.xml.err
+@@ -0,0 +1 @@
++I/O error : failed to load "http://example.invalid/file.txt": Attempt to load network entity
+diff --git a/result/XInclude/issue1120-2.xml b/result/XInclude/issue1120-2.xml
+new file mode 100644
+index 0000000..af5bde9
+--- /dev/null
++++ b/result/XInclude/issue1120-2.xml
+@@ -0,0 +1,4 @@
++<?xml version="1.0"?>
++<doc xmlns:xi="http://www.w3.org/2001/XInclude">
++  <p>Network access is not allowed</p>
++</doc>
+diff --git a/result/XInclude/issue1120-2.xml.err b/result/XInclude/issue1120-2.xml.err
+new file mode 100644
+index 0000000..051f592
+--- /dev/null
++++ b/result/XInclude/issue1120-2.xml.err
+@@ -0,0 +1 @@
++I/O error : failed to load "http://example.invalid/file.xml": Attempt to load network entity
+diff --git a/runtest.c b/runtest.c
+index 26681a3..5c41667 100644
+--- a/runtest.c
++++ b/runtest.c
+@@ -2463,6 +2463,77 @@ streamParseTest(const char *filename, const char *result, const char *err,
+     return(ret);
+ }
+ 
++#ifdef LIBXML_XINCLUDE_ENABLED
++/**
++ * Parse a file and run xmlXIncludeProcess() to verify that doc->parseFlags
++ * is propagated properly.
++ *
++ * @param filename  the file to parse
++ * @param result  the file with expected result
++ * @param err  the file with error messages
++ * @returns 0 in case of success, an error code otherwise
++ */
++static int
++xincludeProcessTest(const char *filename, const char *result, const char *err,
++                    int options) {
++    xmlParserCtxtPtr ctxt;
++    xmlDocPtr doc;
++    xmlChar *base = NULL;
++    int size, res;
++    int ret = 0;
++
++    nb_tests++;
++
++    /* Create a new parser context */
++    ctxt = xmlNewParserCtxt();
++    if (ctxt == NULL)
++        return(-1);
++
++    /* Load the data from `filename` into a parser context */
++    xmlCtxtSetErrorHandler(ctxt, testStructuredErrorHandler, NULL);
++    doc = xmlCtxtReadFile(ctxt, filename, NULL, options);
++    xmlFreeParserCtxt(ctxt);
++
++    /* Check if `doc` was created successfully */
++    if (doc == NULL) {
++        testErrorHandler(NULL, "%s : failed to parse\n", filename);
++        return(-1);
++    }
++
++    /*
++     * Run xmlXIncludeProcess() with a structured error handler to check that
++     * the parse flags are propagated.
++     */
++    xmlSetStructuredErrorFunc(NULL, testStructuredErrorHandler);
++    xmlXIncludeProcess(doc);
++    xmlSetStructuredErrorFunc(NULL, NULL);
++
++    /* Check the result and for any errors */
++    if (result) {
++        xmlDocDumpMemory(doc, &base, &size);
++        res = compareFileMem(result, (char *) base, size);
++        xmlFree(base);
++        if (res != 0) {
++            fprintf(stderr, "Result for %s failed in %s\n", filename, result);
++            ret = -1;
++        }
++    }
++
++    if ((ret == 0) && (err != NULL)) {
++        /* The 2.13 branch formats this diagnostic differently from 2.15.
++         * Assert the security condition rather than the newer message layout. */
++        res = (strstr(testErrors, "Attempt to load network entity") == NULL);
++        if (res != 0) {
++            fprintf(stderr, "Error for %s failed\n", filename);
++            ret = -1;
++        }
++    }
++
++    xmlFreeDoc(doc);
++    return(ret);
++}
++#endif
++
+ /**
+  * walkerParseTest:
+  * @filename: the file to parse
+@@ -4831,6 +4902,9 @@ testDesc testDescriptions[] = {
+     { "XInclude regression tests without reader",
+       errParseTest, "./test/XInclude/without-reader/*", "result/XInclude/", "",
+       ".err", XML_PARSE_XINCLUDE },
++    { "XInclude xmlXIncludeProcess() issue1120 regression tests",
++      xincludeProcessTest, "./test/XInclude/issue1120/*", "result/XInclude/",
++      "", ".err", XML_PARSE_NONET },
+ #endif
+ #ifdef LIBXML_XPATH_ENABLED
+ #ifdef LIBXML_DEBUG_ENABLED
+diff --git a/test/XInclude/issue1120/issue1120-1.xml b/test/XInclude/issue1120/issue1120-1.xml
+new file mode 100644
+index 0000000..b0b8fee
+--- /dev/null
++++ b/test/XInclude/issue1120/issue1120-1.xml
+@@ -0,0 +1,6 @@
++<?xml version="1.0"?>
++<doc xmlns:xi="http://www.w3.org/2001/XInclude">
++  <xi:include href="http://example.invalid/file.txt" parse="text">
++    <xi:fallback>Network access is not allowed</xi:fallback>
++  </xi:include>
++</doc>
+diff --git a/test/XInclude/issue1120/issue1120-2.xml b/test/XInclude/issue1120/issue1120-2.xml
+new file mode 100644
+index 0000000..b4c9fe5
+--- /dev/null
++++ b/test/XInclude/issue1120/issue1120-2.xml
+@@ -0,0 +1,6 @@
++<?xml version="1.0"?>
++<doc xmlns:xi="http://www.w3.org/2001/XInclude">
++  <xi:include href="http://example.invalid/file.xml">
++    <xi:fallback><p>Network access is not allowed</p></xi:fallback>
++  </xi:include>
++</doc>
+diff --git a/uri.c b/uri.c
+index d5fa3ea..c1458b4 100644
+--- a/uri.c
++++ b/uri.c
+@@ -1704,6 +1704,8 @@ xmlURIEscapeStr(const xmlChar *str, const xmlChar *list) {
+     if (str[0] == 0)
+ 	return(xmlStrdup(str));
+     len = xmlStrlen(str);
++    if (len == 0)
++        return(NULL);
+ 
+     len += 20;
+     ret = (xmlChar *) xmlMallocAtomic(len);
+diff --git a/valid.c b/valid.c
+index 45a9aa0..da4b14d 100644
+--- a/valid.c
++++ b/valid.c
+@@ -4996,7 +4996,15 @@ xmlSnprintfElements(char *buf, int size, xmlNodePtr node, int glob) {
+     int len;
+ 
+     if (node == NULL) return;
+-    if (glob) strcat(buf, "(");
++    len = strlen(buf);
++    if (glob) {
++        if (size - len < 50) {
++            if ((size - len > 4) && (buf[len - 1] != '.'))
++                strcat(buf, " ...");
++            return;
++        }
++        strcat(buf, "(");
++    }
+     cur = node;
+     while (cur != NULL) {
+ 	len = strlen(buf);
+@@ -5060,7 +5068,11 @@ xmlSnprintfElements(char *buf, int size, xmlNodePtr node, int glob) {
+ 	}
+ 	cur = cur->next;
+     }
+-    if (glob) strcat(buf, ")");
++    if (glob) {
++        len = strlen(buf);
++        if (size - len > 1)
++            strcat(buf, ")");
++    }
+ }
+ 
+ /**
+diff --git a/xinclude.c b/xinclude.c
+index 6c1e3ac..10e2ffa 100644
+--- a/xinclude.c
++++ b/xinclude.c
+@@ -1655,6 +1655,7 @@ xmlXIncludeLoadTxt(xmlXIncludeCtxtPtr ctxt, xmlXIncludeRefPtr ref) {
+     }
+     if (ctxt->errorHandler != NULL)
+         xmlCtxtSetErrorHandler(pctxt, ctxt->errorHandler, ctxt->errorCtxt);
++    xmlCtxtUseOptions(pctxt, ctxt->parseFlags);
+     inputStream = xmlLoadExternalEntity((const char*)url, NULL, pctxt);
+     if (inputStream == NULL) {
+         /*
+@@ -1664,7 +1665,8 @@ xmlXIncludeLoadTxt(xmlXIncludeCtxtPtr ctxt, xmlXIncludeRefPtr ref) {
+             xmlXIncludeErrMemory(ctxt);
+         else if ((pctxt->errNo != XML_ERR_OK) &&
+                  (pctxt->errNo != XML_IO_ENOENT) &&
+-                 (pctxt->errNo != XML_IO_UNKNOWN))
++                 (pctxt->errNo != XML_IO_UNKNOWN) &&
++                 (pctxt->errNo != XML_IO_NETWORK_ATTEMPT))
+             xmlXIncludeErr(ctxt, NULL, pctxt->errNo, "load error", NULL);
+ 	goto error;
+     }
+@@ -2376,7 +2378,7 @@ xmlXIncludeProcessFlags(xmlDocPtr doc, int flags) {
+  */
+ int
+ xmlXIncludeProcess(xmlDocPtr doc) {
+-    return(xmlXIncludeProcessFlags(doc, 0));
++    return(xmlXIncludeProcessFlags(doc, doc ? doc->parseFlags : 0));
+ }
+ 
+ /**
+@@ -2420,7 +2422,7 @@ xmlXIncludeProcessTreeFlags(xmlNodePtr tree, int flags) {
+  */
+ int
+ xmlXIncludeProcessTree(xmlNodePtr tree) {
+-    return(xmlXIncludeProcessTreeFlags(tree, 0));
++    return(xmlXIncludeProcessTreeFlags(tree, (tree && tree->doc) ? tree->doc->parseFlags : 0));
+ }
+ 
+ /**
+diff --git a/xmlIO.c b/xmlIO.c
+index 896f3bd..91e2659 100644
+--- a/xmlIO.c
++++ b/xmlIO.c
+@@ -2495,7 +2495,7 @@ xmlParserInputBufferRead(xmlParserInputBufferPtr in, int len) {
+  */
+ int
+ xmlOutputBufferWrite(xmlOutputBufferPtr out, int len, const char *buf) {
+-    int nbchars = 0; /* number of chars to output to I/O */
++    size_t nbchars = 0; /* number of chars to output to I/O */
+     int ret;         /* return from function call */
+     int written = 0; /* number of char written to I/O so far */
+     int chunk;       /* number of byte current processed from buf */
+@@ -2557,6 +2557,10 @@ xmlOutputBufferWrite(xmlOutputBufferPtr out, int len, const char *buf) {
+ 	len -= chunk;
+ 
+ 	if (out->writecallback) {
++            if (nbchars >= INT_MAX) {
++                out->error = XML_ERR_INTERNAL_ERROR;
++                return(-1);
++            }
+             if ((nbchars < MINLEN) && (len <= 0))
+                 goto done;
+ 
+@@ -2671,7 +2675,7 @@ xmlEscapeContent(unsigned char* out, int *outlen,
+ int
+ xmlOutputBufferWriteEscape(xmlOutputBufferPtr out, const xmlChar *str,
+                            xmlCharEncodingOutputFunc escaping) {
+-    int nbchars = 0; /* number of chars to output to I/O */
++    size_t nbchars = 0; /* number of chars to output to I/O */
+     int ret;         /* return from function call */
+     int written = 0; /* number of char written to I/O so far */
+     int oldwritten=0;/* loop guard */
+@@ -2760,6 +2764,10 @@ xmlOutputBufferWriteEscape(xmlOutputBufferPtr out, const xmlChar *str,
+ 	len -= cons;
+ 
+ 	if (out->writecallback) {
++            if (nbchars >= INT_MAX) {
++                out->error = XML_ERR_INTERNAL_ERROR;
++                return(-1);
++            }
+             if ((nbchars < MINLEN) && (len <= 0))
+                 goto done;
+ 
+@@ -2909,15 +2917,25 @@ xmlOutputBufferFlush(xmlOutputBufferPtr out) {
+      */
+     if ((out->conv != NULL) && (out->encoder != NULL) &&
+ 	(out->writecallback != NULL)) {
++        size_t bufsize = xmlBufUse(out->conv);
++        if (bufsize >= INT_MAX) {
++            out->error = XML_ERR_INTERNAL_ERROR;
++            return(-1);
++        }
+ 	ret = out->writecallback(out->context,
+                                  (const char *)xmlBufContent(out->conv),
+-                                 xmlBufUse(out->conv));
++                                 bufsize);
+ 	if (ret >= 0)
+ 	    xmlBufShrink(out->conv, ret);
+     } else if (out->writecallback != NULL) {
++        size_t bufsize = xmlBufUse(out->buffer);
++        if (bufsize >= INT_MAX) {
++            out->error = XML_ERR_INTERNAL_ERROR;
++            return(-1);
++        }
+ 	ret = out->writecallback(out->context,
+                                  (const char *)xmlBufContent(out->buffer),
+-                                 xmlBufUse(out->buffer));
++                                 bufsize);
+ 	if (ret >= 0)
+ 	    xmlBufShrink(out->buffer, ret);
+     }
+diff --git a/xpointer.c b/xpointer.c
+index 87ea85b..8c5cbcf 100644
+--- a/xpointer.c
++++ b/xpointer.c
+@@ -955,6 +955,13 @@ xmlXPtrEvalXPtrPart(xmlXPathParserContextPtr ctxt, xmlChar *name) {
+     level = 1;
+ 
+     len = xmlStrlen(ctxt->cur);
++    /* Overflow in xmlStrlen */
++    if (len == 0 && ctxt->cur != NULL && *ctxt->cur != 0) {
++        xmlXPathPErrMemory(ctxt);
++        xmlFree(name);
++        return;
++    }
++
+     len++;
+     buffer = (xmlChar *) xmlMallocAtomic(len);
+     if (buffer == NULL) {

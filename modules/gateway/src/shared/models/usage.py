@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Integer, Numeric, String
+from sqlalchemy import JSON, BigInteger, DateTime, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
@@ -27,6 +27,88 @@ class UsageLog(Base, TenantMixin):
     # Issue #1616: Per-run cost traceability
     agent_run_id: Mapped[str | None] = mapped_column(String(255), index=True)
     chat_log_s3_key: Mapped[str | None] = mapped_column(String(1024))
+    # Issue #4180: prompt-cache token accounting. Nullable on purpose —
+    # NULL means "provider did not report this counter", 0 means "provider
+    # reported zero cache activity". Collapsing the two would make the cache
+    # hit-rate query silently wrong. Never give these a default.
+    cache_read_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_creation_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    # Issue #4207: the orchestration graph address (`flow/epic/wave/node`) this
+    # call is attributable to. Nullable with NO default, and never backfilled —
+    # a null means "this row is not addressed to a graph node", which is the
+    # truth for every pre-feature row and for every non-gateway Bedrock path
+    # (ADP_BEDROCK_VIA=direct writes no row at all). A default would stamp a
+    # fabricated address onto historical rows and land them in some EPIC's total.
+    graph_address: Mapped[str | None] = mapped_column(String(512), index=True)
+    # Issue #4398: which client tool made the request (claude_code, codex_cli,
+    # cursor, web_chat, sdk — the closed set in src/proxy/client_tool.py).
+    # Nullable with NO default, and never backfilled: NULL means "NOT CAPTURED",
+    # never "unknown tool". That distinction is the whole contract (FR-6.2) —
+    # every pre-migration row is NULL, and a default or sentinel here would make
+    # those rows read as a real tool and corrupt any future per-tool breakdown.
+    # Never holds a raw User-Agent; only a normalised member of that closed set.
+    client_tool: Mapped[str | None] = mapped_column(String(32), index=True)
+    # Issue #5426: trusted PMM-06 persona-policy evidence.  Every field is
+    # nullable with NO default and is never backfilled. NULL means "not
+    # captured", never a fabricated persona, chain, owner or current revision.
+    persona_key: Mapped[str | None] = mapped_column(String(64))
+    compatibility_class: Mapped[str | None] = mapped_column(String(64))
+    harness_contract_revision: Mapped[str | None] = mapped_column(String(64))
+    root_invocation_id: Mapped[str | None] = mapped_column(String(255))
+    chain_id: Mapped[str | None] = mapped_column(String(255))
+    preference_owner_kind: Mapped[str | None] = mapped_column(String(32))
+    preference_owner_id: Mapped[str | None] = mapped_column(String(255))
+    model_policy_snapshot_digest: Mapped[str | None] = mapped_column(String(64))
+    model_policy_revision: Mapped[str | None] = mapped_column(String(64))
+    model_catalogue_revision: Mapped[str | None] = mapped_column(String(64))
+    # PMM-07's report-only proposal. These are not the invoked model (that is
+    # ``model`` above) and are nullable as one atomic decision tuple.
+    requested_model_id: Mapped[str | None] = mapped_column(String(255))
+    resolved_model_id: Mapped[str | None] = mapped_column(String(255))
+    resolution_source: Mapped[str | None] = mapped_column(String(32))
+    runtime_posture: Mapped[str | None] = mapped_column(String(32))
+    posture_revision: Mapped[int | None] = mapped_column(Integer)
+    pricing_confidence: Mapped[str | None] = mapped_column(String(32))
+    pricing_estimate_reasons: Mapped[str | None] = mapped_column(Text)
+    pricing_decision: Mapped[dict | None] = mapped_column(JSON)
+    model_decision: Mapped[dict | None] = mapped_column(JSON)
+    model_decision_id: Mapped[str | None] = mapped_column(String(64))
+    approving_human_id: Mapped[str | None] = mapped_column(String(255))
+    destination_region: Mapped[str | None] = mapped_column(String(64))
+    provider_request_id: Mapped[str | None] = mapped_column(String(255))
+    # The complete pricing-decision identity. A partial tuple is never written:
+    # NULL across all five means the decision was not captured, not "current".
+    pricing_source_kind: Mapped[str | None] = mapped_column(String(32))
+    pricing_generation_id: Mapped[int | None] = mapped_column(BigInteger)
+    pricing_pointer_revision: Mapped[int | None] = mapped_column(BigInteger)
+    pricing_snapshot_version: Mapped[str | None] = mapped_column(String(255))
+    pricing_policy_version: Mapped[int | None] = mapped_column(Integer)
+
+    __table_args__ = (
+        Index(
+            "ix_usage_org_request",
+            "org_id",
+            "request_id",
+            postgresql_where=text("request_id IS NOT NULL"),
+            sqlite_where=text("request_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_usage_persona_owner",
+            "org_id",
+            "preference_owner_kind",
+            "preference_owner_id",
+            "persona_key",
+            postgresql_where=text("persona_key IS NOT NULL AND preference_owner_id IS NOT NULL"),
+            sqlite_where=text("persona_key IS NOT NULL AND preference_owner_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_usage_chain_id",
+            "org_id",
+            "chain_id",
+            postgresql_where=text("chain_id IS NOT NULL"),
+            sqlite_where=text("chain_id IS NOT NULL"),
+        ),
+    )
 
 
 class RateLimitConfig(Base, TenantMixin):

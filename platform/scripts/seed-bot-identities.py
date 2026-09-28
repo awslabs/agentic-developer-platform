@@ -6,14 +6,14 @@ the same identity_resolver path as humans. All operations are idempotent.
 
 Usage:
     python seed-bot-identities.py \\
-        --tenant-org-id sophos-test \\
+        --tenant-org-id acme-test \\
         --bot-slug agent-developer \\
         --installation-id 12345 \\
         [--bot-github-id 123456789]
 
     # Seed all known bots at once:
     python seed-bot-identities.py \\
-        --tenant-org-id sophos-test \\
+        --tenant-org-id acme-test \\
         --all-bots \\
         --installation-id 12345
 

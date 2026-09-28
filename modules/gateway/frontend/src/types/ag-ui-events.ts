@@ -165,6 +165,28 @@ export interface SessionMeta {
   tokens?: { input: number; output: number };
   turnCount?: number;
   heartbeat?: { turn: number; ts: number };
+  /**
+   * Issue #4208: the live intent draft an intake conversation is building.
+   * Arrives as a whole-object STATE_DELTA patch at `/draft` each time the
+   * agent calls `update_draft`.
+   */
+  draft?: IntentDraft;
+}
+
+/**
+ * The intent draft rendered by DraftPanel (#4208). Mirrors the worker's
+ * IntentDraft (agent/src/complex-task-chat/draft/port.ts) — every field is
+ * optional because a draft fills in over the course of a conversation.
+ */
+export interface IntentDraft {
+  waveDisplay?: { title: string; description: string };
+  epicDisplay?: { title: string; description: string };
+  intent?: string;
+  motivation?: string;
+  outcomes?: string[];
+  constraints?: string[];
+  openQuestions?: string[];
+  updatedAt?: string;
 }
 
 // ---------------------------------------------------------------------------

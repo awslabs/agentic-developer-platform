@@ -8,15 +8,13 @@ Authentication + WebSocket lifecycle tests (scenarios 1-3).
 
 from __future__ import annotations
 
-import re
 import time
-
 import pytest
+
+from urllib.parse import parse_qs, urlsplit
 
 from .helpers import (
     CLOUDFRONT_URL,
-    COGNITO_TOKEN_KEYS,
-    get_session_storage_tokens,
     inject_tokens_and_navigate,
     login_via_cognito_hosted_ui,
     send_chat_message,
@@ -24,32 +22,86 @@ from .helpers import (
 )
 
 
+def _assert_stored_session(page):
+    # Report only booleans, never token values, including on assertion failure.
+    state = page.evaluate(
+        """() => ({
+            id_token: Boolean(sessionStorage.getItem('cognito_id_token')),
+            access_token: Boolean(sessionStorage.getItem('cognito_access_token')),
+            refresh_token: Boolean(sessionStorage.getItem('cognito_refresh_token')),
+            jwt_shape: (sessionStorage.getItem('cognito_id_token') || '').split('.').length === 3,
+            unexpired: Number(sessionStorage.getItem('cognito_token_expiry')) > Date.now()
+        })"""
+    )
+    assert all(state.values()), f"Incomplete stored session: {state}"
+    page.get_by_role("button", name="Logout", exact=True).wait_for(state="visible")
+
+
+def _is_workspace_response(response):
+    return urlsplit(response.url).path.endswith("/auth/workspaces")
+
+
+@pytest.mark.chat_independent
 class TestLoginRoundTrip:
-    """Scenario 1: Full Cognito hosted-UI login flow."""
+    """Scenario 1: Full email-button → Cognito hosted-UI → OAuth callback flow."""
 
-    def test_login_stores_tokens_in_session_storage(self, page, test_creds, cognito_tokens):
-        """Load CloudFront URL → Cognito hosted UI → submit creds → land on dashboard.
+    def test_login_stores_tokens_in_session_storage(self, page, test_creds):
+        """Require a real PKCE authorization, callback, and successful token exchange."""
+        observed = {"pkce_authorization": False, "code_callback": False, "token_exchange": False}
+        target = urlsplit(CLOUDFRONT_URL)
 
-        Asserts: sessionStorage contains cognito_id_token, cognito_access_token,
-        cognito_refresh_token.
-        """
-        # Use token injection (the hosted-UI flow is tested in test_frontend_smoke.py;
-        # here we verify the token storage contract that downstream tests depend on)
-        inject_tokens_and_navigate(page, cognito_tokens)
+        def observe_request(request):
+            url = urlsplit(request.url)
+            query = parse_qs(url.query)
+            if (url.hostname or "").endswith(".amazoncognito.com"):
+                if query.get("response_type") == ["code"] and query.get("code_challenge"):
+                    observed["pkce_authorization"] = True
+            elif (url.scheme, url.netloc) == (target.scheme, target.netloc):
+                if url.path == "/auth/callback" and query.get("code"):
+                    observed["code_callback"] = True
 
-        tokens = get_session_storage_tokens(page)
+        def observe_response(response):
+            url = urlsplit(response.url)
+            if (
+                (url.hostname or "").endswith(".amazoncognito.com")
+                and url.path == "/oauth2/token"
+                and response.request.method == "POST"
+                and response.status == 200
+            ):
+                observed["token_exchange"] = True
 
-        for key in COGNITO_TOKEN_KEYS:
-            assert tokens.get(key), (
-                f"sessionStorage key '{key}' is missing or empty after login. "
-                "The chat page depends on these tokens for WS auth."
-            )
+        page.on("request", observe_request)
+        page.on("response", observe_response)
+        with page.expect_response(_is_workspace_response) as workspaces:
+            login_via_cognito_hosted_ui(page, test_creds)
+        assert workspaces.value.status == 200, "OAuth session could not read workspaces"
+        assert all(observed.values()), f"OAuth flow was not completed: {observed}"
+        _assert_stored_session(page)
 
-        # id_token should look like a JWT (3 dot-separated parts)
-        id_token = tokens["cognito_id_token"]
-        assert id_token.count(".") == 2, (
-            f"cognito_id_token doesn't look like a JWT: {id_token[:50]}..."
+
+@pytest.mark.chat_independent
+class TestSessionRestoration:
+    """Stored-session startup is independent of the hosted OAuth login flow."""
+
+    def test_supplied_tokens_restore_authenticated_session(self, page, cognito_tokens):
+        with page.expect_response(_is_workspace_response) as workspaces:
+            inject_tokens_and_navigate(page, cognito_tokens, path="/activity")
+        assert workspaces.value.status == 200, "Restored session could not read workspaces"
+        assert urlsplit(page.url).path == "/activity", "Restored session did not reach /activity"
+        _assert_stored_session(page)
+        supplied_tokens_preserved = page.evaluate(
+            """tokens => ['id_token', 'access_token', 'refresh_token'].every(
+                key => sessionStorage.getItem('cognito_' + key) === tokens[key])""",
+            cognito_tokens,
         )
+        assert supplied_tokens_preserved, "Restoration replaced or ignored supplied tokens"
+
+        # Reload without injecting again: the normal AuthContext startup must work.
+        with page.expect_response(_is_workspace_response) as reloaded_workspaces:
+            page.reload(wait_until="domcontentloaded")
+        assert reloaded_workspaces.value.status == 200, "Session did not survive reload"
+        assert urlsplit(page.url).path == "/activity", "Reload returned to login"
+        _assert_stored_session(page)
 
 
 class TestWebSocketOpens:

@@ -9,7 +9,7 @@ export function MobileNav() {
       {/* Mobile menu button */}
       <button
         type="button"
-        className="lg:hidden p-2 rounded-md text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+        className="blueprint-mobile-toggle lg:hidden p-2 rounded-md"
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}
         aria-controls="mobile-menu"
@@ -38,18 +38,18 @@ export function MobileNav() {
       {/* Mobile menu panel */}
       <div
         id="mobile-menu"
-        className={`fixed inset-y-0 left-0 z-50 w-64 bg-white dark:bg-gray-900 shadow-xl transform transition-transform duration-300 ease-in-out lg:hidden ${
+        className={`blueprint-mobile-panel fixed inset-y-0 left-0 z-50 w-64 shadow-xl transform transition-transform duration-300 ease-in-out lg:hidden ${
           isOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
         <div className="flex flex-col h-full">
-          <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-            <span className="text-lg font-semibold text-gray-900 dark:text-white">
+          <div className="blueprint-mobile-heading flex items-center justify-between p-4">
+            <span className="text-lg font-semibold">
               Menu
             </span>
             <button
               type="button"
-              className="p-2 rounded-md text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+              className="blueprint-mobile-control p-2 rounded-md"
               onClick={() => setIsOpen(false)}
               aria-label="Close menu"
             >

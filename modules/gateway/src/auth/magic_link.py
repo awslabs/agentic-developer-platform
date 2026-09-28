@@ -27,6 +27,7 @@ from typing import Any
 
 import jwt
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.vault import MagicLinkNonce
@@ -154,8 +155,16 @@ async def store_nonce(
     target_user_id: str | None,
     expires_at: datetime,
     db: AsyncSession,
+    delivery_method: str | None = None,
 ) -> MagicLinkNonce:
-    """Persist the nonce row BEFORE returning the token to the caller."""
+    """Persist the nonce row BEFORE returning the token to the caller.
+
+    ``delivery_method`` records HOW the link reaches the claimed account, so the
+    consume path can tell a private delivery from a post in a conversation other
+    people can read (#5664, A10). It defaults to ``None``, which
+    ``delivery_proves_ownership`` treats as unproven — a minter that does not say
+    how it delivered gets an unproven link, not a trusted one.
+    """
     nonce = MagicLinkNonce(
         jti=jti,
         provider=provider,
@@ -163,11 +172,22 @@ async def store_nonce(
         channel_context=channel_context,
         target_user_id=target_user_id,
         expires_at=expires_at,
+        delivery_method=delivery_method,
     )
     db.add(nonce)
     await db.commit()
     await db.refresh(nonce)
     return nonce
+
+
+class ClaimNotBoundToNonceError(Exception):
+    """A signed claim disagrees with the stored nonce it names.
+
+    The JWT and the nonce row both carry provider / provider_user_id. Only the row
+    is authoritative: it was written by the minter, whereas the token is data the
+    consumer hands back. They can only diverge if a token was altered or crafted,
+    so the mismatch is refused rather than resolved in either direction.
+    """
 
 
 async def consume_nonce(
@@ -176,16 +196,31 @@ async def consume_nonce(
     channel_context: str | None,
     consuming_user_id: str,
     db: AsyncSession,
+    claimed_provider: str | None = None,
+    claimed_provider_user_id: str | None = None,
 ) -> MagicLinkNonce:
-    """Atomically consume the nonce.
+    """Consume the nonce exactly once, without committing (#5664, A10).
 
-    Rules:
-    1. Nonce must exist.
-    2. Nonce must not yet be consumed.
-    3. channel_context must match (prevents cross-channel replay).
-    4. If target_user_id is set, it must match consuming_user_id.
+    Two properties this function is responsible for, beyond its original checks:
 
-    Returns the nonce row on success.
+    **One-time consumption is atomic.** It used to read the row, test
+    ``consumed_at IS NULL`` in Python, then write and commit. Two concurrent
+    requests could both pass the test before either wrote, so a single nonce could
+    be redeemed twice — and on this flow each redemption writes an identity link.
+    The claim is now staked with a single conditional UPDATE whose WHERE clause
+    carries the ``consumed_at IS NULL`` predicate, so the database decides the
+    winner and the loser sees ``NonceAlreadyConsumedError``.
+
+    **Consumption commits with the identity write, not before it.** This function
+    deliberately does NOT commit. It flushes, leaving the consumption pending in
+    the caller's transaction so that "nonce spent" and "identity linked" land in
+    one commit. Committing here would make the two separable: a failure between
+    them burned the nonce without linking anything, which is unrecoverable for the
+    user because the nonce cannot be reissued by them.
+
+    ``claimed_provider`` / ``claimed_provider_user_id`` bind the signed token to
+    the stored row. When supplied they must equal the row's values; the caller
+    should then use the ROW's values for the identity write.
 
     Raises:
         NonceNotFoundError
@@ -193,6 +228,7 @@ async def consume_nonce(
         NonceAlreadyConsumedError
         ChannelContextMismatchError
         TargetUserMismatchError
+        ClaimNotBoundToNonceError
     """
     stmt = select(MagicLinkNonce).where(MagicLinkNonce.jti == jti)
     result = await db.execute(stmt)
@@ -207,6 +243,26 @@ async def consume_nonce(
 
     if nonce.consumed_at is not None:
         raise NonceAlreadyConsumedError(jti)
+
+    # Every signed claim must agree with the row before the nonce is spent, so a
+    # tampered token cannot redirect a legitimate nonce at a different account.
+    if claimed_provider is not None and claimed_provider != nonce.provider:
+        logger.warning(
+            "Magic-link provider not bound to nonce jti=%s stored=%r claimed=%r",
+            jti,
+            nonce.provider,
+            claimed_provider,
+        )
+        raise ClaimNotBoundToNonceError("Token provider does not match the issued nonce")
+
+    if claimed_provider_user_id is not None and claimed_provider_user_id != nonce.provider_user_id:
+        logger.warning(
+            "Magic-link provider_user_id not bound to nonce jti=%s stored=%r claimed=%r",
+            jti,
+            nonce.provider_user_id,
+            claimed_provider_user_id,
+        )
+        raise ClaimNotBoundToNonceError("Token provider_user_id does not match the issued nonce")
 
     # channel_context binding — both None is allowed (no channel context)
     if nonce.channel_context != channel_context:
@@ -228,16 +284,26 @@ async def consume_nonce(
         )
         raise TargetUserMismatchError(f"Token was issued for user {nonce.target_user_id!r}, but consumed by {consuming_user_id!r}")
 
-    # Mark as consumed
-    nonce.consumed_at = now
-    await db.commit()
+    # Stake the claim in one statement. The predicate is what makes this safe under
+    # concurrency: whichever request the database serialises second matches zero
+    # rows and is refused, so two callers cannot both proceed to write a link.
+    claim = await db.execute(sa_update(MagicLinkNonce).where(MagicLinkNonce.jti == jti, MagicLinkNonce.consumed_at.is_(None)).values(consumed_at=now))
+    if claim.rowcount != 1:
+        logger.warning("Magic-link nonce lost the consume race jti=%s consumer=%s", jti, consuming_user_id)
+        raise NonceAlreadyConsumedError(jti)
+
+    # Flush, do NOT commit: the caller commits this together with the identity row.
+    await db.flush()
+    # The UPDATE bypassed the ORM's view of this instance, so refresh the attribute
+    # rather than leaving the caller with a stale `consumed_at=None`.
     await db.refresh(nonce)
 
     logger.info(
-        "Magic-link nonce consumed jti=%s provider=%s provider_user_id=%s user=%s",
+        "Magic-link nonce consumed jti=%s provider=%s provider_user_id=%s user=%s delivery=%s",
         jti,
         nonce.provider,
         nonce.provider_user_id,
         consuming_user_id,
+        nonce.delivery_method,
     )
     return nonce

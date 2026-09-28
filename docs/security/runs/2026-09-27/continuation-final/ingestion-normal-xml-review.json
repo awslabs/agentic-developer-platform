@@ -1,0 +1,40 @@
+{
+  "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
+  "raw_receipt": {
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "docker_root_descriptor": "sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+    "config_digest": "sha256:12439834f5b4837fa9bd76e475b6cf9e29e48dcdd9e0a34ae4d047f1cdb92edc",
+    "time": "2026-09-27T14:36:49.296445+00:00",
+    "packages": 3949,
+    "native_counts": {
+      "Negligible": 703,
+      "High": 154,
+      "Critical": 25,
+      "Low": 29,
+      "Medium": 154,
+      "Unknown": 5
+    },
+    "sbom_sha256": "78318244d5d973d083964fb2f9ba1fbe8d5d6fb7b9994b5ef1aeb0be9902ff3d",
+    "grype_sha256": "61a7fe7cafba65feaa2d27e53860fe0e755786aae12f0039d13a3c7a51c7e019",
+    "archive_sha256": "da7530f8b37519b5cf8e620a5373d396c6a2a70846311276cf056eda8f27ad3e"
+  },
+  "binary_observation": {
+    "version": "2.13.9-0+adp1",
+    "runtime_version": "21309",
+    "sha256": "b38d226e6b1126549ea9c3e7a903b23c0be88a42cc5eb16f807811197f3fb337"
+  },
+  "dispositions": [
+    {
+      "native_match_index": 103,
+      "id": "CVE-2026-6653",
+      "package": "libxml2",
+      "version": "2.13.9-0+adp1",
+      "status": "fixed-upstream-source-in-exact-image",
+      "binary_sha256": "b38d226e6b1126549ea9c3e7a903b23c0be88a42cc5eb16f807811197f3fb337",
+      "fix_commit": "463bbeeca1805b5c4828f50d0fefc4eebaf620df",
+      "upstream_release": "2.13.9",
+      "basis": "Debian identifies upstream 2.11.0 as fixed; its 2.14.5 package threshold reflects the Debian source-version reversion, not this upstream source build."
+    }
+  ],
+  "scope": "exact candidate only; not live closure"
+}

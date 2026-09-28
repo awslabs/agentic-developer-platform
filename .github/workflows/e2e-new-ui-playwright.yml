@@ -1,0 +1,252 @@
+name: E2E New UI Playwright Acceptance Suite
+
+# Runs tests/e2e/new_ui/ (the /next preview shell acceptance suite) against a
+# DEPLOYED environment. Issue #5135: nothing referenced that directory, so the
+# twelve tests in it never ran anywhere.
+#
+# This is a POST-DEPLOY suite: it drives a browser against the deployed SPA and
+# asserts the live /api/features flag. Running it on push, concurrently with
+# gateway-deploy.yml, would test the PREVIOUS bundle — so the on-merge trigger is
+# `workflow_run` completion of Gateway Deploy rather than a `paths` filter.
+# It also cannot run in gateway-ci.yml's pull_request job: no browser, no
+# deployed target.
+
+on:
+  # Fires after Gateway Deploy finishes on main, so the bundle under test is the
+  # one that was just published. Gated on conclusion == 'success' in the job `if`.
+  workflow_run:
+    workflows: ['Gateway Deploy']
+    types: [completed]
+    branches: [main]
+  schedule:
+    # Nightly at 04:00 UTC. Deliberately offset from e2e-chat-playwright.yml's
+    # 03:00 so the two suites do not contend for the ARC runner pool.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to test (must have test credentials + a resolvable URL).'
+        required: false
+        default: 'dev'
+      cloudfront_url:
+        description: 'Override the target URL (default: resolve from SSM).'
+        required: false
+        default: ''
+      expected_flag:
+        description: >-
+          Preview-flag mode. "auto" derives it from SSM (correct for normal runs).
+          Forcing on/off against a contradicting live flag makes the suite fail on
+          its live-flag assertion — that is the intended mutation probe.
+        required: false
+        type: choice
+        options: [auto, 'on', 'off']
+        default: auto
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # A nightly run and a post-deploy run must not drive the same environment at
+  # the same time; queue instead of cancelling so neither result is lost.
+  group: e2e-new-ui-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  e2e-new-ui:
+    name: Playwright New UI Acceptance
+    # Skip when the upstream deploy failed — there is no new bundle to accept.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    environment: adp-browser-checks-${{ github.event.inputs.environment || 'dev' }}
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # On workflow_run, check out the commit that was deployed rather than
+          # whatever main has drifted to since.
+          ref: ${{ github.event.workflow_run.head_sha || '' }}
+
+      # Use the browser fixture identity before SSM and Secrets Manager reads.
+      - name: Establish trusted browser checks identity
+        uses: ./.github/actions/trusted-checks
+        with:
+          role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
+          region: us-east-1
+
+      - name: Resolve environment
+        env:
+          INPUT_ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$INPUT_ENVIRONMENT" =~ ^[a-z][a-z0-9-]*$ ]]; then
+            echo "::error::environment must be a lowercase environment name"
+            exit 1
+          fi
+          printf 'ENVIRONMENT=%s\n' "$INPUT_ENVIRONMENT" >> "$GITHUB_ENV"
+
+      # Must go through CloudFront, not the internal ALB: Playwright drives a
+      # browser against the SPA and S3 is only reachable via the distribution
+      # (OAC). That is also why runbook 6.1 cannot drop the NAT EIPs from the
+      # CloudFront allowlist. Never hardcode the domain — a hardcoded one drifted
+      # in the chat workflow and silently exercised a different account.
+      - name: Resolve dashboard URL
+        env:
+          INPUT_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url }}
+        run: bash .github/scripts/resolve-dashboard-url.sh
+
+      # tests/e2e/new_ui/conftest.py requires E2E_NEW_UI_EXPECTED_FLAG=on|off
+      # explicitly (it raises pytest.UsageError without it) and then asserts the
+      # LIVE /api/features flag equals it, deselecting the opposite mode's tests.
+      # So the mode must track the environment's real flag: hardcoding `on` would
+      # turn every legitimate flag-off period into a spurious failure.
+      #
+      # The reading matches gateway-deploy.yml, which is the only place this
+      # parameter reaches a running pod: the literal "true" enables the preview,
+      # an absent parameter means disabled, and anything else is disabled too.
+      - name: Resolve preview flag mode
+        env:
+          INPUT_EXPECTED_FLAG: ${{ github.event.inputs.expected_flag || 'auto' }}
+        run: |
+          set -euo pipefail
+          FORCED="$INPUT_EXPECTED_FLAG"
+          PARAM="/adp/${ENVIRONMENT}/gateway/feature-new-ui"
+
+          if [ "$FORCED" = "on" ] || [ "$FORCED" = "off" ]; then
+            MODE="$FORCED"
+            echo "::warning::Preview-flag mode FORCED to '${MODE}' by dispatch input; the suite will fail if the live flag disagrees."
+            SOURCE="dispatch override"
+          else
+            set +e
+            RAW=$(aws ssm get-parameter --name "$PARAM" --query Parameter.Value --output text 2>/tmp/ssm-flag-err.txt)
+            RC=$?
+            set -e
+            if [ "$RC" -ne 0 ]; then
+              if grep -q 'ParameterNotFound' /tmp/ssm-flag-err.txt; then
+                # Absent parameter means the preview was never enabled here.
+                RAW="false"
+              else
+                # An IAM/network failure must NOT silently resolve to a mode.
+                echo "::error::Could not read ${PARAM} (and it is not ParameterNotFound). Refusing to guess a preview-flag mode."
+                sed 's/^/  /' /tmp/ssm-flag-err.txt
+                exit 1
+              fi
+            fi
+            if [ "$RAW" = "true" ]; then MODE="on"; else MODE="off"; fi
+            SOURCE="${PARAM}='${RAW}'"
+          fi
+
+          echo "E2E_NEW_UI_EXPECTED_FLAG=${MODE}" >> "$GITHUB_ENV"
+          echo "Preview-flag mode: ${MODE} (from ${SOURCE})"
+          {
+            echo "### New UI acceptance run"
+            echo ""
+            echo "| Setting | Value |"
+            echo "|---|---|"
+            echo "| Environment | \`${ENVIRONMENT}\` |"
+            echo "| Target URL | ${E2E_CLOUDFRONT_URL} |"
+            echo "| Preview-flag mode | \`${MODE}\` |"
+            echo "| Mode source | ${SOURCE} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # --with-deps installs the ~24 system libraries Chromium needs
+      # (libglib-2.0, libnss3, libX11, libatk-1.0, libcairo, libgbm, ...). It
+      # needs root, which this runner has and an agent pod does not — which is
+      # why the suite could not be run by hand.
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-html pytest-timeout playwright boto3 requests
+          playwright install chromium --with-deps
+
+      # No -x: this is an acceptance run and the per-test picture is the point,
+      # so one failure must not hide the state of the remaining tests.
+      # Credentials are read from Secrets Manager by the suite's shared helper
+      # (tests/e2e/chat/helpers.py) at runtime; none appear in this file.
+      - name: Run E2E new UI suite
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          python -m pytest tests/e2e/new_ui/ \
+            -v \
+            --tb=short \
+            --junitxml=test-results/e2e-new-ui-junit.xml \
+            --html=test-results/e2e-new-ui-report.html \
+            --self-contained-html \
+            --timeout=300 \
+            2>&1 | tee test-results/e2e-new-ui-output.txt
+        env:
+          E2E_NEW_UI_ENABLED: '1'
+          E2E_NEW_UI_EXPECTED_FLAG: ${{ env.E2E_NEW_UI_EXPECTED_FLAG }}
+          E2E_CLOUDFRONT_URL: ${{ env.E2E_CLOUDFRONT_URL }}
+          AWS_REGION: us-east-1
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
+
+      # The primary failure mode for this suite is a VACUOUS pass: a missing or
+      # malformed E2E_NEW_UI_ENABLED makes conftest.py skip every test, and
+      # pytest still exits 0. A green check that asserted nothing is worse than
+      # no check, so assert on the executed count, not just the exit code.
+      - name: Assert the run was not vacuous
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("test-results/e2e-new-ui-junit.xml")
+          if not report.is_file():
+              sys.exit("::error::No JUnit report at %s — pytest did not get far enough to "
+                       "report anything, so this run is not acceptance evidence." % report)
+
+          root = ET.parse(report).getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          failures = sum(int(s.get("failures", 0)) for s in suites)
+          errors = sum(int(s.get("errors", 0)) for s in suites)
+          executed = total - skipped
+
+          print(f"collected={total} skipped={skipped} executed={executed} "
+                f"failures={failures} errors={errors}")
+
+          # Write the counts BEFORE any exit: the vacuous-run case is exactly when
+          # a reader most needs to see them in the summary.
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write(f"\n| Collected | Skipped | Executed | Failures | Errors |\n"
+                           f"|---|---|---|---|---|\n"
+                           f"| {total} | {skipped} | {executed} | {failures} | {errors} |\n")
+
+          if executed == 0:
+              sys.exit("::error::0 tests executed (collected=%d, skipped=%d). A run that "
+                       "skipped everything is not a pass — check E2E_NEW_UI_ENABLED and "
+                       "E2E_NEW_UI_EXPECTED_FLAG." % (total, skipped))
+          PY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-new-ui-results
+          path: test-results/
+          retention-days: 14
+
+      # Screenshots contain real UI data (see tests/e2e/new_ui/README.md) and the
+      # suite writes them 0600 locally; review before sharing.
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-new-ui-screenshots
+          path: /tmp/e2e-chat-*.png
+          retention-days: 14
+          if-no-files-found: ignore

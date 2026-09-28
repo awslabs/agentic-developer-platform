@@ -1,0 +1,30 @@
+{
+  "image": "security27/arc-runner:rebuilt",
+  "docker_root_descriptor": "sha256:a5f75c5914fd6bc7ba81d6436609ead349628df43dc9d0b24ad35f5759ed568c",
+  "config_digest": "sha256:07d6c810efa9152bc5bbfe8854d99387489085902b9e36ecef35d7f184ce220b",
+  "time": "2026-09-27T09:10:27.417921+00:00",
+  "packages": 2778,
+  "native_counts": {
+    "Medium": 397,
+    "High": 105,
+    "Negligible": 10,
+    "Low": 71,
+    "Unknown": 11
+  },
+  "sbom_sha256": "d3f550ef7b63289b70445f604f04443c8efe41af9b52991cc046348a187446a3",
+  "grype_sha256": "37b3b273fc6c7fe818585452f61655029b107854bb9e653fa194d8756f106d77",
+  "archive_sha256": "5a79eeb4d408c9113925ce1289b9ba325fe52fef6d1506fe49df6a1bc5c474ae",
+  "source_commit": "489f17109c8d6da5bbca689eda599a4dad4fbca5",
+  "baseline_raw_counts": {
+    "Critical": 64,
+    "High": 464
+  },
+  "new_critical_high_advisory_package_pairs": [],
+  "validation": [
+    "Existing Dockerfile build-time tool and non-root checks",
+    "Network-isolated Terraform terraform_data init/validate/plan/apply/output",
+    "Network-isolated sudo Kaniko scratch COPY build producing tar without push",
+    "Node/npm/AWS/kubectl version checks"
+  ],
+  "live_acceptance": "Pending: actual runner job assignment, completion and scale-down; no rollout"
+}

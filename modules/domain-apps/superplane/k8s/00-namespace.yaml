@@ -1,0 +1,31 @@
+---
+# =============================================================================
+# The domain's own namespace — Issue #5042 (U3), EPIC #4910.
+# =============================================================================
+# Declared here rather than assumed to exist, so a rollout into a fresh cluster does not
+# depend on somebody having run `kubectl create ns` first.
+#
+# The name is substituted from the SSM parameter Terraform publishes
+# (`/adp/<env>/superplane/namespace`, written by infra/control-plane/config.tf), NOT written
+# as a literal. The IRSA trust policies in irsa.tf are scoped to
+# `system:serviceaccount:<namespace>:<name>`, so a literal here that drifted from
+# `var.skypilot_namespace` would produce pods that start and then cannot assume their role —
+# a failure that surfaces as opaque AWS 403s rather than as a rollout error.
+#
+# `pod-security.kubernetes.io/enforce: restricted` is set because a domain app has no reason
+# to need privileged pods, and the enforcement is worth having even though
+# check_rendered_manifests.py separately rejects hostNetwork/hostPID/hostPath. Two
+# independent mechanisms, because the guard checks the text we render and this constrains
+# anything that reaches the namespace by another route.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: REPLACE_WITH_SKYPILOT_NAMESPACE
+  labels:
+    app.kubernetes.io/part-of: adp-superplane
+    # Marks the namespace as an optional domain app, so teardown and cost attribution can
+    # identify domain-owned objects without a hardcoded list.
+    adp.aws-e.io/domain-app: superplane
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

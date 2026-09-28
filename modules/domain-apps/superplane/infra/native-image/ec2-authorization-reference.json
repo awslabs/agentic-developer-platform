@@ -1,0 +1,1021 @@
+{
+  "actions": [
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "CreateKeyPair",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:KeyPairType"
+          ],
+          "Name": "key-pair"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "CreateNetworkInterface",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:NetworkInterfaceID"
+          ],
+          "Name": "network-interface"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SecurityGroupID",
+            "ec2:Vpc"
+          ],
+          "Name": "security-group"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SubnetID",
+            "ec2:Vpc"
+          ],
+          "Name": "subnet"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": true,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "CreateNetworkInterfacePermission",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AuthorizedService",
+            "ec2:AuthorizedUser",
+            "ec2:AvailabilityZone",
+            "ec2:ManagedResourceOperator",
+            "ec2:NetworkInterfaceID",
+            "ec2:Permission",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:Subnet",
+            "ec2:Vpc"
+          ],
+          "Name": "network-interface"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "CreateSnapshot",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:Location",
+            "ec2:OutpostArn",
+            "ec2:ParentVolume",
+            "ec2:SnapshotID",
+            "ec2:SourceAvailabilityZone",
+            "ec2:SourceOutpostArn",
+            "ec2:VolumeSize"
+          ],
+          "Name": "snapshot"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZoneId",
+            "ec2:Encrypted",
+            "ec2:ManagedResourceOperator",
+            "ec2:ParentVolume",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:VolumeID",
+            "ec2:VolumeInitializationRate",
+            "ec2:VolumeIops",
+            "ec2:VolumeSize",
+            "ec2:VolumeThroughput",
+            "ec2:VolumeType"
+          ],
+          "Name": "volume"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": false
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:CreateAction",
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": true,
+          "IsWrite": true
+        }
+      },
+      "Name": "CreateTags",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:ResourceTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:ImageID",
+            "ec2:ImageType",
+            "ec2:Owner",
+            "ec2:Public",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:RootDeviceType"
+          ],
+          "Name": "image"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:ResourceTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:CpuOptionsAmdSevSnp",
+            "ec2:EbsOptimized",
+            "ec2:InstanceAutoRecovery",
+            "ec2:InstanceBandwidthWeighting",
+            "ec2:InstanceID",
+            "ec2:InstanceMarketType",
+            "ec2:InstanceMetadataTags",
+            "ec2:InstanceProfile",
+            "ec2:InstanceType",
+            "ec2:ManagedResourceOperator",
+            "ec2:MetadataHttpEndpoint",
+            "ec2:MetadataHttpPutResponseHopLimit",
+            "ec2:MetadataHttpTokens",
+            "ec2:PlacementGroup",
+            "ec2:ProductCode",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:RootDeviceType",
+            "ec2:Tenancy"
+          ],
+          "Name": "instance"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:ResourceTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:KeyPairName",
+            "ec2:KeyPairType",
+            "ec2:ResourceTag/${TagKey}"
+          ],
+          "Name": "key-pair"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:ResourceTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:AuthorizedUser",
+            "ec2:AvailabilityZone",
+            "ec2:ManagedResourceOperator",
+            "ec2:NetworkInterfaceID",
+            "ec2:Permission",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:Subnet",
+            "ec2:Vpc"
+          ],
+          "Name": "network-interface"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:ResourceTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SecurityGroupID",
+            "ec2:Vpc"
+          ],
+          "Name": "security-group"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:ResourceTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:Encrypted",
+            "ec2:Owner",
+            "ec2:ParentVolume",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SnapshotID",
+            "ec2:SnapshotTime",
+            "ec2:VolumeSize"
+          ],
+          "Name": "snapshot"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:ResourceTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SubnetID",
+            "ec2:Vpc"
+          ],
+          "Name": "subnet"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:ResourceTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:Encrypted",
+            "ec2:ManagedResourceOperator",
+            "ec2:ParentSnapshot",
+            "ec2:ParentVolume",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:VolumeID",
+            "ec2:VolumeInitializationRate",
+            "ec2:VolumeIops",
+            "ec2:VolumeSize",
+            "ec2:VolumeThroughput",
+            "ec2:VolumeType"
+          ],
+          "Name": "volume"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": false
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "DeleteKeyPair",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:KeyPairName",
+            "ec2:KeyPairType",
+            "ec2:ResourceTag/${TagKey}"
+          ],
+          "Name": "key-pair"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "DeleteNetworkInterface",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZone",
+            "ec2:ManagedResourceOperator",
+            "ec2:NetworkInterfaceID",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:Subnet",
+            "ec2:Vpc"
+          ],
+          "Name": "network-interface"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "DeleteSnapshot",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZone",
+            "ec2:OutpostArn",
+            "ec2:Owner",
+            "ec2:ParentVolume",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SnapshotID",
+            "ec2:SnapshotTime",
+            "ec2:VolumeSize"
+          ],
+          "Name": "snapshot"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": false
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "DeleteVolume",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:Encrypted",
+            "ec2:ManagedResourceOperator",
+            "ec2:ParentSnapshot",
+            "ec2:ParentVolume",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:VolumeID",
+            "ec2:VolumeInitializationRate",
+            "ec2:VolumeIops",
+            "ec2:VolumeSize",
+            "ec2:VolumeThroughput",
+            "ec2:VolumeType"
+          ],
+          "Name": "volume"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "ModifyInstanceAttribute",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:Attribute",
+            "ec2:Attribute/${AttributeName}",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:CpuOptionsAmdSevSnp",
+            "ec2:EbsOptimized",
+            "ec2:InstanceAutoRecovery",
+            "ec2:InstanceBandwidthWeighting",
+            "ec2:InstanceID",
+            "ec2:InstanceMarketType",
+            "ec2:InstanceMetadataTags",
+            "ec2:InstanceProfile",
+            "ec2:InstanceType",
+            "ec2:ManagedResourceOperator",
+            "ec2:MetadataHttpEndpoint",
+            "ec2:MetadataHttpPutResponseHopLimit",
+            "ec2:MetadataHttpTokens",
+            "ec2:PlacementGroup",
+            "ec2:ProductCode",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:RootDeviceType",
+            "ec2:Tenancy"
+          ],
+          "Name": "instance"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SecurityGroupID",
+            "ec2:Vpc"
+          ],
+          "Name": "security-group"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:Encrypted",
+            "ec2:ManagedResourceOperator",
+            "ec2:ParentSnapshot",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:VolumeID",
+            "ec2:VolumeInitializationRate",
+            "ec2:VolumeIops",
+            "ec2:VolumeSize",
+            "ec2:VolumeThroughput",
+            "ec2:VolumeType"
+          ],
+          "Name": "volume"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "RegisterImage",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:ImageID",
+            "ec2:Owner"
+          ],
+          "Name": "image"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:OutpostArn",
+            "ec2:Owner",
+            "ec2:ParentVolume",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SnapshotID",
+            "ec2:SnapshotTime",
+            "ec2:SourceOutpostArn",
+            "ec2:VolumeSize"
+          ],
+          "Name": "snapshot"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "RunInstances",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:ImageID",
+            "ec2:ImageType",
+            "ec2:IsLaunchTemplateResource",
+            "ec2:LaunchTemplate",
+            "ec2:Owner",
+            "ec2:Public",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:RootDeviceType"
+          ],
+          "Name": "image"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:CpuOptionsAmdSevSnp",
+            "ec2:EbsOptimized",
+            "ec2:InstanceAutoRecovery",
+            "ec2:InstanceBandwidthWeighting",
+            "ec2:InstanceID",
+            "ec2:InstanceMarketType",
+            "ec2:InstanceMetadataTags",
+            "ec2:InstanceProfile",
+            "ec2:InstanceType",
+            "ec2:IsLaunchTemplateResource",
+            "ec2:LaunchTemplate",
+            "ec2:ManagedResourceOperator",
+            "ec2:MetadataHttpEndpoint",
+            "ec2:MetadataHttpPutResponseHopLimit",
+            "ec2:MetadataHttpTokens",
+            "ec2:PlacementGroup",
+            "ec2:ProductCode",
+            "ec2:RootDeviceType",
+            "ec2:Tenancy"
+          ],
+          "Name": "instance"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:IsLaunchTemplateResource",
+            "ec2:KeyPairName",
+            "ec2:KeyPairType",
+            "ec2:LaunchTemplate",
+            "ec2:ResourceTag/${TagKey}"
+          ],
+          "Name": "key-pair"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:AssociatePublicIpAddress",
+            "ec2:AuthorizedService",
+            "ec2:AvailabilityZone",
+            "ec2:IsLaunchTemplateResource",
+            "ec2:LaunchTemplate",
+            "ec2:ManagedResourceOperator",
+            "ec2:NetworkInterfaceID",
+            "ec2:Subnet",
+            "ec2:Vpc"
+          ],
+          "Name": "network-interface"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:IsLaunchTemplateResource",
+            "ec2:LaunchTemplate",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SecurityGroupID",
+            "ec2:Vpc"
+          ],
+          "Name": "security-group"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:IsLaunchTemplateResource",
+            "ec2:LaunchTemplate",
+            "ec2:Owner",
+            "ec2:ParentVolume",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SnapshotID",
+            "ec2:SnapshotTime",
+            "ec2:VolumeSize"
+          ],
+          "Name": "snapshot"
+        },
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:IsLaunchTemplateResource",
+            "ec2:LaunchTemplate",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:SubnetID",
+            "ec2:Vpc"
+          ],
+          "Name": "subnet"
+        },
+        {
+          "ConditionKeys": [
+            "aws:RequestTag/${TagKey}",
+            "aws:TagKeys",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:Encrypted",
+            "ec2:IsLaunchTemplateResource",
+            "ec2:LaunchTemplate",
+            "ec2:ManagedResourceOperator",
+            "ec2:ParentSnapshot",
+            "ec2:VolumeID",
+            "ec2:VolumeInitializationRate",
+            "ec2:VolumeIops",
+            "ec2:VolumeSize",
+            "ec2:VolumeThroughput",
+            "ec2:VolumeType"
+          ],
+          "Name": "volume"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": true
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "StopInstances",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:CpuOptionsAmdSevSnp",
+            "ec2:EbsOptimized",
+            "ec2:InstanceAutoRecovery",
+            "ec2:InstanceBandwidthWeighting",
+            "ec2:InstanceID",
+            "ec2:InstanceMarketType",
+            "ec2:InstanceMetadataTags",
+            "ec2:InstanceProfile",
+            "ec2:InstanceType",
+            "ec2:ManagedResourceOperator",
+            "ec2:MetadataHttpEndpoint",
+            "ec2:MetadataHttpPutResponseHopLimit",
+            "ec2:MetadataHttpTokens",
+            "ec2:PlacementGroup",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:RootDeviceType",
+            "ec2:Tenancy"
+          ],
+          "Name": "instance"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": false
+      }
+    },
+    {
+      "ActionConditionKeys": [
+        "ec2:Region"
+      ],
+      "Annotations": {
+        "Properties": {
+          "IsList": false,
+          "IsPermissionManagement": false,
+          "IsTaggingOnly": false,
+          "IsWrite": true
+        }
+      },
+      "Name": "TerminateInstances",
+      "Resources": [
+        {
+          "ConditionKeys": [
+            "aws:ResourceTag/${TagKey}",
+            "ec2:AvailabilityZone",
+            "ec2:AvailabilityZoneId",
+            "ec2:CpuOptionsAmdSevSnp",
+            "ec2:EbsOptimized",
+            "ec2:InstanceAutoRecovery",
+            "ec2:InstanceBandwidthWeighting",
+            "ec2:InstanceID",
+            "ec2:InstanceMarketType",
+            "ec2:InstanceMetadataTags",
+            "ec2:InstanceProfile",
+            "ec2:InstanceType",
+            "ec2:ManagedResourceOperator",
+            "ec2:MetadataHttpEndpoint",
+            "ec2:MetadataHttpPutResponseHopLimit",
+            "ec2:MetadataHttpTokens",
+            "ec2:PlacementGroup",
+            "ec2:ProductCode",
+            "ec2:ResourceTag/${TagKey}",
+            "ec2:RootDeviceType",
+            "ec2:Tenancy"
+          ],
+          "Name": "instance"
+        }
+      ],
+      "SupportedBy": {
+        "IAM Access Analyzer Policy Generation": true,
+        "IAM Action Last Accessed": false
+      }
+    }
+  ],
+  "resources": [
+    {
+      "ARNFormats": [
+        "arn:${Partition}:ec2:${Region}::image/${ImageId}"
+      ],
+      "ConditionKeys": [
+        "aws:RequestTag/${TagKey}",
+        "aws:ResourceTag/${TagKey}",
+        "aws:TagKeys",
+        "ec2:Attribute",
+        "ec2:Attribute/${AttributeName}",
+        "ec2:BootModeOverride",
+        "ec2:ImageID",
+        "ec2:ImageType",
+        "ec2:IsLaunchTemplateResource",
+        "ec2:LaunchTemplate",
+        "ec2:Owner",
+        "ec2:Public",
+        "ec2:Region",
+        "ec2:ResourceTag/${TagKey}",
+        "ec2:RootDeviceType"
+      ],
+      "Name": "image"
+    },
+    {
+      "ARNFormats": [
+        "arn:${Partition}:ec2:${Region}:${Account}:instance/${InstanceId}"
+      ],
+      "ConditionKeys": [
+        "aws:RequestTag/${TagKey}",
+        "aws:ResourceTag/${TagKey}",
+        "aws:TagKeys",
+        "ec2:Attribute",
+        "ec2:Attribute/${AttributeName}",
+        "ec2:AvailabilityZone",
+        "ec2:AvailabilityZoneId",
+        "ec2:CpuOptionsAmdSevSnp",
+        "ec2:EbsOptimized",
+        "ec2:InstanceAutoRecovery",
+        "ec2:InstanceBandwidthWeighting",
+        "ec2:InstanceID",
+        "ec2:InstanceMarketType",
+        "ec2:InstanceMetadataTags",
+        "ec2:InstanceProfile",
+        "ec2:InstanceType",
+        "ec2:IsLaunchTemplateResource",
+        "ec2:LaunchTemplate",
+        "ec2:ManagedResourceOperator",
+        "ec2:MetadataHttpEndpoint",
+        "ec2:MetadataHttpPutResponseHopLimit",
+        "ec2:MetadataHttpTokens",
+        "ec2:NewInstanceProfile",
+        "ec2:PlacementGroup",
+        "ec2:ProductCode",
+        "ec2:Region",
+        "ec2:ResourceTag/${TagKey}",
+        "ec2:RootDeviceType",
+        "ec2:Tenancy"
+      ],
+      "Name": "instance"
+    },
+    {
+      "ARNFormats": [
+        "arn:${Partition}:ec2:${Region}:${Account}:key-pair/${KeyPairName}"
+      ],
+      "ConditionKeys": [
+        "aws:RequestTag/${TagKey}",
+        "aws:ResourceTag/${TagKey}",
+        "aws:TagKeys",
+        "ec2:IsLaunchTemplateResource",
+        "ec2:KeyPairName",
+        "ec2:KeyPairType",
+        "ec2:LaunchTemplate",
+        "ec2:Region",
+        "ec2:ResourceTag/${TagKey}"
+      ],
+      "Name": "key-pair"
+    },
+    {
+      "ARNFormats": [
+        "arn:${Partition}:ec2:${Region}:${Account}:network-interface/${NetworkInterfaceId}"
+      ],
+      "ConditionKeys": [
+        "aws:RequestTag/${TagKey}",
+        "aws:ResourceTag/${TagKey}",
+        "aws:TagKeys",
+        "ec2:AssociatePublicIpAddress",
+        "ec2:Attribute",
+        "ec2:Attribute/${AttributeName}",
+        "ec2:AuthorizedService",
+        "ec2:AuthorizedUser",
+        "ec2:AvailabilityZone",
+        "ec2:IsLaunchTemplateResource",
+        "ec2:LaunchTemplate",
+        "ec2:ManagedResourceOperator",
+        "ec2:NetworkInterfaceID",
+        "ec2:Permission",
+        "ec2:Region",
+        "ec2:ResourceTag/${TagKey}",
+        "ec2:Subnet",
+        "ec2:Vpc"
+      ],
+      "Name": "network-interface"
+    },
+    {
+      "ARNFormats": [
+        "arn:${Partition}:ec2:${Region}:${Account}:security-group/${SecurityGroupId}"
+      ],
+      "ConditionKeys": [
+        "aws:RequestTag/${TagKey}",
+        "aws:ResourceTag/${TagKey}",
+        "aws:TagKeys",
+        "ec2:IsLaunchTemplateResource",
+        "ec2:LaunchTemplate",
+        "ec2:Region",
+        "ec2:ResourceTag/${TagKey}",
+        "ec2:SecurityGroupID",
+        "ec2:Vpc"
+      ],
+      "Name": "security-group"
+    },
+    {
+      "ARNFormats": [
+        "arn:${Partition}:ec2:${Region}::snapshot/${SnapshotId}"
+      ],
+      "ConditionKeys": [
+        "aws:RequestTag/${TagKey}",
+        "aws:ResourceTag/${TagKey}",
+        "aws:TagKeys",
+        "ec2:Add/group",
+        "ec2:Add/userId",
+        "ec2:Attribute",
+        "ec2:Attribute/${AttributeName}",
+        "ec2:AvailabilityZone",
+        "ec2:Encrypted",
+        "ec2:IsLaunchTemplateResource",
+        "ec2:LaunchTemplate",
+        "ec2:Location",
+        "ec2:OutpostArn",
+        "ec2:Owner",
+        "ec2:ParentSnapshot",
+        "ec2:ParentVolume",
+        "ec2:ProductCode",
+        "ec2:Region",
+        "ec2:Remove/group",
+        "ec2:Remove/userId",
+        "ec2:ResourceTag/${TagKey}",
+        "ec2:SnapshotCoolOffPeriod",
+        "ec2:SnapshotID",
+        "ec2:SnapshotLockDuration",
+        "ec2:SnapshotTime",
+        "ec2:SourceAvailabilityZone",
+        "ec2:SourceOutpostArn",
+        "ec2:VolumeSize"
+      ],
+      "Name": "snapshot"
+    },
+    {
+      "ARNFormats": [
+        "arn:${Partition}:ec2:${Region}:${Account}:subnet/${SubnetId}"
+      ],
+      "ConditionKeys": [
+        "aws:RequestTag/${TagKey}",
+        "aws:ResourceTag/${TagKey}",
+        "aws:TagKeys",
+        "ec2:Attribute",
+        "ec2:Attribute/${AttributeName}",
+        "ec2:AvailabilityZone",
+        "ec2:AvailabilityZoneId",
+        "ec2:Ipv4IpamPoolId",
+        "ec2:Ipv6IpamPoolId",
+        "ec2:IsLaunchTemplateResource",
+        "ec2:LaunchTemplate",
+        "ec2:Region",
+        "ec2:ResourceTag/${TagKey}",
+        "ec2:SubnetID",
+        "ec2:Vpc"
+      ],
+      "Name": "subnet"
+    },
+    {
+      "ARNFormats": [
+        "arn:${Partition}:ec2:${Region}:${Account}:volume/${VolumeId}"
+      ],
+      "ConditionKeys": [
+        "aws:RequestTag/${TagKey}",
+        "aws:ResourceTag/${TagKey}",
+        "aws:TagKeys",
+        "ec2:Attribute",
+        "ec2:Attribute/${AttributeName}",
+        "ec2:AvailabilityZone",
+        "ec2:AvailabilityZoneId",
+        "ec2:Encrypted",
+        "ec2:IsLaunchTemplateResource",
+        "ec2:KmsKeyId",
+        "ec2:LaunchTemplate",
+        "ec2:ManagedResourceOperator",
+        "ec2:ParentSnapshot",
+        "ec2:ParentVolume",
+        "ec2:Region",
+        "ec2:ResourceTag/${TagKey}",
+        "ec2:VolumeID",
+        "ec2:VolumeInitializationRate",
+        "ec2:VolumeIops",
+        "ec2:VolumeSize",
+        "ec2:VolumeThroughput",
+        "ec2:VolumeType"
+      ],
+      "Name": "volume"
+    }
+  ],
+  "retrieved": "2026-09-26",
+  "sha256": "c95e9f1909e1f762d1f653f0e2533adc8dbc99120906af98fa4e093d7354d527",
+  "source": "https://servicereference.us-east-1.amazonaws.com/v1/ec2/ec2.json",
+  "version": "v1.4"
+}

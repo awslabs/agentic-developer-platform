@@ -1,0 +1,552 @@
+{
+  "would_register": true,
+  "violations": [],
+  "plan_hash": "aa724d447945a21b419e2341ea3f9b04867f82154f7245aa648cd4ade416ab0a",
+  "plan_hash_is_bindable": true,
+  "flow_slug": "security-nightly-2026-09-21",
+  "title": "ANALYSIS ONLY \u2014 Security nightly 2026-09-21 topology",
+  "acceptance_gate_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+  "nodes": [
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "kind": "gate",
+      "title": "Human gate: accept this plan to start execution",
+      "inserted_by_server": true,
+      "issue_ref": "",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "human_decision",
+      "depends_on": []
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s01",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S01: Remediate Superplane controller runtime and embedded Helm dependencies",
+      "inserted_by_server": false,
+      "issue_ref": "5600",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s02",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S02: Remove or replace the vulnerable ecdsa dependency in Superplane API",
+      "inserted_by_server": false,
+      "issue_ref": "5601",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s03",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S03: Refresh the pinned SkyPilot image and its bundled vulnerable packages",
+      "inserted_by_server": false,
+      "issue_ref": "5602",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s04",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S04: Validate and harden agent gateway/knowledge outbound destinations",
+      "inserted_by_server": false,
+      "issue_ref": "5603",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s05",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S05: Validate fixed-origin GitHub API SSRF alerts",
+      "inserted_by_server": false,
+      "issue_ref": "5604",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s06",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S06: Update the agent npm dependency tree",
+      "inserted_by_server": false,
+      "issue_ref": "5605",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s07",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S07: Update the frontend npm dependency tree",
+      "inserted_by_server": false,
+      "issue_ref": "5606",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s08",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S08: Resolve the Git blob SHA-1 scanner finding without changing Git semantics",
+      "inserted_by_server": false,
+      "issue_ref": "5607",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s09",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S09: Constrain historical-analysis Python execution and resolve its alert",
+      "inserted_by_server": false,
+      "issue_ref": "5608",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s10",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S10: Revalidate and enforce verified gateway caller identity",
+      "inserted_by_server": false,
+      "issue_ref": "5609",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s11",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S11: Revalidate tenant identity resolution and external account ownership",
+      "inserted_by_server": false,
+      "issue_ref": "5610",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/s10"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s12",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S12: Bind vault credentials and worker authority to the verified run",
+      "inserted_by_server": false,
+      "issue_ref": "5611",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/s11"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s13",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S13: Revalidate admin role ceilings and Cognito privilege boundaries",
+      "inserted_by_server": false,
+      "issue_ref": "5612",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/s10"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s14",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S14: Constrain CI runner IAM escalation in both infrastructure trees",
+      "inserted_by_server": false,
+      "issue_ref": "5613",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s15",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S15: Secure knowledge ingestion execution, source access and tenant ACLs together",
+      "inserted_by_server": false,
+      "issue_ref": "5614",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/s10"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s16",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S16: Enforce chat session and artifact ownership across ingress and retrieval",
+      "inserted_by_server": false,
+      "issue_ref": "5615",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s17",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S17: Secure cyber worker script execution and tenant-scoped object access",
+      "inserted_by_server": false,
+      "issue_ref": "5616",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s18",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S18: Make budget reservation, settlement and transcripts use trusted request identity",
+      "inserted_by_server": false,
+      "issue_ref": "5617",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/s13"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s19",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S19: Restore trustworthy one-off scan coverage and severity reporting",
+      "inserted_by_server": false,
+      "issue_ref": "5618",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s20",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S20: Triage all unscored scanner errors into actionable findings",
+      "inserted_by_server": false,
+      "issue_ref": "5619",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/accept"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "kind": "story",
+      "title": "[Security 2026-09-21] S21: Integrate fixes, reconcile AWS Security Agent results and verify the complete run",
+      "inserted_by_server": false,
+      "issue_ref": "5620",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "merged_pull_request",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/s01",
+        "security-nightly-2026-09-21/nightly/remediation/s02",
+        "security-nightly-2026-09-21/nightly/remediation/s03",
+        "security-nightly-2026-09-21/nightly/remediation/s04",
+        "security-nightly-2026-09-21/nightly/remediation/s05",
+        "security-nightly-2026-09-21/nightly/remediation/s06",
+        "security-nightly-2026-09-21/nightly/remediation/s07",
+        "security-nightly-2026-09-21/nightly/remediation/s08",
+        "security-nightly-2026-09-21/nightly/remediation/s09",
+        "security-nightly-2026-09-21/nightly/remediation/s12",
+        "security-nightly-2026-09-21/nightly/remediation/s14",
+        "security-nightly-2026-09-21/nightly/remediation/s15",
+        "security-nightly-2026-09-21/nightly/remediation/s16",
+        "security-nightly-2026-09-21/nightly/remediation/s17",
+        "security-nightly-2026-09-21/nightly/remediation/s18",
+        "security-nightly-2026-09-21/nightly/remediation/s19",
+        "security-nightly-2026-09-21/nightly/remediation/s20"
+      ]
+    },
+    {
+      "address": "security-nightly-2026-09-21/nightly/remediation/final-evaluation",
+      "kind": "eval",
+      "title": "Independent evidence review of all security remediations \u2014 issue not yet materialized",
+      "inserted_by_server": false,
+      "issue_ref": "",
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "concluded_by": "human_decision",
+      "depends_on": [
+        "security-nightly-2026-09-21/nightly/remediation/s21"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s10",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s11",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s11",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s12",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s10",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s13",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s10",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s15",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s13",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s18",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s01",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s02",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s03",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s04",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s05",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s06",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s07",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s08",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s09",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s12",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s14",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s15",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s16",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s17",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s18",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s19",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s20",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/s21",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/final-evaluation",
+      "inserted_by_server": false
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s01",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s02",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s03",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s04",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s05",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s06",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s07",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s08",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s09",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s10",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s14",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s16",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s17",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s19",
+      "inserted_by_server": true
+    },
+    {
+      "from_address": "security-nightly-2026-09-21/nightly/remediation/accept",
+      "to_address": "security-nightly-2026-09-21/nightly/remediation/s20",
+      "inserted_by_server": true
+    }
+  ],
+  "proposed_execution_policy": null,
+  "execution_is_unbounded": true,
+  "waves": [
+    {
+      "epic_ref": "nightly",
+      "wave_ref": "remediation",
+      "stage": 0,
+      "node_addresses": [
+        "security-nightly-2026-09-21/nightly/remediation/accept",
+        "security-nightly-2026-09-21/nightly/remediation/s01",
+        "security-nightly-2026-09-21/nightly/remediation/s02",
+        "security-nightly-2026-09-21/nightly/remediation/s03",
+        "security-nightly-2026-09-21/nightly/remediation/s04",
+        "security-nightly-2026-09-21/nightly/remediation/s05",
+        "security-nightly-2026-09-21/nightly/remediation/s06",
+        "security-nightly-2026-09-21/nightly/remediation/s07",
+        "security-nightly-2026-09-21/nightly/remediation/s08",
+        "security-nightly-2026-09-21/nightly/remediation/s09",
+        "security-nightly-2026-09-21/nightly/remediation/s10",
+        "security-nightly-2026-09-21/nightly/remediation/s11",
+        "security-nightly-2026-09-21/nightly/remediation/s12",
+        "security-nightly-2026-09-21/nightly/remediation/s13",
+        "security-nightly-2026-09-21/nightly/remediation/s14",
+        "security-nightly-2026-09-21/nightly/remediation/s15",
+        "security-nightly-2026-09-21/nightly/remediation/s16",
+        "security-nightly-2026-09-21/nightly/remediation/s17",
+        "security-nightly-2026-09-21/nightly/remediation/s18",
+        "security-nightly-2026-09-21/nightly/remediation/s19",
+        "security-nightly-2026-09-21/nightly/remediation/s20",
+        "security-nightly-2026-09-21/nightly/remediation/s21",
+        "security-nightly-2026-09-21/nightly/remediation/final-evaluation"
+      ],
+      "depends_on": []
+    }
+  ],
+  "wrote_nothing": true
+}

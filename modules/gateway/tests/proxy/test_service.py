@@ -298,6 +298,7 @@ class TestProxyServiceInvokeModel:
         assert response is not None
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("unmapped_routing")
     async def test_invoke_model_preserves_anthropic_fields(
         self,
         mock_pool_service: MockPoolService,
@@ -356,6 +357,7 @@ class TestProxyServiceGetAvailableModels:
             assert "claude-3-5" in resolved or "claude-3.5" in model["id"].lower()
 
 
+@pytest.mark.usefixtures("unmapped_routing")
 class TestProxyServicePoolInteraction:
     """Test ProxyService interaction with pool service."""
 

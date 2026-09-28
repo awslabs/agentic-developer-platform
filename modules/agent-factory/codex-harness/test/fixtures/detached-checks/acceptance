@@ -1,0 +1,5 @@
+#!/bin/sh
+# Trusted image content: candidate repository tests cannot replace this check.
+set -eu
+[ "$(cat /work/source.txt)" = expected ]
+[ "$(wc -c < /work/source.txt | tr -d ' ')" = 9 ]

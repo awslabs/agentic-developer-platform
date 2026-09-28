@@ -1,0 +1,77 @@
+{
+  "issue": 6124,
+  "status": "local executor image validation; whole family remains open",
+  "built_source_commit": "483c9ab4836af8725b738ab3c687fda34257f008",
+  "python_base_input": "public.ecr.aws/docker/library/python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f",
+  "image_config_id_verified_from_docker_save": "sha256:f59d080717867922ce2dcec3369268bfd443e81d198cfff25d147f0480bcf07e",
+  "scanner_local_manifest_digest": "sha256:21d2e9263f8eaef56b0faf28b33901d5bff613b425e2a219642b9f1e93a79cfa",
+  "raw_grype_sha256": "13557a53ad29166bd2339323e55101168efe90a2ec1826b1a27e3b61d12ddad8",
+  "gzip_grype_sha256": "ad6fabdd7903f50ade85055395bf0b3ae779d85980be8afdff25c5fd38a0c261",
+  "native_findings": {
+    "High": 53,
+    "Medium": 77,
+    "Negligible": 45,
+    "Low": 14
+  },
+  "total_raw_findings": 189,
+  "runtime_smoke": {
+    "uid": 65531,
+    "kubectl": {
+      "clientVersion": {
+        "major": "1",
+        "minor": "31",
+        "gitVersion": "v1.31.4+adp.security.1",
+        "gitCommit": "a78aa47129b8539636eb86a9d00e31b2720fe06b",
+        "gitTreeState": "dirty",
+        "buildDate": "1970-01-01T00:00:00Z",
+        "goVersion": "go1.26.8",
+        "compiler": "gc",
+        "platform": "linux/amd64"
+      },
+      "kustomizeVersion": "v5.4.2"
+    },
+    "terraform": "1.9.8",
+    "aws_cli": "2.37.4",
+    "pip_check": "passed",
+    "paid_worker_missing_authority": "refused",
+    "service_missing_authority": "idle_without_serving",
+    "offline_kubectl_creation": "passed",
+    "installed_imports_and_workspace_lock": "passed"
+  },
+  "installed_model_smoke": {
+    "scope": "offline parser/service-model only; no cloud or credential calls",
+    "results": [
+      {
+        "version": "aws-cli/2.37.4 Python/3.14.6 Linux/7.0.0-1012-aws exe/x86_64.debian.13",
+        "launcher_sha256": "f8b07be1ad7c2cc63c5c14238d927e5f48bd278173fc1c71ae40f4a12ff88e49",
+        "service_model_input_skeletons": [
+          "eks describe-cluster",
+          "eks describe-access-entry",
+          "eks list-associated-access-policies",
+          "eks list-access-entries",
+          "ec2 describe-security-group-rules",
+          "ec2 describe-security-groups",
+          "ec2 describe-vpc-endpoints",
+          "iam simulate-principal-policy",
+          "sts get-caller-identity",
+          "sts assume-role",
+          "s3api head-object",
+          "ssm get-parameter"
+        ],
+        "invalid_command_refused": true
+      }
+    ]
+  },
+  "runtime_controls": [
+    "network none",
+    "readonly root",
+    "cap-drop ALL",
+    "no-new-privileges",
+    "uid65531/gid65532",
+    "temporary HOME/config/credentials/KUBECONFIG paths",
+    "no host credential mounts",
+    "metadata access disabled"
+  ],
+  "publication": false,
+  "rollout": false
+}

@@ -205,6 +205,7 @@ def main() -> int:
         "service": "aws",
         "label": label or None,
         "purpose": "deploy via load-deploy-config",
+        "permission_tier": "deploy-bootstrap",
     }
 
     api_gw_url = os.environ.get("ADP_GATEWAY_API_URL", "").rstrip("/")

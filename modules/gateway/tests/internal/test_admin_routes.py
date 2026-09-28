@@ -95,7 +95,7 @@ class TestTenantConfig:
         data = resp.json()
         assert data["tenant"] == "adp-security-test"
         assert data["enable_user_credentials"] is True
-        assert data["enforce_credential_binding"] is True
+        assert data["credential_binding_mode"] == "authenticated_run"
 
     def test_returns_false_when_features_disabled(self, client_creds_disabled):
         resp = client_creds_disabled.get(
@@ -105,7 +105,7 @@ class TestTenantConfig:
         assert resp.status_code == 200
         data = resp.json()
         assert data["enable_user_credentials"] is False
-        assert data["enforce_credential_binding"] is False
+        assert data["credential_binding_mode"] == "authenticated_run"
 
     def test_rejects_without_auth(self, client):
         resp = client.get("/internal/v1/admin/tenant-config/adp-security-test")

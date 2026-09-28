@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "SANITIZED shape of the successful `terraform show -json <refresh-only plan>`",
+    "export that root generated against the real platform backend with Terraform",
+    "1.14.9 and AWS provider 6.66.0 (issue #5831).",
+    "",
+    "This is a SHAPE fixture, not real data. Every value is a placeholder: no",
+    "account number, ARN, resource id, bucket, variable value or attribute from",
+    "the real deployment appears here, and none may be added. The real export and",
+    "the real plan stay on root's host.",
+    "",
+    "Why it exists: an earlier version of refresh_only_migration_guard.py refused",
+    "this document, reporting that it 'has no resource_changes key'. That key is",
+    "LEGITIMATELY ABSENT -- Terraform omits resource_changes from the JSON of a",
+    "plan that proposes no resource changes, which is exactly what a correct",
+    "refresh-only plan is. So the guard was refusing the very artifact it exists",
+    "to approve. This fixture pins the distinction the guard must now make:",
+    "an omitted optional field is a legitimate complete export; a malformed,",
+    "truncated, errored or incomplete document is not.",
+    "",
+    "The top-level key set below is exactly the one root reported, in the same",
+    "order, with resource_changes absent. Do NOT add resource_changes to this",
+    "fixture to make a test pass -- that would recreate the defect by editing the",
+    "evidence instead of the guard.",
+    "",
+    "Terraform never reads this file; it is test input only. The _comment key is",
+    "a literal string array and is not a real plan-export field."
+  ],
+
+  "applyable": true,
+  "checks": [],
+  "complete": true,
+  "configuration": {
+    "provider_config": {},
+    "root_module": {}
+  },
+  "errored": false,
+  "format_version": "1.2",
+  "output_changes": {},
+  "planned_values": {
+    "root_module": {}
+  },
+  "prior_state": {
+    "format_version": "1.0",
+    "terraform_version": "1.14.9",
+    "values": {
+      "root_module": {}
+    }
+  },
+  "relevant_attributes": [],
+  "resource_drift": [],
+  "terraform_version": "1.14.9",
+  "timestamp": "2026-09-24T00:00:00Z",
+  "variables": {}
+}

@@ -29,12 +29,30 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate publication or rollback selectors before Terraform or Kubernetes writes.
+if [[ "$DRY_RUN" == false && ( "$SKIP_IMG" != true || "$SKIP_K8S" != true ) ]]; then
+    [[ "$ECR_REPO_NAME" == adp-agent-gateway ]] || { echo 'Unsupported agent gateway repository' >&2; exit 1; }
+    [[ "${PUBLISH_LATEST:-false}" == false ]] || { echo 'Mutable latest publication is unsupported' >&2; exit 1; }
+    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+    ECR_URI="$REGISTRY/$ECR_REPO_NAME"
+    if [[ "$SKIP_IMG" == true ]]; then
+        AGENT_IMAGE="${AGENT_IMAGE:-$ECR_URI:${AGENT_IMAGE_TAG:?Provide AGENT_IMAGE or a full source SHA when skipping the build}}"
+        AGENT_IMAGE=$(python3 "$REPO_ROOT/platform/scripts/resolve-ecr-image.py" "$AGENT_IMAGE")
+    else
+        SOURCE_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)
+        [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Expected a full source SHA' >&2; exit 1; }
+        [[ "${AGENT_IMAGE_TAG:-$SOURCE_SHA}" == "$SOURCE_SHA" ]] || { echo 'AGENT_IMAGE_TAG must match source SHA' >&2; exit 1; }
+    fi
+fi
+
 echo "=== Agent Gateway Deploy ==="
 
 # Step 1: Terraform (enable_gateway = true)
 if [[ "${SKIP_TF}" != "true" ]]; then
     echo "[1/3] Terraform apply (enable_gateway=true)..."
     if [[ "${DRY_RUN}" == "false" ]]; then
+        bash "${REPO_ROOT}/platform/scripts/build-agent-factory-lambdas.sh"
         pushd "${MODULE_ROOT}/infra" > /dev/null
         terraform apply -input=false -auto-approve -var="enable_gateway=true"
         INPUT_QUEUE_URL=$(terraform output -raw gateway_input_queue_url 2>/dev/null || echo "")
@@ -62,26 +80,9 @@ fi
 if [[ "${SKIP_IMG}" != "true" ]]; then
     echo "[2/3] Building Docker image..."
     if [[ "${DRY_RUN}" == "false" ]]; then
-        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-        ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}"
-
-        aws ecr describe-repositories --repository-names "${ECR_REPO_NAME}" --region "${AWS_REGION}" > /dev/null 2>&1 || \
-            aws ecr create-repository --repository-name "${ECR_REPO_NAME}" --region "${AWS_REGION}" --no-cli-pager
-
-        aws ecr get-login-password --region "${AWS_REGION}" | \
-            docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-
-        BUILD_DIR="/tmp/agent-gateway-build"
-        rm -rf "${BUILD_DIR}"; mkdir -p "${BUILD_DIR}"
-        cp -r "${MODULE_ROOT}/gateway/app" "${BUILD_DIR}/app"
-        cp -r "${MODULE_ROOT}/agent" "${BUILD_DIR}/agent"
-        cp "${MODULE_ROOT}/gateway/Dockerfile" "${BUILD_DIR}/Dockerfile"
-        cp "${MODULE_ROOT}/gateway/entrypoint.sh" "${BUILD_DIR}/entrypoint.sh"
-
-        docker build -t "${ECR_URI}:${AGENT_IMAGE_TAG}" "${BUILD_DIR}"
-        docker push "${ECR_URI}:${AGENT_IMAGE_TAG}"
-        rm -rf "${BUILD_DIR}"
-        AGENT_IMAGE="${ECR_URI}:${AGENT_IMAGE_TAG}"
+        SOURCE_SHA="$SOURCE_SHA" IMAGE_TAG="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
+            bash "$REPO_ROOT/platform/scripts/publish-local-image.sh" adp-agent-gateway
+        AGENT_IMAGE=$(python3 "$REPO_ROOT/platform/scripts/resolve-ecr-image.py" "$ECR_URI:$SOURCE_SHA")
         echo "  Pushed: ${AGENT_IMAGE}"
     else
         echo "  [DRY RUN] docker build + push"

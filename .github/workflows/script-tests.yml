@@ -1,0 +1,361 @@
+name: Script Tests
+
+# Runs the test suites under .github/scripts/tests/, which no other workflow
+# executes. Without this binding those suites can rot silently and any quality
+# gate citing them is vacuous.
+
+on:
+  # Runs on both PR and post-merge push to main. The push trigger is not
+  # redundant: a pull_request-only workflow never attaches a check-run to a
+  # main commit, so "does this gate exist on main?" is unanswerable via the
+  # commit check-runs API — and any gate citing this check cannot verify it.
+  push:
+    branches:
+      - main
+    paths:
+      # Test suites
+      - '.github/scripts/tests/**'
+      # Subject scripts under test
+      - '.github/scripts/diff_security_findings.py'
+      - '.github/scripts/run_detect_secrets.py'
+      - '.github/scripts/tests/test_complete_secret_identities.py'
+      - '.github/scripts/discover_dockerfiles.py'
+      - '.github/scripts/post_security_pr_comment.py'
+      - '.github/scripts/ensure_umbrella_epic.py'
+      - '.github/scripts/security_agent_ledger.py'
+      - '.github/scripts/render_security_report.py'
+      - '.github/scripts/securityagent_preflight.py'
+      - '.github/scripts/code_review_request.py'
+      - '.github/scripts/assert_findings_bucket_private.py'
+      - '.github/scripts/normalize_security_findings.py'
+      - '.github/scripts/dedup_security_findings.py'
+      - '.github/scripts/triage_group_findings.py'
+      - '.github/scripts/author_grouping_plan.py'
+      - '.github/scripts/security_traceability.py'
+      - '.github/scripts/processed_runs.py'
+      - '.github/scripts/join_barrier.py'
+      - '.github/scripts/ops_dispatch.py'
+      - '.github/scripts/ops_stuck_tracker.py'
+      - '.github/scripts/finalize_security_report.py'
+      - '.github/scripts/verify_scoped_plan.py'
+      # Artifacts the securityagent preflight suite asserts against (#4443)
+      - '.github/workflows/security-agent-nightly.yml'
+      - 'platform/infra/policies/securityagent-nightly-policy.json'
+      - 'platform/infra/securityagent-nightly-iam.tf'
+      - '.github/actions/publish-findings-s3/action.yml'
+      # Artifact the dedup suite asserts against (#4447)
+      - '.github/security/security-agent-baseline.json'
+      # Artifacts the triage suite asserts against (#4448)
+      - '.github/security/triage-banned-patterns.json'
+      # The persona the triage suite's authorization gates assert against
+      # (#4448). Listed so a later edit re-runs the gate that guards it — the
+      # authorization and the dispatch prohibition are asserted by content, and
+      # a persona change reaches the runtime only via an image rebuild, so a
+      # regression here is otherwise invisible until a nightly run misbehaves.
+      - 'modules/agent-factory/rules/personas/architect.md'
+      # Artifact the ops dispatch suite asserts against (#4450). The rule's
+      # InputTransformer pins persona, service_identity and the target repo as
+      # literals, and the suite asserts both that they are literals and that
+      # they follow the caller-supplied values. Listed so an edit re-runs the
+      # gate that guards it -- otherwise that assertion is decorative.
+      - 'modules/agent-factory/webhook-ingress/infra/eventbridge.tf'
+      # Artifacts the profile suite asserts against
+      - '.github/security/security-agent-profile.json'
+      - '.github/security/security-agent-profile.schema.json'
+      # The workflow the scoped-plan guard suite asserts against (#5006). The
+      # suite asserts by content that the scope input is a `type: choice`, that
+      # the -target address is a hardcoded literal, that the apply consumes the
+      # saved plan, and that the destroy gate survives on both paths. Listed so
+      # an edit re-runs the gate that guards it — otherwise those assertions
+      # only hold for the commit that introduced them.
+      - '.github/workflows/platform-infra-apply.yml'
+      # Exact reviewed-source admission and its sole automatic caller.
+      - '.github/workflows/gateway-infra-apply.yml'
+      - '.github/workflows/gateway-deploy.yml'
+      - 'platform/infra/modules/eks/main.tf'
+      # The AWS provider floor the constraint guard asserts against (#5831).
+      # `required_providers` is resolved by `init`, so no `terraform test` can
+      # see it; the guard reads these files as text and is the only merge-
+      # blocking check that the floor still admits nothing below 6.42.0 (below
+      # which aws_eks_addon state cannot be serialised to JSON, breaking
+      # saved-plan review). Both files are listed because the root and child
+      # constraints must stay identical or `init` fails on an empty
+      # intersection.
+      - 'platform/infra/main.tf'
+      - 'platform/infra/modules/bedrock-invocation-logging/main.tf'
+      - '.github/scripts/tests/test_platform_provider_constraint.py'
+      # The mixed-age state reproduction (#5831). The floor above was necessary
+      # but not sufficient: a targeted plan over state containing a record OLDER
+      # than the provider's schema still fails to export, because -target leaves
+      # untargeted records unupgraded while `show -json` serialises all of them.
+      # The runbook is listed because the suite asserts it still documents the
+      # refresh-only migration sequence — the only reviewed route that normalises
+      # schema without proposing resource changes. An ordinary full apply would
+      # propose destroying the undeclared CoreDNS add-on, so that advice drifting
+      # is a destructive-change risk, not a docs nit.
+      - '.github/scripts/tests/test_platform_mixed_state_export.py'
+      - '.github/scripts/tests/fixtures/platform-mixed-state-5831/**'
+      - 'docs/runbooks/platform-aws-provider-floor.md'
+      # The step-4 preservation guard for that migration (#5831). It is the gate in
+      # front of a state-WRITING apply, so its refusal legs are the safety property:
+      # the snippet it replaced printed counts and exited 0 regardless, which reads
+      # as a gate while stopping nothing. Needs no terraform binary.
+      - 'platform/scripts/refresh_only_migration_guard.py'
+      - '.github/scripts/tests/test_refresh_only_migration_guard.py'
+      # The cross-module tag agreement for the shared CI runner access entry is
+      # asserted against BOTH declarations, so an edit to either side must
+      # re-run the gate. No workflow here runs `terraform test`, so the tftest
+      # beside the module is not merge-blocking and this is the real gate.
+      - 'modules/agent-factory/infra/main.tf'
+      # Artifacts the security-scan tool-invocation and container-coverage
+      # suites assert against (S19, #5618). The suites assert by content that
+      # the scan emits valid detect-secrets JSON, handles cfn-nag FATAL records,
+      # and that every expected image must produce a real result. Listed so an
+      # edit to any subject re-runs the gate that guards it.
+      - '.github/workflows/security-scan.yml'
+      - '.github/actions/codebuild-run/action.yml'
+      - '.github/actions/publish-findings-s3/action.yml'
+      - '.github/scripts/reconcile_security_scan.py'
+      - 'modules/gateway/scripts/repository-scan-receipt.py'
+      - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
+      - '.github/security/cfn-nag-suppressions.yml'
+      - 'codebuild/security_image_targets.py'
+      - 'codebuild/scan_security_images.py'
+      - 'codebuild/bs-grype-scan.yml'
+      - 'codebuild/bs-syft-scan.yml'
+      - 'codebuild/tests/**'
+      - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
+      # This workflow
+      - '.github/workflows/script-tests.yml'
+  pull_request:
+    paths:
+      # Test suites
+      - '.github/scripts/tests/**'
+      # Subject scripts under test
+      - '.github/scripts/diff_security_findings.py'
+      - '.github/scripts/run_detect_secrets.py'
+      - '.github/scripts/tests/test_complete_secret_identities.py'
+      - '.github/scripts/discover_dockerfiles.py'
+      - '.github/scripts/post_security_pr_comment.py'
+      - '.github/scripts/ensure_umbrella_epic.py'
+      - '.github/scripts/security_agent_ledger.py'
+      - '.github/scripts/render_security_report.py'
+      - '.github/scripts/securityagent_preflight.py'
+      - '.github/scripts/code_review_request.py'
+      - '.github/scripts/assert_findings_bucket_private.py'
+      - '.github/scripts/normalize_security_findings.py'
+      - '.github/scripts/dedup_security_findings.py'
+      - '.github/scripts/triage_group_findings.py'
+      - '.github/scripts/author_grouping_plan.py'
+      - '.github/scripts/security_traceability.py'
+      - '.github/scripts/processed_runs.py'
+      - '.github/scripts/join_barrier.py'
+      - '.github/scripts/ops_dispatch.py'
+      - '.github/scripts/ops_stuck_tracker.py'
+      - '.github/scripts/finalize_security_report.py'
+      - '.github/scripts/verify_scoped_plan.py'
+      # Artifacts the securityagent preflight suite asserts against (#4443)
+      - '.github/workflows/security-agent-nightly.yml'
+      - 'platform/infra/policies/securityagent-nightly-policy.json'
+      - 'platform/infra/securityagent-nightly-iam.tf'
+      - '.github/actions/publish-findings-s3/action.yml'
+      # Artifact the dedup suite asserts against (#4447)
+      - '.github/security/security-agent-baseline.json'
+      # Artifacts the triage suite asserts against (#4448)
+      - '.github/security/triage-banned-patterns.json'
+      # The persona the triage suite's authorization gates assert against
+      # (#4448). Listed so a later edit re-runs the gate that guards it — the
+      # authorization and the dispatch prohibition are asserted by content, and
+      # a persona change reaches the runtime only via an image rebuild, so a
+      # regression here is otherwise invisible until a nightly run misbehaves.
+      - 'modules/agent-factory/rules/personas/architect.md'
+      # Artifact the ops dispatch suite asserts against (#4450). The rule's
+      # InputTransformer pins persona, service_identity and the target repo as
+      # literals, and the suite asserts both that they are literals and that
+      # they follow the caller-supplied values. Listed so an edit re-runs the
+      # gate that guards it -- otherwise that assertion is decorative.
+      - 'modules/agent-factory/webhook-ingress/infra/eventbridge.tf'
+      # Artifacts the profile suite asserts against
+      - '.github/security/security-agent-profile.json'
+      - '.github/security/security-agent-profile.schema.json'
+      # The workflow the scoped-plan guard suite asserts against (#5006). The
+      # suite asserts by content that the scope input is a `type: choice`, that
+      # the -target address is a hardcoded literal, that the apply consumes the
+      # saved plan, and that the destroy gate survives on both paths. Listed so
+      # an edit re-runs the gate that guards it — otherwise those assertions
+      # only hold for the commit that introduced them.
+      - '.github/workflows/platform-infra-apply.yml'
+      # Exact reviewed-source admission and its sole automatic caller.
+      - '.github/workflows/gateway-infra-apply.yml'
+      - '.github/workflows/gateway-deploy.yml'
+      - 'platform/infra/modules/eks/main.tf'
+      # The AWS provider floor the constraint guard asserts against (#5831).
+      # `required_providers` is resolved by `init`, so no `terraform test` can
+      # see it; the guard reads these files as text and is the only merge-
+      # blocking check that the floor still admits nothing below 6.42.0 (below
+      # which aws_eks_addon state cannot be serialised to JSON, breaking
+      # saved-plan review). Both files are listed because the root and child
+      # constraints must stay identical or `init` fails on an empty
+      # intersection.
+      - 'platform/infra/main.tf'
+      - 'platform/infra/modules/bedrock-invocation-logging/main.tf'
+      - '.github/scripts/tests/test_platform_provider_constraint.py'
+      # The mixed-age state reproduction (#5831). The floor above was necessary
+      # but not sufficient: a targeted plan over state containing a record OLDER
+      # than the provider's schema still fails to export, because -target leaves
+      # untargeted records unupgraded while `show -json` serialises all of them.
+      # The runbook is listed because the suite asserts it still documents the
+      # refresh-only migration sequence — the only reviewed route that normalises
+      # schema without proposing resource changes. An ordinary full apply would
+      # propose destroying the undeclared CoreDNS add-on, so that advice drifting
+      # is a destructive-change risk, not a docs nit.
+      - '.github/scripts/tests/test_platform_mixed_state_export.py'
+      - '.github/scripts/tests/fixtures/platform-mixed-state-5831/**'
+      - 'docs/runbooks/platform-aws-provider-floor.md'
+      # The step-4 preservation guard for that migration (#5831). It is the gate in
+      # front of a state-WRITING apply, so its refusal legs are the safety property:
+      # the snippet it replaced printed counts and exited 0 regardless, which reads
+      # as a gate while stopping nothing. Needs no terraform binary.
+      - 'platform/scripts/refresh_only_migration_guard.py'
+      - '.github/scripts/tests/test_refresh_only_migration_guard.py'
+      # The cross-module tag agreement for the shared CI runner access entry is
+      # asserted against BOTH declarations, so an edit to either side must
+      # re-run the gate. No workflow here runs `terraform test`, so the tftest
+      # beside the module is not merge-blocking and this is the real gate.
+      - 'modules/agent-factory/infra/main.tf'
+      # Artifacts the security-scan tool-invocation and container-coverage
+      # suites assert against (S19, #5618). The suites assert by content that
+      # the scan emits valid detect-secrets JSON, handles cfn-nag FATAL records,
+      # and that every expected image must produce a real result. Listed so an
+      # edit to any subject re-runs the gate that guards it.
+      - '.github/workflows/security-scan.yml'
+      - '.github/actions/codebuild-run/action.yml'
+      - '.github/actions/publish-findings-s3/action.yml'
+      - '.github/scripts/reconcile_security_scan.py'
+      - 'modules/gateway/scripts/repository-scan-receipt.py'
+      - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
+      - '.github/security/cfn-nag-suppressions.yml'
+      - 'codebuild/security_image_targets.py'
+      - 'codebuild/scan_security_images.py'
+      - 'codebuild/bs-grype-scan.yml'
+      - 'codebuild/bs-syft-scan.yml'
+      - 'codebuild/tests/**'
+      - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
+      # This workflow
+      - '.github/workflows/script-tests.yml'
+    branches:
+      - main
+
+concurrency:
+  group: script-tests-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  script-tests:
+    name: Script Tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        # PyYAML: the securityagent preflight suite (#4443) parses the nightly
+        # workflow to assert it carries no `schedule:` key. Without the
+        # dependency those gates importorskip and the check goes green
+        # having asserted nothing.
+        #
+        # detect-secrets: same reasoning (S19, #5618). Two gates in
+        # test_security_scan_tool_invocations.py shell out to the real
+        # `detect-secrets` binary -- one runs `audit --report` against the
+        # committed baseline (it crashed on every run before this fix), the other
+        # plants a live AWS key and asserts the workflow's command shape actually
+        # surfaces it. Both skipif when the binary is absent, so without this
+        # dependency the detect-secrets gate passes having asserted nothing.
+        # Pinned to the version security-scan.yml installs.
+        run: pip install pytest pytest-timeout pyyaml detect-secrets==1.5.0
+
+      # Test files are pinned explicitly rather than globbed: a glob silently
+      # stops covering a file that is moved or renamed, which is the same
+      # silent-coverage-loss this workflow exists to prevent.
+      - name: Run script tests
+        working-directory: .github/scripts
+        run: |
+          pytest \
+            tests/test_diff_security_findings.py \
+            tests/test_complete_secret_identities.py \
+            tests/test_discover_dockerfiles.py \
+            tests/test_post_security_pr_comment.py \
+            tests/test_security_agent_profile.py \
+            tests/test_security_agent_ledger.py \
+            tests/test_render_security_report.py \
+            tests/test_umbrella_epic_idempotency.py \
+            tests/test_securityagent_preflight.py \
+            tests/test_code_review_request.py \
+            tests/test_assert_findings_bucket_private.py \
+            tests/test_security_agent_dedup.py \
+            tests/test_triage_grouping.py \
+            tests/test_author_grouping_plan.py \
+            tests/test_security_traceability.py \
+            tests/test_processed_runs.py \
+            tests/test_join_barrier.py \
+            tests/test_ops_dispatch_bounds.py \
+            tests/test_nightly_triage_wiring.py \
+            tests/test_report_finalization.py \
+            tests/test_verify_scoped_plan.py \
+            tests/test_gateway_infra_reviewed_source.py \
+            tests/test_platform_provider_constraint.py \
+            tests/test_refresh_only_migration_guard.py \
+            tests/test_security_scan_tool_invocations.py \
+            -v --tb=short --timeout=60
+
+      # The mixed-age state reproduction (#5831) runs separately from the pinned
+      # suite above for two reasons, both of which would otherwise make it
+      # decorative:
+      #
+      # 1. It needs a real `terraform` binary. Its Terraform-dependent legs skip
+      #    when one is absent, so without the setup step below this gate would
+      #    report green having asserted only the fixture's shape -- the exact
+      #    silent-coverage-loss this workflow exists to prevent. Terraform is set
+      #    up immediately before it rather than at job top so the dependency is
+      #    visible at the point of use.
+      # 2. Its legs run `init` (which downloads a provider) and six plan+export
+      #    cycles, so they exceed the 60s per-test timeout the pinned run uses.
+      #    Raising that run's timeout to suit one suite would weaken the bound on
+      #    twenty others; a separate step keeps 60s meaningful there.
+      # 3. Two of those legs drive platform/scripts/refresh_only_migration_guard.py
+      #    against plans Terraform really wrote. The guard's own suite in the pinned
+      #    run stubs `terraform show`, so only here is it shown to work on real
+      #    Terraform output -- which is why the guard's path is a trigger for this
+      #    step too, not just for the pinned one.
+      #
+      # No AWS access: the suite strips every AWS_*/BOTO_* variable and disables
+      # IMDS, so the self-hosted pool's ambient identity cannot satisfy its plans.
+      # Pinned to the Terraform version the platform workflows use.
+      - name: Setup Terraform for the mixed-state reproduction
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+
+      - name: Run platform mixed-age state reproduction
+        working-directory: .github/scripts
+        run: |
+          pytest \
+            tests/test_platform_mixed_state_export.py \
+            -v --tb=short --timeout=300
+
+      # The container-scan inventory/coverage suite lives beside its subject in
+      # codebuild/, not under .github/scripts/tests/, so the pinned run above
+      # cannot reach it. No other workflow executes it either: without this step
+      # the S19 (#5618) coverage gate -- "every expected image must produce a
+      # real result" -- is asserted by tests that never run.
+      - name: Run container scan inventory tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          pytest \
+            codebuild/tests/test_security_image_scan.py \
+            -v --tb=short --timeout=60

@@ -226,7 +226,7 @@ def sample_rate_limit_config() -> RateLimitConfigRequest:
 
 
 @pytest.fixture
-def test_app(rate_limit_service, admin_context) -> FastAPI:
+def test_app(rate_limit_service, admin_context, durable_rate_limit_store) -> FastAPI:
     """Provide a FastAPI test application with rate limit routes.
 
     Issue #133: Updated to mock the new get_current_user dependency instead
@@ -246,6 +246,13 @@ def test_app(rate_limit_service, admin_context) -> FastAPI:
         return admin_context
 
     app.dependency_overrides[get_current_user] = override_get_current_user
+    from src.shared.database import get_db
+
+    async def override_db():
+        async with durable_rate_limit_store() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_db
 
     return app
 
@@ -303,3 +310,32 @@ def mock_backend() -> AsyncMock:
     backend.set_concurrent_limit.return_value = None
     backend.close.return_value = None
     return backend
+
+
+@pytest.fixture(autouse=True)
+async def durable_rate_limit_store(monkeypatch):
+    """Exercise the same persisted rate-limit rows used by both admin APIs."""
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    from src.shared.models.audit import AuditLog
+    from src.shared.models.organization import Organization
+    from src.shared.models.usage import RateLimitConfig as StoredConfig
+
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    async with engine.begin() as connection:
+        await connection.run_sync(Organization.__table__.create)
+        await connection.run_sync(StoredConfig.__table__.create)
+        await connection.run_sync(AuditLog.__table__.create)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def session(_self):
+        async with factory() as db:
+            yield db
+
+    monkeypatch.setattr(RateLimitService, "_get_session", session)
+    yield factory
+    await engine.dispose()

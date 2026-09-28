@@ -40,21 +40,38 @@ env:
 jobs:
   destroy:
     name: Destroy Agent Factory Infrastructure
+    if: github.ref == 'refs/heads/main'
     runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
 
     steps:
       - name: Confirm module name
+        env:
+          ADP_INPUT_226C03454D: ${{ inputs.confirm }}
         run: |
-          if [ "${{ inputs.confirm }}" != "agent-factory" ]; then
+          if [ "${ADP_INPUT_226C03454D}" != "agent-factory" ]; then
             echo "::error::Input did not match 'agent-factory'. Aborting to prevent accidental destroy."
             exit 1
           fi
-
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -66,28 +83,13 @@ jobs:
 
       - name: Install required CLI tools
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v terraform >/dev/null 2>&1; then
-            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends terraform
-          fi
-          aws --version
-          terraform version | head -1
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       - name: Assert AWS account
+        env:
+          ADP_INPUT_824138160E: ${{ inputs.customer_account_id }}
         run: |
           set -e
           ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
@@ -95,7 +97,7 @@ jobs:
           # customer account, so the caller identity is the customer's — the
           # intended destroy target. Prefer that; else the platform account
           # from the vars.AWS_ACCOUNT_ID repository variable.
-          EXPECTED_ACCOUNT="${{ inputs.customer_account_id }}"
+          EXPECTED_ACCOUNT="${ADP_INPUT_824138160E}"
           if [ -z "$EXPECTED_ACCOUNT" ]; then
             EXPECTED_ACCOUNT="${{ vars.AWS_ACCOUNT_ID }}"
           fi
@@ -110,7 +112,6 @@ jobs:
             exit 1
           fi
           echo "Account verified: $ACTUAL_ACCOUNT"
-
       - name: Configure kubectl
         run: |
           set -e

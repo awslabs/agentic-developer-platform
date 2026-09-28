@@ -1,3 +1,4 @@
+import { workerAwsCredentials, workerAwsRegion } from './runIdentity';
 /**
  * DynamoDB correlation pointer writer for the Node agent runtime.
  *
@@ -8,13 +9,13 @@
  * version — the Node agent runs in a separate process.
  */
 
-import { DynamoDBClient, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, UpdateItemCommand } from '@aws-sdk/client-dynamodb';
 
 let _client: DynamoDBClient | null = null;
 
 function getClient(): DynamoDBClient {
   if (!_client) {
-    _client = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
+    _client = new DynamoDBClient({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
   }
   return _client;
 }
@@ -36,15 +37,16 @@ export async function writePointer(
 
   try {
     const now = Math.floor(Date.now() / 1000);
-    await getClient().send(new PutItemCommand({
+    await getClient().send(new UpdateItemCommand({
       TableName: tableName,
-      Item: {
-        channel_key: { S: channelKey },
-        latest_correlation_id: { S: correlationId },
-        latest_root_human_id: { S: rootHumanId },
-        latest_is_human_rooted: { BOOL: isHumanRooted },
-        updated_at: { N: String(now) },
-        expires_at: { N: String(now + ttlDays * 86400) },
+      Key: { channel_key: { S: channelKey } },
+      UpdateExpression: 'SET latest_correlation_id = :correlation, latest_root_human_id = :root, latest_is_human_rooted = :human, updated_at = :now, expires_at = :expiry',
+      ExpressionAttributeValues: {
+        ':correlation': { S: correlationId },
+        ':root': { S: rootHumanId },
+        ':human': { BOOL: isHumanRooted },
+        ':now': { N: String(now) },
+        ':expiry': { N: String(now + ttlDays * 86400) },
       },
     }));
   } catch (err) {

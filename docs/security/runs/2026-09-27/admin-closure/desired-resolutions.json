@@ -1,0 +1,60 @@
+{
+  "time": "2026-09-27T18:15:18.102727+00:00",
+  "inventory": "/workspaces/projects/security27-admin-closure/live-refresh-20260927T181514Z",
+  "targets": [
+    {
+      "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af",
+      "workloads": [
+        {
+          "kind": "ScaledJob",
+          "namespace": "adp-gateway-agents",
+          "name": "agent-gateway-worker",
+          "uid": "429aa0b6-2fb0-48f9-9030-b2507d1e2c1a"
+        }
+      ],
+      "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:536cee39ec8481ae687938755a38b258f39d41a23f2ef5f259af1e7705cf91af"
+    },
+    {
+      "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c",
+      "workloads": [
+        {
+          "kind": "DaemonSet",
+          "namespace": "adp-gateway-agents",
+          "name": "chat-agent-image-prepull",
+          "uid": "8f1b8197-350f-4cbd-a1e0-edc9f9f3eb43"
+        },
+        {
+          "kind": "ScaledJob",
+          "namespace": "adp-gateway-agents",
+          "name": "chat-agent-worker",
+          "uid": "a7450496-1380-40bf-a184-ea34bca20b9b"
+        }
+      ],
+      "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:2cd3b931766b8fde445694fc7d615732406fac2530cac1b9def2a00a22855c2c"
+    },
+    {
+      "requested_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d",
+      "workloads": [
+        {
+          "kind": "CronJob",
+          "namespace": "agent-context",
+          "name": "ingestion-refresh",
+          "uid": "b7d46c14-7b07-4a3b-9476-fae7b3457da6"
+        },
+        {
+          "kind": "CronJob",
+          "namespace": "agent-context",
+          "name": "vuln-scan",
+          "uid": "660b55a8-f6be-4499-ab3e-d99dd1a41b2a"
+        },
+        {
+          "kind": "ScaledJob",
+          "namespace": "agent-context",
+          "name": "ingestion-worker",
+          "uid": "d470c825-5f4f-4c28-983d-959891dce293"
+        }
+      ],
+      "reference": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-ingestion@sha256:a2b0f802670beaed1bd9b12aada64ec7b0fb1975fceecf0cf0ca0a9760d9298d"
+    }
+  ]
+}

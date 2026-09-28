@@ -1,0 +1,136 @@
+{
+  "dev": {
+    "account": "879318057152",
+    "region": "us-east-1",
+    "image_repository": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime",
+    "images": {
+      "sha256:733d382711a5217fbaf5bcd4be1bd8067f76c29db29488600a3daeb95fb9ac22": {
+        "source_sha": "8822bebf43296fb51fbaf261e76b47efc3072c6d",
+        "build_id": "adp-dev-agent-runtime:d79d8121-6c48-4ff0-90bb-17f8836c885e",
+        "build_status": "SUCCEEDED",
+        "source_bucket": "adp-terraform-state-879318057152",
+        "source_key": "codebuild/src/adp-dev-agent-runtime/8822bebf43296fb51fbaf261e76b47efc3072c6d-1790397729-3687383.zip",
+        "source_archive_sha256": "0b8a2cb291f5da3bd3fadc7b39eada58f8d8c86a929e9738d5c39823072fb78c",
+        "image_tag": "8822bebf43296fb51fbaf261e76b47efc3072c6d",
+        "image_repository": "adp-agent-runtime",
+        "os": "linux",
+        "architecture": "amd64",
+        "build_log_group": "/aws/codebuild/adp-dev-agent-runtime",
+        "build_log_stream": "d79d8121-6c48-4ff0-90bb-17f8836c885e",
+        "packaged_runtime_checks": [
+          {
+            "path": "app/task-agents/cyber/dist/index.js",
+            "source": "modules/agent-factory/task-agents/cyber/src/index.js",
+            "sha256": "2aa020a546ee42282ac3ee1238891d0936ef55c9059d0593dcc99c3388f59929",
+            "layer_digest": "sha256:84fd4e142a9b4c6bfb52e5363602e6ad1b1c182bf0c1a8fb72f6cd1573ed9414"
+          },
+          {
+            "path": "app/task-agents/cyber/dist/task-runtime/protocol.mjs",
+            "source": "modules/tools/task-sdk/protocol.mjs",
+            "sha256": "2cb3e03d634e82c2dc36c5916c109d2e37e6545465d289a1b70002ebb14a4b63",
+            "layer_digest": "sha256:84fd4e142a9b4c6bfb52e5363602e6ad1b1c182bf0c1a8fb72f6cd1573ed9414"
+          },
+          {
+            "path": "app/task-agents/cyber/dist/task-runtime/execution-failure.mjs",
+            "source": "modules/tools/task-sdk/execution-failure.mjs",
+            "sha256": "72c34ce713f51719d4dec6d185dd7bde08a01c52160a2763a573afd7d4b7d343",
+            "layer_digest": "sha256:84fd4e142a9b4c6bfb52e5363602e6ad1b1c182bf0c1a8fb72f6cd1573ed9414"
+          },
+          {
+            "path": "app/lib/task_host.py",
+            "source": "modules/agent-factory/agent-worker-image/lib/task_host.py",
+            "sha256": "a391febb2363fb2fc3efd211dad1d1507ab9b3829c6657f992fe2d6908b5d8c6",
+            "layer_digest": "sha256:f39935cf8b178e5868ffcfe390f791f37dc479546650098475a64ee6180b9169"
+          }
+        ],
+        "independent_review": {
+          "reviewer": "root",
+          "fresh_aws_source_archive_and_image_layer_verification": true,
+          "receipt_equal": true,
+          "image_tag_mutability": "IMMUTABLE",
+          "image_digest": "sha256:733d382711a5217fbaf5bcd4be1bd8067f76c29db29488600a3daeb95fb9ac22",
+          "source_sha": "8822bebf43296fb51fbaf261e76b47efc3072c6d",
+          "four_packaged_files_match_source": true,
+          "result": "approved"
+        },
+        "contract_selfcheck": "Shared-contract selfcheck OK",
+        "source_pr": "https://github.com/aws-e/adp/pull/6318",
+        "rollout_status": "built_and_verified_not_deployed",
+        "superseded_by": "sha256:5d3e952c1be21b1a2656b783fbebf0d653893469d9bc17e7f0ca623cef3f8572",
+        "superseded_reason": "Missing authoritative deadline in Task start frame prevented Codex startup; replacement includes deadline transport and the same refusal-reporting fix."
+      },
+      "sha256:5d3e952c1be21b1a2656b783fbebf0d653893469d9bc17e7f0ca623cef3f8572": {
+        "source_sha": "f1f776f59fd3be3ba9956d90c646a7d39ce1af02",
+        "build_id": "adp-dev-agent-runtime:8c783e7b-6522-4906-80bb-1d9228148b7c",
+        "build_status": "SUCCEEDED",
+        "source_bucket": "adp-terraform-state-879318057152",
+        "source_key": "codebuild/src/adp-dev-agent-runtime/f1f776f59fd3be3ba9956d90c646a7d39ce1af02-1790399098-3738802.zip",
+        "source_archive_sha256": "6937e4060968d1e95d766c349aa900da4d5a9de7b7fa8f0fbabee04da2066557",
+        "image_tag": "f1f776f59fd3be3ba9956d90c646a7d39ce1af02",
+        "image_repository": "adp-agent-runtime",
+        "os": "linux",
+        "architecture": "amd64",
+        "build_log_group": "/aws/codebuild/adp-dev-agent-runtime",
+        "build_log_stream": "8c783e7b-6522-4906-80bb-1d9228148b7c",
+        "packaged_runtime_checks": [
+          {
+            "path": "app/task-agents/investigator/dist/protocol.js",
+            "source": "modules/agent-factory/task-agents/investigator/src/protocol.ts",
+            "verification": "byte_equal_to_local_locked_tsc_build",
+            "sha256": "21ba2ce4479dd55ed436ff86182024e8fdb9a53b9f78ca49c46ae0e6e8a5519d",
+            "layer_digest": "sha256:a7146df693c454d4cff93a965da0c43e75d32139afe4479dcf867a20d0f63554"
+          },
+          {
+            "path": "app/task-agents/cyber/dist/task-runtime/codex-runner.mjs",
+            "source": "modules/tools/task-sdk/codex-runner.mjs",
+            "verification": "byte_equal_to_git",
+            "sha256": "6c625b4668d93af4a3f12ccc77b1369f2409a7ac83fa8464af6959e1d16b80fb",
+            "layer_digest": "sha256:78b72f030472a26042e6745241e22b3d09a328d55fe4cb5b42c873d0fe02d00d"
+          },
+          {
+            "path": "app/task-agents/cyber/dist/index.js",
+            "source": "modules/agent-factory/task-agents/cyber/src/index.js",
+            "verification": "byte_equal_to_git_with_build_rewrite",
+            "sha256": "2aa020a546ee42282ac3ee1238891d0936ef55c9059d0593dcc99c3388f59929",
+            "layer_digest": "sha256:78b72f030472a26042e6745241e22b3d09a328d55fe4cb5b42c873d0fe02d00d"
+          },
+          {
+            "path": "app/task-agents/cyber/dist/task-runtime/protocol.mjs",
+            "source": "modules/tools/task-sdk/protocol.mjs",
+            "verification": "byte_equal_to_git",
+            "sha256": "2cb3e03d634e82c2dc36c5916c109d2e37e6545465d289a1b70002ebb14a4b63",
+            "layer_digest": "sha256:78b72f030472a26042e6745241e22b3d09a328d55fe4cb5b42c873d0fe02d00d"
+          },
+          {
+            "path": "app/task-agents/cyber/dist/task-runtime/execution-failure.mjs",
+            "source": "modules/tools/task-sdk/execution-failure.mjs",
+            "verification": "byte_equal_to_git",
+            "sha256": "72c34ce713f51719d4dec6d185dd7bde08a01c52160a2763a573afd7d4b7d343",
+            "layer_digest": "sha256:78b72f030472a26042e6745241e22b3d09a328d55fe4cb5b42c873d0fe02d00d"
+          },
+          {
+            "path": "app/lib/task_host.py",
+            "source": "modules/agent-factory/agent-worker-image/lib/task_host.py",
+            "verification": "byte_equal_to_git",
+            "sha256": "ea53530f6005b1fe3acba441a1b2f2eb9b2d92278c0dc3bb8472791e5d0be2a0",
+            "layer_digest": "sha256:690b7998f1284caf008747f312791e81500603db65dee8dd327b3be62a97c2b7"
+          }
+        ],
+        "source_pr": "https://github.com/aws-e/adp/pull/6327",
+        "included_refusal_reporting_pr": "https://github.com/aws-e/adp/pull/6318",
+        "rollout_status": "built_and_verified_not_deployed",
+        "contract_selfcheck": "Shared-contract selfcheck OK",
+        "independent_review": {
+          "result": "approved",
+          "source_sha": "f1f776f59fd3be3ba9956d90c646a7d39ce1af02",
+          "image_digest": "sha256:5d3e952c1be21b1a2656b783fbebf0d653893469d9bc17e7f0ca623cef3f8572",
+          "fresh_aws_archive_manifest_config_six_packaged_files_verified": true,
+          "typescript_rebuilt_independently": true,
+          "receipt_equal": true,
+          "image_tag_mutability": "IMMUTABLE",
+          "deployed": false
+        }
+      }
+    }
+  }
+}

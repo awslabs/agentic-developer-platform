@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Option C — The Ledger · Orchestration Graph Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Archivo:wght@500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light;
+    --paper:#ffffff; --plane:#f7f7f5; --ink:#141414; --ink-2:#4a4a46; --muted:#8a8880;
+    --grid:#e6e5df; --ring:rgba(11,11,11,.10);
+    --accent:#2a78d6;
+    --good:#0ca30c; --good-text:#006300; --warn:#fab219; --warn-text:#8a6200;
+    --serious:#ec835a; --serious-text:#b0431f; --critical:#d03b3b;
+  }
+  *{box-sizing:border-box; margin:0}
+  body{background:var(--plane); color:var(--ink); font-family:"Newsreader", Georgia, serif; font-size:16.5px; line-height:1.62}
+  .ui{font-family:"Archivo", system-ui, sans-serif}
+  .mono{font-family:"Fira Code", ui-monospace, monospace}
+
+  .nav-strip{background:var(--ink); color:#aaa; padding:7px 24px; font-size:12.5px; display:flex; gap:16px}
+  .nav-strip{font-family:"Archivo", system-ui, sans-serif}
+  .nav-strip a{color:#fff; text-decoration:none; font-weight:600}
+  .nav-strip a.here{color:var(--warn)}
+
+  .sheet{max-width:840px; margin:26px auto 60px; background:var(--paper); border:1px solid var(--ring); border-radius:4px; padding:52px 64px 64px}
+  @media (max-width:900px){ .sheet{margin:0; padding:32px 22px; border:none} }
+
+  /* masthead */
+  .masthead{border-bottom:3px double var(--ink); padding-bottom:22px; margin-bottom:8px}
+  .masthead .kicker{font-family:"Archivo",sans-serif; font-size:12px; font-weight:700; letter-spacing:.22em; text-transform:uppercase; color:var(--muted)}
+  .masthead h1{font-size:37px; font-weight:500; letter-spacing:-.01em; line-height:1.15; margin:10px 0 10px}
+  .masthead .standfirst{font-size:18px; color:var(--ink-2); font-style:italic; max-width:620px}
+  .factrow{display:flex; gap:0; border-bottom:1px solid var(--grid); margin-bottom:40px; flex-wrap:wrap}
+  .fact{padding:14px 26px 14px 0; margin-right:26px; border-right:1px solid var(--grid)}
+  .fact:last-child{border-right:none}
+  .fact .l{font-family:"Archivo",sans-serif; font-size:11px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--muted)}
+  .fact .v{font-size:21px; font-weight:600; font-family:"Archivo",sans-serif}
+  .fact .v .flag{color:var(--serious-text); font-size:15px}
+
+  /* chronicle entries */
+  .day{font-family:"Archivo",sans-serif; font-size:12px; font-weight:700; letter-spacing:.18em; text-transform:uppercase; color:var(--muted); margin:38px 0 6px; display:flex; align-items:center; gap:14px}
+  .day::after{content:""; flex:1; border-top:1px solid var(--grid)}
+
+  .entry{display:grid; grid-template-columns:26px 1fr 110px; gap:0 18px; padding:14px 0}
+  .entry .spine{position:relative}
+  .entry .spine::before{content:""; position:absolute; left:11px; top:-14px; bottom:-14px; width:2px; background:var(--grid)}
+  .entry:first-of-type .spine::before{top:8px}
+  .entry .spine .node{position:absolute; left:4px; top:7px; width:16px; height:16px; border-radius:50%; background:var(--paper); border:3px solid var(--good); z-index:1}
+  .entry.gate .spine .node{border-color:var(--ink); background:var(--paper)}
+  .entry.now .spine .node{border-color:var(--accent); background:var(--accent)}
+  .entry.alert .spine .node{border-color:var(--serious); background:var(--serious)}
+  .entry.future .spine .node{border-color:var(--grid); border-style:dashed; background:var(--paper)}
+  .entry.future .spine::before{background:transparent; border-left:2px dashed var(--grid); width:0}
+  @keyframes breathe{50%{box-shadow:0 0 0 7px rgba(42,120,214,.14)}}
+  .entry.now .spine .node{animation:breathe 2s ease infinite}
+  @media (prefers-reduced-motion: reduce){ .entry.now .spine .node{animation:none} }
+
+  .entry .when{font-family:"Archivo",sans-serif; font-size:12px; font-weight:600; color:var(--muted); padding-top:6px}
+  .entry p{max-width:56ch}
+  .entry .margin{text-align:right; font-family:"Archivo",sans-serif; padding-top:5px}
+  .margin .cost{font-family:"Fira Code",monospace; font-size:13.5px; font-weight:500}
+  .margin .tag{display:block; font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; margin-top:2px}
+  .t-good{color:var(--good-text)} .t-warn{color:var(--warn-text)} .t-serious{color:var(--serious-text)} .t-run{color:var(--accent)} .t-mut{color:var(--muted)}
+  .who{font-style:italic; color:var(--ink-2)}
+  .entry a{color:var(--accent); text-decoration-thickness:1px; text-underline-offset:2px}
+  .aside-note{font-size:14px; color:var(--ink-2); border-left:2px solid var(--grid); padding:2px 0 2px 14px; margin-top:8px; font-style:italic}
+
+  /* the now / alert cards */
+  .card{border:1px solid var(--ring); border-radius:8px; padding:16px 18px; margin-top:10px; font-family:"Archivo",sans-serif; font-size:14px; background:var(--paper)}
+  .card.alert{border-color:var(--serious); background:#fdf6f2}
+  .card.gatecard{border-color:var(--warn); background:#fffcf3}
+  .card h3{font-size:14px; font-weight:700; margin-bottom:6px}
+  .card p{font-size:13.5px; color:var(--ink-2); max-width:none}
+  .card .actions{display:flex; gap:8px; margin-top:12px; flex-wrap:wrap}
+  button{font-family:"Archivo",sans-serif; font-size:13px; font-weight:700; border-radius:7px; padding:7px 14px; cursor:pointer; border:1px solid var(--ring); background:#fff; color:var(--ink)}
+  button.primary{background:var(--ink); color:#fff; border-color:var(--ink)}
+  button:disabled{opacity:.5; cursor:not-allowed}
+  button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  .attrib{font-size:12px; color:var(--muted); margin-top:10px}
+
+  /* cost appendix */
+  .appendix{margin-top:48px; border-top:3px double var(--ink); padding-top:20px}
+  .appendix h2{font-family:"Archivo",sans-serif; font-size:13px; font-weight:700; letter-spacing:.18em; text-transform:uppercase; margin-bottom:14px}
+  .cbar{display:grid; grid-template-columns:170px 1fr 70px; gap:12px; align-items:center; padding:3px 0; font-family:"Archivo",sans-serif; font-size:13.5px}
+  .cbar .track{height:12px; position:relative}
+  .cbar .fill{position:absolute; inset:0 auto 0 0; background:var(--accent); border-radius:0 3px 3px 0}
+  .cbar .v{font-family:"Fira Code",monospace; font-size:12.5px; text-align:right}
+  .cbar .v.mut{color:var(--muted)}
+  .appendix .note{font-size:13px; color:var(--muted); margin-top:12px; font-family:"Archivo",sans-serif}
+
+  /* ── run drawer ── */
+  .runlink{font-family:"Archivo",sans-serif; font-size:12.5px; font-weight:700; color:var(--accent); cursor:pointer; text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:2px}
+  .scrim{position:fixed; inset:0; background:rgba(20,20,20,.42); z-index:40; opacity:0; pointer-events:none; transition:opacity .2s}
+  .drawer{position:fixed; top:0; right:0; bottom:0; width:min(500px,94vw); background:var(--paper); border-left:1px solid var(--ring); z-index:41; transform:translateX(103%); transition:transform .22s ease; display:flex; flex-direction:column; box-shadow:-12px 0 40px rgba(0,0,0,.14)}
+  body.drawer-open .scrim{opacity:1; pointer-events:auto}
+  body.drawer-open .drawer{transform:none}
+  @media (prefers-reduced-motion: reduce){ .drawer,.scrim{transition:none} }
+  .drawer .dhead{padding:18px 22px 14px; border-bottom:3px double var(--ink); position:relative}
+  .drawer .dhead .k{font-family:"Archivo",sans-serif; font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--muted)}
+  .drawer .dhead h3{font-size:19px; font-weight:600; line-height:1.3; margin-top:4px}
+  .drawer .dhead .dmeta{font-family:"Fira Code",monospace; font-size:11.5px; color:var(--ink-2); margin-top:6px}
+  .drawer .dclose{position:absolute; top:12px; right:14px; border:none; background:none; font-size:19px; padding:4px 8px; color:var(--muted); cursor:pointer}
+  .drawer .dbody{flex:1; overflow:auto; padding:16px 22px; display:flex; flex-direction:column; gap:16px}
+  .dlog{background:#181816; color:#c3c2b7; border-radius:6px; padding:12px 14px; font-family:"Fira Code",monospace; font-size:11.5px; line-height:1.7; overflow:auto; max-height:44vh}
+  .dlog .t{color:#898781} .dlog .w{color:var(--serious)} .dlog .g{color:#3fbf3f}
+  .dsec{font-family:"Archivo",sans-serif; font-size:11px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin-bottom:6px}
+  .dtrans{font-size:14.5px}
+  .dtrans div{padding:6px 0; border-bottom:1px solid var(--grid); display:flex; gap:12px}
+  .dtrans .t{color:var(--muted); font-family:"Fira Code",monospace; font-size:11.5px; flex:none; width:60px; padding-top:2px}
+  .drawer .dfoot{border-top:1px solid var(--grid); padding:14px 22px; display:flex; gap:8px; flex-wrap:wrap}
+
+  footer{max-width:840px; margin:0 auto; padding:0 24px 40px; color:var(--muted); font-size:12.5px; font-family:"Archivo",sans-serif}
+</style>
+</head>
+<body>
+<div class="nav-strip">
+  <span>Mockup options:</span>
+  <a href="option-a-transit.html">A · Transit</a>
+  <a href="option-b-mission-control.html">B · Mission Control</a>
+  <a class="here" href="option-c-ledger.html">C · Ledger</a>
+  <a href="option-d-portfolio.html">D · Portfolio</a>
+  <a href="option-e-inception.html">E · Inception</a>
+  <a href="index.html" style="margin-left:auto">↩ all options</a>
+</div>
+
+<article class="sheet">
+  <div class="masthead">
+    <div class="kicker">The Delivery Ledger · written by the engine, signed by humans</div>
+    <h1>Durable orchestration graph<br><span style="color:var(--muted); font-size:26px">EPIC #4121, from intent #4120</span></h1>
+    <p class="standfirst">Everything below is the engine's own record — each entry is a state transition, each signature a human. Read top to bottom and you know what happened, what is happening, what comes next, and what it has cost.</p>
+  </div>
+  <div class="factrow ui">
+    <div class="fact"><div class="l">Position</div><div class="v">Wave 2 of 5</div></div>
+    <div class="fact"><div class="l">Cost to date</div><div class="v mono">$94.65</div></div>
+    <div class="fact"><div class="l">Gates</div><div class="v">6 of 9</div></div>
+    <div class="fact"><div class="l">Health</div><div class="v"><span class="flag">⚠ 1 stalled run</span></div></div>
+  </div>
+
+  <div class="day">Sunday 24 August — inception</div>
+
+  <div class="entry gate">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>The journey began.</strong> <span class="who">Pranav</span> filed the intent — make the delivery loop visible, steerable, and costed — and summoned the analyst. By evening the problem frame was written and its first gate <strong>approved by <span class="who">Pranav</span> at 20:24</strong>.</p>
+    </div>
+    <div class="margin"><span class="cost">$4.87</span><span class="tag t-good">✓ gated</span></div>
+    <span class="when">08:14</span>
+  </div>
+
+  <div class="entry alert">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>The code was read, and it disagreed with four assumptions.</strong> Deep verification found that issue prose still drives execution in five places, and that no promotion check exists anywhere. Midway, the run went silent for 46 minutes — an API retry loop — then recovered on its own.</p>
+      <p class="aside-note">Had this ledger existed, that stall would have alerted at minute 15 instead of being found by hand.</p>
+    </div>
+    <div class="margin"><span class="cost">$9.12</span><span class="tag t-serious">⚠ 1 stall</span></div>
+    <span class="when">20:24 →</span>
+  </div>
+
+  <div class="day">Tuesday 26 August — the plan of record</div>
+
+  <div class="entry gate">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>The plan was agreed, and became the record.</strong> Requirements and delivery planning closed every open question. <span class="who">Pranav</span> approved the loop proposal at 10:12: <strong>five waves, eleven stories, four evaluations, three human gates.</strong> From this entry on, progress is measured against what was accepted here — not against anyone's prose.</p>
+      <div class="card">
+        <h3>The accepted plan · <a href="#">view spec</a> · <a href="#">plan vs. actual</a></h3>
+        <p class="mono" style="font-size:12.5px">W1 UX spike → ⛩ → W2 engine core (3∥) → E2 → ⛩ → W3 dispatch (2∥) → E3 → W4 dashboard → E4 → ⛩ → W5 cost+SLO → done</p>
+      </div>
+    </div>
+    <div class="margin"><span class="cost">$31.50</span><span class="tag t-good">inception total</span></div>
+    <span class="when">10:12</span>
+  </div>
+
+  <div class="day">Friday 28 August — wave one</div>
+
+  <div class="entry gate">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>Three futures were sketched; one was chosen.</strong> The UX spike delivered three clickable mockups of this very surface. <span class="who">Pranav</span> reviewed them at the gate and chose the operator console, folding in the narrative feed. Dashboard stories were cut only after this decision.</p>
+    </div>
+    <div class="margin"><span class="cost">$18.40</span><span class="tag t-good">✓ gated</span></div>
+    <span class="when">16:05</span>
+  </div>
+
+  <div class="day">Wednesday 2 September — today · wave two</div>
+
+  <div class="entry">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>The ledger got its table.</strong> Story #4206 (run-ledger schema, migration 026) went red at evaluation — a missing foreign key — entered <strong>defect cycle 1 of 3</strong>, was fixed, re-evaluated green, and was <strong>promoted by the engine</strong>. No one vouched; the transition table decided. <span class="runlink" data-run="s4206" role="button" tabindex="0">Open the run record →</span></p>
+    </div>
+    <div class="margin"><span class="cost">$19.50</span><span class="tag t-good">✓ done</span></div>
+    <span class="when">13:04</span>
+  </div>
+
+  <div class="entry now">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>Now running:</strong> story #4208, the scheduled tick engine — 38 minutes in, heartbeat healthy, last turn 6 seconds ago. <span class="runlink" data-run="s4208" role="button" tabindex="0">Watch the log live →</span></p>
+    </div>
+    <div class="margin"><span class="cost">$6.55</span><span class="tag t-run">▶ running</span></div>
+    <span class="when">13:54 →</span>
+  </div>
+
+  <div class="entry alert">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>Needs a hand:</strong> story #4207 (transition table + CI guard) has been <strong>silent for 52 minutes</strong> — an API retry loop at turn 341. The 15-minute stall SLO fired at 14:03 and #adp-ops was notified. Its cost is <strong>unknown</strong> until its ledger row lands — the ledger refuses to print a false $0.</p>
+      <div class="card alert">
+        <h3>⚠ Stalled run — one action to recover</h3>
+        <p>Resume restarts from the last checkpoint and is idempotent — safe to press twice.</p>
+        <div class="actions">
+          <button class="primary">Resume from checkpoint</button>
+          <button>Abort run</button>
+          <button data-run="s4207">Heartbeat log</button>
+        </div>
+        <div class="attrib">Requires role <span class="mono">graph:operate</span> · your action will be signed as <span class="who">Pranav</span> and entered in this ledger.</div>
+      </div>
+    </div>
+    <div class="margin"><span class="cost" style="color:var(--muted)">⌀ unk.</span><span class="tag t-serious">⚠ stalled 52m</span></div>
+    <span class="when">14:03</span>
+  </div>
+
+  <div class="day" style="color:var(--ink)">What happens next</div>
+
+  <div class="entry future">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>When both stories land,</strong> evaluation E2 runs its 25 acceptance checks — 13 of them adversarial, including the cost-identifier trap. If it goes red, a defect cycle opens (3 allowed, then the wave halts and tells you).</p>
+    </div>
+    <div class="margin"><span class="tag t-mut">then</span></div>
+    <span class="when">next</span>
+  </div>
+
+  <div class="entry future gate">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>Then the graph will wait for you.</strong> Gate W2→W3 opens only on a green E2 — no agent can open it, and nothing proceeds until a signature lands here.</p>
+      <div class="card gatecard">
+        <h3>🚦 Gate W2 → W3 · not yet open</h3>
+        <div class="actions">
+          <button class="primary" disabled>Approve wave 3</button>
+          <button disabled>Send back with notes</button>
+        </div>
+        <div class="attrib">Will require role <span class="mono">gate:approve</span> · wrong-tenant or viewer-grade callers are refused.</div>
+      </div>
+    </div>
+    <div class="margin"><span class="tag t-warn">🚦 your gate</span></div>
+    <span class="when">after E2</span>
+  </div>
+
+  <div class="entry future">
+    <div class="spine"><span class="node"></span></div>
+    <div>
+      <p><strong>Beyond:</strong> wave 3 wires engine-owned dispatch and the one-way GitHub projection, wave 4 builds this dashboard for real, wave 5 finishes cost and stall SLOs. Then: done, with this ledger as the receipt.</p>
+    </div>
+    <div class="margin"><span class="tag t-mut">ahead</span></div>
+    <span class="when">W3–W5</span>
+  </div>
+
+  <div class="appendix">
+    <h2>Appendix · what it cost</h2>
+    <div class="cbar"><span>Inception (5 stages)</span><div class="track"><div class="fill" style="width:33%"></div></div><span class="v">$31.50</span></div>
+    <div class="cbar"><span>Wave 1 · UX spike</span><div class="track"><div class="fill" style="width:19%; background:#eb6834"></div></div><span class="v">$18.40</span></div>
+    <div class="cbar"><span>Wave 2 · Engine core</span><div class="track"><div class="fill" style="width:47%; background:#1baf7a"></div></div><span class="v">$44.75</span></div>
+    <div class="cbar"><span>Waves 3–5</span><div class="track"></div><span class="v mut">ahead</span></div>
+    <div class="cbar" style="border-top:1px solid var(--grid); margin-top:6px; padding-top:8px"><span><strong>EPIC to date</strong></span><div class="track"></div><span class="v"><strong>$94.65</strong></span></div>
+    <p class="note">Agent-run costs only (v1 boundary); figures match Agent Activity per-run. One run's cost is currently unknown and is reported as unknown — a missing figure is never printed as $0.00.</p>
+  </div>
+</article>
+
+<footer>Mockup C of 3 · static, illustrative data based on EPIC #4120's real inception history · AIDLC UX spike input, 2026-08-25</footer>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Run record">
+  <div class="dhead">
+    <div class="k" id="d-eyebrow"></div>
+    <h3 id="d-title"></h3>
+    <div class="dmeta" id="d-meta"></div>
+    <button class="dclose" id="d-close" aria-label="Close">✕</button>
+  </div>
+  <div class="dbody">
+    <div><div class="dsec">Live log <span id="d-live" style="color:var(--good-text)"></span></div><div class="dlog" id="d-log" aria-live="polite"></div></div>
+    <div><div class="dsec">As entered in the ledger</div><div class="dtrans" id="d-trans"></div></div>
+  </div>
+  <div class="dfoot" id="d-actions"></div>
+</aside>
+<script>
+const RUNS={
+ s4206:{eyebrow:'Story #4206 · developer · done',title:'Run-ledger schema, migration 026',
+  meta:'run_88ab02 + run_91cc07 · agent/issue-4206 · $19.50',
+  log:[["11:02:14","clone + setup complete"],["11:38:20","turn 96: alembic revision 026 written"],["11:40:55","✓ run_88ab02 complete — PR #4310 opened","g"],["12:22:03","⚠ eval red: missing FK — defect cycle 1/3 opened","w"],["12:58:47","fix run: FK + index added · tests 52/52 green"],["13:04:19","✓ eval green — engine promoted story","g"]],
+  trans:[["11:01","Dispatched by the engine as wave 2 opened."],["12:22","Went red at evaluation; the first of three allowed defect cycles began."],["13:04","Promoted — the transition table was satisfied. No one vouched."]],
+  actions:['View PR #4310 ↗','Open in Agent Activity ↗'],stream:null},
+ s4208:{eyebrow:'Story #4208 · developer · running 38m',title:'Scheduled tick engine',
+  meta:'run_c07d11 · agent/issue-4208 · $6.55 so far',
+  log:[["14:28:40","tests 41/41 green (unit)"],["14:30:12","turn 213 completed"],["14:31:58","turn 214: Write engine/tick.py"]],
+  trans:[["13:54","Dispatched by the engine, second of three parallel branches."],["14:20","Heartbeat healthy; cost checkpoint $4.10."]],
+  actions:['Pause after current turn (via #3959, when live)|d','Abort run','Open in Agent Activity ↗'],stream:'run'},
+ s4207:{eyebrow:'Story #4207 · developer · stalled 52m',title:'Transition table + CI guard R-O5c',
+  meta:'run_9f21c4 · agent/issue-4207 · cost unknown',
+  log:[["13:39:41","turn 340 completed"],["13:39:44","turn 341 started (Bash)"],["14:03:02","⚠ stall SLO breached (15m) — alert → #adp-ops","w"],["14:31:56","💓 no SDK messages for 3,120s (turn 341)","w"]],
+  trans:[["13:12","Dispatched by the engine, third of three parallel branches."],["14:03","Marked stalled (api-retry-loop) and entered on the graph; the on-call was told."]],
+  actions:['Resume from checkpoint (idempotent)|p','Abort run','Open in Agent Activity ↗'],stream:'stall'}
+};
+let timer=null, stallSecs=3120, turn=214;
+const $=id=>document.getElementById(id);
+function esc(x){return x.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function line(t,m,c){return `<div><span class="t">${t}</span>  <span class="${c||''}">${esc(m)}</span></div>`}
+function openRun(id){
+  const r=RUNS[id]; if(!r) return;
+  $('d-eyebrow').textContent=r.eyebrow; $('d-title').textContent=r.title; $('d-meta').textContent=r.meta;
+  $('d-log').innerHTML=r.log.map(l=>line(l[0],l[1],l[2])).join('');
+  $('d-trans').innerHTML=r.trans.map(t=>`<div><span class="t">${t[0]}</span><span>${esc(t[1])}</span></div>`).join('');
+  $('d-actions').innerHTML=r.actions.map(a=>{const d=a.endsWith('|d'),p=a.endsWith('|p');a=a.replace(/\|[dp]$/,'');
+    return `<button class="${p?'primary':''}" ${d?'disabled':''}>${a}</button>`}).join('');
+  $('d-live').textContent = r.stream ? '· streaming' : '';
+  document.body.classList.add('drawer-open');
+  clearInterval(timer);
+  if(r.stream && !matchMedia('(prefers-reduced-motion: reduce)').matches){
+    timer=setInterval(()=>{
+      const log=$('d-log');
+      if(r.stream==='stall'){ stallSecs+=30;
+        log.insertAdjacentHTML('beforeend', line('14:32:'+String((stallSecs/30|0)%60).padStart(2,'0'), `💓 no SDK messages for ${stallSecs.toLocaleString()}s (turn 341)`, 'w'));
+      } else { turn+=1;
+        const acts=['Bash: pytest engine/tests -q','Write engine/tick.py','Read gateway/app.py','Bash: ruff check engine/'];
+        log.insertAdjacentHTML('beforeend', line('14:32:'+String((turn*7)%60).padStart(2,'0'), `turn ${turn}: ${acts[turn%acts.length]}`));
+      }
+      log.scrollTop=log.scrollHeight;
+    }, 2200);
+  }
+}
+function closeRun(){ document.body.classList.remove('drawer-open'); clearInterval(timer); }
+document.querySelectorAll('[data-run]').forEach(el=>{
+  el.addEventListener('click',e=>{e.stopPropagation(); openRun(el.dataset.run)});
+  el.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();openRun(el.dataset.run)}});
+});
+$('scrim').addEventListener('click',closeRun); $('d-close').addEventListener('click',closeRun);
+addEventListener('keydown',e=>{ if(e.key==='Escape') closeRun(); });
+if(location.hash && RUNS[location.hash.slice(1)]) openRun(location.hash.slice(1));
+</script>
+
+</body>
+</html>

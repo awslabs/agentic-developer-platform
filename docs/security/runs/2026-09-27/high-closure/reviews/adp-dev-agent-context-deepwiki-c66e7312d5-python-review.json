@@ -1,0 +1,37 @@
+{
+  "config_digest": "sha256:b0d9ddb37e0abfa6fb5839dc831f442743efdc85ceffc7447dabe2c9ef1ad312",
+  "raw_receipt": {
+    "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-dev-agent-context-deepwiki@sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
+    "docker_root_descriptor": "sha256:c66e7312d5ada80c140b3bf0c8322fe46d5c4a0cd5b1effd4c6b2f3291906e6c",
+    "config_digest": "sha256:b0d9ddb37e0abfa6fb5839dc831f442743efdc85ceffc7447dabe2c9ef1ad312",
+    "time": "2026-09-27T22:00:33.448735+00:00",
+    "packages": 599,
+    "native_counts": {
+      "Negligible": 136,
+      "High": 116,
+      "Critical": 25,
+      "Medium": 123,
+      "Low": 31
+    },
+    "sbom_sha256": "7a226ed82abd53109357647d8f30b185e413824a4abd0d57d8536a28114338c8",
+    "grype_sha256": "2d7613db68e921b1556de89694001204143a2ff5b6729ec4e16526eeaf39f7c5",
+    "archive_sha256": "d436db382f8291a327b24aa69c7aae73dcf9b7d93309763c35eb850ffd8e5e26"
+  },
+  "dispositions": [
+    {
+      "native_match_index": 202,
+      "status": "fixed-source-backport",
+      "canonical_id": "CVE-2026-82049",
+      "source_evidence": {
+        "source": "/usr/local/lib/python3.11/tarfile.py",
+        "sha256": "cc5519f9f4203730d02d9c5e5a0fcf36d305e249ea41befceb7820ffded13936",
+        "version": "3.11.16 (main, Sep  1 2026, 00:12:26) [GCC 14.2.0]",
+        "test": "test_tar_hardlink_does_not_relocate_symlink",
+        "passed": true
+      },
+      "regression": "/workspaces/projects/security27-high-closure/adp-dev-agent-context-deepwiki-c66e7312d5-python-regression.json",
+      "upstream_commit": "see committed stdlib311 provenance.json",
+      "reviewed_manifest": "/workspaces/projects/security27-high-source/modules/agent-context/images/deepwiki/security/stdlib311/manifest.json"
+    }
+  ]
+}

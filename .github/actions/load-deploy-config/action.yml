@@ -2,7 +2,7 @@ name: Load deployment config
 description: |
   Loads ADP deployment values and exports them to $GITHUB_ENV so subsequent
   steps can reference them as $ACCOUNT_ID, $AWS_REGION, $ENVIRONMENT,
-  $STATE_BUCKET, $GITHUB_ORG (+ optional $CUSTOMER_ACCOUNT_ID).
+  $STATE_BUCKET, and $GITHUB_ORG.
 
   Resolution order per field:
     1. Action input (this file's `with:` block, if set by the calling
@@ -12,9 +12,8 @@ description: |
     3. Runtime fallback (aws sts get-caller-identity for account_id,
        AWS_REGION env, etc.).
 
-  This means a workflow_dispatch with explicit -f account_id=... overrides
-  whatever's on the ref or in env, which is the cleanest way for an
-  orchestrator to target a specific customer account.
+  Legacy customer_account inputs are rejected. Linked inspection/routing roles
+  cannot select a deployment target.
 
 inputs:
   account_id:
@@ -34,15 +33,15 @@ inputs:
     required: false
     default: ''
   customer_account_id:
-    description: Customer-linked AWS account to deploy into (cross-account mode). Overrides config file.
+    description: Retired. Any non-empty value fails the action closed.
     required: false
     default: ''
   customer_aws_label:
-    description: Vaulted credential label for the customer account.
+    description: Retired. Any non-empty value fails the action closed.
     required: false
     default: ''
   customer_user_id:
-    description: ADP users.id UUID for the linked-account owner. Required when customer_account_id is set.
+    description: Retired. Any non-empty value fails the action closed.
     required: false
     default: ''
 
@@ -62,10 +61,6 @@ outputs:
   github_org:
     description: GitHub org owning the repo
     value: ${{ steps.load.outputs.github_org }}
-  customer_account_id:
-    description: Customer-linked AWS account (empty when not in cross-account mode)
-    value: ${{ steps.load.outputs.customer_account_id }}
-
 runs:
   using: composite
   steps:
@@ -96,6 +91,8 @@ runs:
           fi
         done
 
+        unset CUSTOMER_ACCOUNT_ID
+
         # shellcheck source=/dev/null
         source "${GITHUB_WORKSPACE}/platform/scripts/load-deploy-config.sh"
 
@@ -106,23 +103,8 @@ runs:
           echo "ENVIRONMENT=${ADP_ENVIRONMENT}"
           echo "STATE_BUCKET=${ADP_STATE_BUCKET}"
           echo "GITHUB_ORG=${ADP_GITHUB_ORG}"
-          echo "CUSTOMER_ACCOUNT_ID=${ADP_CUSTOMER_ACCOUNT_ID:-}"
+          echo "CUSTOMER_ACCOUNT_ID="
         } >> "$GITHUB_ENV"
-
-        # Cross-account assume already populated AWS_* into env (via the
-        # helper) — surface them to subsequent steps too.
-        # Issue #2566: mask credentials BEFORE writing to GITHUB_ENV so the
-        # runner redacts them from all subsequent log output.
-        if [ -n "${ADP_CUSTOMER_ACCOUNT_ID:-}" ] && [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
-          echo "::add-mask::${AWS_ACCESS_KEY_ID}"
-          echo "::add-mask::${AWS_SECRET_ACCESS_KEY}"
-          echo "::add-mask::${AWS_SESSION_TOKEN}"
-          {
-            echo "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}"
-            echo "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}"
-            echo "AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}"
-          } >> "$GITHUB_ENV"
-        fi
 
         # Surface as step outputs too
         {
@@ -131,10 +113,6 @@ runs:
           echo "region=${ADP_REGION}"
           echo "environment=${ADP_ENVIRONMENT}"
           echo "github_org=${ADP_GITHUB_ORG}"
-          echo "customer_account_id=${ADP_CUSTOMER_ACCOUNT_ID:-}"
         } >> "$GITHUB_OUTPUT"
 
         echo "Resolved: account=${ADP_ACCOUNT_ID} region=${ADP_REGION} env=${ADP_ENVIRONMENT} bucket=${ADP_STATE_BUCKET}"
-        if [ -n "${ADP_CUSTOMER_ACCOUNT_ID:-}" ]; then
-          echo "Cross-account: deploying into customer account ${ADP_CUSTOMER_ACCOUNT_ID} (label=${ADP_CUSTOMER_AWS_LABEL:-<auto>})"
-        fi

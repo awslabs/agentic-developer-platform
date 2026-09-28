@@ -16,7 +16,7 @@ export class ConfigLoader {
       pollingInterval: parseInt(process.env.POLLING_INTERVAL || '30000', 10),
       maxRetries: parseInt(process.env.MAX_RETRIES || '5', 10),
       logLevel: (process.env.LOG_LEVEL as Config['logLevel']) || 'INFO',
-      bedrockModel: process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-opus-5',
+      bedrockModel: process.env.ANTHROPIC_MODEL || 'global.anthropic.claude-sonnet-5',
     };
 
     this.secretsClient = new SecretsManagerClient({ region: awsRegion });
@@ -27,7 +27,11 @@ export class ConfigLoader {
 
   setupBedrockEnv(): void {
     process.env.CLAUDE_CODE_USE_BEDROCK = '1';
-    if (this.config) {
+    // The Python entrypoint is the model-assignment boundary. Rewriting the
+    // variable here creates a second selector after gateway resolution and can
+    // also let repository/config state replace a principal-owned preference.
+    // Populate only a genuinely absent legacy value; never reassign one.
+    if (this.config && !process.env.ANTHROPIC_MODEL) {
       process.env.ANTHROPIC_MODEL = this.config.bedrockModel;
     }
   }

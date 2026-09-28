@@ -55,24 +55,55 @@ resource "aws_security_group_rule" "lambda_to_rds" {
 # Lambda Deployment Package
 # =============================================================================
 
+# Issue #4969: the shared pricing policy package, vendored into BOTH Lambda zips.
+#
+# Enumerated with fileset() rather than one source block per file on purpose.
+# The hand-listed pattern below it has already shipped a Lambda that ImportErrors
+# on cold start when a module was added and not listed (see #4391), and this
+# package is worse for that failure mode: it carries snapshots/*.json data files
+# whose absence produces a FileNotFoundError only when a rate is actually looked
+# up. Globbing means adding a snapshot or a module cannot desync the archives.
+#
+# Both Lambdas and the gateway image must carry the same package: it is the single
+# source of pricing truth, and a version skew between the estimator and the
+# settlement path is the class of bug #4969 exists to remove.
+locals {
+  pricing_policy_dir = "${path.root}/../pricing_policy"
+  pricing_policy_files = concat(
+    tolist(fileset(local.pricing_policy_dir, "**/*.py")),
+    tolist(fileset(local.pricing_policy_dir, "snapshots/*.json")),
+  )
+  shared_lambda_dir   = "${path.root}/../lambda/shared"
+  shared_lambda_files = fileset(local.shared_lambda_dir, "*.py")
+}
+
 # Archive the usage tracker Lambda code
 data "archive_file" "usage_tracker" {
   type        = "zip"
   output_path = "${path.module}/usage_tracker.zip"
 
-  source {
-    content  = file("${path.root}/../lambda/budget-usage-tracker/handler.py")
-    filename = "handler.py"
+  dynamic "source" {
+    for_each = fileset("${path.root}/../lambda/budget-usage-tracker", "*.py")
+    content {
+      content  = file("${path.root}/../lambda/budget-usage-tracker/${source.value}")
+      filename = source.value
+    }
   }
 
-  source {
-    content  = file("${path.root}/../lambda/shared/db.py")
-    filename = "db.py"
+  dynamic "source" {
+    for_each = local.pricing_policy_files
+    content {
+      content  = file("${local.pricing_policy_dir}/${source.value}")
+      filename = "pricing_policy/${source.value}"
+    }
   }
 
-  source {
-    content  = file("${path.root}/../lambda/shared/pricing_fallback.py")
-    filename = "pricing_fallback.py"
+  dynamic "source" {
+    for_each = local.shared_lambda_files
+    content {
+      content  = file("${local.shared_lambda_dir}/${source.value}")
+      filename = source.value
+    }
   }
 }
 
@@ -81,19 +112,28 @@ data "archive_file" "pricing_refresh" {
   type        = "zip"
   output_path = "${path.module}/pricing_refresh.zip"
 
-  source {
-    content  = file("${path.root}/../lambda/pricing-refresh/handler.py")
-    filename = "handler.py"
+  dynamic "source" {
+    for_each = fileset("${path.root}/../lambda/pricing-refresh", "*.py")
+    content {
+      content  = file("${path.root}/../lambda/pricing-refresh/${source.value}")
+      filename = source.value
+    }
   }
 
-  source {
-    content  = file("${path.root}/../lambda/shared/db.py")
-    filename = "db.py"
+  dynamic "source" {
+    for_each = local.pricing_policy_files
+    content {
+      content  = file("${local.pricing_policy_dir}/${source.value}")
+      filename = "pricing_policy/${source.value}"
+    }
   }
 
-  source {
-    content  = file("${path.root}/../lambda/shared/pricing_fallback.py")
-    filename = "pricing_fallback.py"
+  dynamic "source" {
+    for_each = local.shared_lambda_files
+    content {
+      content  = file("${local.shared_lambda_dir}/${source.value}")
+      filename = source.value
+    }
   }
 }
 
@@ -180,6 +220,7 @@ resource "aws_lambda_function" "usage_tracker" {
 
 # CloudWatch Log Group for Usage Tracker
 resource "aws_cloudwatch_log_group" "usage_tracker" {
+  #checkov:skip=CKV_AWS_338: Budget Lambda logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/aws/lambda/${var.name_prefix}-budget-usage-tracker"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn
@@ -192,12 +233,28 @@ resource "aws_cloudwatch_log_group" "usage_tracker" {
 }
 
 # S3 Event Permission for Usage Tracker Lambda
+#
+# source_account is REQUIRED here, not defence in depth. An S3 bucket ARN carries
+# no account id — `arn:aws:s3:::name` is globally namespaced — so source_arn alone
+# does not bind this permission to our account. If the chat-logs bucket were ever
+# deleted, anyone could create a bucket with the same name in their own account and
+# its notifications would satisfy our source_arn, invoking this function with
+# attacker-controlled objects. That is the confused-deputy case, and it is why AWS
+# requires both conditions for the S3 principal specifically.
+#
+# Every other aws_lambda_permission in this repo is already sufficient with
+# source_arn alone, because execute-api, cognito-idp, events and logs ARNs all embed
+# the account id. Do not "fix" those to match this one.
 resource "aws_lambda_permission" "usage_tracker_s3" {
   statement_id  = "AllowS3Invoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.usage_tracker.function_name
   principal     = "s3.amazonaws.com"
   source_arn    = var.chat_logs_bucket_arn
+  # Use the root module's already-resolved identity. A module-level depends_on
+  # defers data sources inside this module, and an unknown source_account is a
+  # force-new diff that would briefly remove this confused-deputy protection.
+  source_account = var.account_id
 }
 
 # S3 Bucket Notification for Usage Tracker
@@ -219,7 +276,7 @@ resource "aws_s3_bucket_notification" "chat_logs" {
 
 resource "aws_lambda_function" "pricing_refresh" {
   function_name                  = "${var.name_prefix}-pricing-refresh"
-  description                    = "Refreshes model pricing from AWS Pricing API (Issue #234)"
+  description                    = "Publishes validated AWS Bedrock pricing generations from AWS catalogs and model cards"
   reserved_concurrent_executions = var.enable_reserved_concurrency ? 2 : -1
 
   filename         = data.archive_file.pricing_refresh.output_path
@@ -265,6 +322,7 @@ resource "aws_lambda_function" "pricing_refresh" {
 
 # CloudWatch Log Group for Pricing Refresh
 resource "aws_cloudwatch_log_group" "pricing_refresh" {
+  #checkov:skip=CKV_AWS_338: Pricing Lambda logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/aws/lambda/${var.name_prefix}-pricing-refresh"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn
@@ -281,6 +339,14 @@ resource "aws_cloudwatch_event_rule" "pricing_refresh" {
   name                = "${var.name_prefix}-pricing-refresh-schedule"
   description         = "Triggers pricing refresh Lambda daily"
   schedule_expression = var.pricing_refresh_schedule
+  # Creation and corrective infra applies must not start publication before the
+  # matching code/schema are ready. The release verifier explicitly enables the
+  # rule after seed, code, notification and immediate-refresh checks pass.
+  state = "DISABLED"
+
+  lifecycle {
+    ignore_changes = [state]
+  }
 }
 
 # EventBridge Target for Pricing Refresh Lambda
@@ -288,6 +354,17 @@ resource "aws_cloudwatch_event_target" "pricing_refresh" {
   rule      = aws_cloudwatch_event_rule.pricing_refresh.name
   target_id = "${var.name_prefix}-pricing-refresh"
   arn       = aws_lambda_function.pricing_refresh.arn
+
+  retry_policy {
+    maximum_retry_attempts       = 2
+    maximum_event_age_in_seconds = 3600
+  }
+
+  dead_letter_config {
+    arn = aws_sqs_queue.pricing_delivery_failure.arn
+  }
+
+  depends_on = [aws_sqs_queue_policy.pricing_delivery_failure, aws_lambda_permission.pricing_refresh_eventbridge]
 }
 
 # EventBridge Permission for Pricing Refresh Lambda

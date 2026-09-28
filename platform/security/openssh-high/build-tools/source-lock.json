@@ -1,0 +1,26 @@
+{
+  "source_package": "openssh",
+  "version": "1:10.0p1-7+deb13u4",
+  "downstream_version": "1:10.0p1-7+deb13u4+adp.security.2",
+  "upstream_commit": "e8bdfb151a356d0171fea4194dd205fbb252be23",
+  "upstream_patch_sha256": "b88393504c4fb6cee75e0553aa5fc29b4b44a7f37b4c9e986ff90eeebce34be7",
+  "backport_patch_sha256": "d35735e1bcf1dbb99e624ee94747edf7fb20eca4c12a3aea1317522e0fb5dffe",
+  "source_sha256": {
+    "openssh_10.0p1-7+deb13u4.dsc": "73fed3fd77d60925ed342bcb0afd3c037e4ea0d39333107bf617aa90f859910f",
+    "openssh_10.0p1.orig.tar.gz": "021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c",
+    "openssh_10.0p1-7+deb13u4.debian.tar.xz": "102e1065030c6002acabd7f896eeba1462bf54b4d7393bac34b0308312868ec6"
+  },
+  "backport_adjustments": [
+    "Exclude upstream RCS revision-banner hunks",
+    "Retain Debian GSSAPI local declarations while applying identical lifetime changes"
+  ],
+  "scope": "CVE-2026-60002 client lifetime plus CVE-2026-59999 server tunnel forwarding and CVE-2026-60000 GSSAPI authentication accounting; no capability removal",
+  "high_patch_sha256": {
+    "CVE-2026-59999": "c28399d0856e1e5602e11d95268e35f26b6dc676b2d3a345f9d787be458ed705",
+    "CVE-2026-60000": "bbf51380f08f10b47342d41b74cd5292be34957e70218cae8e657bde2f497c79"
+  },
+  "high_upstream_commits": {
+    "CVE-2026-59999": "8dfe7ed6e2fd988de08df508355a196b956b2753",
+    "CVE-2026-60000": "5d04ca6af739b82fd30d84d2783ca802ebfa1192"
+  }
+}

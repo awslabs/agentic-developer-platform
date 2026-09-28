@@ -12,10 +12,14 @@
  * - Typed dependencies (blocks, parent-child, discovered-from)
  *
  * Architecture:
- *   S3 (s3://adp-agent-state/beads/) ←→ Local .beads/dolt/ ←→ All Agents
+ *   S3 (s3://$BEADS_S3_BUCKET/beads/) ←→ Local .beads/dolt/ ←→ All Agents
+ *
+ * The bucket is supplied by configuration (BEADS_S3_BUCKET), not hardcoded —
+ * see DEFAULT_CONFIG below and issue #4184.
  */
 
 import { execSync } from 'child_process';
+import { workerAwsEnvironment, workerAwsRegion } from './lib/runIdentity';
 
 // ============================================================================
 // Configuration
@@ -31,10 +35,17 @@ export interface BeadsConfig {
   fallbackToGitHub: boolean;  // If beads fails, fall back to GitHub Projects
 }
 
+// Issue #4184: `adp-agent-state` is a bucket in a foreign AWS account that no
+// statement in the agent's IAM policy permits, and `us-west-2` contradicted the
+// us-east-1 deployment. Both call sites (agent-worker.ts, agent-pm.ts) override
+// these via configureBeads() before any bd command runs, so these values were
+// unreachable in practice — corrected anyway so they cannot become reachable,
+// and because the old literals were being copy-pasted outward.
+// Empty bucket is the safe default: syncPull/syncPush guard on it and skip.
 const DEFAULT_CONFIG: BeadsConfig = {
   enabled: true,
-  s3Bucket: 'adp-agent-state',
-  s3Region: 'us-west-2',
+  s3Bucket: '',
+  s3Region: workerAwsRegion(),
   s3Path: 'beads/adp',
   syncOnStart: true,
   syncOnComplete: true,
@@ -48,7 +59,15 @@ export function configureBeads(newConfig: Partial<BeadsConfig>): void {
 }
 
 export function isBeadsEnabled(): boolean {
-  return config.enabled;
+  return config.enabled && !protectedBeadsRun();
+}
+
+function protectedBeadsRun(): boolean {
+  return process.env.ADP_AGENT_AUTHORITY_ENABLED?.toLowerCase() === 'true';
+}
+
+function requireLegacyBeadsSync(): void {
+  if (protectedBeadsRun()) throw new Error('Shared Beads S3 sync is unavailable for protected runs; use GitHub task tracking');
 }
 
 export function getBeadsConfig(): BeadsConfig {
@@ -129,7 +148,7 @@ async function bd(
       cwd,
       encoding: 'utf-8',
       env: {
-        ...process.env,
+        ...workerAwsEnvironment(),
         AWS_REGION: config.s3Region,
       },
       maxBuffer: 10 * 1024 * 1024,
@@ -198,6 +217,7 @@ export async function isBeadsInitialized(cwd: string = process.cwd()): Promise<b
  * Initialize beads in the current directory
  */
 export async function initializeBeads(cwd: string = process.cwd()): Promise<void> {
+  requireLegacyBeadsSync();
   log('INFO', 'Initializing beads...');
 
   // Initialize with stealth mode (don't commit .beads to git)
@@ -224,6 +244,7 @@ export async function initializeBeads(cwd: string = process.cwd()): Promise<void
  * Sync with remote (pull latest state)
  */
 export async function syncPull(cwd: string = process.cwd()): Promise<void> {
+  requireLegacyBeadsSync();
   if (!config.s3Bucket) {
     log('WARN', 'No S3 bucket configured, skipping sync');
     return;
@@ -242,6 +263,7 @@ export async function syncPull(cwd: string = process.cwd()): Promise<void> {
  * Sync with remote (push current state)
  */
 export async function syncPush(cwd: string = process.cwd()): Promise<void> {
+  requireLegacyBeadsSync();
   if (!config.s3Bucket) {
     log('WARN', 'No S3 bucket configured, skipping sync');
     return;
@@ -524,7 +546,7 @@ export async function startWork(
   agentName: string,
   cwd: string = process.cwd()
 ): Promise<{ task: BeadsTask; context: string } | null> {
-  if (!config.enabled) {
+  if (!isBeadsEnabled()) {
     log('INFO', 'Beads disabled, skipping startWork');
     return null;
   }
@@ -572,7 +594,7 @@ export async function completeWork(
   reason: string,
   cwd: string = process.cwd()
 ): Promise<BeadsTask | null> {
-  if (!config.enabled) {
+  if (!isBeadsEnabled()) {
     log('INFO', 'Beads disabled, skipping completeWork');
     return null;
   }
@@ -598,7 +620,7 @@ export async function reportFailure(
   errorMessage: string,
   cwd: string = process.cwd()
 ): Promise<void> {
-  if (!config.enabled) {
+  if (!isBeadsEnabled()) {
     return;
   }
 

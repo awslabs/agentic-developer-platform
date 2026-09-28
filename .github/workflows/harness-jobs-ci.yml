@@ -1,0 +1,291 @@
+name: Harness Jobs CI
+
+# Offline test gate for the shared durable operation store and transactional dispatch
+# outbox (`modules/harness/jobs/`, issue #5525 (w6-02), EPIC #4910, Wave 6).
+#
+# A separate workflow rather than a job in superplane-domain-ci.yml, for the reason
+# orchestration-harness-ci.yml gives for its own split: that lane's paths and
+# working-directories are all `modules/domain-apps/superplane` and
+# `modules/gateway`, and `modules/harness/` is covered by NO pull-request workflow at
+# all. Before this file, the only workflow mentioning `modules/harness` was
+# hitl-ticket-contract-tests.yml, and only in a comment.
+#
+# That absence is the thing being fixed. `superplane-domain-ci.yml` is a required check
+# for several Wave 6 units, and it would have stayed green through any change to this
+# package -- including one that deleted its uniqueness constraint -- because it never
+# collects these tests.
+#
+# This workflow builds no image, deploys nothing, and contacts no provider, cloud or
+# AWS service. It runs on the existing self-hosted `arc-runner-org` pool like every
+# other ADP workflow. The pool has an ambient platform identity; the job clears AWS
+# credential provider inputs so normal SDK discovery cannot obtain credentials, and
+# then verifies the effective environment. That is an offline test environment, not a
+# claim that the runner is a sandbox. Live acceptance remains a separately authorized
+# run (the named Wave 6 live gate).
+#
+# ## Why this lane needs a real database
+#
+# Every guarantee the package makes is a property of PostgreSQL rather than of Python:
+# the duplicate refusal is a UNIQUE constraint firing under genuine concurrency,
+# "admission and enqueue commit together" is transaction atomicity, the delivery claim
+# is `FOR UPDATE SKIP LOCKED`, and "survives a restart" is a claim about disk. A fake
+# or SQLite would pass a suite that proves none of it -- SQLite has no `SKIP LOCKED` at
+# all, so a green run against it would be evidence about the fake.
+#
+# The server comes from the `pgserver` package: a real PostgreSQL binary run against a
+# temporary data directory over a unix socket, needing no Docker, no root and no
+# listening port. This is the same mechanism
+# `modules/gateway/tests/migrations/conftest_postgres.py` uses. A `services:` container
+# is NOT an option here: ARC runners have no Docker-in-Docker (see
+# `gateway-ci.yml:344`, where docker build has failed on every run since the DinD
+# sidecar was removed).
+#
+# Python is pinned to 3.12 because pgserver publishes wheels for <= 3.12 only. On 3.13
+# the dependency marker drops it and the whole suite would skip -- see the vacuity
+# guard below, which is what makes that failure loud instead of green.
+
+on:
+  pull_request:
+    paths:
+      - 'modules/harness/jobs/**'
+      - '.github/workflows/harness-jobs-ci.yml'
+      # The contract this package is tested for agreement with. `test_contract_agreement.py`
+      # duplicates the permission string, the operation states and the forbidden-parameter
+      # set rather than importing them (the package installs independently of the contracts
+      # package). Duplication without a test is drift waiting to happen, so a PR that
+      # changes EITHER side has to be able to run the tests that compare them -- otherwise
+      # the domain side moves, this side does not, and nothing notices.
+      - 'modules/domain-apps/superplane/contracts/superplane_contracts/integration.py'
+      - 'modules/domain-apps/superplane/contracts/superplane_contracts/provisioning.py'
+      - 'modules/domain-apps/superplane/contracts/superplane_contracts/version.py'
+      # The consumer's Protocol and its refusal exceptions. The facade's signature is
+      # fixed by this file; a change to it that this package does not follow is a port
+      # that no longer fits its consumer.
+      - 'modules/domain-apps/superplane/src/superplane-api/app/services/provisioning.py'
+      # The two upstreams the approval vocabulary is duplicated from (#5526, w6-03).
+      # `test_approval_contract_agreement.py` re-spells the four HITL results and the
+      # ADMINISTER permission rather than importing them -- pydantic is not in this
+      # package's runtime closure and `superplane_auth` belongs to the consumer. Same
+      # reasoning as the contracts entries above: a PR that changes either upstream has
+      # to run the tests that compare the two spellings, or a widened permissive set or
+      # a renamed permission lands with nothing noticing.
+      - 'contracts/hitl-ticket/v1/models.py'
+      - 'modules/domain-apps/superplane/auth/superplane_auth/policy.py'
+  push:
+    branches: [main]
+    paths:
+      - 'modules/harness/jobs/**'
+      - '.github/workflows/harness-jobs-ci.yml'
+      - 'modules/domain-apps/superplane/contracts/superplane_contracts/integration.py'
+      - 'modules/domain-apps/superplane/contracts/superplane_contracts/provisioning.py'
+      - 'modules/domain-apps/superplane/contracts/superplane_contracts/version.py'
+      - 'modules/domain-apps/superplane/src/superplane-api/app/services/provisioning.py'
+      - 'contracts/hitl-ticket/v1/models.py'
+      - 'modules/domain-apps/superplane/auth/superplane_auth/policy.py'
+  workflow_dispatch:
+
+# No `id-token` and no AWS credential step anywhere in this file: lint and offline
+# tests need no AWS role. This package reads no DSN and holds no credential by design,
+# so a lane that needed one would contradict the thing under test.
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-jobs-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness-jobs-tests:
+    # Treat this string as a contract: renaming a job silently removes a required check
+    # rather than failing.
+    name: Harness jobs store tests
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      # Converts the suite's honest "no database, so skip" into a hard failure. The
+      # default is a skip because a developer without a database is not doing anything
+      # wrong; for CI a skip is the wrong answer, because "56 skipped" is green and a
+      # lane that reports green while asserting none of these guarantees is worse than
+      # no lane. See `tests/conftest.py`.
+      HARNESS_JOBS_REQUIRE_POSTGRES: '1'
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        # 3.12, not 3.13: pgserver ships wheels for <= 3.12 only, and the whole
+        # real-database half of this suite depends on it. See the header.
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/harness/jobs/pyproject.toml
+
+      - name: Verify the test process has no AWS credentials
+        run: |
+          FOUND=""
+          for var in AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ACCESS_KEY_ID \
+                     AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                     AWS_CONTAINER_CREDENTIALS_FULL_URI \
+                     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI; do
+            if [ -n "${!var:-}" ]; then
+              FOUND="${FOUND} ${var}"
+            fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "::error::AWS credentials are present in the offline test process (set:${FOUND})."
+            exit 1
+          fi
+
+      - name: Install the package and its test dependencies
+        working-directory: modules/harness/jobs
+        # The package itself declares NO runtime dependencies -- it is
+        # standard-library-only, because every entry point is handed a connection and
+        # so the package never opens one. asyncpg, pytest and pgserver are all in the
+        # `dev` extra, which is the only place a driver appears.
+        run: pip install -e ".[dev]" ruff
+
+      - name: Lint
+        working-directory: modules/harness/jobs
+        # The rule set comes from this package's own pyproject.toml, NOT from the flags
+        # here. That is deliberate: there is no repository-root ruff config, so a bare
+        # `ruff check` would silently use ruff's DEFAULT rules rather than the
+        # `["E","F","I","N","W","UP"]` that ADP's modules select -- meaning "lint
+        # passes" would mean something different in CI than locally. Pinning it in the
+        # package makes the two runs the same run.
+        run: |
+          set -euo pipefail
+          ruff check .
+          ruff format --check .
+
+      - name: Run the store, outbox, schema and facade tests
+        working-directory: modules/harness/jobs
+        # No `HARNESS_JOBS_TEST_POSTGRES_URL`: with the variable unset the suite starts
+        # its own pgserver instance, which is what keeps this lane free of any external
+        # database and any credential. Each test still isolates itself in a randomly
+        # named schema on that instance.
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          python -m pytest tests \
+            -v \
+            --tb=short \
+            --junitxml=test-results/harness-jobs-junit.xml
+
+      # The failure mode this guards is a VACUOUS pass. `HARNESS_JOBS_REQUIRE_POSTGRES`
+      # already turns a missing database into an error, but that only covers the one
+      # cause we know about: a future interpreter bump, a renamed marker, or a conftest
+      # edit could each reduce this lane to collecting the offline half and exiting 0.
+      # A green check that tested nothing is worse than no check, so assert on the
+      # executed count rather than on the exit code.
+      #
+      # The floor is a floor, not the current total (414 collected at the time of
+      # writing, of which 132 are offline-only; the remainder require a database).
+      # Pinning the exact number would turn every added test into a CI failure;
+      # pinning nothing would let the database half vanish silently.
+      #
+      # It MUST stay above the offline-only count, which is the whole mechanism: a run
+      # where every database test skipped executes exactly the offline half, so a floor
+      # at or below that number is satisfied by the failure it exists to catch. #5526
+      # raised the offline half from 57 to 146 and the old floor of 100 fell below it --
+      # i.e. the guard had silently become vacuous while still reading as a guard. #5527
+      # adds execution, leases, recovery and cancellation tests (another ~120 database
+      # tests). 390 is above today's offline 132 and below today's total 414. Raise it,
+      # with this sentence in mind, whenever the offline half grows.
+      - name: Assert the run was not vacuous
+        if: always()
+        working-directory: modules/harness/jobs
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          FLOOR = 390
+
+          report = Path("test-results/harness-jobs-junit.xml")
+          if not report.is_file():
+              sys.exit("::error::No JUnit report -- pytest did not get far enough to "
+                       "report anything, so this run is not evidence.")
+
+          root = ET.parse(report).getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          total = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          failures = sum(int(s.get("failures", 0)) for s in suites)
+          errors = sum(int(s.get("errors", 0)) for s in suites)
+          executed = total - skipped
+
+          print(f"collected={total} skipped={skipped} executed={executed} "
+                f"failures={failures} errors={errors}")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write("### Harness jobs store (real PostgreSQL, offline)\n\n"
+                           "| Collected | Skipped | Executed | Failures | Errors |\n"
+                           "|---|---|---|---|---|\n"
+                           f"| {total} | {skipped} | {executed} | {failures} | {errors} |\n")
+
+          # Nothing may skip in THIS lane, which is a stronger statement than the floor
+          # and catches what the floor cannot. `HARNESS_JOBS_REQUIRE_POSTGRES=1` already
+          # turns a missing database into a failure, and `pydantic` is in the `dev`
+          # extra so the HITL contract is importable -- so every skip reason the suite
+          # has is one this lane has removed. A remaining skip therefore means an
+          # upstream became unimportable and a drift guard quietly stopped guarding.
+          #
+          # This is not hypothetical: the two `test_approval_contract_agreement.py`
+          # tests that read the four HITL result values off the contract skipped on the
+          # first green run of this lane, because pydantic was not installed. The floor
+          # passed -- 257 executed, well above 200 -- while the check that the duplicated
+          # approval vocabulary has not drifted ran nowhere at all. A widened permissive
+          # set upstream would have landed with a green tick.
+          if skipped:
+              names = [
+                  "%s::%s" % (case.get("classname", "?"), case.get("name", "?"))
+                  for suite in suites
+                  for case in suite.iter("testcase")
+                  if case.find("skipped") is not None
+              ]
+              sys.exit(
+                  "::error::%d test(s) skipped in a lane that removes every skip "
+                  "reason this suite has, so a skip here means a guard silently "
+                  "stopped running rather than a developer lacking a database: %s"
+                  % (skipped, ", ".join(names))
+              )
+
+          if executed < FLOOR:
+              sys.exit(
+                  "::error::only %d tests executed (collected=%d, skipped=%d), below the "
+                  "floor of %d. The real-database half of this suite did not run. Its "
+                  "absence is not a pass: the constraint, transaction and lock behaviour "
+                  "this package exists to provide is asserted nowhere else."
+                  % (executed, total, skipped, FLOOR)
+              )
+          PY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: harness-jobs-results
+          path: modules/harness/jobs/test-results/
+          retention-days: 14

@@ -1,0 +1,50 @@
+{
+  "note": "Suites overlap; counts must not be added. These are local tests, not a live rollout attestation.",
+  "checks": {
+    "gateway_authentication": {
+      "passed": 1262,
+      "skipped": 8
+    },
+    "gateway_identity_billing_and_allowlist": {
+      "passed": 130
+    },
+    "worker_model_and_budget_identity": {
+      "passed": 88
+    },
+    "production_broker_allowlist_and_membership": {
+      "passed": 26
+    },
+    "context_auth_and_search": {
+      "passed": 111
+    },
+    "webhook_signature_and_handler": {
+      "passed": 22
+    },
+    "agent_memory_approval_and_reassessment": {
+      "passed": 28
+    },
+    "gitlab_mocked_terraform_plans": {
+      "passed": 4
+    },
+    "secret_ownership_contract": {
+      "passed": 3
+    },
+    "go_auth_proxy": {
+      "passed": 2
+    },
+    "typescript_build": "passed",
+    "python_lint": "passed",
+    "changed_yaml_parse": "passed",
+    "gitlab_terraform_validate": "passed",
+    "shell_syntax": "passed",
+    "zoekt_container_runtime": "passed",
+    "context_full_ci_suite": {
+      "passed": 2663,
+      "skipped": 12,
+      "deselected": 31
+    },
+    "gateway_policy_and_persona_integration": {
+      "passed": 221
+    }
+  }
+}

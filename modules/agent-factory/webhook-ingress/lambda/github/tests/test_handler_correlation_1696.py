@@ -14,11 +14,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
+# Issue #5663 (A09): lineage authority is now bound to the job's own tenant /
+# installation / repository as well as to the server-written row's fields. These
+# #1696 precedence tests are not about that predicate, so ``_chain`` and ``_payload``
+# below are kept CONSISTENT with the identity's tenant; the predicate itself is
+# asserted in test_handler_lineage_context_5663.py.
+TENANT = "test-org"
+REPO = "test-org/repo"
+INSTALLATION = "4242"
+
+
 @dataclass
 class MockResolvedIdentity:
     """Minimal mock of ResolvedIdentity."""
 
-    tenant_id: str = "test-org"
+    tenant_id: str = TENANT
     org_id: str = "test-org"
     user_id: str = "user-123"
     user_provisioning_mode: str = "strict"
@@ -42,34 +52,65 @@ MARKER_TEXT = (
 )
 
 
+def _chain(correlation_id, root_human_id, is_human_rooted, chain_depth):
+    """A server-written ``webhook-events`` row for a chain (issue #4129).
+
+    The pointer branches of determine_correlation now source root_human_id /
+    is_human_rooted / chain_depth from the ``correlation-index`` GSI instead of
+    reading them off the pod-writable pointer row, so precedence tests must stub
+    the chain row too. Values mirror the pointer under test, which keeps these
+    tests asserting pointer-vs-marker PRECEDENCE (their actual subject) rather
+    than #4129's fail-closed path.
+    """
+    return {
+        "event_id": "evt-chain",
+        "correlation_id": correlation_id,
+        "root_human_id": root_human_id,
+        "is_human_rooted": is_human_rooted,
+        "chain_depth": chain_depth,
+        # Issue #5663: same tenant/installation/repo as ``_payload()``.
+        "tenant_id": TENANT,
+        "installation_id": INSTALLATION,
+        "repo": REPO,
+    }
+
+
+def _payload() -> dict:
+    """Signature-verified payload fields the A09 job context is derived from."""
+    return {"repository": {"full_name": REPO}, "installation": {"id": INSTALLATION}}
+
+
 class TestDetermineCorrelationPrecedence:
     """Test pointer-vs-marker precedence rule (issue #1696, architect I1)."""
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-marker-001", "user-pointer", True, 4),
+    )
     @patch("handler._get_correlation_store")
-    def test_pointer_and_marker_same_correlation_uses_pointer(self, mock_store_fn):
+    def test_pointer_and_marker_same_correlation_uses_pointer(self, mock_store_fn, _chain_fn):
         """Pointer + marker with matching correlation_id → pointer wins."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
         mock_store.read_pointer.return_value = {
             "correlation_id": "corr-marker-001",  # Same as marker
-            "root_human_id": "user-pointer",
-            "is_human_rooted": True,
             "triggering_invocation_id": "msg-pointer-inv",
-            "chain_depth": 4,
         }
         mock_store_fn.return_value = mock_store
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
         )
 
         assert result["correlation_id"] == "corr-marker-001"
-        # Pointer data wins (server-written, authoritative)
+        # Server-resolved chain data wins over the marker's claim (issue #4129:
+        # sourced from the webhook-events GSI, not from the pointer row).
         assert result["root_human_id"] == "user-pointer"
         assert result["parent_invocation_id"] == "msg-pointer-inv"
-        assert result["chain_depth"] == 5  # pointer depth (4) + 1
+        # Issue #4268: inherited unchanged — the chain row's 4, not 4+1.
+        assert result["chain_depth"] == 4
         assert result["is_new_chain"] is False
 
     @patch("handler._get_correlation_store")
@@ -96,7 +137,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,pr=1741", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,pr=1741", marker_text=MARKER_TEXT
         )
 
         assert result["correlation_id"] == "corr-marker-001"  # chain inherited
@@ -104,9 +145,20 @@ class TestDetermineCorrelationPrecedence:
         assert result["parent_invocation_id"] == "msg-parent-123"
         assert result["is_new_chain"] is False
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-marker-001", "user-marker", True, 2),
+    )
     @patch("handler._get_correlation_store")
-    def test_pointer_and_marker_different_correlation_uses_marker(self, mock_store_fn):
-        """Pointer + marker with different correlation_id → marker wins (cross-channel hop)."""
+    def test_pointer_and_marker_different_correlation_uses_marker(self, mock_store_fn, _chain_fn):
+        """Pointer + marker with different correlation_id → marker wins (cross-channel hop).
+
+        Issue #5663: the marker still WINS the precedence decision — it selects the
+        chain — but the human authority is now read from that chain's server-written
+        row rather than off the marker, so this test stubs the row for the marker's
+        correlation_id. Same adaptation #4129 already made to the pointer branches
+        above; the subject here is still precedence.
+        """
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -121,44 +173,54 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
         )
 
         # Marker data wins
         assert result["correlation_id"] == "corr-marker-001"
         assert result["root_human_id"] == "user-marker"
         assert result["parent_invocation_id"] == "msg-parent-123"
-        assert result["chain_depth"] == 3  # marker depth (2) + 1
+        # Issue #4268: inherited unchanged — the marker's 2, not 2+1.
+        assert result["chain_depth"] == 2
         assert result["is_new_chain"] is False
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-ptr-001", "user-ptr", True, 1),
+    )
     @patch("handler._get_correlation_store")
-    def test_pointer_only_no_marker(self, mock_store_fn):
+    def test_pointer_only_no_marker(self, mock_store_fn, _chain_fn):
         """Pointer exists, no marker → same-channel continuation (pointer wins)."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
         mock_store.read_pointer.return_value = {
             "correlation_id": "corr-ptr-001",
-            "root_human_id": "user-ptr",
-            "is_human_rooted": True,
             "triggering_invocation_id": "msg-ptr-inv",
-            "chain_depth": 1,
         }
         mock_store_fn.return_value = mock_store
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=None
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=None
         )
 
         assert result["correlation_id"] == "corr-ptr-001"
         assert result["parent_invocation_id"] == "msg-ptr-inv"
-        assert result["chain_depth"] == 2  # 1 + 1
+        assert result["chain_depth"] == 1  # inherited unchanged (#4268)
         assert result["is_new_chain"] is False
 
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-marker-001", "user-marker", True, 2),
+    )
     @patch("handler._get_correlation_store")
-    def test_marker_only_no_pointer(self, mock_store_fn):
-        """No pointer, valid marker → cross-channel first hop (marker wins)."""
+    def test_marker_only_no_pointer(self, mock_store_fn, _chain_fn):
+        """No pointer, valid marker → cross-channel first hop (marker wins).
+
+        Issue #5663: as above — the marker selects the chain, the chain's row supplies
+        the human.
+        """
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -167,13 +229,14 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
         )
 
         assert result["correlation_id"] == "corr-marker-001"
         assert result["root_human_id"] == "user-marker"
         assert result["parent_invocation_id"] == "msg-parent-123"
-        assert result["chain_depth"] == 3  # marker depth (2) + 1
+        # Issue #4268: inherited unchanged — the marker's 2, not 2+1.
+        assert result["chain_depth"] == 2
         assert result["is_new_chain"] is False
 
     @patch("handler._get_correlation_store")
@@ -187,7 +250,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _bot_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=None
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=None
         )
 
         assert result["correlation_id"]  # UUID generated
@@ -214,7 +277,7 @@ class TestDetermineCorrelationPrecedence:
 
         identity = _human_identity()
         result = determine_correlation(
-            {}, identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
+            _payload(), identity, "github:repo=org/repo,issue=55", marker_text=MARKER_TEXT
         )
 
         assert result["correlation_id"] != "corr-marker-001"
@@ -226,31 +289,40 @@ class TestDetermineCorrelationPrecedence:
         assert result["is_human_rooted"] is True
 
 
-class TestChainDepthIncrement:
-    """Verify depth increments exactly once per hop."""
+class TestChainDepthInheritance:
+    """Ingest inherits depth unchanged; the increment belongs to dispatch (#4268).
 
+    This class asserted ``inherited + 1`` until #4268. The +1 on ingest is what
+    made the counter measure webhook events instead of agent generations: the
+    value is persisted on every row, including the ``no_op`` rows this Lambda
+    writes and discards, and the next event inherits the newest row's depth. Which
+    SOURCE the depth is read from (server-written chain row vs marker, and the
+    legacy-absent fallback) is unchanged and still covered here.
+    """
+
+    @patch(
+        "handler._resolve_chain_record",
+        return_value=_chain("corr-001", "user-h", True, 3),
+    )
     @patch("handler._get_correlation_store")
-    def test_depth_increments_once_from_pointer(self, mock_store_fn):
-        """Pointer depth N → spawned run gets depth N+1."""
+    def test_depth_inherited_from_server_resolved_chain(self, mock_store_fn, _chain_fn):
+        """Server-resolved chain depth N → context carries N, not N+1."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
         mock_store.read_pointer.return_value = {
             "correlation_id": "corr-001",
-            "root_human_id": "user-h",
-            "is_human_rooted": True,
             "triggering_invocation_id": "msg-parent",
-            "chain_depth": 3,
         }
         mock_store_fn.return_value = mock_store
 
         identity = _bot_identity()
-        result = determine_correlation({}, identity, "key", marker_text=None)
-        assert result["chain_depth"] == 4
+        result = determine_correlation(_payload(), identity, "key", marker_text=None)
+        assert result["chain_depth"] == 3
 
     @patch("handler._get_correlation_store")
-    def test_depth_increments_once_from_marker(self, mock_store_fn):
-        """Marker depth N → spawned run gets depth N+1."""
+    def test_depth_inherited_from_marker(self, mock_store_fn):
+        """Marker depth N → context carries N, not N+1."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -263,12 +335,12 @@ class TestChainDepthIncrement:
             "adp-is-human-rooted:true adp-invocation:msg-m adp-chain-depth:5 -->"
         )
         identity = _bot_identity()
-        result = determine_correlation({}, identity, "key", marker_text=marker)
-        assert result["chain_depth"] == 6
+        result = determine_correlation(_payload(), identity, "key", marker_text=marker)
+        assert result["chain_depth"] == 5
 
     @patch("handler._get_correlation_store")
     def test_missing_depth_in_pointer_defaults_to_zero(self, mock_store_fn):
-        """Pointer without chain_depth (old data) → treated as 0, child gets 1."""
+        """Pointer without chain_depth (old data) → treated as 0."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -282,12 +354,12 @@ class TestChainDepthIncrement:
         mock_store_fn.return_value = mock_store
 
         identity = _bot_identity()
-        result = determine_correlation({}, identity, "key", marker_text=None)
-        assert result["chain_depth"] == 1  # 0 + 1
+        result = determine_correlation(_payload(), identity, "key", marker_text=None)
+        assert result["chain_depth"] == 0
 
     @patch("handler._get_correlation_store")
     def test_missing_depth_in_marker_defaults_to_zero(self, mock_store_fn):
-        """Marker without chain_depth (legacy) → treated as 0, child gets 1."""
+        """Marker without chain_depth (legacy) → treated as 0."""
         from handler import determine_correlation
 
         mock_store = MagicMock()
@@ -300,8 +372,8 @@ class TestChainDepthIncrement:
             "adp-is-human-rooted:true -->\nBody"
         )
         identity = _bot_identity()
-        result = determine_correlation({}, identity, "key", marker_text=legacy_marker)
-        assert result["chain_depth"] == 1  # 0 + 1
+        result = determine_correlation(_payload(), identity, "key", marker_text=legacy_marker)
+        assert result["chain_depth"] == 0
 
 
 class TestSourceRefIssueFallback:

@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ADP - cross-account role for Bedrock model routing
+# Issue #4742 (child G of #4692). This is a SEPARATE template from
+# aws_role_v1.yaml, not a replacement. v1 creates a read-only role for agent
+# delegation and pins its trust policy to a single user; both properties are
+# deliberate there and must survive. This template exists because neither
+# property works for routing a team's Bedrock traffic:
+#
+#   1. v1 attaches only ReadOnlyAccess, which does NOT include
+#      bedrock:InvokeModel* (they are mutating actions), so every routed call
+#      fails AccessDeniedException.
+#   2. v1's trust policy conditions on aws:RequestTag/adp:user_id, fixed at
+#      stack-create time to the connecting user's id — so a v1 role is
+#      assumable on behalf of exactly one person and cannot serve a team.
+#
+# See docs/design-notes/4692-per-principal-bedrock-account-routing.md
+# sections 5.0 and 5.0b.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Required connection settings
+        Parameters:
+          - Nickname
+          - ExternalId
+          - GatewayRolePrincipal
+          - GatewayAccountId
+Parameters:
+  Nickname:
+    Type: String
+    Default: default
+    Description: Short label for this connection, used in the role name
+  ExternalId:
+    Type: String
+    NoEcho: true
+    Description: >-
+      Per-connection secret issued by ADP. Confused-deputy protection: with the
+      single-user session-tag condition gone (see below), this is the
+      load-bearing authorization condition on this role.
+    MinLength: 36
+    MaxLength: 36
+    AllowedPattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    ConstraintDescription: Must be the UUID issued by the ADP connection flow.
+  GatewayRolePrincipal:
+    Type: String
+    Description: ARN of ADP's gateway pod IRSA role
+  GatewayAccountId:
+    Type: String
+    Description: AWS account ID that hosts the ADP platform (gateway role's home account)
+Resources:
+  AdpRoutingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Same ADP-Agent-* name shape as v1 so the platform's existing IRSA grant
+      # (sts:AssumeRole + sts:TagSession on arn:aws:iam::*:role/ADP-Agent-*)
+      # matches without a Terraform change.
+      RoleName: !Sub "ADP-Agent-${Nickname}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Trust the platform ACCOUNT root but restrict to the specific gateway
+          # role via aws:PrincipalArn condition. This pattern survives role
+          # recreation (terraform replace / destroy+create) because AWS does not
+          # resolve account-level principals to internal IDs — it only resolves
+          # role/user ARNs. When the gateway role is recreated with the same
+          # name, the condition still matches without needing to update this
+          # trust policy. (Carried over from v1 verbatim.)
+          #
+          # DELIBERATELY ABSENT vs. v1: the
+          # "aws:RequestTag/adp:user_id": !Ref UserSessionTag condition.
+          # That condition is what makes a v1 role usable by exactly one
+          # person. A routing destination serves many principals — a whole team
+          # or org — so a per-user authorization gate here means AccessDenied
+          # for every member except whoever happened to run the stack.
+          #
+          # ADP still SENDS adp:user_id (and agent/task/persona) as session tags
+          # on every assume, so CloudTrail in this account still attributes each
+          # call to the individual it was made for. The tag remains an AUDIT
+          # signal; it simply stops being an authorization gate that only one
+          # principal can pass. Authorization rests on ExternalId +
+          # PrincipalArn, both retained above.
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${GatewayAccountId}:root"
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+                "aws:PrincipalArn": !Ref GatewayRolePrincipal
+          # TagSession is a separate statement because sts:ExternalId is not a
+          # valid condition key for that action. Session tags are still sent
+          # (for audit), so this permission is still required.
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${GatewayAccountId}:root"
+            Action: sts:TagSession
+            Condition:
+              StringEquals:
+                "aws:PrincipalArn": !Ref GatewayRolePrincipal
+      Description: !Sub "ADP Bedrock routing role for ${Nickname} - managed by user"
+      # NOTE: no ManagedPolicyArns. v1's ReadOnlyAccess is not granted here —
+      # this role exists solely to sign Bedrock model calls, so it gets only
+      # the Bedrock invoke actions below and nothing else.
+      Policies:
+        - PolicyName: AdpBedrockInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Exactly the two calls the gateway makes against bedrock-runtime
+              # (src/pool/simple_pool.py: invoke_model and
+              # invoke_model_with_response_stream). Resource-scoped rather than
+              # "*" per this repo's IAM review standard.
+              - Sid: InvokeBedrockModels
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  # Models invoked directly by id, in any region of this account.
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+                  # Cross-region inference profiles (the "us.anthropic.*" ids)
+                  # resolve to an inference-profile ARN in this account, and
+                  # application inference profiles are how per-team cost
+                  # allocation tags are attached. Both are in scope for routing.
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:application-inference-profile/*"
+              # Bedrock's OpenAI Responses API authorizes InvokeModel against
+              # the destination account's default project, not a model ARN.
+              - Sid: InvokeBedrockResponses
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:project/default"
+      Tags:
+        - Key: adp:managed
+          Value: 'true'
+        - Key: adp:purpose
+          Value: bedrock-routing
+        - Key: adp:template-version
+          Value: v2
+Outputs:
+  RoleArn:
+    Value: !GetAtt AdpRoutingRole.Arn
+    Description: The ARN of the created role
+  TemplateVersion:
+    Value: v2
+    Description: >-
+      Marks this role as routing-capable (Bedrock invoke, not pinned to a single
+      ADP user). ADP's connect-verify probe confirms this behaviourally.

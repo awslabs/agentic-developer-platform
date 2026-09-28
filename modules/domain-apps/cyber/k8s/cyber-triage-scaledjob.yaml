@@ -12,7 +12,8 @@ metadata:
     app.kubernetes.io/part-of: adp-cyber
 spec:
   podIdentity:
-    provider: aws-eks
+    # Use the operator credential chain (IRSA or EKS Pod Identity).
+    provider: aws
     identityOwner: keda
 ---
 # =============================================================================
@@ -41,11 +42,34 @@ spec:
           app.kubernetes.io/name: cyber-triage-worker
           role: triage
       spec:
+        nodeSelector:
+          eks.amazonaws.com/compute-type: auto
         serviceAccountName: cyber-worker
         restartPolicy: Never
+        # ---------------------------------------------------------------
+        # Pod hardening (issue #5616)
+        # ---------------------------------------------------------------
+        # Triage feeds attacker-controlled bytes to libmagic, magika and pefile.
+        # Those parsers are the exposed surface here, so the container is held to
+        # the minimum analysis needs. Kept identical to the static worker: the
+        # weakest pod is the one an attacker picks, so both are hardened even
+        # though only static executes generated scripts.
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 61161
+          runAsGroup: 61161
+          fsGroup: 61161
+          seccompProfile:
+            type: RuntimeDefault
         containers:
           - name: cyber-triage
             image: REPLACE_WITH_CYBER_WORKER_IMAGE
+            securityContext:
+              allowPrivilegeEscalation: false
+              privileged: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
             env:
               - name: WORKER_ROLE
                 value: "triage"
@@ -57,6 +81,17 @@ spec:
                 value: "REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL"
               - name: RESULTS_TABLE
                 value: "adp-dev-cyber-analysis-results"
+              # Issue #5616: fails closed when unset — see static worker.
+              - name: CYBER_ALLOWED_BUCKETS
+                value: "REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS"
+              # magika caches its model under HOME; /root is unwritable for 1001.
+              - name: HOME
+                value: /tmp
+            volumeMounts:
+              # Compatible with readOnlyRootFilesystem: the worker's only writes
+              # go through tempfile.TemporaryDirectory().
+              - name: scratch
+                mountPath: /tmp
             resources:
               requests:
                 cpu: "500m"
@@ -66,6 +101,10 @@ spec:
                 cpu: "2"
                 memory: "2Gi"
                 ephemeral-storage: "1Gi"
+        volumes:
+          - name: scratch
+            emptyDir:
+              sizeLimit: "1Gi"
   pollingInterval: 5
   minReplicaCount: 0
   maxReplicaCount: 10

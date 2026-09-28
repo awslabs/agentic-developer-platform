@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import boto3
-import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +41,9 @@ log = logging.getLogger("publish-ingestion")
 
 from config import settings
 from scope import DEFAULT_SCOPE, IngestionScope
+from source_admission import validate_source
+from s3_source_guard import check_s3_source
+from url_fetch import fetch
 
 AWS_REGION = settings.aws_region
 SQS_QUEUE_URL = settings.sqs_queue_url
@@ -185,11 +187,10 @@ def _repo_has_changed(source: str, state: dict[str, Any]) -> bool:
 def _url_has_changed(source: str, state: dict[str, Any]) -> bool:
     """Check if a URL has changed via ETag/Last-Modified."""
     try:
-        resp = requests.head(
-            source,
+        resp = fetch(
+            source, method="HEAD",
             timeout=15,
             headers={"User-Agent": "AgentContext-Publisher/1.0"},
-            allow_redirects=True,
         )
         if resp.status_code >= 400:
             return True
@@ -210,8 +211,12 @@ def _doc_has_changed(source: str, state: dict[str, Any]) -> bool:
     """Check if a document has changed (S3 last modified or URL ETag)."""
     if source.startswith("s3://"):
         try:
-            parts = source.replace("s3://", "").split("/", 1)
-            bucket, key = parts[0], parts[1] if len(parts) > 1 else ""
+            decision = check_s3_source(
+                source, settings.s3_source_allowlist, settings.s3_bucket_name, scope=DEFAULT_SCOPE
+            )
+            if not decision.allowed:
+                return True
+            bucket, key = decision.bucket, decision.key
             s3 = boto3.client("s3", region_name=AWS_REGION)
             resp = s3.head_object(Bucket=bucket, Key=key)
             last_mod = resp["LastModified"].isoformat()
@@ -240,6 +245,13 @@ def publish_message(
     installation_id: int | None = None,
 ) -> bool:
     """Publish a single ingestion message to SQS."""
+    try:
+        validate_source(content_type, source, scope or DEFAULT_SCOPE,
+                        default_bucket=settings.s3_bucket_name,
+                        allowlist=settings.s3_source_allowlist, allow_infra=True)
+    except ValueError as exc:
+        log.error("Refusing ingestion source type=%s: %s", content_type, exc)
+        return False
     now = datetime.now(timezone.utc).isoformat()
     message = {
         "source": source,
@@ -294,6 +306,14 @@ def publish(
     stats["total"] = len(items)
 
     for source, title, tags in items:
+        try:
+            validate_source(content_type, source, DEFAULT_SCOPE,
+                            default_bucket=settings.s3_bucket_name,
+                            allowlist=settings.s3_source_allowlist, allow_infra=True)
+        except ValueError as exc:
+            log.error("Refusing ingestion source type=%s: %s", content_type, exc)
+            stats["errors"] += 1
+            continue
         state = get_dynamo_state(source, content_type)
 
         if not force and not has_changed(source, state, content_type):
@@ -340,6 +360,12 @@ def publish_from_registry(
 
     for asset in assets:
         org_repo = extract_org_repo(asset.source_ref)
+        try:
+            validate_source("repo", org_repo, DEFAULT_SCOPE)
+        except ValueError as exc:
+            log.error("Refusing registered repository source: %s", exc)
+            stats["errors"] += 1
+            continue
         state = get_dynamo_state(org_repo, "repo")
 
         if not force and not has_changed(org_repo, state, "repo"):

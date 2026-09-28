@@ -26,6 +26,8 @@ from src.proxy.model_resolver import ModelResolver
 from src.proxy.routes import get_mantle_service, get_token_context, router, set_mantle_service, set_model_resolver
 from src.shared.schemas.auth import TokenContext
 
+pytestmark = pytest.mark.usefixtures("unmapped_mantle_routing")
+
 # A recognizable secret-key value the tests assert never leaks into logs.
 SIGV4_SECRET_KEY = "wJalrXUtnFEMI-TEST-SIGV4-DO-NOT-LOG-KEY"
 
@@ -246,7 +248,7 @@ class TestMantlePassthrough:
         ]
         captured = {}
 
-        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id):
+        async def spy(context, model, usage, latency_ms, status_code, request_id, agent_run_id, *, routing_decision=None):
             captured["usage"] = dict(usage)
             captured["model"] = model
             captured["status"] = status_code
@@ -322,7 +324,10 @@ class TestMantlePassthrough:
             await svc.create_response(b"{}", token_context, stream=False, model="openai.gpt-5.5", request_id="req-1")
 
         kwargs = mock_usage.log_request.await_args.kwargs
-        assert kwargs["cost_usd"] == pytest.approx(0.0385)
+        from decimal import Decimal
+
+        assert kwargs["cost_usd"] == Decimal("0.038500")
+        assert isinstance(kwargs["cost_usd"], Decimal)
         assert kwargs["cost_usd"] > 0
 
 
@@ -454,3 +459,25 @@ class TestMantleRoute:
         resp = client.post("/openai/v1/responses", json={"model": "openai.gpt-5.5", "input": "x", "stream": True})
         assert resp.status_code == 200
         assert resp.content == b"".join(chunks)
+
+
+@pytest.mark.parametrize("model", ["global.moonshotai.kimi-k3", "us.moonshotai.kimi-k3"])
+def test_kimi_response_route_preserves_tool_and_reasoning_input(token_context, model):
+    stub = StubMantleService(MantleResponse(status_code=200, content=b'{"output":[]}'))
+    app = build_app(stub, ModelResolver(allowed_models_config={token_context.org_id: [model]}), token_context)
+    body = (
+        b'{"model":"'
+        + model.encode()
+        + b'","input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}],"reasoning":{"effort":"low"},"max_output_tokens":256}'
+    )
+    response = TestClient(app).post("/openai/v1/responses", content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 200
+    assert stub.calls[0]["body"] == body
+
+
+def test_kimi_route_does_not_override_tenant_deny(token_context):
+    stub = StubMantleService(MantleResponse(status_code=200, content=b"{}"))
+    app = build_app(stub, ModelResolver(allowed_models_config={token_context.org_id: ["openai.*"]}), token_context)
+    response = TestClient(app).post("/openai/v1/responses", json={"model": "global.moonshotai.kimi-k3", "input": "hello"})
+    assert response.status_code == 403
+    assert stub.calls == []

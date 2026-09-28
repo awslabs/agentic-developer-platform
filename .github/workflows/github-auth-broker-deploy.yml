@@ -52,11 +52,27 @@ env:
 jobs:
   deploy:
     name: Package and Deploy Broker Lambda
+    if: github.ref == 'refs/heads/main'
     runs-on: arc-runner-org
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -74,19 +90,10 @@ jobs:
 
       - name: Install required CLI tools
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          aws --version
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       - name: Package Lambda
         run: |
           set -e
@@ -101,6 +108,12 @@ jobs:
             --implementation cp \
             --python-version 3.12 \
             -r "${LAMBDA_SRC_DIR}/requirements.txt"
+          # Issue #4849: the shared membership-eligibility reader lives outside the
+          # broker dir (modules/gateway/lambda/shared/) so the pre-signup Lambda
+          # packages the same file rather than a divergent copy. Must stay in
+          # lockstep with modules/gateway/scripts/deploy-broker.sh, which is
+          # documented as replicating this job exactly.
+          cp modules/gateway/lambda/shared/membership_eligibility.py "${BUILD_DIR}/"
           # Copy all Python source modules (exclude tests, build/, __pycache__)
           cd "${LAMBDA_SRC_DIR}"
           for f in *.py; do
@@ -147,7 +160,22 @@ jobs:
       - name: Smoke test — /start endpoint should return 302 to github.com
         run: |
           set -e
-          API_URL="https://59o2rakc50.execute-api.us-east-1.amazonaws.com/dev/auth/github/start"
+          # Resolve the broker's public base from SSM rather than hardcoding an
+          # API Gateway URL. The hardcoded value stopped being correct twice over:
+          # the broker is served through the distribution, and once delivery moved
+          # to the broker's own function URL the API Gateway no longer carries an
+          # /auth/github route at all — so the old URL now returns 403 and this
+          # step failed for a reason unrelated to the code it is testing. Same
+          # treatment as the Playwright target.
+          BROKER_URL=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/github-auth-broker-url" \
+            --query Parameter.Value --output text --region "${AWS_REGION}" 2>/dev/null || echo "")
+          if [ -z "$BROKER_URL" ] || [ "$BROKER_URL" = "None" ]; then
+            echo "❌ SSM /adp/${ENVIRONMENT}/gateway/github-auth-broker-url is empty."
+            echo "   gateway-infra publishes it; apply that stack before deploying the broker."
+            exit 1
+          fi
+          API_URL="${BROKER_URL%/}/start"
           echo "Hitting: $API_URL"
           HTTP_CODE=$(curl -sS -o /tmp/resp.out -w "%{http_code}" --max-redirs 0 "$API_URL" || true)
           echo "HTTP code: $HTTP_CODE"

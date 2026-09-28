@@ -18,7 +18,10 @@ from src.shared.models.organization import Organization, User
 @pytest.fixture
 def mock_cognito_sync():
     mock = AsyncMock()
-    mock.create_user_and_invite = AsyncMock(return_value={"Username": "test@test.com"})
+    mock.create_user_and_invite = AsyncMock(
+        side_effect=lambda **kw: {"Username": kw["email"], "Attributes": [{"Name": "sub", "Value": "sub-" + kw["email"]}]}
+    )
+    mock.ensure_user_group = AsyncMock()
     mock.delete_user = AsyncMock(return_value=True)
     return mock
 
@@ -72,12 +75,17 @@ class TestUsersWriteThrough:
 
         result = await svc.create_user("wt-org", req)
 
+        # #5664 (A10): each projected identity carries the provenance the Postgres
+        # row was written with. An administrator provisioning a user is genuine,
+        # accountable proof (`admin_attested`), and it must reach the DDB projection —
+        # the webhook authority gate decides from that attribute, so dropping it here
+        # would make the gate refuse an administrator-established link.
         mock_identity_writer.sync_user_identities.assert_awaited_once_with(
             user_id=result.id,
             org_id="wt-org",
             identities=[
-                {"provider_user_id": "gh-123", "provider_username": "alice-gh"},
-                {"provider_user_id": "sl-456", "provider_username": "alice-sl"},
+                {"provider": "github", "provider_user_id": "gh-123", "provider_username": "alice-gh", "verification_method": "admin_attested"},
+                {"provider": "slack", "provider_user_id": "sl-456", "provider_username": "alice-sl", "verification_method": "admin_attested"},
             ],
         )
 
@@ -149,7 +157,7 @@ class TestUsersWriteThrough:
         deleted = await svc.delete_user("wt-org", user.id)
         assert deleted is True
 
-        mock_identity_writer.delete_all_user_identities.assert_awaited_once_with(["gh-del1", "sl-del2"])
+        mock_identity_writer.delete_all_user_identities.assert_awaited_once_with(["sl-del2"], provider="slack")
 
     @pytest.mark.asyncio
     async def test_delete_user_no_identities_skips_ddb(self, db_session: AsyncSession, mock_cognito_sync, mock_identity_writer, seeded_org):

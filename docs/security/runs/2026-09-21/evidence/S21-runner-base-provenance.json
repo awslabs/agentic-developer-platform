@@ -1,0 +1,28 @@
+{
+  "reviewed_at": "2026-09-25T09:12:01.518739+00:00",
+  "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-arc-runner@sha256:9d8c57fee4e7abef273584cbd20d3ee3f132757a9d52fd8d5d366858f4c78f59",
+  "manifest_sha256_verified": true,
+  "manifest_media_type": "application/vnd.docker.distribution.manifest.v2+json",
+  "config_digest": "sha256:5cf66519c49b95838fe79ac4ff9fa17324660f726790ff31f85f5d38d4c121b5",
+  "build": {
+    "id": "adp-dev-arc-runner:cbca2825-0359-4189-a2d2-0961254e5ce9",
+    "status": "SUCCEEDED",
+    "source_location": "adp-terraform-state-879318057152/codebuild/src/adp-dev-arc-runner/dbcae39cbcd9c72d2f0afbc61b4a5a371ad4a7ad-1790265622-476279.zip",
+    "resolved_source_version": null,
+    "inputs": {
+      "IMAGE_TAG": "dbcae39cb",
+      "ADP_SOURCE_SHA": "dbcae39cbcd9c72d2f0afbc61b4a5a371ad4a7ad",
+      "RUNNER_DOCKERFILE": "Dockerfile.recovery",
+      "PUBLISH_LATEST": "false"
+    }
+  },
+  "existing_s14_runtime_evidence": {
+    "matching_pod_count": 3,
+    "source": "Protected existing S14 runtime inventory; no fresh runtime probe"
+  },
+  "limits": [
+    "ECR manifest and CodeBuild metadata re-read only; no fresh runtime probe or image scan.",
+    "Build used Dockerfile.recovery at stated source SHA, not full platform/arc-runner/Dockerfile.",
+    "Recovery base was existing f7f3021f... artifact; runner overlay used upstream actions-runner:2.337.0 tag. Resulting final artifact is selected by verified digest, not tag."
+  ]
+}

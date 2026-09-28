@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "results.schema.json",
+  "title": "Task API terminal result and failure contract v1",
+  "description": "Terminal outcomes. The investigator's report shape is fixed here because the design requires every finding to name its supporting evidence and absent evidence to become an explicit uncertainty rather than an unsupported claim. Failure and cancellation outcomes carry their confirmation evidence so an unconfirmed stop cannot be presented as a confirmed one. Design revision b5761a4a2502aceaa9133afef552b567a19cb46e, design sections 3 and 8.",
+  "$defs": {
+    "task_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "outcome", "report", "committed_at", "process_exit_validated"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "outcome": { "const": "completed" },
+        "report": { "$ref": "results.schema.json#/$defs/investigator_report" },
+        "artifact_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "common.schema.json#/$defs/artifact_id" },
+          "description": "Result artifacts, at most 1 MiB total."
+        },
+        "committed_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "process_exit_validated": {
+          "const": true,
+          "description": "LC-05: completion requires a validated process exit as well as a committed result. Fixed true on a completed result."
+        },
+        "turns_used": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "total_usd": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      }
+    },
+
+    "investigator_report": {
+      "type": "object",
+      "description": "The agent-task-investigator report shape from design section 3.",
+      "additionalProperties": false,
+      "required": ["summary", "findings", "uncertainties", "recommendations", "evidence_refs"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "results.schema.json#/$defs/finding" }
+        },
+        "uncertainties": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "description": "Absent evidence produces an explicit uncertainty rather than an unsupported finding."
+        },
+        "recommendations": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "$ref": "results.schema.json#/$defs/evidence_ref" }
+        }
+      }
+    },
+
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "evidence_refs"],
+      "properties": {
+        "statement": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+          "description": "Each finding names the evidence supporting it. An unsupported claim belongs in uncertainties instead."
+        },
+        "confidence": { "enum": ["low", "medium", "high"] }
+      }
+    },
+
+    "evidence_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "source"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "source": {
+          "enum": ["inputs", "artifact", "instructions", "follow_up_input"],
+          "description": "Only caller-supplied evidence. The investigator performs no checkout, URL fetch or shell execution."
+        },
+        "artifact_id": { "$ref": "common.schema.json#/$defs/artifact_id" }
+      }
+    },
+
+    "task_error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "outcome", "code", "message", "committed_at"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "outcome": { "enum": ["failed", "cancelled"] },
+        "code": { "$ref": "results.schema.json#/$defs/failure_code" },
+        "message": { "$ref": "common.schema.json#/$defs/safe_message" },
+        "committed_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "runtime_not_started": { "const": true, "description": "Gateway-owned proof that no runtime attempt ever started; workers cannot assert this field." },
+        "child_exit_confirmed": {
+          "type": "boolean",
+          "description": "Whether the task process was observed to stop. A disconnected host cannot claim this."
+        },
+        "provider_outcome": {
+          "$ref": "common.schema.json#/$defs/handoff_status",
+          "description": "Tracked separately from process exit. Closing an HTTP connection does not prove a provider stopped computing."
+        },
+        "recovery_required": { "type": "boolean" },
+        "generations_used": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "total_usd": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Null means unknown spend. Unknown is never recorded as zero."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["runtime_not_started"] },
+          "then": { "$ref": "results.schema.json#/$defs/runtime_not_started_cancellation" }
+        },
+        {
+          "description": "LC-14 and design section 8: a cancelled outcome must state whether the child exit was confirmed, and an unconfirmed stop must remain recovery-required rather than a clean cancellation.",
+          "if": { "properties": { "outcome": { "const": "cancelled" } }, "required": ["outcome"] },
+          "then": {
+            "required": ["child_exit_confirmed", "recovery_required"],
+            "anyOf": [
+              { "$ref": "results.schema.json#/$defs/runtime_not_started_cancellation" },
+              {
+                "properties": {
+                  "child_exit_confirmed": { "const": true },
+                  "recovery_required": { "const": false }
+                }
+              },
+              {
+                "properties": {
+                  "child_exit_confirmed": { "const": false },
+                  "recovery_required": { "const": true },
+                  "code": { "const": "cancellation_stop_unconfirmed" }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "description": "An unknown model outcome cannot claim a known total spend.",
+          "if": {
+            "properties": { "code": { "const": "model_outcome_unknown" } },
+            "required": ["code"]
+          },
+          "then": {
+            "properties": {
+              "provider_outcome": { "const": "unknown" },
+              "total_usd": { "type": "null" }
+            }
+          }
+        }
+      ]
+    },
+
+    "runtime_not_started_cancellation": {
+      "required": [
+        "runtime_not_started",
+        "child_exit_confirmed",
+        "recovery_required",
+        "provider_outcome",
+        "total_usd"
+      ],
+      "properties": {
+        "runtime_not_started": {
+          "const": true
+        },
+        "outcome": {
+          "const": "cancelled"
+        },
+        "code": {
+          "const": "cancelled_by_client"
+        },
+        "child_exit_confirmed": {
+          "const": false
+        },
+        "recovery_required": {
+          "const": false
+        },
+        "provider_outcome": {
+          "const": "not_started"
+        },
+        "total_usd": {
+          "const": 0
+        }
+      }
+    },
+
+    "failure_code": {
+      "enum": [
+        "admission_recovery_exhausted",
+        "deadline_exceeded",
+        "model_outcome_unknown",
+        "model_access_denied",
+        "budget_exceeded",
+        "authority_revoked",
+        "invalid_agent_output",
+        "protocol_violation",
+        "process_failed",
+        "recovery_exhausted",
+        "cancelled_by_client",
+        "cancellation_stop_unconfirmed",
+        "event_budget_exhausted",
+        "storage_unavailable"
+      ]
+    }
+  }
+}

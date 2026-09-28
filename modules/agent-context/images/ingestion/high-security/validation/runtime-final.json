@@ -1,0 +1,1 @@
+{"uid": 10001, "ruby": {"ruby": "3.4.11", "zlib": "3.2.3", "imap": "0.5.15"}, "bundler": true, "sorbet": true, "libxml2_version": "2.13.9", "libxml2_sha256": "7fbeda36ef4bffc18550971fc46893a4b2d5f6ed38505dbeca974b18c1d0f4da", "llvm_load": true, "chromium_dom_canvas_screenshot": true, "network": "isolated loopback only"}

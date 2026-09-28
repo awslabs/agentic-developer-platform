@@ -1,0 +1,174 @@
+name: Shared Runtime Maintenance
+
+# Reviewed platform-account maintenance only. This does not invoke either broad
+# infra workflow and does not remove the webhook infrastructure hold.
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: Confirm the reviewed platform account (879318057152).
+        required: true
+        type: string
+      stage:
+        description: Run one explicit stage; diagnose reads rollout health independently of the release lane.
+        required: true
+        type: choice
+        options:
+          - prerequisites
+          - worker
+          - gateway-enable
+          - tick-enable
+          - verify
+          - diagnose
+          - redis-diagnose
+          - tick-redis
+      gateway_revision:
+        description: Full reviewed gateway/tick SHA. Required except for diagnose, redis-diagnose, and tick-redis.
+        required: false
+        type: string
+      worker_revision:
+        description: Full reviewed worker source SHA. Required except for diagnose, redis-diagnose, and tick-redis.
+        required: false
+        type: string
+      worker_digest:
+        description: Approved worker sha256 digest. Required except for diagnose, redis-diagnose, and tick-redis.
+        required: false
+        type: string
+      execute:
+        description: Apply the exact machine-validated plans or worker patch. False plans only.
+        required: true
+        default: false
+        type: boolean
+      unlock_known_orphan:
+        description: Prerequisites only. Recheck and unlock only cancelled job 106168875014's exact orphan lock.
+        required: true
+        default: false
+        type: boolean
+
+# Diagnostics may observe an in-progress rollout. All other stages retain the
+# gateway deploy/infra release lane; neither lane cancels an active run.
+concurrency:
+  group: ${{ (inputs.stage == 'diagnose' || inputs.stage == 'redis-diagnose') && 'gateway-diagnostics-dev' || 'gateway-release-dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  maintain:
+    if: github.ref == 'refs/heads/main'
+    environment: adp-deploy-dev
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    env:
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_PAGER: ''
+      GH_TOKEN: ${{ github.token }}
+      TARGET_ACCOUNT: ${{ inputs.account_id }}
+      ROLLOUT_STAGE: ${{ inputs.stage }}
+      GATEWAY_REVISION: ${{ inputs.gateway_revision }}
+      WORKER_REVISION: ${{ inputs.worker_revision }}
+      WORKER_DIGEST: ${{ inputs.worker_digest }}
+      EXECUTE: ${{ inputs.execute }}
+      UNLOCK_KNOWN_ORPHAN: ${{ inputs.unlock_known_orphan }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Validate stage inputs before tooling or runtime reads
+        run: |
+          set -euo pipefail
+          if [[ "$ROLLOUT_STAGE" == diagnose || "$ROLLOUT_STAGE" == redis-diagnose ]]; then
+            [[ "$EXECUTE" == false && "$UNLOCK_KNOWN_ORPHAN" == false ]]
+          elif [[ "$ROLLOUT_STAGE" == tick-redis ]]; then
+            [[ "$UNLOCK_KNOWN_ORPHAN" == false ]]
+          else
+            [[ "$GATEWAY_REVISION" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$WORKER_REVISION" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$WORKER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          fi
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Run offline maintenance guards before runtime operations
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest==9.0.3'
+          python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_diagnostics.py platform/scripts/tests/test_tick_redis.py platform/scripts/tests/test_tick_redis_plan.py -q
+          python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_maintenance.py -q
+          # These pure patch-generator tests need no Lambda/AWS fixture setup.
+          python -m pytest --noconftest --import-mode=importlib modules/agent-factory/webhook-ingress/tests/test_shared_worker_rollout.py -q
+      - uses: hashicorp/setup-terraform@v3
+        if: inputs.stage != 'diagnose' && inputs.stage != 'redis-diagnose'
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.35.0'
+      - name: Install missing runner CLI tools
+        run: |
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+      - name: Run reviewed maintenance stage
+        run: |
+          set -euo pipefail
+          if [[ "$ROLLOUT_STAGE" == tick-redis ]]; then
+            redis_args=(--account-id "$TARGET_ACCOUNT" --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence")
+            if [[ "$EXECUTE" == true ]]; then redis_args+=(--execute); fi
+            python platform/scripts/maintain-tick-redis.py "${redis_args[@]}"
+            exit 0
+          fi
+          if [[ "$ROLLOUT_STAGE" == redis-diagnose ]]; then
+            python platform/scripts/tick_redis.py \
+              --account-id "$TARGET_ACCOUNT" \
+              --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence"
+            exit 0
+          fi
+          if [[ "$ROLLOUT_STAGE" == diagnose ]]; then
+            python platform/scripts/diagnose-flow-recovery.py \
+              --account-id "$TARGET_ACCOUNT" \
+              --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence"
+            python platform/scripts/diagnose-shared-runtime.py \
+              --account-id "$TARGET_ACCOUNT" \
+              --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence"
+            exit 0
+          fi
+          args=(
+            --account-id "$TARGET_ACCOUNT"
+            --stage "$ROLLOUT_STAGE"
+            --gateway-revision "$GATEWAY_REVISION"
+            --worker-revision "$WORKER_REVISION"
+            --worker-digest "$WORKER_DIGEST"
+            --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence"
+          )
+          if [[ "$EXECUTE" == true ]]; then args+=(--execute); fi
+          if [[ "$UNLOCK_KNOWN_ORPHAN" == true ]]; then args+=(--unlock-known-orphan); fi
+          python platform/scripts/maintain-shared-runtime.py "${args[@]}"
+      - name: Retain sanitized evidence and account-specific inputs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: shared-runtime-${{ inputs.stage }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/shared-runtime-evidence/*.json
+          if-no-files-found: error
+          retention-days: 30

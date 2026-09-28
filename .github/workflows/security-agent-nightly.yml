@@ -1,0 +1,1003 @@
+name: Security Agent Nightly
+
+# The host workflow for the nightly security run (intent #4290, unit U4,
+# issue #4443). This unit ships the skeleton only: provisioning + preflight.
+# The code-review job (U5) and pentest job (U6/U7) land as further jobs here.
+#
+# ---------------------------------------------------------------------------
+# THERE IS DELIBERATELY NO `schedule:` KEY. DO NOT ADD ONE HERE.
+# ---------------------------------------------------------------------------
+# Arming the schedule needs two things this unit does not have:
+#   1. A measured run duration. Nothing has timed a full run yet, so any cron
+#      expression would be arming an unmeasured job.
+#   2. A window that does not collide with the three other nightly suites
+#      already hitting the same shared dev environment.
+# Adding `schedule:` before both exist is the specific failure this unit's
+# quality gate blocks (the gate parses this YAML and fails on a schedule key).
+# The schedule is a separate, later decision.
+#
+# ---------------------------------------------------------------------------
+# Why provisioning is unconditional, and why there is no setup-python
+# ---------------------------------------------------------------------------
+# This repo contains ~20 CLI-install steps shaped `command -v x || install x`.
+# On this runner image every one of them is a no-op. Copying that idiom here
+# would produce a step that looks like provisioning and provisions nothing,
+# and every downstream unit would then fail on a runtime the plan believed was
+# fixed. So the install step below has no `command -v` guard and no `|| true`.
+#
+# It matters on THIS runner specifically. The U0 spike ran on the
+# agent-scaledjob pod, whose image already resolves the service; the nightly
+# runs on arc-runner-org, whose image hard-pins an older boto3 release that
+# the spike proved does NOT carry `securityagent`. The upgrade here is real
+# work, not a formality. (Concrete versions are deliberately absent from this
+# file: the floor lives only in the validated profile, and the gate enforces
+# that by searching this workflow for version literals.)
+#
+# `actions/setup-python` is deliberately absent. It would introduce a second
+# interpreter, and the classic form of this bug is the package landing in one
+# Python while the assertion runs in another. Both steps below invoke the same
+# `$SECURITYAGENT_PYTHON`, and securityagent_preflight.py installs into its own
+# `sys.executable` — so interpreter identity is structural, not a convention.
+#
+# The install command and the botocore version floor are READ from
+# .github/security/security-agent-profile.json (U0, #4439) and appear as
+# literals neither here nor in the preflight script. That artifact is the
+# interface; retyping either value would create a second source of truth.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (dev only for now)'
+        type: choice
+        options:
+          - dev
+        default: dev
+      # Test/replay lever. When set to a prior run's prefix date, this run
+      # SKIPS the metered whole-repo review and drives triage/deliver against
+      # the findings that run already published to the S3 rendezvous. It lets an
+      # operator exercise the dedup -> plan -> validate -> file half in minutes
+      # without paying the ~5.5h scan again. Empty (the default) is a normal
+      # full run. Adding an input does not change the set of triggers, so the
+      # no-schedule / manual-only gate is unaffected: the pipeline stays as
+      # dormant as before, this only changes what a MANUAL dispatch does.
+      # Which transport the plan-authoring model call uses. `direct` is
+      # bedrock-runtime on the runner's own IRSA identity and attributes nothing:
+      # a whole-repo night's ~26 Opus calls appear in no gateway usage row and
+      # against no budget envelope. `gateway` SigV4-signs to the ADP gateway's
+      # IAM-authenticated agent route, which resolves this runner's role through
+      # the agent registry and puts the call through budget and rate-limit
+      # enforcement -- that IS the attribution, and it is also a new way for the
+      # night to fail (a missing budget config or a reached cap now fails plan
+      # authoring). An INPUT rather than a committed default so proving the
+      # gateway path costs a dispatch instead of a PR, and rolling back costs a
+      # dispatch instead of a revert.
+      bedrock_via:
+        description: >-
+          How to reach the model for plan authoring. `direct` = bedrock-runtime on
+          the runner identity (no spend attribution). `gateway` = via the ADP
+          gateway, so the night's spend lands on a budget.
+        type: choice
+        options:
+          - direct
+          - gateway
+        default: direct
+        required: false
+      findings_run_date:
+        description: >-
+          Reuse an existing run's published findings instead of scanning. Set to
+          a prior run-prefix date (YYYY-MM-DD, e.g. 2026-08-30) to skip the code
+          review and run triage/deliver against findings already in S3. Leave
+          empty for a normal full run.
+        type: string
+        default: ''
+        required: false
+
+concurrency:
+  # Serialised, never cancelled: a partially-completed security run against
+  # shared dev is worse than a queued one.
+  group: security-agent-nightly-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: arc-runner-org
+    env:
+      # Single source of interpreter truth for every step in this job.
+      SECURITYAGENT_PYTHON: python3
+    steps:
+      - uses: actions/checkout@v7
+
+      # Ordered BEFORE preflight, and asserted to be so by the quality gate:
+      # an assertion that runs before provisioning would pass or fail on the
+      # image's state rather than on the state this job creates.
+      - name: Provision the Security Agent client
+        run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py --provision
+
+      - name: Preflight — assert the client resolves on this runner
+        run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py
+
+  # ---------------------------------------------------------------------------
+  # Whole-repo code review (U5, issue #4445)
+  # ---------------------------------------------------------------------------
+  # Gated on `preflight`: the driver constructs a `securityagent` client, and
+  # without the preflight's provisioning that fails with an opaque botocore
+  # error rather than the preflight's named cause and fix.
+  #
+  # The provision/assert pair is repeated here rather than inherited. Jobs do
+  # not share a filesystem or an interpreter, so `needs: preflight` proves the
+  # client resolved on *that* runner, not on this one. Dropping the pair here
+  # would make this job depend on a property of a different machine.
+  #
+  # Two settings are deliberately absent from every line below, and their
+  # absence is the safety content of this unit:
+  #
+  #   * the live-validation mode — its permissive member stops this being a
+  #     code review and starts exercising real endpoints, giving this job the
+  #     blast radius of the pentest half
+  #   * the remediation strategy — its permissive member makes the service open
+  #     its own fix pull requests, racing the fix pipeline this EPIC builds
+  #
+  # Neither is an input, an env var, or a script flag. They are constants in
+  # code_review_request.py, with no parameter threading them and no flag naming
+  # the file they are read from, so reaching a permissive value requires editing
+  # that file — a reviewable diff rather than a workflow tweak. The validated
+  # profile still records both values and the driver fails closed if it
+  # disagrees, but the profile is the record, not the authority: while the values
+  # were read out of it, `--profile` made them reachable from a workflow edit
+  # after all (#4524). The gate asserts that unreachability, including the
+  # profile-source route, not merely today's value.
+  #
+  # There is still no `schedule:` key in this file, and this unit does not add
+  # one: arming the schedule needs a measured run duration and a non-colliding
+  # window, neither of which this unit produces.
+  code-review:
+    name: Code Review
+    needs: preflight
+    runs-on: arc-runner-org
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
+    # The night's date, resolved by ONE `date -u` in this job and consumed by
+    # `triage` and `deliver`. Every job that addresses the run prefix has to
+    # agree on which night it is, and each independent `date` call is another
+    # UTC-midnight straddle surface: a job crossing midnight would sync a prefix
+    # the review never wrote to and read an empty night as a quiet one. One clock
+    # read, published, is the only shape where that cannot happen.
+    outputs:
+      run_date: ${{ steps.run_date.outputs.run_date }}
+    env:
+      # Same single-source-of-interpreter-truth discipline as `preflight`:
+      # provisioning and use must land in the same Python.
+      SECURITYAGENT_PYTHON: python3
+      # `dev` is the only option this dispatch-only workflow offers, so the
+      # fallback is correct today. It is written as an explicit default rather
+      # than a bare `||` chain because the empty-string case is silent: on any
+      # invocation without a dispatch input, `inputs.environment` is empty and
+      # findings would route to the dev bucket with nothing in the log saying
+      # so. Once a second environment exists that is a misrouting bug (#4517).
+      ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Resolved ONCE, and FIRST. Once, because calling `date` in both the review
+      # step and the publish prefix can straddle UTC midnight on a long run and
+      # file the findings under a different day than the review they came from.
+      # First, because the publish step is `if: always()`: resolving this after
+      # the preflight would leave it empty on any earlier failure.
+      #
+      # Written to BOTH $GITHUB_ENV and $GITHUB_OUTPUT from the SAME command
+      # substitution: the env var is this job's, and the output is what `triage`
+      # and `deliver` consume. Two `date` calls here — one per destination —
+      # would reintroduce the straddle inside a single step.
+      # Still resolved ONCE and FIRST, and still the single source both `triage`
+      # and `deliver` consume. The only addition is the replay path: when
+      # `findings_run_date` is set the operator is pointing this run at a prefix
+      # a PAST night already wrote, so `date -u` (which would name TODAY) is
+      # exactly wrong — the reused date is authoritative and no clock is read.
+      # The value arrives via env, never interpolated into the script body, so a
+      # dispatch input cannot inject shell. It is format-checked here so a typo
+      # fails loud with its own cause rather than surfacing 20 lines down as an
+      # empty S3 sync that the triage job misreads as a quiet night.
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Resolve run date
+        id: run_date
+        env:
+          FINDINGS_RUN_DATE: ${{ inputs.findings_run_date }}
+        run: |
+          if [ -n "$FINDINGS_RUN_DATE" ]; then
+            if ! printf '%s' "$FINDINGS_RUN_DATE" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
+              echo "::error title=Security nightly::findings_run_date \
+          '${FINDINGS_RUN_DATE}' is not a YYYY-MM-DD run-prefix date." >&2
+              exit 1
+            fi
+            RUN_DATE="$FINDINGS_RUN_DATE"
+            echo "reusing published findings under run prefix ${RUN_DATE}; the code review will be skipped"
+          else
+            RUN_DATE=$(date -u +%Y-%m-%d)
+          fi
+          echo "RUN_DATE=${RUN_DATE}" >> "$GITHUB_ENV"
+          echo "run_date=${RUN_DATE}" >> "$GITHUB_OUTPUT"
+
+      - name: Provision the Security Agent client
+        run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py --provision
+
+      - name: Preflight — assert the client resolves on this runner
+        run: $SECURITYAGENT_PYTHON .github/scripts/securityagent_preflight.py
+
+      - name: Resolve account ID
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      # Packages the repo as a zip, registers the service role and staging
+      # bucket on the existing agent space, creates and starts the review,
+      # polls to a terminal state, and aborts the job via StopCodeReviewJob if
+      # the bound is hit. The agent space, service role and staging bucket are
+      # read from .github/security/security-agent-profile.json — retyping any
+      # of them here would create a second source of truth.
+      #
+      # timeout-minutes is above the poll bound on purpose: the script's own
+      # timeout must fire first so the job is *stopped*, not merely abandoned
+      # to a runner kill that leaves it running and unabortable.
+      #
+      # Both numbers are derived from the two measured whole-repo runs recorded
+      # in the validated profile's `code_review.observed_job_durations` (the
+      # slowest took about three and a half hours). The original pair — a 1h
+      # poll bound under a 75m step — predated any measurement and aborted every
+      # healthy run roughly 2.5h early, billing an hour of review for an empty
+      # findings document (#4526). The bound itself lives only in
+      # code_review_request.py; it is not retyped here.
+      #
+      # The escalation is strictly ordered, each level above the one below:
+      #   script poll bound   300m  (stops the job -- the abortable path)
+      #   this step           330m  (kills the step if the script itself hangs)
+      #   job default         360m  (GitHub's implicit ceiling; left implicit,
+      #                              and deliberately not crowded -- the step
+      #                              plus its provisioning overhead must stay
+      #                              under it or the default becomes the killer)
+      # A gate parses this value and the script's bound and fails if the two
+      # ever cross, so neither can be raised alone.
+      # Skipped on the replay path: when the operator points this run at an
+      # existing prefix (`findings_run_date`), the findings already exist in the
+      # rendezvous and re-running the ~5.5h review would be the whole cost the
+      # replay exists to avoid. The condition gates only this step; provisioning
+      # and the preflight assertion above stay unconditional so a replay run
+      # still proves the client resolves.
+      - name: Run the whole-repo code review
+        if: inputs.findings_run_date == ''
+        timeout-minutes: 330
+        run: |
+          $SECURITYAGENT_PYTHON .github/scripts/code_review_request.py \
+            --run-date "$RUN_DATE" \
+            --output code-review-findings.json
+
+      # Reuses the existing rendezvous action rather than adding a second
+      # upload path. The bucket is private (a public findings object would make
+      # whole-repo security findings world-readable), which the step below
+      # asserts with `.github/scripts/assert_findings_bucket_private.py`.
+      #
+      # That script, and NOT `aws s3api get-bucket-policy-status`. The latter
+      # reports the public-ness of a bucket *policy* and is only defined for
+      # buckets that have one; this bucket deliberately has none and is locked
+      # down with a public-access-block instead, so the call raises
+      # NoSuchBucketPolicy on every run and its pass condition is unreachable
+      # (#4533).
+      #
+      # dest-prefix is REQUIRED here, not cosmetic — but not for the reason an
+      # earlier version of this comment gave, and the difference matters to
+      # anyone reasoning about this job's blast radius (#4525).
+      #
+      # This job uses the protected on-demand scan identity. The service role
+      # remains assumable only by Security Agent; the dispatcher may pass only
+      # that exact role and write only scan source/evidence prefixes.
+
+      #
+      # So dest-prefix is not what keeps this step from failing AccessDenied —
+      # the runner could write anywhere in the bucket. It is what keeps the
+      # findings INSIDE the one prefix the reviewed service-role policy is bounded
+      # to (`security-agent/*`; securityagent-nightly-iam.tf sets
+      # securityagent_staging_prefix = "security-agent"). The action's default
+      # `findings/<run_id>/<tool>/` layout is outside it, which would scatter the
+      # nightly's output across a prefix the audited identity cannot read and
+      # leave the ledger and every downstream consumer looking in the wrong
+      # place. The dated layout below is also what #4445's Validation asserts.
+      #
+      # The action defaults this input, so the 8 security-scan.yml callers that
+      # omit it keep the legacy layout unchanged.
+      # `always()` so a scan that fails partway still publishes what it produced
+      # — AND only on the scanning path. On a replay the findings are already in
+      # the rendezvous (that is what we are reusing); this step has no local file
+      # to publish and running it would overwrite the reused object with nothing.
+      - name: Publish findings to the private S3 rendezvous
+        if: always() && inputs.findings_run_date == ''
+        uses: ./.github/actions/publish-findings-s3
+        with:
+          path: code-review-findings.json
+          tool-name: securityagent-code-review
+          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          dest-prefix: security-agent/runs/${{ env.RUN_DATE }}/
+
+      # Ordered AFTER publish, and `if: always()` to mirror it: the property
+      # worth asserting is that the bucket the findings just landed in is not
+      # world-readable, so this must run on exactly the runs that wrote to it.
+      #
+      # The assertion is a script, not an inline `aws` one-liner, so that
+      # "NoSuchBucketPolicy means no policy, therefore private" is an asserted
+      # branch rather than a comment, and so the four public-access-block flags
+      # are checked individually. It exits non-zero on AccessDenied, throttling,
+      # a missing bucket and an absent public-access-block: an unknown is not a
+      # pass, and there is deliberately no `|| true` here (a check that is green
+      # regardless of the bucket's state is the vacuous gate of #4517).
+      #
+      # The bucket is passed from the same env as the publish step rather than
+      # rebuilt, so the two cannot drift onto different buckets. Because
+      # `if: always()` also reaches runs where "Resolve account ID" never ran,
+      # an empty ACCOUNT_ID is named explicitly: otherwise the bucket resolves
+      # to a trailing-dash name and the step reports NoSuchBucket, blaming the
+      # bucket for an upstream failure. It still exits non-zero — the privacy of
+      # the real bucket is genuinely unverified in that case.
+      #
+      # This runs as the ARC runner identity (this job has no
+      # configure-aws-credentials step), which needs
+      # s3:GetBucketPublicAccessBlock and s3:GetBucketPolicyStatus — both are in
+      # the runner role's S3Combined statement
+      # (modules/agent-factory/infra/modules/runner-iam/main.tf).
+      - name: Assert the findings bucket is not public
+        if: always()
+        run: |
+          if [ -z "${ACCOUNT_ID}" ]; then
+            echo "::error title=Findings bucket privacy::ACCOUNT_ID is empty, so \
+          the findings bucket cannot be named and its privacy is unverified. An \
+          earlier step in this job failed before 'Resolve account ID' ran." >&2
+            exit 1
+          fi
+          $SECURITYAGENT_PYTHON .github/scripts/assert_findings_bucket_private.py \
+            --bucket "adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}"
+
+  # ---------------------------------------------------------------------------
+  # Has this scan already been turned into issues? (#4792)
+  # ---------------------------------------------------------------------------
+  # A whole JOB rather than a step inside `triage`, and that is the load-bearing
+  # choice. The triage job's steps are guarded by wiring gates that require them
+  # to be UNCONDITIONAL, for good reasons: a plan gate that can be skipped is not
+  # a gate, and the filing step is what writes the completion marker the delivery
+  # barrier joins on — a condition there is how a night silently stops signalling.
+  # Conditioning those steps would have satisfied this feature by weakening both.
+  #
+  # A job-level decision touches no step. `triage` is skipped whole or runs whole,
+  # and `deliver` skips with it because a skipped dependency skips its dependents.
+  # Nothing is half-done, and no gate is bypassed.
+  #
+  # Why this exists: the pipeline had no memory of its own work, so the same scan
+  # file could be consumed repeatedly, each time filing a fresh set of issues for
+  # the same defects (2026-08-30 produced 31 work items and then 27 more). The
+  # existing guard matched on issue TITLE, which is model-authored and varies
+  # between runs — the one part of a plan guaranteed not to match.
+  scan_gate:
+    name: Scan Gate
+    needs: code-review
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
+    runs-on: arc-runner-org
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      processed: ${{ steps.check.outputs.processed }}
+      findings_version: ${{ steps.check.outputs.findings_version }}
+      started_at: ${{ steps.check.outputs.started_at }}
+    env:
+      SECURITYAGENT_PYTHON: python3
+      ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+      RUN_DATE: ${{ needs.code-review.outputs.run_date }}
+      SOURCE: code-review
+      # A FIXED key, deliberately not under a run's date prefix: the log has to
+      # outlive any single run.
+      RUN_LOG: security-agent/processed-runs.json
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Resolve account ID
+        run: echo "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
+
+      # Keyed on the findings file's CONTENT, not its date: a re-scan that
+      # republishes a different document for the same date must still be
+      # processed, and keying on the date would skip it and lose real findings.
+      # Only a `success` entry blocks, so a failed night stays retryable.
+      - name: Has this scan already been processed?
+        id: check
+        run: |
+          mkdir -p run-log
+          aws s3 cp \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/code-review-findings.json" \
+            findings.json --no-progress
+          aws s3 cp \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/${RUN_LOG}" \
+            run-log/processed-runs.json --no-progress 2>/dev/null \
+            || echo "no run log yet — nothing has been processed"
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          $SECURITYAGENT_PYTHON .github/scripts/processed_runs.py check \
+            --log run-log/processed-runs.json \
+            --source "$SOURCE" \
+            --findings findings.json | tee check.txt
+          grep -E '^(processed|findings_version)=' check.txt >> "$GITHUB_OUTPUT"
+          if grep -q '^processed=true$' check.txt; then
+            echo "::notice title=Security triage::this scan file has already been turned into issues; triage and delivery will be skipped"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Turn the night's raw findings into deduped, grouped issues (#4613)
+  # ---------------------------------------------------------------------------
+  # The middle of the pipeline. Without it `code-review` publishes findings to a
+  # private prefix that nothing reads and `deliver` finds no marker to join, so
+  # the night exits green having created nothing.
+  #
+  # ---------------------------------------------------------------------------
+  # WHY THIS IS ITS OWN JOB AND NOT THE TAIL OF `code-review`
+  # ---------------------------------------------------------------------------
+  #   * Permissions. Filing the EPIC and its stories needs `issues: write`.
+  #     Appending these steps to `code-review` would grant that to the metered,
+  #     5.5-hour, service-role-adjacent scanner, whose narrow blast radius is the
+  #     safety content of that job (see its header).
+  #   * The step budget there is deliberately crowded: script 300m < step 330m <
+  #     job default 360m, with about 30m of headroom. Appending a plan-authoring
+  #     wait plus N x `gh issue create` risks the 360m default killing the run
+  #     AFTER the metered review has been paid for and BEFORE any marker is
+  #     written — the #4526 failure shape.
+  #   * Retry granularity. A rate limit or a plan failing `validate` is far more
+  #     likely than a scan failure and is cheap to retry; coupling the two makes
+  #     every retry cost a full review.
+  #   * It adds no new mechanism: `deliver` already reads the night's state only
+  #     via `aws s3 sync`, so a third job on a third runner is the arrangement
+  #     the ledger was built for.
+  #
+  # The provision/preflight pair is deliberately NOT repeated here. `code-review`
+  # repeats it because it constructs a `securityagent` client; no step below
+  # touches that service, so provisioning here would install for nothing.
+  #
+  # ---------------------------------------------------------------------------
+  # TWO CALLS THAT LOOK MISSING AND MUST STAY MISSING
+  # ---------------------------------------------------------------------------
+  #   * `normalize_security_findings.py` is a LIBRARY — no argparse, no main, no
+  #     `__main__`. `dedup ... diff` already calls `normalize_documents`
+  #     internally. Invoking it here would exit 0 having done nothing.
+  #   * `shard-orchestration.json` is written by `deliver`'s own barrier
+  #     (`join_barrier.py wait --ledger-fields`). A second writer here would
+  #     produce a contradicting shard, and `planned_sequence` merges `single` in
+  #     the ledger schema's `x-fields`, so a disagreement is an error rather than
+  #     something reconciled.
+  #
+  # This job adds no `schedule:` key and flips no enable flag. Adding a job adds
+  # no trigger, so the wiring lands as dormant as the rest of the file.
+  triage:
+    name: Triage
+    needs: [code-review, scan_gate]
+    # Skipped WHOLE when this scan file has already been turned into issues. No
+    # step inside carries a condition — see the `scan_gate` job on why.
+    if: needs.scan_gate.outputs.processed != 'true'
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
+    runs-on: arc-runner-org
+    permissions:
+      id-token: write
+      contents: read
+      # Files the dated EPIC and its story issues. Read-only cannot create them.
+      issues: write
+    env:
+      SECURITYAGENT_PYTHON: python3
+      # Same explicit-default idiom as the other jobs: an empty environment
+      # resolves the findings bucket to a doubled-dash name that does not exist,
+      # and the failure names the bucket rather than the missing input (#4517).
+      ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+      # Consumed, never re-derived: see `code-review`'s `outputs` block.
+      RUN_DATE: ${{ needs.code-review.outputs.run_date }}
+      # Local mirror of the run prefix. The scripts read and write shards on
+      # disk; S3 is the durable copy either side.
+      LEDGER_DIR: security-agent-ledger
+      # One value, used by `validate` and by `file`. It is rendered verbatim into
+      # every filed body, so the gate must lint the body that will actually be
+      # filed — two spellings would gate one body and file another.
+      SOURCE: code-review
+      RUN_LOG: security-agent/processed-runs.json
+      BEDROCK_VIA: ${{ inputs.bedrock_via == '' && 'direct' || inputs.bedrock_via }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Resolve account ID
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      # A separate runner with no shared filesystem, so the findings come back
+      # down from the rendezvous rather than being passed along. The publish
+      # action `cp`s the file under its own name, so this yields
+      # `code-review-findings.json` in the ledger dir.
+      #
+      # A missing object is NOT tolerated here: `sync` treats an absent prefix as
+      # empty and would leave the night looking quiet when the scanner in fact
+      # published nothing. The explicit check names that difference.
+      - name: Fetch the night's findings from the private rendezvous
+        run: |
+          mkdir -p "$LEDGER_DIR"
+          aws s3 sync \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/" \
+            "$LEDGER_DIR/" --no-progress
+          if [ ! -f "$LEDGER_DIR/code-review-findings.json" ]; then
+            echo "::error title=Security triage::no code-review findings document under \
+          the ${RUN_DATE} run prefix. The review either never published or published \
+          elsewhere; a night with no findings document is not a quiet night." >&2
+            exit 1
+          fi
+
+      # New-vs-baseline. `--ledger-dir` is a DIRECTORY, not a file: the shard's
+      # name is derived from its stage id (`shard-workflow.<source>.json`), so the
+      # id lives in code and the key it lands on cannot disagree with the id
+      # inside the file. `--generated-at` is passed rather than read from a clock
+      # inside the script so a re-run of a night rewrites a byte-identical shard.
+      #
+      # Normalization happens INSIDE this call — see the header note.
+      - name: Dedup tonight's findings against the accepted baseline
+        run: |
+          $SECURITYAGENT_PYTHON .github/scripts/dedup_security_findings.py diff \
+            --findings "$LEDGER_DIR/code-review-findings.json" \
+            --output new-findings.json \
+            --ledger-dir "$LEDGER_DIR" \
+            --source "$SOURCE" \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --run-date "$RUN_DATE"
+
+      # The two consumers of the document above disagree on which findings they
+      # can see, and the disagreement is silent. `source_of` falls back to
+      # `unknown` when a finding carries no recognised job field; dedup's ledger
+      # shard then counts it as new (it filters on the `f-` prefix alone) while
+      # triage drops it (it requires this scanner's source AND a referenceable
+      # id). Such a finding is counted, filed under no work item, and never
+      # covered — and it surfaces only as an unexplained `reconcile` coverage
+      # delta, naming a finding that a FILTER dropped rather than a decision.
+      #
+      # So the two are compared HERE, at the boundary, by asking each producer for
+      # its own answer rather than re-deriving either. Nothing below retypes an id
+      # pattern or a source list: a retyped filter is free to drift from the one
+      # it mirrors, which is the same class of defect as a hand-typed shard name.
+      # (#4569 owns the durable form of this constraint; this is it arriving one
+      # layer early, which is where the cost of getting it wrong is lowest.)
+      - name: Assert the ledger's new findings are all fileable
+        run: |
+          $SECURITYAGENT_PYTHON - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, ".github/scripts")
+          import dedup_security_findings as dedup
+          import triage_group_findings as triage
+          from security_agent_ledger import SHARD_NAME_TEMPLATE
+
+          source = os.environ["SOURCE"]
+          # Derived exactly as the writer derived it, so this reads the shard that
+          # step actually wrote rather than a name assumed to match it.
+          shard_path = Path(os.environ["LEDGER_DIR"]) / SHARD_NAME_TEMPLATE.format(
+              stage=dedup.workflow_stage(source)
+          )
+          shard = json.loads(shard_path.read_text(encoding="utf-8"))
+          counted = set(shard["fields"]["new_finding_ids"])
+          fileable = set(triage.load_new_findings("new-findings.json", source)["finding_ids"])
+
+          uncovered = sorted(counted - fileable)
+          if uncovered:
+              print(
+                  f"::error title=Security triage::{len(uncovered)} finding(s) are "
+                  "recorded as new in the night's ledger but cannot be filed by triage "
+                  "— unattributed source or an unreferenceable id. They would be "
+                  "counted, grouped into nothing, and show up only as a reconciliation "
+                  f"coverage gap: {uncovered}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          print(f"every one of {len(counted)} new finding(s) is fileable")
+          PY
+
+      # Idempotent by exact title, so a retried night adopts the existing
+      # umbrella instead of filing a second one. Ordered BEFORE `file`, which
+      # hard-raises when the umbrella is absent — and only on a night that found
+      # something, so the first productive night is where a missing umbrella would
+      # otherwise be discovered.
+      #
+      # The title contains an em dash. A step that mangled the encoding would fail
+      # the exact-title match and file a duplicate umbrella rather than error, so
+      # the title is not retyped here at all: the script's default is the value.
+      - name: Ensure the runtime umbrella EPIC and the story label exist
+        run: |
+          $SECURITYAGENT_PYTHON .github/scripts/ensure_umbrella_epic.py \
+            --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # There is no human architect in an unattended nightly, so the grouping
+      # plan is authored here. This producer is deliberately NOT issue-bound (it
+      # is not the architect workflow, which reads ISSUE_NUMBER and cannot exist
+      # before the issues it would create) and it touches no GitHub state.
+      #
+      # It gates itself on `triage_group_findings`'s own fileability check and
+      # deletes any earlier plan before it starts, so a failure here cannot leave
+      # a stale or hand-written plan behind for the filing step to pick up.
+      #
+      # `--findings-uri` is the run prefix and is rendered into every body, which
+      # is why it comes from the same env as the two steps below.
+      # `--traceability` writes the GROUPING stage of the night's
+      # finding-to-issue ledger (which findings clustered together and each
+      # cluster's computed severity) beside the plan, inside $LEDGER_DIR so the
+      # persist step below carries it to the private run rendezvous. The filing
+      # step enriches this same file in place with each cluster's issue number.
+      # `--gateway-url` is resolved from SSM only on the gateway path, so the
+      # default `direct` run needs no extra permission and no extra call. The
+      # protected scan identity authenticates the gateway call -- there
+      # is no token to mint, store or rotate -- so nothing secret is read here.
+      - name: Author the night's grouping plan
+        run: |
+          TRANSPORT_ARGS=(--bedrock-via "$BEDROCK_VIA")
+          if [ "$BEDROCK_VIA" = "gateway" ]; then
+            GATEWAY_URL=$(aws ssm get-parameter \
+              --name "/adp/${ENVIRONMENT}/gateway/apigw-invoke-url" \
+              --query Parameter.Value --output text)
+            if [ -z "${GATEWAY_URL}" ] || [ "${GATEWAY_URL}" = "None" ]; then
+              echo "::error title=Security nightly::bedrock_via=gateway but \
+          /adp/${ENVIRONMENT}/gateway/apigw-invoke-url is unset" >&2
+              exit 1
+            fi
+            TRANSPORT_ARGS+=(--gateway-url "$GATEWAY_URL")
+            echo "routing plan authoring through the ADP gateway"
+          fi
+          $SECURITYAGENT_PYTHON .github/scripts/author_grouping_plan.py \
+            --new-findings new-findings.json \
+            --source "$SOURCE" \
+            --output plan.json \
+            --findings-uri "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}" \
+            --run-id "${{ github.run_id }}" \
+            --run-date "$RUN_DATE" \
+            --raw-findings "$LEDGER_DIR/code-review-findings.json" \
+            --traceability "$LEDGER_DIR/traceability.$SOURCE.json" \
+            "${TRANSPORT_ARGS[@]}"
+
+      # A HARD GATE, with no fallback, and that asymmetry is the whole point: a
+      # failed night is recoverable by re-dispatch and costs one wasted scan,
+      # whereas a night that files placeholder-section issues under a dated EPIC
+      # cannot be recalled. `validate` touches no GitHub state and lints every
+      # rendered body, so a band violation, an uncovered finding, an `@agent-`
+      # mention or a banned-pattern hit fails HERE rather than after the issues
+      # exist.
+      #
+      # Every argument below matches the filing step exactly. Gating one body and
+      # filing a different one would make this step decorative.
+      - name: Gate the plan before anything is filed
+        run: |
+          $SECURITYAGENT_PYTHON .github/scripts/triage_group_findings.py validate \
+            --plan plan.json \
+            --new-findings new-findings.json \
+            --source "$SOURCE" \
+            --findings-uri "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}" \
+            --run-id "${{ github.run_id }}" \
+            --run-date "$RUN_DATE"
+
+      # Creates the dated EPIC and its story issues, and writes the completion
+      # marker the delivery job's barrier joins on.
+      #
+      # `--ledger-dir` is a DIRECTORY for the same reason as above: the marker's
+      # name is derived from its stage id (`shard-triage.<source>.json`), so it
+      # cannot drift from the stage inside the file nor from `deliver`'s
+      # `shard-triage*.json` glob. Nothing here retypes that filename.
+      #
+      # The marker is written on BOTH paths, including a night with nothing new
+      # (NT-5). That quiet-night marker is what lets the barrier tell "this
+      # scanner ran and found nothing" from "this scanner never signalled" —
+      # without it every common night would look like a hung pass.
+      - name: File the night's grouped work items
+        run: |
+          $SECURITYAGENT_PYTHON .github/scripts/triage_group_findings.py file \
+            --repo "${{ github.repository }}" \
+            --plan plan.json \
+            --new-findings new-findings.json \
+            --source "$SOURCE" \
+            --findings-uri "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}" \
+            --run-id "${{ github.run_id }}" \
+            --run-date "$RUN_DATE" \
+            --ledger-dir "$LEDGER_DIR" \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --traceability "$LEDGER_DIR/traceability.$SOURCE.json"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # `if: always()`, because a night that filed some issues and then failed
+      # must still leave its shards behind: they are what make the retry adopt
+      # the work already done rather than re-file it. Losing them on a later
+      # failure would break the idempotency the steps above rely on.
+      - name: Persist the triage shards to the private rendezvous
+        if: always()
+        run: |
+          if [ -z "${ACCOUNT_ID}" ] || [ ! -d "$LEDGER_DIR" ]; then
+            echo "no shards to persist"
+            exit 0
+          fi
+          aws s3 sync "$LEDGER_DIR/" \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/" \
+            --no-progress --exclude 'code-review-findings.json'
+
+      # Record that this scan file was consumed (#4792). LAST, and `always()`, so a
+      # failed night is written as history — only a `success` entry blocks a retry,
+      # which is what keeps a failed night re-dispatchable.
+      #
+      # A run that dies before this step leaves no entry and is correctly retried.
+      # It re-files whatever it had already filed; that is accepted, not a gap — it
+      # needs a crash in a narrow window and yields a duplicate issue, which is
+      # visible and closable. An in-progress state would buy little for real cost.
+      #
+      # The whole log object is rewritten each time, on purpose: the bucket's one
+      # lifecycle rule has NO prefix filter and expires at 365 days, so an object
+      # never rewritten eventually ages out and would silently weaken this check.
+      - name: Record this run in the processed-scan log
+        if: always()
+        run: |
+          if [ -z "${ACCOUNT_ID}" ] || [ ! -f "$LEDGER_DIR/code-review-findings.json" ]; then
+            echo "no findings document reached this run; nothing to record"
+            exit 0
+          fi
+          STATUS=success
+          if [ "${{ job.status }}" != "success" ]; then STATUS=failed; fi
+          mkdir -p run-log
+          aws s3 cp \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/${RUN_LOG}" \
+            run-log/processed-runs.json --no-progress 2>/dev/null || true
+          TOTAL=$($SECURITYAGENT_PYTHON -c \
+            "import json;print(len(json.load(open('new-findings.json')).get('new_findings') or []))" \
+            2>/dev/null || echo "")
+          $SECURITYAGENT_PYTHON .github/scripts/processed_runs.py record \
+            --log run-log/processed-runs.json \
+            --source "$SOURCE" \
+            --findings-version "${{ needs.scan_gate.outputs.findings_version }}" \
+            --findings-key "security-agent/runs/${RUN_DATE}/code-review-findings.json" \
+            --run-id "${{ github.run_id }}" \
+            --run-date "$RUN_DATE" \
+            --started-at "${{ needs.scan_gate.outputs.started_at }}" \
+            --finished-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --status "$STATUS" \
+            ${TOTAL:+--findings-total "$TOTAL"}
+          aws s3 cp run-log/processed-runs.json \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/${RUN_LOG}" --no-progress
+
+  # ---------------------------------------------------------------------------
+  # Hand the night's plan off to the delivery role (U11, issue #4450 / #4598)
+  # ---------------------------------------------------------------------------
+  # This job is the CALLER the U11 scripts were built for. #4559 §8 items 6-9
+  # are the contract, and items 6 and 7 are the two that belong HERE:
+  #
+  #   6. create the night's plan issue first and capture its number
+  #   7. emit ONE `put-events` root event carrying that number
+  #
+  # ---------------------------------------------------------------------------
+  # WHY `dispatch-items` AND `transition` ARE NOT STEPS IN THIS JOB
+  # ---------------------------------------------------------------------------
+  # They are not missing. They are not CI steps at all, and adding them here
+  # would produce steps that fail on every run — so this comment exists to stop
+  # the next reader "completing" the wiring by pasting them in.
+  #
+  # #4559 §1 splits the night's dispatches across two transports that are NOT
+  # interchangeable. The root, once per night, must be `put-events`: a GitHub
+  # Actions job cannot originate a chain any other way, because `adp-trigger`
+  # and `POST /agent/trigger` are both verified closed to root-minting (a fresh
+  # call has no lineage -> `400 missing_lineage`; a fabricated one -> `422
+  # unknown_chain`). Every hop INSIDE the night is `adp-trigger`, which runs in
+  # the `operations` run this job's event starts — not on this runner.
+  #
+  # That split is enforced by the runtime, twice over:
+  #
+  #   * `adp-trigger` is installed only in the agent-worker image
+  #     (modules/agent-factory/agent-worker-image/Dockerfile). It is absent from
+  #     platform/arc-runner/Dockerfile, so `ops_dispatch.py dispatch-items` on
+  #     this runner dies `FileNotFoundError: adp-trigger` — not a graceful skip.
+  #   * even if it were installed, `adp_trigger/client.py` hard-requires
+  #     ADP_CORRELATION_ID / ADP_MESSAGE_ID / ADP_CHAIN_DEPTH /
+  #     ADP_TRIGGER_ENDPOINT from the POD environment and exits 2 without them.
+  #     A GitHub Actions runner has none: it is not in the chain, which is the
+  #     whole reason the root has to come from EventBridge.
+  #
+  # So `dispatch-items` and `transition` are the delivery role's tools, reached
+  # THROUGH the root dispatch below. Calling them from CI would either crash or,
+  # if someone "fixed" that by switching the per-item hops to `put-events`, mint
+  # a fresh root per item at chain_depth=0 — disabling the depth cap and the
+  # cross-persona loop guard and unlinking the night in lineage (§1).
+  #
+  # ---------------------------------------------------------------------------
+  # STILL NO `schedule:` KEY, AND THE RULE IS STILL DISABLED
+  # ---------------------------------------------------------------------------
+  # This job adds no `schedule:` (the gate in test_securityagent_preflight.py
+  # fails the build on one) and does not flip
+  # `enable_eventbridge_security_agent_rule`, which stays `false` in
+  # modules/agent-factory/webhook-ingress/infra/terraform.tfvars. With the rule
+  # off, the emit below reaches no target: the wiring lands inert on purpose.
+  # Arming is a separate, deliberate step and the IAM `events:PutEvents` grant
+  # must be applied first (§8 items 8 and 10).
+  deliver:
+    name: Deliver
+    # BOTH, and the `triage` half is load-bearing. Without it this job races the
+    # stage that writes the markers it joins on: it would sync an empty prefix,
+    # find no marker, and — now that the temporary `joinable` guard is gone —
+    # hard-fail the barrier as STALLED, blaming a triage pass that had not yet
+    # run. `needs` is what makes an absent marker mean "triage is broken".
+    needs: [code-review, triage]
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
+    runs-on: arc-runner-org
+    permissions:
+      id-token: write
+      contents: read
+      # The barrier files the night's plan issue. Read-only cannot create one,
+      # and #4559 §7.2 is explicit that this path attaches an agent to an
+      # EXISTING issue and cannot conjure one.
+      issues: write
+    env:
+      SECURITYAGENT_PYTHON: python3
+      # Same explicit-default idiom as `code-review`: on an invocation without
+      # a dispatch input this is empty, and an empty environment resolves the
+      # ledger bucket to a name with a doubled dash that silently does not
+      # exist (#4517).
+      ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+      # Consumed from `code-review`, never re-derived. This job used to call
+      # `date -u` itself, which is a second UTC-midnight straddle surface: a long
+      # night crossing midnight would address tomorrow's prefix and read the
+      # review's own output as an absent one (#4609).
+      RUN_DATE: ${{ needs.code-review.outputs.run_date }}
+      # Local mirror of the run's private ledger prefix. The U11 scripts read
+      # and write shards on disk; S3 is the durable copy either side.
+      LEDGER_DIR: security-agent-ledger
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
+      - name: Resolve account ID
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
+      # The ledger is the night's shared state and it lives in S3, because the
+      # stages that write it are separate jobs on separate runners with no
+      # shared filesystem. Pulled down rather than reconstructed: `load_plan`
+      # takes the order from the shard U10's barrier committed, and re-deriving
+      # it here would be a second ordering that can disagree with the plan the
+      # morning reads.
+      #
+      # `--no-progress` because the default progress output is per-object and
+      # a night's shard count makes it noise. A missing prefix is not an error:
+      # `sync` treats it as empty, which is the correct reading of a night whose
+      # earlier stages wrote nothing.
+      - name: Fetch the run ledger from the private rendezvous
+        run: |
+          mkdir -p "$LEDGER_DIR"
+          aws s3 sync \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/" \
+            "$LEDGER_DIR/" --no-progress
+          echo "shards=$(find "$LEDGER_DIR" -name 'shard-*.json' | wc -l)"
+
+      # Item 6: the plan issue exists BEFORE the dispatch, and its number is
+      # captured. Idempotent per date by exact title match, so a retried night
+      # adopts its existing plan instead of filing a second one.
+      #
+      # The barrier is now called UNCONDITIONALLY. It used to sit behind a
+      # `joinable` step that skipped it whenever no `shard-triage*.json` existed,
+      # which was scaffolding for the period when nothing wrote those markers:
+      # the condition was unconditionally true and an unguarded call would have
+      # failed every run. `triage` writes them now, and this job `needs` it, so
+      # zero markers no longer means "triage is not wired" — it means the triage
+      # pass is wholly broken, which is exactly the case the barrier's STALLED
+      # hard-fail exists to surface. The guard would have masked it (#4603).
+      #
+      # `--sources code-review` names the scanners THIS night runs. The default is
+      # every source in the vocabulary, which includes `pentest` — a scanner that
+      # is not merely absent tonight but unbuilt (U6/U7). Joining on it would wait
+      # out the full 1800s timeout and then ship a plan stamped PARTIAL blaming a
+      # scanner that was never going to signal, and record that as a permanent
+      # `unsignalled_sources` entry in the durable ledger. The pentest half adds
+      # itself here when it lands; the constant stays whole meanwhile.
+      #
+      # `pipefail` is load-bearing: without it `tee` decides the step's exit
+      # status and a failed barrier would read as success, after which the
+      # dispatch step below would emit a root event naming an issue that was
+      # never filed — and the worker dies on a bad issue number (§7.2).
+      - name: Join the grouping passes and file the night's plan
+        run: |
+          set -o pipefail
+          $SECURITYAGENT_PYTHON .github/scripts/join_barrier.py wait \
+            --repo "${{ github.repository }}" \
+            --run-date "$RUN_DATE" \
+            --ledger-dir "$LEDGER_DIR" \
+            --ledger-uri "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}" \
+            --sources code-review \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --ledger-fields "$LEDGER_DIR/shard-orchestration.json" \
+            | tee barrier.out
+          # A night whose scanners all reported nothing files no plan (NT-5).
+          # That is the common night and it is not a failure — but there is then
+          # no issue to attach an agent to, so the dispatch below must not run.
+          if grep -q 'nothing_to_plan=true' barrier.out; then
+            echo "PLAN_ISSUE=" >> "$GITHUB_ENV"
+          else
+            echo "PLAN_ISSUE=$(sed -n 's/.*plan_issue=\([0-9][0-9]*\).*/\1/p' barrier.out)" >> "$GITHUB_ENV"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Item 7: the night's ONE root event. `root-dispatch` is its own
+      # subcommand precisely so this cannot run twice for a date — it is guarded
+      # by a durable per-date marker in the ledger dir, which the sync below
+      # persists, so a retried night skips the emit instead of minting a second
+      # chain at chain_depth=0 (the envelope's `dedup_key` deduplicates nothing,
+      # §7.3, so this marker is the whole idempotency story).
+      #
+      # Only --run-date, --issue-number and the marker dir are passed. Persona,
+      # service identity and target repo are deliberately NOT sent: they are
+      # Terraform literals in the rule's InputTransformer, which is the primary
+      # control on this path since `events:PutEvents` cannot be scoped to an
+      # event source (§5). Passing any of them here would delete that control.
+      #
+      # With the rule disabled this emit matches nothing and starts no run,
+      # which is the intended inert state.
+      - name: Hand the plan to the delivery role (one root dispatch)
+        run: |
+          if [ -z "${PLAN_ISSUE}" ]; then
+            echo "no plan was filed for ${RUN_DATE}, so there is nothing to hand off"
+            exit 0
+          fi
+          $SECURITYAGENT_PYTHON .github/scripts/ops_dispatch.py root-dispatch \
+            --run-date "$RUN_DATE" \
+            --issue-number "$PLAN_ISSUE" \
+            --marker-dir "$LEDGER_DIR"
+
+      # Ordered AFTER the dispatch and `if: always()`: the orchestration shard
+      # and the root marker are what make a retried night adopt the night in
+      # progress rather than re-plan and re-dispatch it. Losing them on a later
+      # failure would break exactly the idempotency the two steps above rely on.
+      - name: Persist the run ledger back to the private rendezvous
+        if: always()
+        run: |
+          if [ -z "${ACCOUNT_ID}" ] || [ ! -d "$LEDGER_DIR" ]; then
+            echo "no ledger to persist"
+            exit 0
+          fi
+          aws s3 sync "$LEDGER_DIR/" \
+            "s3://adp-${ENVIRONMENT}-security-scans-${ACCOUNT_ID}/security-agent/runs/${RUN_DATE}/" \
+            --no-progress

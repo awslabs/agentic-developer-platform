@@ -1,0 +1,81 @@
+{
+  "$comment": [
+    "GOLDEN CONTRACT FIXTURE — POST /internal/v1/provenance (issue #4029).",
+    "",
+    "ONE artifact, THREE consumers. Two independent fixtures in two modules is",
+    "exactly how the drift this file exists to prevent happened: the worker sent",
+    "source_event as a string and omitted org_id, the gateway required a dict and",
+    "a non-null string, every write 422'd for months, and both suites stayed green",
+    "because each asserted its own side's assumption.",
+    "",
+    "Consumers (all three MUST keep passing):",
+    "  1. modules/agent-factory/agent-worker-image/tests/test_provenance_client.py",
+    "     asserts build_provenance_payload(**builder_inputs) == request",
+    "  2. modules/gateway/tests/internal/test_provenance_contract.py",
+    "     asserts CreateProvenanceRequest.model_validate(request) succeeds,",
+    "     and that every entry in rejected_variants is REJECTED",
+    "  3. modules/agent-factory/agent/src/lib/provenanceClient.test.ts",
+    "     asserts buildProvenanceBody(...) == request",
+    "",
+    "If you change the gateway schema, this file must change, and the worker/TS",
+    "tests fail until their builders follow. That is the point — do not fork it."
+  ],
+
+  "builder_inputs": {
+    "actor_user_id": "user-bot-7f3a",
+    "triggered_by": null,
+    "root_human_id": "user-human-9c21",
+    "is_human_rooted": true,
+    "action_kind": "pr_create",
+    "source_event": {
+      "source": "worker:entrypoint",
+      "event_type": "pr_create",
+      "repo": "acme-corp/flagship-app",
+      "branch": "agent/issue-4029"
+    },
+    "correlation_id": "corr-chain-abc-123",
+    "org_id": "org-acme",
+    "parent_invocation_id": "msg-parent-run-789"
+  },
+
+  "request": {
+    "actor_user_id": "user-bot-7f3a",
+    "triggered_by": null,
+    "root_human_id": "user-human-9c21",
+    "is_human_rooted": true,
+    "action_kind": "pr_create",
+    "source_event": {
+      "source": "worker:entrypoint",
+      "event_type": "pr_create",
+      "repo": "acme-corp/flagship-app",
+      "branch": "agent/issue-4029"
+    },
+    "correlation_id": "corr-chain-abc-123",
+    "org_id": "org-acme",
+    "parent_invocation_id": "msg-parent-run-789"
+  },
+
+  "rejected_variants": [
+    {
+      "name": "source_event_as_string",
+      "why": "The original bug (worker sent the literal string 'worker:entrypoint'). source_event is JSONB NOT NULL and the schema requires an object; a string must 422 so a revert cannot pass silently.",
+      "patch": { "source_event": "worker:entrypoint" }
+    },
+    {
+      "name": "org_id_null",
+      "why": "The second, independent cause of the same 422. action_provenance.org_id is VARCHAR(255) NOT NULL (migration 016), so a null must be rejected at the schema boundary rather than reaching the DB as a 500.",
+      "patch": { "org_id": null }
+    },
+    {
+      "name": "org_id_missing",
+      "why": "Omitting the key entirely must fail the same way as sending null — the worker previously never passed org_id at all.",
+      "unset": ["org_id"]
+    }
+  ],
+
+  "response": {
+    "$comment": "The gateway returns CreateProvenanceResponse: {id, created_at}. It has NEVER returned 'provenance_id' — the old client read that key, and the old tests mocked it, which is why the latent third bug was invisible.",
+    "id": "6f1c9e42-5d3b-4a77-9c10-8b2ef4a1d005",
+    "created_at": "2026-08-22T19:20:31.482913+00:00"
+  }
+}

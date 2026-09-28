@@ -3,7 +3,6 @@
 import logging
 import time
 
-from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.config import (
@@ -17,8 +16,6 @@ from src.admin.config import (
     membership_role_to_admin_role,
 )
 from src.admin.exceptions import AccessDeniedError, InvalidRoleError, InvalidScopeError
-from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import User
 from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger(__name__)
@@ -37,6 +34,7 @@ _ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
         Permission.RATELIMIT_READ,
         Permission.RATELIMIT_UPDATE,
         Permission.USAGE_READ,
+        Permission.ACTIVITY_READ_ALL,
         Permission.LOGS_READ,
         Permission.LOGS_EXPORT,
         Permission.USER_READ,
@@ -47,6 +45,22 @@ _ORG_SCOPED_PERMISSIONS: frozenset[Permission] = frozenset(
         # then short-circuit the target_org_id check (which requires a truthy
         # allowed_org_id), passing the scope check entirely.
         Permission.AGENT_REGISTER,
+        # Issue #4200: promotion-state writes are org-scoped. A flow belongs to
+        # exactly one tenant, so a principal with an empty org_id has no flow it
+        # could legitimately amend. Omitting this would let such a principal skip
+        # the membership-deny below AND short-circuit the target_org_id check
+        # (which requires a truthy allowed_org_id), passing the scope check
+        # entirely — a second, softer door into the state this EPIC exists to
+        # protect. tests/orchestration/test_amend.py asserts this frozenset for
+        # EQUALITY so the next permission cannot be added without landing here.
+        Permission.PLAN_APPROVE,
+        # Issue #4528: draft registration is org-scoped for the same reason, and it
+        # matters MORE here, not less. `PLAN_DRAFT` is held by `AdminRole.MEMBER`,
+        # so it is the one promotion-adjacent permission an unprivileged principal
+        # has; omitting it would let a principal with an empty `org_id` skip the
+        # membership-deny below and short-circuit the `target_org_id` check, and
+        # register plan rows with no tenant at all.
+        Permission.PLAN_DRAFT,
     }
 )
 
@@ -71,7 +85,11 @@ class AccessControl:
         # Issue #3987: keyed by (user_id, tenant_id) — a role resolved in one
         # tenant must never be served for another. Entries carry a monotonic
         # deadline so a role change can't be masked forever by a stale entry.
-        self._role_cache: dict[tuple[str, str | None], tuple[float, tuple[AdminRole, str | None, str | None]]] = {}
+        self._role_cache: dict[
+            tuple[str, str | None],
+            tuple[float, tuple[AdminRole, str | None, str | None]],
+        ] = {}
+        self._discovery_role_unavailable: set[tuple[str, str | None]] = set()
 
     def _cache_get(self, key: tuple[str, str | None]) -> tuple[AdminRole, str | None, str | None] | None:
         """Return a cached role tuple if present and not expired."""
@@ -84,13 +102,17 @@ class AccessControl:
             return None
         return value
 
-    def _cache_put(self, key: tuple[str, str | None], value: tuple[AdminRole, str | None, str | None]) -> None:
+    def _cache_put(
+        self,
+        key: tuple[str, str | None],
+        value: tuple[AdminRole, str | None, str | None],
+    ) -> None:
         """Cache a resolved role tuple with a TTL deadline."""
         ttl = get_admin_config().rbac_role_cache_ttl_seconds
         self._role_cache[key] = (time.monotonic() + ttl, value)
 
     async def _resolve_membership_role(self, context: TokenContext) -> tuple[AdminRole, str | None] | None:
-        """Resolve the caller's role from their active tenant membership.
+        """Resolve the caller's role from their token's tenant membership.
 
         ``tenant_memberships`` (migration 021) is the authority for org-level
         role; the token supplies identity only. Returns ``(role, tenant_id)``
@@ -112,35 +134,15 @@ class AccessControl:
         if self.db is None:
             return None
 
-        pg_user_id = (
-            await self.db.execute(select(User.id).where(or_(User.cognito_sub == context.user_id, User.id == context.user_id)).limit(1))
-        ).scalar_one_or_none()
-        if not pg_user_id:
-            return None
+        from src.shared.identity.workspaces import memberships_for_login
 
-        rows = (
-            await self.db.execute(
-                select(TenantMembership.tenant_id, TenantMembership.role, TenantMembership.is_active).where(
-                    TenantMembership.user_id == pg_user_id,
-                )
-            )
-        ).all()
-        if not rows:
+        _, memberships = await memberships_for_login(self.db, context.user_id, username=context.cognito_username)
+        pair = memberships.get(context.org_id)
+        if pair is None or pair[1] is None:
             return None
-
-        # Prefer the is_active row: after a switch-tenant call the token still
-        # carries the previous org_id until refresh, but the DB is the source of
-        # truth for the active workspace (matches the effective_org_id logic in
-        # admin/connections/routes.py). Falling back to the token's org_id keeps
-        # single-tenant callers working when no row is flagged active.
-        active = next((r for r in rows if r[2]), None)
-        if active is None:
-            active = next((r for r in rows if r[0] == context.org_id), None)
-        if active is None:
-            return None
-
-        tenant_id, stored_role, _ = active
-        return membership_role_to_admin_role(stored_role), tenant_id
+        # A token is pinned to one org. A different session's selected workspace
+        # must never lend its role to this token's org/team/billing context.
+        return membership_role_to_admin_role(pair[1].role), context.org_id
 
     async def get_user_role(self, context: TokenContext) -> tuple[AdminRole, str | None, str | None]:
         """
@@ -148,7 +150,7 @@ class AccessControl:
 
         Authority model (Issue #3987): the token establishes *identity*; the
         database establishes *authority*. Org-level role comes from the caller's
-        active ``tenant_memberships`` row. Platform admin remains a token claim
+        token-scoped ``tenant_memberships`` row. Platform admin remains a token claim
         (``is_admin``) — a tracked follow-up will back it with a server-side
         platform-admin membership lookup.
 
@@ -209,6 +211,54 @@ class AccessControl:
         self._cache_put(cache_key, result)
         return result
 
+    async def get_user_role_for_discovery(self, context: TokenContext) -> tuple[AdminRole, str | None, str | None] | None:
+        """Resolve authority without converting a role-store outage into a role.
+
+        Authorization routes intentionally call :meth:`get_user_role`, whose
+        least-privilege fallback keeps them fail closed. Capability discovery has
+        a different output contract: it must distinguish a confirmed denial from
+        an authority it could not reach. ``None`` means the latter and grants no
+        permission.
+        """
+        if context.is_admin:
+            return (AdminRole.PLATFORM_ADMIN, None, None)
+
+        cache_key = (context.user_id, context.org_id)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        if cache_key in self._discovery_role_unavailable or self.db is None:
+            return None
+
+        try:
+            resolved = await self._resolve_membership_role(context)
+        except Exception as exc:
+            logger.warning(
+                "rbac_role_lookup_failed user=%s org=%s error=%s",
+                context.user_id,
+                context.org_id,
+                exc,
+            )
+            self._discovery_role_unavailable.add(cache_key)
+            return None
+
+        if resolved is not None:
+            role, tenant_id = resolved
+            result = (role, tenant_id, None)
+        else:
+            least_privilege = get_admin_config().rbac_least_privilege_default
+            role = AdminRole.MEMBER if least_privilege else AdminRole.ORG_ADMIN
+            logger.warning(
+                "rbac_role_fallback user=%s org=%s granted=%s reason=no_active_membership",
+                context.user_id,
+                context.org_id,
+                role.value,
+            )
+            result = (role, context.org_id, None)
+
+        self._cache_put(cache_key, result)
+        return result
+
     def get_role_permissions(self, role: AdminRole) -> set[Permission]:
         """
         Get all permissions for a given role.
@@ -222,6 +272,45 @@ class AccessControl:
         if role not in ROLE_PERMISSIONS:
             raise InvalidRoleError(role.value if hasattr(role, "value") else str(role))
         return ROLE_PERMISSIONS[role]
+
+    def _check_resolved_permission(
+        self,
+        role: AdminRole,
+        allowed_org_id: str | None,
+        allowed_dept_id: str | None,
+        permission: Permission,
+        target_org_id: str | None,
+        target_dept_id: str | None,
+    ) -> bool:
+        """Apply the authorization predicate to an already resolved role."""
+        permissions = self.get_role_permissions(role)
+        if permission not in permissions:
+            raise AccessDeniedError(
+                message=f"Permission '{permission.value}' is required for this operation",
+                required_permission=permission.value,
+                user_role=role.value,
+            )
+
+        if role != AdminRole.PLATFORM_ADMIN:
+            if not allowed_org_id and permission in _ORG_SCOPED_PERMISSIONS:
+                raise AccessDeniedError(
+                    message="No organization membership — cannot access admin resources",
+                    required_permission=permission.value,
+                    user_role=role.value,
+                )
+            if target_org_id and allowed_org_id and target_org_id != allowed_org_id:
+                raise InvalidScopeError(
+                    message="Cannot access resources from another organization",
+                    allowed_scope=f"org:{allowed_org_id}",
+                    requested_scope=f"org:{target_org_id}",
+                )
+            if target_dept_id and allowed_dept_id and target_dept_id != allowed_dept_id:
+                raise InvalidScopeError(
+                    message="Cannot access resources from another department",
+                    allowed_scope=f"dept:{allowed_dept_id}",
+                    requested_scope=f"dept:{target_dept_id}",
+                )
+        return True
 
     async def check_permission(
         self,
@@ -245,44 +334,27 @@ class AccessControl:
         Raises:
             AccessDeniedError: If the user does not have the permission
         """
-        role, allowed_org_id, allowed_dept_id = await self.get_user_role(context)
-        permissions = self.get_role_permissions(role)
+        resolved = await self.get_user_role(context)
+        return self._check_resolved_permission(*resolved, permission, target_org_id, target_dept_id)
 
-        # Check if the role has the permission
-        if permission not in permissions:
-            raise AccessDeniedError(
-                message=f"Permission '{permission.value}' is required for this operation",
-                required_permission=permission.value,
-                user_role=role.value,
-            )
+    async def check_permission_for_discovery(
+        self,
+        context: TokenContext,
+        permission: Permission,
+        target_org_id: str | None = None,
+        target_dept_id: str | None = None,
+    ) -> bool | None:
+        """Return a tri-state permission answer without authorizing an action."""
+        resolved = await self.get_user_role_for_discovery(context)
+        if resolved is None:
+            return None
 
-        # Check scope if not platform admin
-        if role != AdminRole.PLATFORM_ADMIN:
-            # Issue #60: Non-admin users with no org membership must be rejected
-            # for org-scoped permissions. Without this, they get 200 with empty
-            # data instead of 403, which is a silent RBAC bypass.
-            if not allowed_org_id and permission in _ORG_SCOPED_PERMISSIONS:
-                raise AccessDeniedError(
-                    message="No organization membership — cannot access admin resources",
-                    required_permission=permission.value,
-                    user_role=role.value,
-                )
-
-            if target_org_id and allowed_org_id and target_org_id != allowed_org_id:
-                raise InvalidScopeError(
-                    message="Cannot access resources from another organization",
-                    allowed_scope=f"org:{allowed_org_id}",
-                    requested_scope=f"org:{target_org_id}",
-                )
-
-            if target_dept_id and allowed_dept_id and target_dept_id != allowed_dept_id:
-                raise InvalidScopeError(
-                    message="Cannot access resources from another department",
-                    allowed_scope=f"dept:{allowed_dept_id}",
-                    requested_scope=f"dept:{target_dept_id}",
-                )
-
-        return True
+        try:
+            return self._check_resolved_permission(*resolved, permission, target_org_id, target_dept_id)
+        except (AccessDeniedError, InvalidScopeError):
+            return False
+        except Exception:
+            return None
 
     async def require_assignable_role(
         self,
@@ -342,6 +414,76 @@ class AccessControl:
         if requested_rank > CALLER_ROLE_RANK.get(role, 0):
             raise AccessDeniedError(
                 message=f"Cannot assign role '{normalized}' above your own privilege level",
+                user_role=role.value,
+            )
+
+    async def require_modifiable_target(
+        self,
+        context: TokenContext,
+        target_current_role: str | None,
+        target_is_platform_admin: bool = False,
+    ) -> None:
+        """Enforce that the caller may modify a user who *currently* holds a role.
+
+        Issue #4019. :meth:`require_assignable_role` guards which role may be
+        *granted*; this guards whether the target may be *touched at all*. Both
+        are needed: without this, an org_admin could demote a platform admin to
+        ``member`` — every individual check passes (the caller may write to the
+        org, and ``member`` is below their ceiling) while the operation strips a
+        superior's privilege.
+
+        Deliberately a separate method rather than a second
+        ``require_assignable_role`` call: that function's errors read "Cannot
+        assign role 'X' above your own privilege level", which is actively
+        misleading when the rejection is about the target's *existing* role.
+
+        Args:
+            context: The authenticated caller's token context.
+            target_current_role: The target's current role, resolved from an
+                authoritative store (the membership row and/or Cognito) — NOT
+                from ``users.role``, which is a display mirror nothing in authz
+                reads.
+            target_is_platform_admin: True when the target holds platform
+                authority. Platform admin is not representable in Postgres
+                (#3981), so the caller must resolve it and pass it in.
+
+        Raises:
+            AccessDeniedError: The target outranks the caller, or the target is a
+                platform admin and the caller is not.
+        """
+        role, _, _ = await self.get_user_role(context)
+
+        # Platform admins may modify anyone.
+        if role == AdminRole.PLATFORM_ADMIN:
+            return
+
+        if target_is_platform_admin:
+            raise AccessDeniedError(
+                message="Cannot modify a platform administrator",
+                user_role=role.value,
+            )
+
+        normalized = (target_current_role or "").strip().lower()
+
+        # A target already holding a platform-level role is off limits to any
+        # non-platform caller, regardless of rank arithmetic.
+        if normalized in PLATFORM_LEVEL_ROLES:
+            raise AccessDeniedError(
+                message="Cannot modify a platform administrator",
+                user_role=role.value,
+            )
+
+        # Unknown/absent roles are treated as rank 0 (a no-membership principal
+        # resolves to MEMBER), so a plain member remains modifiable. This is the
+        # inverse of require_assignable_role's fail-closed treatment of unknown
+        # strings, and deliberately so: there, an unrecognized string might name
+        # a privilege we cannot bound, so granting it is refused; here the
+        # target's authority is what the resolved stores say it is, and the
+        # platform cases above are already handled explicitly.
+        target_rank = ROLE_RANK.get(normalized, 0)
+        if target_rank > CALLER_ROLE_RANK.get(role, 0):
+            raise AccessDeniedError(
+                message=f"Cannot modify a user whose role '{normalized}' is above your own privilege level",
                 user_role=role.value,
             )
 

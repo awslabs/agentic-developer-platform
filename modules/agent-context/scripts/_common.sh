@@ -34,3 +34,24 @@ load_config() {
   [[ -f "${root_dir}/config.local.env" ]] && source "${root_dir}/config.local.env"
   return 0
 }
+
+# Resolve the existing ACL database before rendering the shared ConfigMap.
+# Both CLI and Actions deployment paths must supply the same connection settings.
+resolve_acl_config() {
+  : "${AC_DB_NAME:=agent_context}"
+  : "${AC_DB_USERNAME:=agent_context_svc}"
+  if [[ -z "${AC_RDS_HOST:-}" || "${AC_RDS_HOST}" == "None" ]]; then
+    AC_RDS_HOST=$(aws ssm get-parameter \
+      --name "/adp/${ENVIRONMENT:-dev}/rds/endpoint" \
+      --region "${AWS_REGION:-us-east-1}" \
+      --query 'Parameter.Value' --output text) || {
+      echo "ERROR: Cannot resolve the existing ACL database endpoint." >&2
+      return 1
+    }
+  fi
+  if [[ -z "$AC_RDS_HOST" || "$AC_RDS_HOST" == "None" || "$AC_RDS_HOST" == "null" ]]; then
+    echo "ERROR: ACL database endpoint is empty; refusing an unready deployment." >&2
+    return 1
+  fi
+  export AC_RDS_HOST AC_DB_NAME AC_DB_USERNAME
+}

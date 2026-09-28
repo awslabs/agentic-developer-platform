@@ -1,0 +1,23 @@
+{
+  "source": "fresh GitHub archive of published commit",
+  "provider_head": "e7cf699dfe91951c7b45ec154168ca15660f887b",
+  "tree": "6bd5be119d1db68365a2eb6519061f6af1919bc1",
+  "validation": {
+    "check": "acceptance",
+    "commit": "13887aa83b80c191f0516a2b3a93e439354362b1",
+    "archiveSha256": "4732bb12f528cd22fca1c510fccf41d5eafc94b7b6fd966cac4adcaf09684524",
+    "specificationDigest": "374c23318c60ef2c27121b0088b196a60072120a32033020495d6467a8dbfc17",
+    "environmentDigest": "4d3fe0534a68519942d7bbb0acf50e9969980b678ee22107953f9f93244021db",
+    "status": "passed",
+    "exitCode": 0,
+    "reason": "completed",
+    "durationSeconds": 0.905,
+    "output": "{\"passed\":28}\n",
+    "tree": "6bd5be119d1db68365a2eb6519061f6af1919bc1"
+  },
+  "provider_replay": {
+    "same_receipt": true,
+    "number": 6424,
+    "provider_head": "e7cf699dfe91951c7b45ec154168ca15660f887b"
+  }
+}

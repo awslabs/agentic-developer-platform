@@ -13,13 +13,25 @@ import { Alert, Button } from '@/components/ui';
 import { TableSkeleton } from '@/components/LoadingScreen';
 import { getMyInvocationChain, getAdminInvocationChain } from '@/services/activity';
 import { formatRelativeTime, formatDateTime } from '@/utils/format';
-import type { InvocationChainItem, InvocationChainResponse } from '@/types/activity';
+// Issue #4207: replaces two copy-pasted inline 4/2-decimal expressions.
+import { formatAmount } from '@/utils/cost';
+import type {
+  InvocationChainItem,
+  InvocationChainResponse,
+  InvocationStatus,
+} from '@/types/activity';
 
 // ---------------------------------------------------------------------------
 // Status glyph (compact version for chain view)
 // ---------------------------------------------------------------------------
 
-const STATUS_GLYPHS: Record<string, { glyph: string; colorClass: string }> = {
+// Issue #4187: typed as `Record<InvocationStatus, …>` rather than
+// `Record<string, …>`. It was the loose form, and had already silently fallen
+// behind: `blocked` and `skipped` were missing, so the `?? STATUS_GLYPHS.no_op`
+// fallback below rendered them as "no-op". A budget-stopped run would have shown
+// the same way — a stopped run reported as "nothing ran". Typing it means the
+// next status added to the union fails the build here instead.
+const STATUS_GLYPHS: Record<InvocationStatus, { glyph: string; colorClass: string }> = {
   webhook_received: { glyph: '∘', colorClass: 'text-gray-500' },
   in_progress: { glyph: '●', colorClass: 'text-blue-600 dark:text-blue-400' },
   complete: { glyph: '✓', colorClass: 'text-green-600 dark:text-green-400' },
@@ -27,6 +39,14 @@ const STATUS_GLYPHS: Record<string, { glyph: string; colorClass: string }> = {
   rejected: { glyph: '✗', colorClass: 'text-orange-600 dark:text-orange-400' },
   rate_limited: { glyph: '✗', colorClass: 'text-yellow-600 dark:text-yellow-400' },
   no_op: { glyph: '✗', colorClass: 'text-gray-500' },
+  blocked: { glyph: '✗', colorClass: 'text-gray-500' },
+  skipped: { glyph: '✗', colorClass: 'text-gray-500' },
+  budget_stopped: { glyph: '⊘', colorClass: 'text-amber-600 dark:text-amber-400' },
+  // Issue #3964. The typing did its job: adding `aborted` to the union failed the
+  // build here, which is the only reason this map is not now rendering a
+  // deliberately stopped run as "✗ No-op" via the fallback below. Glyph and colour
+  // match `utils/status.ts` so the chain view and the board agree.
+  aborted: { glyph: '■', colorClass: 'text-amber-600 dark:text-amber-400' },
 };
 
 // ---------------------------------------------------------------------------
@@ -41,7 +61,10 @@ interface ChainNodeProps {
 }
 
 function ChainNode({ node, depth, highlightId, onNodeClick }: ChainNodeProps) {
-  const statusConfig = STATUS_GLYPHS[node.status ?? ''] ?? STATUS_GLYPHS.no_op;
+  // The chain API types `status` as a plain string, so the cast is what lets the
+  // map stay exhaustively typed above. The `??` fallback still covers null and
+  // any value the backend adds before the frontend knows about it.
+  const statusConfig = STATUS_GLYPHS[node.status as InvocationStatus] ?? STATUS_GLYPHS.no_op;
   const isHighlighted = node.invocation_id === highlightId;
 
   return (
@@ -77,7 +100,7 @@ function ChainNode({ node, depth, highlightId, onNodeClick }: ChainNodeProps) {
         {/* Per-node cost badge — Issue #1653 */}
         {node.total_cost_usd != null && (
           <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded font-mono">
-            ${node.total_cost_usd < 0.01 ? node.total_cost_usd.toFixed(4) : node.total_cost_usd.toFixed(2)}
+            {formatAmount(node.total_cost_usd)}
           </span>
         )}
 
@@ -246,7 +269,7 @@ export default function InvocationChain({
         <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
           <span>
             Chain total: <span className="font-medium font-mono">
-              ${data.chain_total_cost_usd < 0.01 ? data.chain_total_cost_usd.toFixed(4) : data.chain_total_cost_usd.toFixed(2)}
+              {formatAmount(data.chain_total_cost_usd)}
             </span>
           </span>
           {data.chain_total_call_count != null && (

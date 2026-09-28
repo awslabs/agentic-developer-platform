@@ -1,30 +1,19 @@
----
-# ConfigMap for agent configuration
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: agent-gateway-config
-  namespace: adp-gateway-agents
-  labels:
-    app.kubernetes.io/name: agent-gateway
-    app.kubernetes.io/part-of: agent-gateway
-data:
-  INPUT_QUEUE_URL: "REPLACE_WITH_INPUT_QUEUE_URL"
-  RESPONSE_QUEUE_URL: "REPLACE_WITH_RESPONSE_QUEUE_URL"
-  SESSIONS_TABLE_NAME: "REPLACE_WITH_SESSIONS_TABLE_NAME"
-  AWS_REGION: "us-east-1"
-  AGENT_DIR: "/app/agent"
-  ANTHROPIC_MODEL: "global.anthropic.claude-sonnet-4-6"
-  # Gateway-routed Bedrock (Phase 3, issue #748). The entrypoint starts a
-  # local sigv4-proxy that re-signs requests for API Gateway. On proxy
-  # health-check failure, the entrypoint falls back to direct Bedrock.
-  # Kill switch: set ADP_BEDROCK_VIA=direct to bypass gateway entirely.
-  ADP_BEDROCK_VIA: "gateway"
-  SIGV4_PROXY_TARGET: "REPLACE_WITH_GATEWAY_APIGW_INVOKE_URL"
-  SIGV4_PROXY_PORT: "9090"
-  ANTHROPIC_BEDROCK_BASE_URL: "http://127.0.0.1:9090"
-  CLAUDE_CODE_USE_BEDROCK: "1"
----
+# NOTE: the agent-gateway-config ConfigMap is NOT defined here.
+#
+# It is managed by Terraform (modules/agent-factory/infra/gateway-main.tf,
+# kubernetes_config_map.agent_gateway_config), because two of its values —
+# SIGV4_PROXY_TARGET and the queue/table names — are only knowable from state.
+#
+# It used to be defined here as well, and the static copy won whenever a script
+# applied this file after Terraform. Two values then regressed silently:
+# SIGV4_PROXY_TARGET became the literal string REPLACE_WITH_GATEWAY_APIGW_INVOKE_URL
+# (deploy-all.sh substitutes four placeholders and never that one), and
+# ANTHROPIC_MODEL reverted to whatever this file said. The first is invisible in
+# operation: the entrypoint health-checks the proxy and falls back to direct
+# Bedrock, so agents keep working while gateway-routed Bedrock (issue #748) is
+# quietly inactive.
+#
+# Do not re-add it. Add new keys to the Terraform resource instead.
 # KEDA TriggerAuthentication — tells KEDA to use the operator's own IRSA role
 # for SQS queue-depth polling. The operator SA is annotated with
 # adp-dev-keda-operator-role (managed by Terraform helm_release.keda).
@@ -55,6 +44,8 @@ metadata:
     app.kubernetes.io/name: agent-gateway-worker
     app.kubernetes.io/part-of: agent-gateway
 spec:
+  rollout:
+    strategy: gradual
   jobTargetRef:
     parallelism: 1
     completions: 1

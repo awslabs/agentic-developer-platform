@@ -1,0 +1,2899 @@
+{
+  "issue": 6108,
+  "frozen_source": "b1d0894c17c686f27c2747057dead0b5a0e6b17e",
+  "reviewed_source_revision": "bd31ddab4",
+  "scope": "Previously fixed guard predicate identity revalidation, supplemented by original fullmodule semantic proof and current unchanged source hashes. Does not change runtime acceptance statuses.",
+  "reviewed_delta": 221,
+  "reviewed_records": [
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=833",
+      "file": "modules/domain-apps/superplane/superplane_acceptance/live_observer.py",
+      "original_line": 1924,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "75d23b40c2d742b2654cd40521a370a6d6d5f5af25f7fa38cc2c698f195b19c9",
+      "predicate_ast_sha256": "279d3dcf01232b1c7630d788d19d3ed01196976e7f1da1d399ef1fa273d8039b",
+      "matching_guard_lines": [
+        1924
+      ],
+      "historical_evidence": "evidence/bandit-superplane-inventory-guard.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=962",
+      "file": "modules/gateway/scripts/build-budget-lambda-archives.py",
+      "original_line": 13,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1421ce60be45a4383ec0e52fe98e9ff4f843731468b22faae6efb615f033b7e7",
+      "predicate_ast_sha256": "58a505d253e1a39d0002d145d69baab5b8e14ce1e9bb4dd6814f9dd6b9afde7a",
+      "matching_guard_lines": [
+        13
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=963",
+      "file": "modules/gateway/scripts/build-budget-lambda-archives.py",
+      "original_line": 14,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1421ce60be45a4383ec0e52fe98e9ff4f843731468b22faae6efb615f033b7e7",
+      "predicate_ast_sha256": "cc6270250ccf87803602d748ee3088af28af0b83f9864d8f4ae6c5e52251bd38",
+      "matching_guard_lines": [
+        15
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=964",
+      "file": "modules/gateway/scripts/build-budget-lambda-archives.py",
+      "original_line": 15,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1421ce60be45a4383ec0e52fe98e9ff4f843731468b22faae6efb615f033b7e7",
+      "predicate_ast_sha256": "404d5b086432c3844f5038e14f422ba7694b11c07517412f4552c0d1a2170b3e",
+      "matching_guard_lines": [
+        17
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=965",
+      "file": "modules/gateway/scripts/build-budget-lambda-archives.py",
+      "original_line": 19,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1421ce60be45a4383ec0e52fe98e9ff4f843731468b22faae6efb615f033b7e7",
+      "predicate_ast_sha256": "e0f451010d904bb391ee9d7e61114156656aac70237c517df33dfe4ae39a294f",
+      "matching_guard_lines": [
+        22
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1024",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 201,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "cc204bb14a5c69823d82e2f2cc6ce513d1e3653f5858f345a0082169372b364c",
+      "matching_guard_lines": [
+        201
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1026",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 213,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "48debc4f6fc8c28f2e65de43972478601cf357af19633a96eeb7491ed4eb7f9c",
+      "matching_guard_lines": [
+        214
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1027",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 215,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "7b1b55951727d6782f84e413b374b30ce05211545e04a705cea883c5541a3fb6",
+      "matching_guard_lines": [
+        217
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1028",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 216,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "490b9f7e24f7994865e7db34da7f8eeb85c7d90b3792627099852d0eef8ab2d3",
+      "matching_guard_lines": [
+        219
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1029",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 217,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "8c0f12139df992e7c653e6f738f646b12c7c039b705ddbb31e25046285ec0954",
+      "matching_guard_lines": [
+        221
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1030",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 223,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "dbc93eec33afcd88241fdb768b5029947eafa427a1d08aac2cf6879123c38cc0",
+      "matching_guard_lines": [
+        228
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1031",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 226,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "76847693c609d735bc133d4afaed8df1e3c516213ad203d78a8836553f7d69f7",
+      "matching_guard_lines": [
+        232
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1032",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 227,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "de5d17022100c0a941aafe46e3d7e0ad230ebb91a6d9c3d2862e8ec7ec259ea5",
+      "matching_guard_lines": [
+        234
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1033",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 228,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "c5037752e291dec6e3e669253d776a1319dbbd16bbb43e8e59fd32e1ac8ebb56",
+      "matching_guard_lines": [
+        236
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1034",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 234,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "611373ca962a640ee651dd47d0bf26499898c82fe8a69bb250f9e20262d3bd47",
+      "matching_guard_lines": [
+        243
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1035",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 237,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "2a6c37759a98d8a4fbe5656225f1bf0fe93580f7a774b96c094487bc85baab23",
+      "matching_guard_lines": [
+        247
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1036",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 238,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "b584d5816e100b264b95ef3ad00e5c32e69148aabfd46bad5416fa83a8eb8dfb",
+      "matching_guard_lines": [
+        249
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1037",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 250,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "ae5ed779754d2d92c19715819fc3d2124a3566d7ffbd983d3941faeccf51cbff",
+      "matching_guard_lines": [
+        262
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1038",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 253,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "62e1e1aa0d604ad28e8baae048464338878d7cf7b461365e605e09d8fcc1ba63",
+      "matching_guard_lines": [
+        266
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1039",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 265,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "b173a3cd4f7efc5837441c117bf3ec8ec027828b50a3c57e4e2f94787fd3aab9",
+      "matching_guard_lines": [
+        279
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1040",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 269,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "9252494e47a4b8cfa9379e7f4dd9acca7680c07127a96580026b6047ea14c336",
+      "matching_guard_lines": [
+        284
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1041",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 277,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "c384b005550e355b92a09a8facdebeffb4ef6d6789e0c91baed47e379670d3a3",
+      "matching_guard_lines": [
+        291
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1042",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 279,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "535bf52f5bf5c9d0b77a73bf6695f4a7200c45e222651cb3440687c7a5e95186",
+      "matching_guard_lines": [
+        294
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1043",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 282,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "6be1c621409b45de030cb5a6eb4198021c6347c1dcdd4a782bca16b26911094c",
+      "matching_guard_lines": [
+        298
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1044",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 285,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "9a27cd3c574ce8af47d2f8562ff4f37a58cebd971516039e722bae8bc44da106",
+      "matching_guard_lines": [
+        302
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1045",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 286,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "77b00c7b159ed90db00d3a78a2284c1b485a13dc1f32cbf8fb8965d07f1d3dce",
+      "matching_guard_lines": [
+        304
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1046",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 309,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "51d60e7d8986be30c53abbd7070f3b1be71d81fece557b06bcb3bc2dde16fef9",
+      "matching_guard_lines": [
+        328
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1047",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 313,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "edcbacaeed9e41ca527d066a6aea5cfe29a1a3dc7b5c20ba998cf3fecb636af5",
+      "matching_guard_lines": [
+        333
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1048",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 314,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "c91ec61cedba7ee20771eea4a6c760ebb85903203d0b5b4ce2a8563aa3ec7828",
+      "matching_guard_lines": [
+        335
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1049",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 318,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "e18f857c317042f7cc19e2241cba9892ba784d2a44e9284e0a4cda3d22ba8cfc",
+      "matching_guard_lines": [
+        340
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1050",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 320,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "5dd2298e40a46fbac6720fcb877ed4ff9111af2609291495a1ae6aad1d1d9cf0",
+      "matching_guard_lines": [
+        343
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1051",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 321,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "f8959a7c3f6ff386af85a4a4987071caf89f760ec6a3d62a1db93241c2aebc12",
+      "matching_guard_lines": [
+        345
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1052",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 322,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "a30c2245586af36d819c8803bcaad6870b34b8c141911d2f736bd18d8a90f802",
+      "matching_guard_lines": [
+        347
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1053",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 325,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "3233ee363b0afade6a8c63c727382920ba6ac78389e975b3b0efd58b50f526fd",
+      "matching_guard_lines": [
+        351
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1054",
+      "file": "modules/gateway/scripts/pricing-rollout.py",
+      "original_line": 348,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "4b21cf77a8e84f908cf9abc4fb24b07933ae97d794915c4c809de2e2abff870f",
+      "predicate_ast_sha256": "545753c9cfdcda33c18e236c66fcd2691286ce459110bf2bc4e60143e986a977",
+      "matching_guard_lines": [
+        375
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1135",
+      "file": "modules/gateway/src/shared/identity/verification.py",
+      "original_line": 187,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "9e36f83875e28872095043d69a0cd4c5d4f8ef6a5efa9301720bbaab57315f5b",
+      "predicate_ast_sha256": "240b87f1571284285a6c4c4cc15e8182e16202e4cd7e8a85a60296822760ae6f",
+      "matching_guard_lines": [
+        187
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1136",
+      "file": "modules/gateway/src/shared/identity/verification.py",
+      "original_line": 189,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "9e36f83875e28872095043d69a0cd4c5d4f8ef6a5efa9301720bbaab57315f5b",
+      "predicate_ast_sha256": "7459fac9c6d5f7a2ee2bfcc70d2a9db12832fa8af7da3bbf7aa0fdbc253f0320",
+      "matching_guard_lines": [
+        190
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1137",
+      "file": "modules/gateway/src/shared/identity/verification.py",
+      "original_line": 191,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "9e36f83875e28872095043d69a0cd4c5d4f8ef6a5efa9301720bbaab57315f5b",
+      "predicate_ast_sha256": "16e37a3cc1b5eae247566707a45c3026739eb14b53a81e958f68e7184fa1c924",
+      "matching_guard_lines": [
+        193
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1138",
+      "file": "modules/gateway/src/shared/identity/verification.py",
+      "original_line": 193,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "9e36f83875e28872095043d69a0cd4c5d4f8ef6a5efa9301720bbaab57315f5b",
+      "predicate_ast_sha256": "1410a110bce960322aca0469dd86c75ac9566697d5e75c8489048bcf61087bb4",
+      "matching_guard_lines": [
+        196
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1139",
+      "file": "modules/gateway/src/shared/identity/verification.py",
+      "original_line": 195,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "9e36f83875e28872095043d69a0cd4c5d4f8ef6a5efa9301720bbaab57315f5b",
+      "predicate_ast_sha256": "553f8331e7dffd15e287b9636914455024c9bfbe815c8a48a97f7df8dc11c53c",
+      "matching_guard_lines": [
+        199
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1140",
+      "file": "modules/gateway/src/shared/identity/verification.py",
+      "original_line": 197,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "9e36f83875e28872095043d69a0cd4c5d4f8ef6a5efa9301720bbaab57315f5b",
+      "predicate_ast_sha256": "89c779f56ec9e7150ec15cba01f412f7c52b6ab4650c2a0f1968a4c391bd1595",
+      "matching_guard_lines": [
+        202
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1141",
+      "file": "modules/gateway/src/shared/identity/verification.py",
+      "original_line": 201,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "9e36f83875e28872095043d69a0cd4c5d4f8ef6a5efa9301720bbaab57315f5b",
+      "predicate_ast_sha256": "1b784403bf265a478a4e3568b611f017f7b01aea8c7b84c54d390da9584176f0",
+      "matching_guard_lines": [
+        207
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1142",
+      "file": "modules/gateway/src/shared/identity/verification.py",
+      "original_line": 203,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "9e36f83875e28872095043d69a0cd4c5d4f8ef6a5efa9301720bbaab57315f5b",
+      "predicate_ast_sha256": "a2ea270c971023ae9d83c57f09ee461fbaa92d1816c70d264e40292a577d1996",
+      "matching_guard_lines": [
+        210
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1161",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 30,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "58a4843e987a6dc5776ed8d891d51aa16c8ab0b6a91a5142434816ea8f3e5988",
+      "matching_guard_lines": [
+        30
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1162",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 45,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "9dee2457b23782884f0b9e46e504c362de9cb84d60daef0c52a96022379e8a9e",
+      "matching_guard_lines": [
+        46
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1163",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 48,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "3ee3d841b3ad07e571d4634eb3b94233821e5ba739fb27d67e184b6f07f22fa7",
+      "matching_guard_lines": [
+        48
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1164",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 68,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "7675f5e23f8225dbaa45b66dd140ec8fcaba1112c552b560b295c17b34fd25fc",
+      "matching_guard_lines": [
+        69
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1165",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 69,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "d53992ec1e1d5326dfbab706e3846f6549860a09bbb2a51d083abb8ab9f76088",
+      "matching_guard_lines": [
+        71
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1166",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 71,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "036d5d74b0959dd13996ae6312237ccabe28464110bd294c9196c429da6e9244",
+      "matching_guard_lines": [
+        74
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1167",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 73,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "3ed7f21fd26c7561e676061d5b8be1878dd23f6a4780dfceb3f74ed5e3779405",
+      "matching_guard_lines": [
+        77
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1168",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 74,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "5b51f897e710b4b407740a3e1d90d2cddcea95e63a30a58c70b9d3952a2cced8",
+      "matching_guard_lines": [
+        79
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1169",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 75,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "c9c6e46ad64a3f84f03aaea085330f42c313bb7405b7d924d50165991369647c",
+      "matching_guard_lines": [
+        81
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1170",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 77,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "f3ceb15a224326eaa1aac4c371648ecb008927eeed6db581ea0c3b58234f8aeb",
+      "matching_guard_lines": [
+        84
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1171",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 78,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "6d9cf39df5460e3581a1c93be555819c398b1ae5749e0441610610f9db001c39",
+      "matching_guard_lines": [
+        86
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1172",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 82,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "d332c0dc7e6be57d9ce911c22b7158735fb285baa0f28aa6be79d2ffa9181835",
+      "matching_guard_lines": [
+        93
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1173",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 86,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "73da9791c3ffb611b939c9df1b20563baed1168e311787d2aee69f787d070543",
+      "matching_guard_lines": [
+        100
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1174",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 90,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "b1b0d46625d471514e55181c6f76fbaa81cf3ccaba668594480445753328eabd",
+      "matching_guard_lines": [
+        105
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1175",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 91,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "3e71e98e766fc14ec889b7e191ab350e35edc33220268d0b2445b8317478bf95",
+      "matching_guard_lines": [
+        107
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1176",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 96,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "f77d63f640f57759d27fa61f19e4253efd067179bcf472dca40514eaa595dce2",
+      "matching_guard_lines": [
+        113
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1177",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 97,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "86570594159abcb6fb826f91e9022287d35842c987c7aff2c0cc8026cfe4a0a4",
+      "matching_guard_lines": [
+        115
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1178",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 107,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "1e1d70696ac521c398979da651ee6eae06e539ccb715374868e1931fae969a7d",
+      "matching_guard_lines": [
+        124
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1179",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 108,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "5310532d1779c9e6f71c1d5d91dab41cdae7d884676833b8559875771d39caaa",
+      "matching_guard_lines": [
+        126
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1180",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 138,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "3e54f4056ff0c865f1e809ff84fbc0803a69e54a2a25207bff713484f01de666",
+      "matching_guard_lines": [
+        157
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1181",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 144,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "4c90e5cfcb305c15821345a1229a35b826a1dcba0a8ace4d4824fe9e218153be",
+      "matching_guard_lines": [
+        164
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1182",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 147,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "48bfbe4b99e1d8ee287b1ddb8e6e745af43c5f68f572673cbb8cf1cdf2b11957",
+      "matching_guard_lines": [
+        166
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1183",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 165,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "c374775389ddd6304104b6647d65a9c3478b108d915b901527f0748d28c4577e",
+      "matching_guard_lines": [
+        185
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1184",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 169,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "3cd42c3cb3f8a97062df6b02b078f4daa1bc1a4557c3aaac41c5cc643f79c55a",
+      "matching_guard_lines": [
+        190
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1185",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 178,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "efc4b63e3dfbff6d7247d04cfc9c314d946a2ec3eaa5a3b8ac165d209ffab29f",
+      "matching_guard_lines": [
+        200
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1186",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 182,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "e757214e8c294ed437773f38572a522705f6f8d6c878d5b9f3a373d28ebc5d24",
+      "matching_guard_lines": [
+        205
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1187",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 185,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "730e9af8c2dfb897500b56c55b4af57ac50669e501d4ca41c01748138195ab83",
+      "matching_guard_lines": [
+        207
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1188",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 211,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "36addf0fa99dcf0d9625bd37c78f3126919bfa94e4b20b2fc81d4cb640b9965b",
+      "matching_guard_lines": [
+        232
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1189",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 215,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "0aaa93a460dbbef7eea0c258672773bcdbd6315f4a40737ba769927e82cd12f6",
+      "matching_guard_lines": [
+        237
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1190",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 223,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "5332a314be0cf1019654cb7acab2bf3efafabf6dca72a8b8b089139bd33bcbf0",
+      "matching_guard_lines": [
+        246
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1191",
+      "file": "platform/automation-infra/deploy-webhook-code.py",
+      "original_line": 224,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "af4ce12884564dc871eb4604752a7b08da1020a212e0cc865655d40b16e0babb",
+      "predicate_ast_sha256": "2e7f7330c13ab6d96c7a489b3e0ec35a411d72f467c01a2441d2ab36fd36926a",
+      "matching_guard_lines": [
+        248
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1193",
+      "file": "platform/automation-infra/prepare-webhook-source.py",
+      "original_line": 15,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "ca2b7681a45cb0213a5a37cd40455a7a4ab54e6e63c0d7a6eb27e36300cf0dfd",
+      "predicate_ast_sha256": "89a47406f1af9a26439589c2f74fecc93f5768e48db38e30ceeca12e3b1700c9",
+      "matching_guard_lines": [
+        15
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1194",
+      "file": "platform/automation-infra/prepare-webhook-source.py",
+      "original_line": 16,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "ca2b7681a45cb0213a5a37cd40455a7a4ab54e6e63c0d7a6eb27e36300cf0dfd",
+      "predicate_ast_sha256": "78ca4b20df0de4d844c27c2b0062faf5b5b6f2448c56e3a991adeeae575254b1",
+      "matching_guard_lines": [
+        17
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1199",
+      "file": "platform/automation-infra/prepare-webhook-source.py",
+      "original_line": 24,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "ca2b7681a45cb0213a5a37cd40455a7a4ab54e6e63c0d7a6eb27e36300cf0dfd",
+      "predicate_ast_sha256": "1aa84f37a939f2fa7cfd0d48f749dee43478886987d9930ed4bfb510c6b84d53",
+      "matching_guard_lines": [
+        26
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1202",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 14,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "9ec1dbf8902d5ca81c35cf35b2fdd831a55d7cb5ca9b72e1ea32846fbb98fda1",
+      "matching_guard_lines": [
+        15
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1203",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 16,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "e111fd74a0880eed74a1de1cf5676b5c8df3475cdb2e666e1df27c9b08078b7f",
+      "matching_guard_lines": [
+        22
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1204",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 17,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "40197cf87eeb3ddae037f833afc6c78b179d72ff007085dc1373de61e3acb08b",
+      "matching_guard_lines": [
+        28
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1205",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 21,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "3663c2427e3eabb08a02c8bd38ddc886ab95132f44b520c32da0c02202da3166",
+      "matching_guard_lines": [
+        36
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1206",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 22,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "0c5f49e23ff9b4aadb10e8136ce4d903965c9a463c1251e34650d93af5ac87cd",
+      "matching_guard_lines": [
+        38
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1207",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 23,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "7a4cf210d72e6ba5886945f4d3f6b4214cd6274d8470d16b4a2d0318f08dc3f3",
+      "matching_guard_lines": [
+        40
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1208",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 35,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "9c49ee6c8992893c49ffd5802570c23bb53aa56c0be4f76a8adc6fee783d882f",
+      "matching_guard_lines": [
+        59
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1209",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 36,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "d1ca4d4a89baf22d65142701a97d4f8225a72ead6e4b135a696939f7261633cd",
+      "matching_guard_lines": [
+        61
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1210",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 40,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "47c599f4bd8ba9a8d82aa078398ce6c0d77bedd2b72c3e090d006a388d58b249",
+      "matching_guard_lines": [
+        81
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1211",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 44,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "7bf6a629d45c41a21951f55d8e232e5d32231f22e0bf63d27a706eae1447481f",
+      "matching_guard_lines": [
+        90
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1212",
+      "file": "platform/automation-infra/verify-cutover.py",
+      "original_line": 52,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "212e69c2521fe33daa39ad955238b55d6a1c799793a821c6546024b268833522",
+      "predicate_ast_sha256": "c96216c6930bb199d97ef7d2ed9acd787e2ccbf0bc64d683c62dc8943ec93d3b",
+      "matching_guard_lines": [
+        105
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1214",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 79,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "4322b1502970cb0040ea97500df7b4377eb5170ba21b9daa412a1c9fc2769f31",
+      "matching_guard_lines": [
+        93
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1215",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 80,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "89db24860169eb2e0bd2d7c928c22d1fac442efe9fbcb6d6cc41a71c50e653c4",
+      "matching_guard_lines": [
+        95
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1216",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 85,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "1a0f41c41badf4adde4169f2ada380dbea8e1731056b81002aec6fdc9aef447b",
+      "matching_guard_lines": [
+        113,
+        137
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1217",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 95,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "5e5d4b10855cee45c65b4d943d40ce6ee15f3a714d01c8d82f95c2be70d30fb0",
+      "matching_guard_lines": [
+        133
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1218",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 98,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "1a0f41c41badf4adde4169f2ada380dbea8e1731056b81002aec6fdc9aef447b",
+      "matching_guard_lines": [
+        113,
+        137
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1219",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 102,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "5c1e54cb19ba1817e8a6e826b85bf5e661311ed447e99ee709786ebfe6c43523",
+      "matching_guard_lines": [
+        142
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1220",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 103,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "6f04495352af8a0d10360e3e18e72c9cacd7450ef54db645163a4a1f5ebeaf0e",
+      "matching_guard_lines": [
+        144
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1224",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 120,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "f0523c25d8b4bb864c145454b25009d03d57f956bfab8d2e02b2d1c81361702f",
+      "matching_guard_lines": [
+        171
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1225",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 121,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "307a2e1c8e49da62785344847e1c549bec405a331008abed136fa4935628fafc",
+      "matching_guard_lines": [
+        173
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1226",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 129,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "81df8d196708979b82e241e680f382fc759236e77bf77c2ad94b220827f778ff",
+      "matching_guard_lines": [
+        189
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1227",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 131,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "e84e296e4968c01899a27c870638b5b20441dade3d0685758ddaddb9886d1e93",
+      "matching_guard_lines": [
+        194
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1228",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 134,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "a2bac537146bdd7da74320c8714a8bdb629b944b6cb7e7191f7b32a83e1abeed",
+      "matching_guard_lines": [
+        200
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1229",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 139,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "4b01ce36208f59e395356b7f2b342e377643d1f9bed83ab1ce1abc4cbcd2b772",
+      "matching_guard_lines": [
+        208,
+        420
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1230",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 142,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "124b068a606f3eb8c75586a6a8e53d2f3b23fb97ef84e4b3cba324dbc7e5e11c",
+      "matching_guard_lines": [
+        212
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1231",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 146,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "2c2960113d290e8d68f73d348dd740a11cdc0d251700ba7c585d6f8231552162",
+      "matching_guard_lines": [
+        217
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1232",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 148,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "5aaa97bbe09507ec1ac7e85e31e6398308c5240b89da649f2eea2e2c572066c4",
+      "matching_guard_lines": [
+        220
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1233",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 156,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "6dc974b48ded82d11b8cc1858a5bda77ae7fc4ba34a5a8896dd0d349149938b4",
+      "matching_guard_lines": [
+        240
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1234",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 161,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "8d094b4abdaf213c5a93c47e191b0edb3e434832d7a4b148d0d5fdaa71f961ff",
+      "matching_guard_lines": [
+        260
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1235",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 170,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "39cf55d624040e93a6c353dac02a64a3309ffc27dae1aaa6781ce6f305020fc6",
+      "matching_guard_lines": [
+        282
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1236",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 174,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "1be6c2042c0f829bc53d1d65cc68cb042ee2a15d4af38c418dad6366ce94be5e",
+      "matching_guard_lines": [
+        287
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1237",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 182,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "89bf0c4a55a605910c8ba62333035c0aa8a19ad6fa2b6de152b8ed5e59c69740",
+      "matching_guard_lines": [
+        300
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1238",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 193,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "8283f555b350e665bf8ad731f98352bdf83bf641e99903536272d06468768e40",
+      "matching_guard_lines": [
+        320
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1239",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 198,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "52676b7ed8db928f52c3480b6e4a2369d36d05075f29ec74cbb8592a54984bb1",
+      "matching_guard_lines": [
+        328
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1240",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 205,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "547dd99dd87eb61351e859dc26a86190612f907b9451cff0d1c9618f11e7264e",
+      "matching_guard_lines": [
+        353
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1241",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 208,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "9fb760fc78283e8ed786c539c0b97415b256b497a82ae40afae7f7e8d86da26c",
+      "matching_guard_lines": [
+        368
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1242",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 211,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "ffadd2e3d283be89985084ff7978ff99a386d223fd535155944723fba66ccb89",
+      "matching_guard_lines": [
+        383
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1243",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 214,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "3064d4e1a3145fc679e616177fd6cc7ec191091d8cc7146ee2b7ea08d11c2b0a",
+      "matching_guard_lines": [
+        403
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1244",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 215,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "db1622fa95484e14a2e01292ec1dc344b6a656a0990362c9fac5fcf8af13400d",
+      "matching_guard_lines": [
+        405
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1245",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 222,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "4b01ce36208f59e395356b7f2b342e377643d1f9bed83ab1ce1abc4cbcd2b772",
+      "matching_guard_lines": [
+        208,
+        420
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1246",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 225,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "0fc85cadf2301a9e4778f4f2ca20f9165e6fdcca7eed40009ceb4b66709f0381",
+      "matching_guard_lines": [
+        424
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1247",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 227,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "5903a28ea240f2d75efe217a7407d36e228c00e64e478e997dfa2a19f0b93023",
+      "matching_guard_lines": [
+        427
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1248",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 228,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "47f4014109b3ef20524b4f1dd09ac842b4dc18ade3af8bc8ab97a4cd26bea7f0",
+      "matching_guard_lines": [
+        429
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1249",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 229,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "2a4125a4f55532631b4825e14f63724d6bf23220d7b09c57c96c468b7b7a0031",
+      "matching_guard_lines": [
+        431
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1250",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 230,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "de116c2b9d6d99ebe07fbf3a42331554a03486b8f1e9b686dc34d6e30f5e0809",
+      "matching_guard_lines": [
+        435
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1251",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 233,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "bf68b72b36be56cf7b94a035d58b7adc9cd6e4dc95101adbf7bb609bd96fce8d",
+      "matching_guard_lines": [
+        439
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1252",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 234,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "7e16e00456b376fb67a14efc5c5e08e60f797370f6b692b2be1e08790525688c",
+      "matching_guard_lines": [
+        441
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1253",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 235,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "f4672165a567d19ac5b0853ebdb78eb54178abb7da691734ef03f01168460204",
+      "matching_guard_lines": [
+        443
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1254",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 237,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "8461ccd0cb320c8af11b16d456964d58f1f0eca0fb6fbe5f1f554194adeca07f",
+      "matching_guard_lines": [
+        453
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1255",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 238,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "0472a87ca920250bb8328ed34fbdb6e87904953c050b89c6928d622ef7f7c466",
+      "matching_guard_lines": [
+        457
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1256",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 240,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "36d0275a98ff3b87b735a27614858851175661c6726700e11bfd90aaba3c70b2",
+      "matching_guard_lines": [
+        462
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1257",
+      "file": "platform/automation-infra/verify-workload-inventory.py",
+      "original_line": 242,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1092424870e7cc9a9669e49ba9808ad07886daa352507915cb0a3478c23a8a59",
+      "predicate_ast_sha256": "0c9b552afdd1cee59009dcac756e952983a649f41459073324f1742faa15d68b",
+      "matching_guard_lines": [
+        469
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1355",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 31,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "02f66ce366eab5084926a0af2d1749f1c2b21c5e8c1ac813e031c401ab34a4c5",
+      "matching_guard_lines": [
+        31
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1356",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 32,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "889b06c02821ee1da2a407c0c33bb8cfb8ffd6c52e29da81f17d6ba34ce111a3",
+      "matching_guard_lines": [
+        33
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1357",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 33,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "4fac1b30fd2f1e7388b52ec94e6f599e909d6902a516d730383a824722af767a",
+      "matching_guard_lines": [
+        35
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1358",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 40,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "5d34a3c9dabacf215b9abafdb2c22a3f5928affaf21830afcf67f98ae9ec3bda",
+      "matching_guard_lines": [
+        45
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1359",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 66,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "148c977bf3ea804570b15abe5e1cdbdf1e0a8c2baea9196c6572337a112b06f3",
+      "matching_guard_lines": [
+        72
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1360",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 81,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "d999ca41fa0f036b6e7f53ed8c375381d2ecbc642b60332fb1d6ea926f949316",
+      "matching_guard_lines": [
+        88
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1361",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 97,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "6f2280ce281603b4a8c97c95b187b9dfe3ad11ee7a130d55b991f4658bf7bbf4",
+      "matching_guard_lines": [
+        105
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1362",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 103,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "73c0d18400df9e0f08cafa31c4b0289262386613cdc35cf8d367f11010b47009",
+      "matching_guard_lines": [
+        112
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1363",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 104,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "0aaa93a460dbbef7eea0c258672773bcdbd6315f4a40737ba769927e82cd12f6",
+      "matching_guard_lines": [
+        114
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1364",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 107,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "b6e1e9550e840b70abb345d7e1bf8526cfbaa6eb7670b8585b9f8c049a0465a2",
+      "matching_guard_lines": [
+        118
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1365",
+      "file": "scripts/security/s14/claim_ecr_continuation.py",
+      "original_line": 112,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "d3e38bd21da5b3a8ab631d19d2730dfe0daa6a0b6f97a216eb06cc62abd9ad73",
+      "predicate_ast_sha256": "20d284a842b841d3ac4f533dceb6d38b2f4beedea0124b8036ed0f81c81bf403",
+      "matching_guard_lines": [
+        124
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1367",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 34,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "cc52949726da04f25ff99287e204426e9721955c9af76eb63166318a974dabaa",
+      "matching_guard_lines": [
+        34
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1368",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 37,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "ed42d37e4426b0c1405c75073f302f53244123c10782db72b753fce293983009",
+      "matching_guard_lines": [
+        38
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1369",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 38,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "d5b59fb63f74797e7074cdc023ba86873864fbf85a50d0a3af63fa8f774e10ec",
+      "matching_guard_lines": [
+        40
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1370",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 39,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "dee33ef9de1ecccfd6a0d1f158cd28a9324c7b86feed21dd2bc20793c3d88fb3",
+      "matching_guard_lines": [
+        42
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1371",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 43,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "1cb84ab0ae2f9852ce00ad33dd1c5890cca01c6cd17a1a4d9494432b7b825aa7",
+      "matching_guard_lines": [
+        45
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1372",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 47,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "07a4e32ef75d985633d98111fdbda0428629378a5e7812899ab906fa8a83f398",
+      "matching_guard_lines": [
+        48
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1373",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 63,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "d241066f60716ba3419daf2b1e1ad19dabcce2e19dd883b1c236521c8ccb6cd1",
+      "matching_guard_lines": [
+        65
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1374",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 68,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "65b8b50b4739333356e84bad3a556de8608ea96c2018cd9a5970a799c72025d7",
+      "matching_guard_lines": [
+        69
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1375",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 80,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "b6e1e9550e840b70abb345d7e1bf8526cfbaa6eb7670b8585b9f8c049a0465a2",
+      "matching_guard_lines": [
+        82
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1376",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 88,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "632c6a8ba3e74ce6b817d827e73c37e8ad6889b29455a04c5afac48323d8823d",
+      "matching_guard_lines": [
+        89
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1377",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 96,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "73c0d18400df9e0f08cafa31c4b0289262386613cdc35cf8d367f11010b47009",
+      "matching_guard_lines": [
+        101
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1378",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 97,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "0aaa93a460dbbef7eea0c258672773bcdbd6315f4a40737ba769927e82cd12f6",
+      "matching_guard_lines": [
+        103
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1379",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 138,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "a919218e2e8326808d0cf75797647b13fb11c765bed1e09996d69a1786e0c1cc",
+      "matching_guard_lines": [
+        145
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1380",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 146,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "a45dc9646ec816ec8fa81da0bade633c7580a7b1fdc71e2202196b33dd73f686",
+      "matching_guard_lines": [
+        154
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1381",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 188,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "bc856d831e469cbf89da71489376ecd020bb642256870405728709f2cb7a0df7",
+      "matching_guard_lines": [
+        197
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1382",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 210,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "8de045c9a1d7a392ca92304b1971128b46509d5cc4dc2febe8c159f94c5fdcbc",
+      "matching_guard_lines": [
+        222
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1384",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 220,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "fb8ef290cd1c8b3b33b9103747e45b37d96e60bba5c0ba89fdb729a81b875fcb",
+      "matching_guard_lines": [
+        233
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1385",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 245,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "37a223d6866a32c897c5dc66b65821192b1974a4fe8119bdd56243504d1bfaa0",
+      "matching_guard_lines": [
+        259
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1387",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 277,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "7b0219a8bd4c9b9cb0a767409ed28e16eaeb1e36363be144c7670b4218ca69da",
+      "matching_guard_lines": [
+        292
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1388",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 279,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "3748ad338aaa072cdaa362af6b06fdbab9a1e5e2d74fea63643a19bccfd956f4",
+      "matching_guard_lines": [
+        295
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1389",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 280,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "2e88d619e52e406072e89b85cae1bcf20a99dff999b7cea37ea32b25383e2e12",
+      "matching_guard_lines": [
+        297
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1390",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 293,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "49e7a1b92e1f2c3d292e01110ea634c2373fff0669b542fddad78eeed5814e7c",
+      "matching_guard_lines": [
+        313
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1391",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 318,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "641763b6d0206eded2d28506b6590e3c38ab02246bb015c8ec14d390abd81708",
+      "matching_guard_lines": [
+        339
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1392",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 337,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "a6e98646479f73b9f7228bcf58bb44d7f6b2628173c075567e567d8a787286f8",
+      "matching_guard_lines": [
+        359
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1393",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 340,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "0ae738d08fd9524b927b412dc85e125d629d34e53d2225948b2d7daa711e07b9",
+      "matching_guard_lines": [
+        361
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1394",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 343,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "e2a2248dcdfae69dcb7d8d1de1230b5f37e84c307f627a4b0d426aa3a2fe1565",
+      "matching_guard_lines": [
+        365
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1395",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 345,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "0717bd518599bb145e517c0b333c5806a2a2f1dd4223f23654c770519795d4d2",
+      "matching_guard_lines": [
+        368
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1398",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 354,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "8c11b0b7bcac61536823e6c59d46220e4fcdba6f5411f596cbb109810ceddf7e",
+      "matching_guard_lines": [
+        378
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1399",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 355,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "4f902b2add59f891ee408dc151be4547a1839834178777110956d2aa08d54d5f",
+      "matching_guard_lines": [
+        380
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1404",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 394,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "ebae0bba4c05931a633495a05194940cbeb6dfd8542b7670d7c79d964db41a70",
+      "matching_guard_lines": [
+        422
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1405",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 396,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "8fa8c2db2df4a171b490f6b955b3daefe74e457d2e4077c520dc53cbc03ed79e",
+      "matching_guard_lines": [
+        425
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1406",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 410,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "b3f07f33110187227fd80bbd90e553082035850c612343da7958f7c18280ac49",
+      "matching_guard_lines": [
+        440
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1407",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 441,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "ece13569646c201803459f4753e8c43be0142dfe0d4d9700c7c9dd8ee09bdcfd",
+      "matching_guard_lines": [
+        472
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1408",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 459,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "6244d631bc26397ca6ce2e981678a12be022ac6dd6df2673d0c509fd75b92795",
+      "matching_guard_lines": [
+        491
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1409",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 467,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "89e50f9663dd9c4ba72231464dceab68d78c370650a4cf8e3a2347e02a5645c3",
+      "matching_guard_lines": [
+        500
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1410",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 468,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "e71a20f59a9e43a3891eabab35889416546077e30e47fca1cfbbf8241615476e",
+      "matching_guard_lines": [
+        502
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1411",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 473,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "8fc54612f427d5776480eaaf3ffb523b1077cd58d326ca831e426b8e8ac41e53",
+      "matching_guard_lines": [
+        508
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1412",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 478,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "0837dcddfe2db6bf196cc68790c64978e323e075c6e2116772863a4e19a91580",
+      "matching_guard_lines": [
+        514
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1413",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 479,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "0945278e1aa4f76db8d0f526de7d3a9f6fe2e87454c31310486043c4dc439785",
+      "matching_guard_lines": [
+        516
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1414",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 480,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "97f5058d696f9343188e639a10fdc9ac3272c1d0a7a71857dc84bc68cacb12ed",
+      "matching_guard_lines": [
+        518
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1415",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 485,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "4553b4c81aaa6f21864b388595dd3a078cfc630f7bdaae54685b9bf0b029eede",
+      "matching_guard_lines": [
+        524
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1416",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 494,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "a697a1458513e9d421afb442f45dff8ebe36418f43105cdb9dfc30a67bc38d5d",
+      "matching_guard_lines": [
+        534
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1417",
+      "file": "scripts/security/s14/diagnostic.py",
+      "original_line": 495,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "1fb36c9593b495998e87a599dd17e988870c16173bab1b76cd3d21021182103f",
+      "predicate_ast_sha256": "e74017fff3100167b26680c24489b8b179e6cce6dc396b17e75ddb5f56220722",
+      "matching_guard_lines": [
+        536
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1418",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 35,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "ff57520bebb3ed9d1b15c6214e98924f1fc27fb47115d5d289145392bbff5ea3",
+      "matching_guard_lines": [
+        35
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1419",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 36,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "9dca7afee1968073e98b9fe5a170695b5f610fb6e3d0c744576a5b22ee11f001",
+      "matching_guard_lines": [
+        37
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1420",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 37,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "349bbd5f1604e6252bc5ec09affc562f81a31edd343505ae483da63cc466cb5c",
+      "matching_guard_lines": [
+        39
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1421",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 38,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "3d6a0e38887c4a46b59fdbc318999c6ef81c7ee253e082cdc9c94d28f9518c3f",
+      "matching_guard_lines": [
+        41
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1422",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 39,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "a0d2e54a9ae4fe7966618fab60916d10f522d3bc3836281dd6cf8feeaa20f9d2",
+      "matching_guard_lines": [
+        43
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1423",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 42,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "8a1c6239cc6b039f5a2d5948ba7c8cc8b9fd22fe1ea192b2538b9527c88540f6",
+      "matching_guard_lines": [
+        49
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1424",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 43,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "ca5d8bd9865e1ce8bc580ada816309c9859e0a48ac1db5f86c7f0cf009aa0f1d",
+      "matching_guard_lines": [
+        51
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1425",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 47,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "1dd91d6a442fd65a7570bb21a7088d5094483c12bb5ad4c42a662a4340cf2235",
+      "matching_guard_lines": [
+        56
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1426",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 48,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "a62ef664fe8faa1655d6c37592fd7924d238ecb59f594c42bbb41f0632da3b64",
+      "matching_guard_lines": [
+        58
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1427",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 51,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "3bc00a9e7f2007e4827567d7a2b45c5930ce6594a1d5768984ae686a08f3a019",
+      "matching_guard_lines": [
+        62
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1428",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 52,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "964679761928170db5435fb30bf5eaca927abe95e06392f4a1c9675ba9b3ac12",
+      "matching_guard_lines": [
+        64
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1429",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 59,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "6b597ae4d2a8714e4913a161c4426678247a994d4547bac95740418eedde6f69",
+      "matching_guard_lines": [
+        72
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1430",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 60,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "70c98526470e4da19dc2ae781ffbad56c8cc161f7d2d9fbc02a57e6f8615d0d2",
+      "matching_guard_lines": [
+        74
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1431",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 61,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "7d5e7b3a5225be0f4027761f021f2d94ab1ce6ce3f498db8907f4b8c14f4cb85",
+      "matching_guard_lines": [
+        76
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1432",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 62,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "3f18e3b7a49dcff409f1a7fcda1662ade92b164d51c220e0a8e390c5e0fc3489",
+      "matching_guard_lines": [
+        78
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1433",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 63,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "646fb7c379e87352e497a883c30a243a718344477dfa6afdc6c42818eaa6cf43",
+      "matching_guard_lines": [
+        80
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1434",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 64,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "db0a780eb07879fc9cb03f0297c1e79ab7c113b2dba3c1cb8a9f51b566b77303",
+      "matching_guard_lines": [
+        82
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1435",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 65,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "f51c8a0a1e81f46c899a4fa14364c2b3d397afab6de47bd93b8fd7d6c4e6437a",
+      "matching_guard_lines": [
+        84
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1436",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 66,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "9a19fb33ab34082ea9d91d5f7e171967ee5d641dc3b1645f38c81042c0121448",
+      "matching_guard_lines": [
+        86
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1437",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 67,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "795c3b54b8e2a607ace65b66484c43a709403b7b2bbcb08cc379cc0672f092dc",
+      "matching_guard_lines": [
+        88
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1438",
+      "file": "scripts/security/s14/recovery_contract.py",
+      "original_line": 68,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "52231e94e5943331b090b1a609b4247489a0d667b7ec231d620a70a44e9e3b06",
+      "predicate_ast_sha256": "889b06c02821ee1da2a407c0c33bb8cfb8ffd6c52e29da81f17d6ba34ce111a3",
+      "matching_guard_lines": [
+        90
+      ],
+      "historical_evidence": "evidence/bandit-optimization-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1443",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 14,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "ef7bab49721c6fac5cf7d60f1916a11c7ebb00d294d38b9a7e32b697d282ec14",
+      "predicate_ast_sha256": "1eb317733381d51847c57d8563f67e4bf3c6886464529e0bb2c3a55918c96bad",
+      "matching_guard_lines": [
+        25
+      ],
+      "historical_evidence": "evidence/bandit-qualified-report-guards.json",
+      "prior_file_sha256": "61aeded014467627c67ebbc80162ff7f603729bf1944dc61471dd1825bf21693",
+      "prior_predicate_ast_sha256": "1eb317733381d51847c57d8563f67e4bf3c6886464529e0bb2c3a55918c96bad",
+      "current_revalidation": "Root review after JUnit binding repair: guard message/outcome retained; hash check now uses content read once and subsequently parsed from validated_artifacts. Other original predicates unchanged. Eight XML/artifact-binding tests pass; no live qualification inferred."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1444",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 17,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "ef7bab49721c6fac5cf7d60f1916a11c7ebb00d294d38b9a7e32b697d282ec14",
+      "predicate_ast_sha256": "b36434938b1b9148652c1da393b3eb121ca3d647c7b598292288c8619558541a",
+      "matching_guard_lines": [
+        30
+      ],
+      "historical_evidence": "evidence/bandit-qualified-report-guards.json",
+      "prior_file_sha256": "61aeded014467627c67ebbc80162ff7f603729bf1944dc61471dd1825bf21693",
+      "prior_predicate_ast_sha256": "b36434938b1b9148652c1da393b3eb121ca3d647c7b598292288c8619558541a",
+      "current_revalidation": "Root review after JUnit binding repair: guard message/outcome retained; hash check now uses content read once and subsequently parsed from validated_artifacts. Other original predicates unchanged. Eight XML/artifact-binding tests pass; no live qualification inferred."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1445",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 22,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "ef7bab49721c6fac5cf7d60f1916a11c7ebb00d294d38b9a7e32b697d282ec14",
+      "predicate_ast_sha256": "e614e54dbaa8b71f29f5412a3d73608f76997dc51abc88cc23976cd38f3db306",
+      "matching_guard_lines": [
+        39
+      ],
+      "historical_evidence": "evidence/bandit-qualified-report-guards.json",
+      "prior_file_sha256": "61aeded014467627c67ebbc80162ff7f603729bf1944dc61471dd1825bf21693",
+      "prior_predicate_ast_sha256": "fb3d32c34ab12da732c3a49c03f02e4838c4a6f953992890b93c664ca0172010",
+      "current_revalidation": "Root review after JUnit binding repair: guard message/outcome retained; hash check now uses content read once and subsequently parsed from validated_artifacts. Other original predicates unchanged. Eight XML/artifact-binding tests pass; no live qualification inferred."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1447",
+      "file": "scripts/task-api/verify-qualified-report.py",
+      "original_line": 32,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "ef7bab49721c6fac5cf7d60f1916a11c7ebb00d294d38b9a7e32b697d282ec14",
+      "predicate_ast_sha256": "1bead891e6519d66b56c8367f500bb69a7b5c16563cf80f956e200b620ccb6ae",
+      "matching_guard_lines": [
+        59
+      ],
+      "historical_evidence": "evidence/bandit-qualified-report-guards.json",
+      "prior_file_sha256": "61aeded014467627c67ebbc80162ff7f603729bf1944dc61471dd1825bf21693",
+      "prior_predicate_ast_sha256": "1bead891e6519d66b56c8367f500bb69a7b5c16563cf80f956e200b620ccb6ae",
+      "current_revalidation": "Root review after JUnit binding repair: guard message/outcome retained; hash check now uses content read once and subsequently parsed from validated_artifacts. Other original predicates unchanged. Eight XML/artifact-binding tests pass; no live qualification inferred."
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1459",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 17,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "bd51c2f54d6e8bcf1870272c8fcd7c1485a9824b0985ee62bf89c985c179d076",
+      "matching_guard_lines": [
+        23
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1460",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 18,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "bc616a3f2a2f11fc38808a779160397c9287d0f8dd0ec764de6a5f1b451c1575",
+      "matching_guard_lines": [
+        24
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1461",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 20,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "29a5e41cd0074eed2e9aa4160049fa69b63a5dd27e1d8584cc3e7d3b38fa3403",
+      "matching_guard_lines": [
+        26
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1462",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 21,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "12b10768b5a827b027346f1f7d0df44830c8d519e21781109045fb8327a68459",
+      "matching_guard_lines": [
+        27
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1463",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 23,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "333afcec0e6d4a029c45ffcdac3670459ce09d6d299b72fe550d363bbd6c3386",
+      "matching_guard_lines": [
+        29
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1464",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 26,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "a88d6ab443134b263f2371e207dab3632bc3c01057f3ffd8d3b9f219d19dc5ac",
+      "matching_guard_lines": [
+        34
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1465",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 32,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "e6e1d68652ee932735ac5e9dc2509858259ce608bfc1b59eb1cb760bfdd19ac7",
+      "matching_guard_lines": [
+        41
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1466",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 33,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "45930b454d50fe6d2ae70145106218fe297c492e6115c9b9d0cd379c18453676",
+      "matching_guard_lines": [
+        45
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1467",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 38,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "c8ac351530c177998fc41f05f27baaf72813b3aff4a707eea2530f2378f59baf",
+      "matching_guard_lines": [
+        53
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1468",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 39,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "0ecf6e08aa0ffb3c123794bfc2486ac5158c7c4f160d87415d0ef18780b37bd9",
+      "matching_guard_lines": [
+        57
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1469",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 40,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "0d886f52b158d690118de3c5b82c183d1bd4870a231484461cd93ea82012cef5",
+      "matching_guard_lines": [
+        61
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1470",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 50,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "c1837ed4b3737b16bf55c7e7598a4affd5c8f9d11acd597acf2b4a21a8700d52",
+      "matching_guard_lines": [
+        74
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    },
+    {
+      "selector": "bandit|bandit-results.sarif|run=0|ri=1471",
+      "file": "scripts/task-api/verify_v4_evidence.py",
+      "original_line": 51,
+      "rule": "B101",
+      "severity": "LOW",
+      "current_file_sha256": "b7464a604e5f54b6812608ce5c8a7faa8fdf3162a1ec2d813c9e397cb7b92600",
+      "predicate_ast_sha256": "23138912a2468c5da3bf792525e24317650460c9241d3d891bc6b99fe01524e4",
+      "matching_guard_lines": [
+        78
+      ],
+      "historical_evidence": "evidence/bandit-v4-evidence-guards.json"
+    }
+  ],
+  "fresh_validation": "79tests pass including old optimized-deployment tamper negatives and qualified/v4 evidence CLI fixtures, plus4 privacy handler subtests. All10 files of original bulk guard receipt match recorded candidate SHA256 exactly."
+}

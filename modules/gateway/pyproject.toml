@@ -5,6 +5,16 @@ description = "Multi-tenant SaaS proxy for Amazon Bedrock"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.136.3",
+    # anyio is transitive (fastapi→starlette) but MUST be pinned: the Docker build
+    # installs with bare `pip install .` (uv.lock is not consulted), and the OTel
+    # operator injects /otel-auto-instrumentation-python ahead of site-packages with
+    # its own old typing_extensions.py. anyio >=4.15.0 imports
+    # typing_extensions.sentinel which is absent from that shadow copy, crash-looping
+    # the pod at import (gateway deploy outage, 2026-09-07). 4.14.2 is the highest
+    # version that does NOT use sentinel. Keep in sync with uv.lock so the image
+    # runs what CI tested.
+    # Issue #6112: bumped from 4.12.1 to fix CVE-2026-63374 and CVE-2026-64847.
+    "anyio==4.14.2",
     "uvicorn==0.34.0",
     "sqlalchemy[asyncio]==2.0.46",
     "asyncpg==0.30.0",
@@ -17,11 +27,24 @@ dependencies = [
     "prometheus-client==0.22.0",
     "passlib[bcrypt]==1.7.4",
     "PyJWT[crypto]==2.13.0",
+    # Keep bare pip image builds on the same patched crypto runtime as uv.lock.
+    "cryptography==50.0.0",
     "python-json-logger==2.0.7",
     "email-validator==2.1.1",
     "python-multipart>=0.0.9",
+    "rfc8785==0.1.4",
     # Issue #143: Chat logging uses boto3 with asyncio.to_thread for async S3/Comprehend
     # No additional deps needed; aioboto3 could be added for native async support if needed
+    #
+    # Issue #5150: promoted from the `dev` extra to a runtime dependency. The
+    # running gateway now parses the reviewed deployment manifest
+    # (`orchestration/manifests/orchestration-deployments.yaml`) via
+    # `deployment_manifest.load_packaged_manifest()`. The Dockerfile installs with
+    # bare `pip install .`, which does not resolve extras, so leaving this in `dev`
+    # would pass every test and raise ModuleNotFoundError in the image. Five test
+    # modules (issue #5039) also import it; a runtime dep covers them too.
+    "pyyaml>=6.0",
+    "websockets==17.1",
 ]
 
 [project.optional-dependencies]
@@ -30,11 +53,41 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "fakeredis==2.26.2",
+    # Issue #4287: fakeredis only evaluates Lua via this optional extra. Without
+    # it register_script/EVAL raise ResponseError, which is why five
+    # tests/ratelimit/test_redis_backend.py cases are xfail'd as "fakeredis
+    # doesn't support Lua" — it does, given lupa. The budget reservation counter
+    # IS a Lua script, so its tests must run against a real Lua engine rather
+    # than a mock of the thing under test.
+    # Pin note: keep redis at 5.2.1 above. redis-py 8.x negotiates RESP3, which
+    # fakeredis rejects with "unknown command 'hello'".
+    "lupa==2.8",
     "moto==5.0.27",
     "ruff==0.9.6",
     "pytest-timeout==2.3.1",
+    # CI wall-clock: the suite is ~13.9k tests that previously ran strictly
+    # serially, taking ~45min. xdist runs them across processes; split shards
+    # them across runners. Measured on one machine over a 4.2k-test slice:
+    # serial 477s -> -n 4 205s -> -n 8 138s (scaling is sublinear, so shard
+    # across runners too rather than only raising -n).
+    # NEVER pass `-n auto`: nproc inside the ARC runner reports the node's 32
+    # cores, not the pod's cgroup limit, so auto oversubscribes ~4-8x and is
+    # slower than a pinned value. Keep -n aligned to the runner's cpu limit
+    # (see modules/agent-factory/infra/modules/arc-runner/main.tf).
+    "pytest-xdist==3.8.0",
+    "pytest-split==0.11.0",
     "aiosqlite>=0.20.0",
     "psycopg2-binary>=2.9.9",
+    # Issue #4969: a real PostgreSQL 16 server for tests/migrations/. The V2
+    # pricing schema is built out of NUMERIC(14,10), JSONB, identity columns,
+    # plpgsql triggers, SELECT ... FOR UPDATE and the 42P01/42703 error codes the
+    # feature-detecting readers key on — none of which SQLite has, so a SQLite run
+    # would report green while testing none of the behavior that matters. Ships a
+    # self-contained binary: no Docker, no root, no host port.
+    # Marker: pgserver publishes wheels for <=3.12 only. CI's Test job runs 3.12,
+    # so these tests execute there; on a 3.13 interpreter the fixtures skip
+    # (importorskip) rather than fail.
+    "pgserver>=0.1.4; python_version < '3.13'",
 ]
 # Issue #20: Playwright browser tests for frontend smoke testing
 browser = [
@@ -62,6 +115,18 @@ line-length = 150
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+[tool.coverage.run]
+# Issue #4213. SQLAlchemy's asyncio layer runs awaited ORM work inside greenlets
+# (`greenlet_spawn`), and coverage.py's default thread-only tracer does not follow
+# a greenlet switch. Without this, every line of an async route body that awaits
+# the ORM is reported as MISSING even though its tests pass and assert real
+# database state — `src/orchestration/controls.py` measured 74% against a >=90%
+# gate while genuinely being at 98%, and `src/orchestration/routes.py` measured
+# 66%. That under-reporting is the dangerous direction for a coverage gate: it
+# hides which lines are actually untested behind a wall of false negatives.
+# `greenlet` is a hard install dependency of SQLAlchemy, so this is always valid.
+concurrency = ["thread", "greenlet"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
@@ -85,10 +150,30 @@ markers = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "pricing_policy*"]
+
+# Issue #4969: the rate snapshots are data, not code, so setuptools would omit
+# them from an installed/built distribution and `load_snapshot()` would raise
+# FileNotFoundError at runtime while working fine from a source checkout.
+[tool.setuptools.package-data]
+pricing_policy = ["snapshots/*.json"]
+# Issue #5150: the reviewed deployment manifest is read by the running gateway
+# (`deployment_manifest.load_packaged_manifest()`), so it has to be in the
+# distribution, not just in the repository. Same failure as the snapshots above:
+# omitted from a wheel, it raises at runtime while every test passes from a
+# source checkout.
+"src.orchestration.manifests" = ["*.yaml"]
+"src.domain_proxy" = ["*.json"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/cli/conftest.py" = ["N802", "E501"]
+# N802: BaseHTTPRequestHandler dispatches on do_GET/do_POST/... — the mixedCase
+# names are the stdlib's contract, not ours (Issue #4154 mock upstream gateway).
+"tests/cli/test_bg_cognito_auth_serve.py" = ["N802"]
+"tests/cli/test_bg_cognito_auth_login_web.py" = ["N802"]
+"tests/cli/test_adp_update.py" = ["N802"]
+"tests/cli/test_adp_install.py" = ["N802"]
+"tests/cli/test_adp_flow.py" = ["N802"]
 # E402: pytestmark must appear before project imports for pytest collection;
 # this is a deliberate pattern across all e2e test files.
 "tests/e2e/test_*.py" = ["E402"]

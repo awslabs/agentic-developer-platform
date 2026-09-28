@@ -11,8 +11,8 @@
 #
 # This custom NodePool overrides that behaviour for workloads that select it:
 #   - weight 100  -> preferred over general-purpose for new provisioning
-#   - instance-size capped to <= xlarge -> no oversized half-empty nodes; small
-#     always-on infra pods (KEDA 100m, adot, agent-context) pack tightly
+#   - instance-size capped to <= 2xlarge -> room for a 4-vCPU CI runner plus
+#     system overhead; smaller nodes remain eligible for always-on infra pods
 #   - disruption budget 50% with reasons [Underutilized, Empty] -> re-packs many
 #     nodes per cycle instead of one, so the cluster actually consolidates down
 #
@@ -67,12 +67,13 @@ locals {
             - key: eks.amazonaws.com/instance-generation
               operator: Gt
               values: ["4"]
-            # Size cap: keep nodes small so tiny always-on infra pods bin-pack
-            # instead of each landing on its own oversized node. xlarge (4 vCPU /
-            # ~8-16Gi) is the ceiling — still fits the agent worker (1 vCPU/4Gi).
+            # A CI runner requests 4 CPU, so a 4-vCPU xlarge cannot fit it
+            # after kube/system reservations and DaemonSet requests. Allow
+            # 8-vCPU 2xlarge nodes for the existing arc-runner-org pool (up to
+            # 40 runners); retain smaller sizes for lighter workloads.
             - key: eks.amazonaws.com/instance-size
               operator: In
-              values: ["medium", "large", "xlarge"]
+              values: ["medium", "large", "xlarge", "2xlarge"]
       disruption:
         consolidationPolicy: WhenEmptyOrUnderutilized
         consolidateAfter: 30s

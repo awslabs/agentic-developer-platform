@@ -71,7 +71,7 @@ export function TrendStrip({ daily }: TrendStripProps) {
 
   return (
     <div
-      className="bg-white dark:bg-gray-800 rounded-lg shadow px-4 py-3"
+      className="blueprint-card bg-white dark:bg-gray-800 rounded-lg shadow px-4 py-3"
       aria-label="7-day activity trend"
       data-testid="trend-strip"
     >

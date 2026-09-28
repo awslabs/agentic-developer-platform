@@ -1,0 +1,51 @@
+{
+  "curl_openssl": {
+    "considered": 2072,
+    "passed": 1835,
+    "reported_pass_rate": "100%"
+  },
+  "curl_gnutls": {
+    "considered": 2072,
+    "passed": 1831,
+    "reported_pass_rate": "100%"
+  },
+  "skips": "upstream unsupported features and root SSH fixture skips retained; nonflaky suite selected",
+  "quic_static_unit_suites": {
+    "nghttp3": "pass",
+    "ngtcp2": "pass",
+    "test_harness_adjustment": "link tests to production static PIC lib/*.o; no source/test assertions changed"
+  },
+  "symbol_abi": {
+    "openssl_versioned_public_symbols_preserved": 96,
+    "gnutls_versioned_public_symbols_preserved": 96,
+    "missing": []
+  },
+  "git_https_tls_refusal": {
+    "deepwiki_uid10001": "pass",
+    "worker_uid1001": "pass",
+    "skypilot_uid1000": "pass"
+  },
+  "deepwiki": [
+    "API/UI/cache",
+    "tar",
+    "stdlib",
+    "Node hostname"
+  ],
+  "skypilot": [
+    "health",
+    "restart",
+    "status request roundtrip",
+    "task parser",
+    "native imports"
+  ],
+  "worker": [
+    "shared contract selfcheck",
+    "node/npm/pnpm/yarn/AWS CLI/Terraform/curl/Git version checks"
+  ],
+  "static_dependency_review": {
+    "grype_matches": 0,
+    "ngtcp2_upstream_advisories": "CVE-2026-40170 fixed1.22.1 and CVE-2024-52811 fixed1.9.1; installed1.25.0",
+    "nghttp3_upstream_advisories": "none returned by upstream repository API at review; not proof of absence of vulnerabilities"
+  },
+  "live_acceptance": false
+}

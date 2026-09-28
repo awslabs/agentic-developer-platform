@@ -5,6 +5,8 @@ This module implements the IRateLimitService interface and provides
 hierarchical rate limit enforcement.
 """
 
+import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import Any
@@ -65,6 +67,10 @@ class RateLimitService(IRateLimitService):
                 key_prefix=self._config.redis_key_prefix,
                 default_ttl=self._config.redis_key_ttl,
             )
+        if self._config.backend_type != "memory" or not (
+            (self._config.allow_memory_backend and self._config.security_profile == "development") or os.environ.get("TESTING") == "1"
+        ):
+            raise RuntimeError("Shared rate limiting requires RATELIMIT_BACKEND_TYPE=redis and BG_REDIS_URL (or RATELIMIT_REDIS_URL)")
         return InMemoryBackend(
             cleanup_interval=self._config.cleanup_interval_seconds,
             entry_ttl=self._config.entry_ttl_seconds,
@@ -83,13 +89,13 @@ class RateLimitService(IRateLimitService):
         async with factory() as session:
             yield session
 
-    async def _load_from_db(self) -> None:
+    async def _load_from_db(self, *, force: bool = False) -> None:
         """Load rate limit configs from the database into memory.
 
         Called lazily on first request and refreshed every _DB_RELOAD_INTERVAL seconds.
         """
         now = time.monotonic()
-        if now - self._last_db_load < _DB_RELOAD_INTERVAL:
+        if not force and now - self._last_db_load < _DB_RELOAD_INTERVAL:
             return
 
         try:
@@ -101,7 +107,11 @@ class RateLimitService(IRateLimitService):
 
             new_limits: dict[str, dict[str, Any]] = {}
             for row in rows:
-                key = f"{row.entity_type}:{row.entity_id}:{row.org_id}"
+                try:
+                    key = self._get_entity_key(EntityType(row.entity_type), row.entity_id, row.org_id)
+                except ValueError:
+                    logger.error("Ignoring rate limit config with unknown entity type: %s", row.entity_type)
+                    continue
                 limits: dict[str, Any] = {}
                 if row.rpm is not None:
                     limits["rpm"] = row.rpm
@@ -109,7 +119,17 @@ class RateLimitService(IRateLimitService):
                     limits["tpm"] = row.tpm
                 if row.concurrent_requests is not None:
                     limits["concurrent_requests"] = row.concurrent_requests
-                new_limits[key] = limits
+                if key in new_limits:
+                    # Older writers could store both org spellings. Keep the
+                    # strictest positive value for each control until migration
+                    # 044's duplicate check has been resolved by the operator.
+                    logger.warning("Duplicate rate limit scope %s; enforcing the strictest configured limits", key)
+                    for name, value in limits.items():
+                        previous = new_limits[key].get(name)
+                        if previous is None or previous <= 0 or (value > 0 and value < previous):
+                            new_limits[key][name] = value
+                else:
+                    new_limits[key] = limits
 
             self._rate_limits = new_limits
             self._last_db_load = now
@@ -117,8 +137,7 @@ class RateLimitService(IRateLimitService):
 
         except Exception as e:
             logger.error(f"Failed to load rate limit configs from DB: {e}", exc_info=True)
-            # Keep existing in-memory configs on failure
-            self._last_db_load = now  # Don't retry immediately
+            raise RuntimeError("Rate limit configuration store unavailable") from e
 
     def _get_entity_key(self, entity_type: EntityType, entity_id: str, org_id: str) -> str:
         """Generate a unique key for an entity."""
@@ -165,9 +184,11 @@ class RateLimitService(IRateLimitService):
         if context.department_id:
             entities.append((EntityType.DEPARTMENT, context.department_id))
 
-        # Organization level
-        if context.org_id:
-            entities.append((EntityType.ORGANIZATION, context.org_id))
+        # Organization level. Issue #4132: the quota bucket follows attribution
+        # for the same reason budget does — a hosted run consumes the triggering
+        # tenant's quota, not one shared __platform__ bucket.
+        if context.attributed_org_id:
+            entities.append((EntityType.ORGANIZATION, context.attributed_org_id))
 
         return entities
 
@@ -179,20 +200,20 @@ class RateLimitService(IRateLimitService):
         applies the most restrictive limit.
         """
         # Ensure configs are loaded from DB
-        await self._load_from_db()
+        await asyncio.wait_for(self._load_from_db(force=True), timeout=3)
         is_service_account = context.account_type == "service"
         entities = self._get_hierarchy_entities(context)
 
         # Check each level if hierarchy enforcement is enabled
         if self._config.enforce_hierarchy:
             for entity_type, entity_id in entities:
-                result = await self._check_entity_limits(entity_type, entity_id, context.org_id, is_service_account)
+                result = await self._check_entity_limits(entity_type, entity_id, context.attributed_org_id, is_service_account)
                 if not result.allowed:
                     return result
         else:
             # Only check the user/service account level
             entity_type, entity_id = entities[0]
-            result = await self._check_entity_limits(entity_type, entity_id, context.org_id, is_service_account)
+            result = await self._check_entity_limits(entity_type, entity_id, context.attributed_org_id, is_service_account)
             if not result.allowed:
                 return result
 
@@ -253,64 +274,75 @@ class RateLimitService(IRateLimitService):
 
         This should be called when a request is being processed.
         """
+        await asyncio.wait_for(self._load_from_db(force=True), timeout=3)
         is_service_account = context.account_type == "service"
         entities = self._get_hierarchy_entities(context)
 
         # Consume from each level if hierarchy enforcement is enabled
         levels_to_consume = entities if self._config.enforce_hierarchy else [entities[0]]
 
-        for entity_type, entity_id in levels_to_consume:
-            limits = self._get_limits_for_entity(entity_type, entity_id, context.org_id, is_service_account)
-            key = self._get_entity_key(entity_type, entity_id, context.org_id)
+        acquired: list[str] = []
+        completed = False
+        try:
+            for entity_type, entity_id in levels_to_consume:
+                limits = self._get_limits_for_entity(entity_type, entity_id, context.attributed_org_id, is_service_account)
+                key = self._get_entity_key(entity_type, entity_id, context.attributed_org_id)
 
-            # Consume RPM token
-            if limits["rpm"]:
-                rpm = limits["rpm"]
-                refill_rate = rpm / 60.0
-                max_tokens = int(rpm * self._config.burst_multiplier / 60.0 * self._config.refill_buffer_seconds)
-                max_tokens = max(1, max_tokens)
+                # Consume RPM token
+                if limits["rpm"]:
+                    rpm = limits["rpm"]
+                    refill_rate = rpm / 60.0
+                    max_tokens = int(rpm * self._config.burst_multiplier / 60.0 * self._config.refill_buffer_seconds)
+                    max_tokens = max(1, max_tokens)
 
-                success, remaining, retry_after = await self._backend.consume(key, LimitType.RPM, max_tokens, refill_rate, 1)
-                if not success:
-                    return RateLimitCheckResult(
-                        allowed=False,
-                        limit_type="rpm",
-                        limit=rpm,
-                        remaining=remaining,
-                        retry_after_seconds=retry_after,
-                    )
+                    success, remaining, retry_after = await self._backend.consume(key, LimitType.RPM, max_tokens, refill_rate, 1)
+                    if not success:
+                        return RateLimitCheckResult(
+                            allowed=False,
+                            limit_type="rpm",
+                            limit=rpm,
+                            remaining=remaining,
+                            retry_after_seconds=retry_after,
+                        )
 
-            # Consume TPM tokens
-            if limits["tpm"] and tokens > 0:
-                tpm = limits["tpm"]
-                refill_rate = tpm / 60.0
-                max_tokens_bucket = int(tpm * self._config.burst_multiplier / 60.0 * self._config.refill_buffer_seconds)
-                max_tokens_bucket = max(tokens, max_tokens_bucket)
+                # Consume TPM tokens
+                if limits["tpm"] and tokens > 0:
+                    tpm = limits["tpm"]
+                    refill_rate = tpm / 60.0
+                    max_tokens_bucket = int(tpm * self._config.burst_multiplier / 60.0 * self._config.refill_buffer_seconds)
+                    max_tokens_bucket = max(tokens, max_tokens_bucket)
 
-                success, remaining, retry_after = await self._backend.consume(key, LimitType.TPM, max_tokens_bucket, refill_rate, tokens)
-                if not success:
-                    return RateLimitCheckResult(
-                        allowed=False,
-                        limit_type="tpm",
-                        limit=tpm,
-                        remaining=remaining,
-                        retry_after_seconds=retry_after,
-                    )
+                    success, remaining, retry_after = await self._backend.consume(key, LimitType.TPM, max_tokens_bucket, refill_rate, tokens)
+                    if not success:
+                        return RateLimitCheckResult(
+                            allowed=False,
+                            limit_type="tpm",
+                            limit=tpm,
+                            remaining=remaining,
+                            retry_after_seconds=retry_after,
+                        )
 
-            # Increment concurrent count
-            if limits["concurrent"]:
-                await self._backend.set_concurrent_limit(key, limits["concurrent"])
-                success, current, limit = await self._backend.increment_concurrent(key)
-                if not success:
-                    return RateLimitCheckResult(
-                        allowed=False,
-                        limit_type="concurrent",
-                        limit=limit,
-                        remaining=0,
-                        retry_after_seconds=5,
-                    )
+                # Increment concurrent count
+                if limits["concurrent"]:
+                    await self._backend.set_concurrent_limit(key, limits["concurrent"])
+                    success, current, limit = await self._backend.increment_concurrent(key)
+                    if success:
+                        acquired.append(key)
+                    if not success:
+                        return RateLimitCheckResult(
+                            allowed=False,
+                            limit_type="concurrent",
+                            limit=limit,
+                            remaining=0,
+                            retry_after_seconds=5,
+                        )
 
-        return RateLimitCheckResult(allowed=True)
+            completed = True
+            return RateLimitCheckResult(allowed=True)
+        finally:
+            if not completed:
+                for key in acquired:
+                    await self._backend.decrement_concurrent(key)
 
     async def release_concurrent(self, context: TokenContext) -> None:
         """Release a concurrent request slot after request completes."""
@@ -320,7 +352,7 @@ class RateLimitService(IRateLimitService):
         levels_to_release = entities if self._config.enforce_hierarchy else [entities[0]]
 
         for entity_type, entity_id in levels_to_release:
-            key = self._get_entity_key(entity_type, entity_id, context.org_id)
+            key = self._get_entity_key(entity_type, entity_id, context.attributed_org_id)
             await self._backend.decrement_concurrent(key)
 
     async def configure_limits(
@@ -331,31 +363,20 @@ class RateLimitService(IRateLimitService):
         config: RateLimitConfigRequest,
     ) -> RateLimitConfigResponse:
         """Configure rate limits for an entity."""
-        key = self._get_entity_key(entity_type, entity_id, org_id)
+        from src.admin.schemas import RateLimitConfigUpdateRequest
+        from src.admin.service import AdminService
 
-        limits = self._rate_limits.get(key, {})
-        if config.rpm is not None:
-            limits["rpm"] = config.rpm
-        if config.tpm is not None:
-            limits["tpm"] = config.tpm
-        if config.concurrent_requests is not None:
-            limits["concurrent_requests"] = config.concurrent_requests
         if config.burst_size is not None:
-            limits["burst_size"] = config.burst_size
-
-        self._rate_limits[key] = limits
-
-        logger.info(f"Configured rate limits for {entity_type.value} {entity_id}: {limits}")
-
-        return RateLimitConfigResponse(
-            entity_type=entity_type.value,
-            entity_id=entity_id,
-            org_id=org_id,
-            rpm=limits.get("rpm"),
-            tpm=limits.get("tpm"),
-            concurrent_requests=limits.get("concurrent_requests"),
-            burst_size=limits.get("burst_size"),
-        )
+            raise ValueError("Per-entity burst_size is unsupported; configure the global burst policy")
+        async with self._get_session() as session:
+            stored = await AdminService(session).update_ratelimit_config(
+                org_id,
+                entity_type.value,
+                entity_id,
+                RateLimitConfigUpdateRequest(rpm=config.rpm, tpm=config.tpm, concurrent_requests=config.concurrent_requests),
+            )
+        self._last_db_load = 0
+        return RateLimitConfigResponse(**stored.model_dump())
 
     async def get_limits(
         self,
@@ -364,6 +385,7 @@ class RateLimitService(IRateLimitService):
         org_id: str,
     ) -> RateLimitConfigResponse | None:
         """Get configured rate limits for an entity."""
+        await asyncio.wait_for(self._load_from_db(force=True), timeout=3)
         key = self._get_entity_key(entity_type, entity_id, org_id)
         limits = self._rate_limits.get(key)
 
@@ -388,6 +410,7 @@ class RateLimitService(IRateLimitService):
         is_service_account: bool = False,
     ) -> RateLimitStatusResponse:
         """Get current rate limit status for an entity."""
+        await asyncio.wait_for(self._load_from_db(force=True), timeout=3)
         key = self._get_entity_key(entity_type, entity_id, org_id)
         limits = self._get_limits_for_entity(entity_type, entity_id, org_id, is_service_account)
 
@@ -471,15 +494,25 @@ class RateLimitService(IRateLimitService):
         org_id: str,
     ) -> bool:
         """Delete configured rate limits for an entity."""
-        key = self._get_entity_key(entity_type, entity_id, org_id)
+        from src.admin.exceptions import ResourceNotFoundError
+        from src.admin.service import AdminService
 
-        if key in self._rate_limits:
-            del self._rate_limits[key]
-            # Reset backend state
-            await self._backend.reset(key, LimitType.RPM)
-            await self._backend.reset(key, LimitType.TPM)
-            return True
-        return False
+        async with self._get_session() as session:
+            try:
+                await AdminService(session).delete_ratelimit(org_id, entity_type.value, entity_id)
+            except ResourceNotFoundError:
+                return False
+        self._last_db_load = 0
+        key = self._get_entity_key(entity_type, entity_id, org_id)
+        await self._backend.reset(key, LimitType.RPM)
+        await self._backend.reset(key, LimitType.TPM)
+        return True
+
+    async def initialize(self) -> None:
+        if isinstance(self._backend, RedisBackend):
+            client = await self._backend._get_client()
+            await client.ping()
+        logger.info("Rate limit backend initialized: %s", type(self._backend).__name__)
 
     async def close(self) -> None:
         """Close and cleanup resources."""

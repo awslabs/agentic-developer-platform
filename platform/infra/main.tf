@@ -16,9 +16,30 @@ terraform {
   }
 
   required_providers {
+    # AWS >= 6.42.0 is a state-decoding floor, not a feature preference (#5831).
+    #
+    # `~> 5.0` resolves to 5.100.0, the final 5.x release. Provider 5.x publishes
+    # no *resource identity* schema for aws_eks_addon, so once the live state
+    # record carries the identity fields a newer provider writes
+    # (account_id, addon_name, cluster_name, region), Terraform can still plan
+    # but can no longer serialise that state to JSON:
+    #
+    #   Failed to marshal plan to json: error marshaling prior state:
+    #   no resource identity schema found for aws_eks_addon.coredns
+    #
+    # That breaks `terraform show -json <saved-plan>`, which is how a saved plan
+    # is inspected before apply — so the constraint, not the plan, was blocking
+    # scoped-plan review. Note a plain `terraform plan` still reports "no
+    # changes" here, which is why this surfaced only at the JSON-export step.
+    #
+    # 6.42.0 specifically: that release added aws_eks_addon `namespace_config`,
+    # a field already present in the dev state record. Verified empirically with
+    # Terraform 1.14.9 against a representative newer-provider state —
+    # 6.41.0 still fails with the message above; 6.42.0 decodes and exports.
+    # Do not lower this floor below 6.42.0.
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">= 6.42.0, < 7.0.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -47,6 +68,29 @@ data "aws_iam_roles" "ci_runner" {
   path_prefix = "/"
 }
 
+# Issue #4027: Resolve the deployer's real IAM role ARN instead of reconstructing
+# it from the STS assumed-role ARN. STS ARNs never carry the IAM path, so the old
+# string rewrite (`assumed-role/NAME/session` → `role/NAME`) produced a
+# nonexistent principal for AWS IAM Identity Center permission-set roles, which
+# live under /aws-reserved/sso.amazonaws.com/<region>/ — and
+# aws_eks_access_entry fails with InvalidParameterException "invalid principal"
+# on a principal that doesn't exist. GetRole's RoleName pattern ([\w+=,.@-]+)
+# can't contain "/", so lookup is by friendly name only; the returned arn is
+# path-qualified. Note EKS access entries *accept* an IAM path (unlike aws-auth
+# ConfigMap entries, which forbid it) — so the path must be preserved, not
+# stripped.
+#
+# count-guarded because this singular data source hard-errors at plan time when
+# the role isn't found, unlike the plural data.aws_iam_roles.ci_runner above
+# (which returns an empty list — exactly the tolerance #2563 relies on). Here
+# absence *should* be loud, but only for assumed-role callers: a plain IAM user
+# caller has no role to look up and must not fail the plan.
+data "aws_iam_role" "deployer" {
+  count = length(regexall("^arn:[^:]+:sts::[0-9]+:assumed-role/", local.caller_arn)) > 0 ? 1 : 0
+
+  name = regex("^arn:[^:]+:sts::[0-9]+:assumed-role/([^/]+)/", local.caller_arn)[0]
+}
+
 locals {
   name_prefix  = coalesce(var.name_prefix, "adp-${var.environment}")
   state_bucket = coalesce(var.state_bucket, "adp-terraform-state-${data.aws_caller_identity.current.account_id}")
@@ -61,15 +105,15 @@ locals {
 
   # Deployer principal that should get EKS cluster-admin.
   # If the caller is an assumed role (e.g. arn:aws:sts::<acct>:assumed-role/Admin/session),
-  # reduce it to the underlying IAM role ARN so the access entry is stable.
+  # resolve the underlying IAM role ARN so the access entry is stable. See the
+  # data.aws_iam_role.deployer comment above for why this is a lookup, not a
+  # string rewrite (issue #4027). Non-assumed-role callers (plain IAM users)
+  # pass through unchanged — the data source isn't created for them, so the [0]
+  # index is only ever evaluated on the assumed-role branch.
   caller_arn = data.aws_caller_identity.current.arn
   deployer_role_arn = (
-    length(regexall("^arn:aws:sts::[0-9]+:assumed-role/", local.caller_arn)) > 0
-    ? replace(
-      replace(local.caller_arn, "/^arn:aws:sts::/", "arn:aws:iam::"),
-      "/:assumed-role/([^/]+)/.*$/",
-      ":role/$1"
-    )
+    length(data.aws_iam_role.deployer) > 0
+    ? data.aws_iam_role.deployer[0].arn
     : local.caller_arn
   )
 
@@ -87,11 +131,25 @@ locals {
   # InvalidParameterException when the principal doesn't exist.
   ci_runner_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-runner-role"
 
-  cluster_admin_principal_arns = distinct(concat(
-    [local.deployer_role_arn],
-    length(data.aws_iam_roles.ci_runner.arns) > 0 ? [local.ci_runner_role_arn] : [],
-    var.extra_cluster_admin_principal_arns,
-  ))
+  # Downstream patch T5: when manage_ci_runner_cluster_admin is false the runner is
+  # excluded however it arrives — filtering the concat alone is not enough, because
+  # on a CI-run apply the runner *is* the deployer. Without this, platform and
+  # agent-factory each revert the other's view of the same access entry and the two
+  # states fight indefinitely.
+  cluster_admin_principal_arns = [
+    for arn in distinct(concat(
+      [local.deployer_role_arn],
+      var.manage_ci_runner_cluster_admin && length(data.aws_iam_roles.ci_runner.arns) > 0 ? [local.ci_runner_role_arn] : [],
+      var.extra_cluster_admin_principal_arns,
+    )) : arn
+    # The release deployer's entry is owned by platform/release-infra. Avoid
+    # attempting to create the same EKS entry when that role runs an upgrade.
+    if(var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn) &&
+    arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-release-deploy" &&
+    arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-trusted-deployment" &&
+    arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-authority-worker-role" &&
+    (!var.agent_legacy_worker_admin_retired || arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-scaledjob-role")
+  ]
 }
 
 provider "aws" {
@@ -136,7 +194,8 @@ module "networking" {
 # Base IAM Roles (cluster + node group service roles)
 # -----------------------------------------------------------------------------
 module "iam" {
-  source = "./modules/iam"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/iam"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -158,7 +217,8 @@ module "iam" {
 # EKS Cluster (Auto Mode)
 # -----------------------------------------------------------------------------
 module "eks" {
-  source = "./modules/eks"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/eks"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -168,9 +228,19 @@ module "eks" {
   private_subnet_ids    = module.networking.private_subnet_ids
   eks_security_group_id = module.networking.eks_security_group_id
 
+  # Reviewed additional EXISTING private capacity subnets for the cluster's own
+  # subnet set (#5830). Empty by default — the cluster's subnet set is then
+  # exactly module.networking.private_subnet_ids, as before. The AZ list lets the
+  # module refuse a subnet in a zone the cluster has no existing capacity in,
+  # without an extra API read.
+  additional_private_subnet_ids_by_az = var.additional_private_subnet_ids_by_az
+  private_subnet_availability_zones   = module.networking.private_subnet_availability_zones
+
   eks_cluster_role_arn         = module.iam.eks_cluster_role_arn
   node_group_role_arn          = module.iam.eks_node_group_role_arn
   eks_public_access_cidrs      = var.eks_public_access_cidrs
+  endpoint_public_access       = var.eks_endpoint_public_access
+  endpoint_private_access      = var.eks_endpoint_private_access
   cluster_admin_principal_arns = local.cluster_admin_principal_arns
 
   cluster_version           = var.eks_cluster_version
@@ -180,6 +250,12 @@ module "eks" {
   node_group_max_size       = var.eks_node_max_size
 
   enable_container_insights = var.enable_container_insights
+
+  # Issue #4999: NetworkPolicy enforcement. Applying this with the variable true
+  # is the point at which every existing NetworkPolicy starts taking effect, so
+  # the ADOT collector egress policy (webhook-ingress module) must already be
+  # applied — see docs/runbooks/network-policy-enforcement.md.
+  enable_network_policy_controller = var.enable_network_policy_controller
 }
 
 # -----------------------------------------------------------------------------
@@ -238,6 +314,7 @@ module "ecr" {
   name_prefix            = local.name_prefix
   common_tags            = local.common_tags
   repositories           = var.ecr_repositories
+  repository_encryption  = var.ecr_repository_encryption
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 }
 
@@ -253,6 +330,7 @@ module "codebuild" {
   security_scans_bucket_arn  = module.security_scans.bucket_arn
   security_scans_bucket_name = module.security_scans.bucket_name
   account_id                 = data.aws_caller_identity.current.account_id
+  aws_region                 = var.aws_region
   ecr_registry               = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 

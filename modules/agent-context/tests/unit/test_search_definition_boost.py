@@ -1292,15 +1292,10 @@ class TestHostPrefixedRepoResolution:
             assert any("layers.py" in f for f in result)
 
     @pytest.mark.asyncio
-    async def test_host_prefixed_name_fails_without_stripping(
+    async def test_host_prefixed_name_resolves_with_exact_identity(
         self, fake_s3_client, fake_zoekt_host_prefixed
     ):
-        """Confirm the host-prefixed name fails to resolve (documents the bug).
-
-        This validates our S3 mock is realistic: a request for the wrong key
-        raises NoSuchKey, and the suffix-match also fails because the normalized
-        name is longer than the real filename.
-        """
+        """Supported domain prefixes resolve to the exact producer identity."""
         from door.server import _resolve_via_code_index
 
         with (
@@ -1311,12 +1306,11 @@ class TestHostPrefixedRepoResolution:
             mock_config.s3_bucket = "test-bucket"
             mock_config.code_index_s3_prefix = "content/code-indexes"
 
-            # With host-prefixed name (the bug — should NOT find the index)
+            # Domain normalization preserves the legitimate repository alias.
             result = await _resolve_via_code_index(
                 "DataLayerInterface",
                 ["github.com/volatilityfoundation/volatility3"],
             )
-            assert not result, (
-                "Host-prefixed repo name should NOT resolve via code-index "
-                "(this documents the bug that #3512 fixes)"
-            )
+            assert result
+            assert "framework/interfaces/layers.py" in result
+            assert "github.com/volatilityfoundation/volatility3/framework/interfaces/layers.py" in result

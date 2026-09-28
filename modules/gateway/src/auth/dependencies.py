@@ -28,12 +28,42 @@ from src.shared.config import get_settings
 from src.shared.schemas.auth import TokenContext
 from src.shared.timing import get_timings
 
+from .caller_provenance import has_caller_identity_assertion, verified_caller_identity
 from .cognito_jwt import CognitoJWTValidator, CognitoTokenClaims
 
 logger = logging.getLogger(__name__)
 
 # Global Cognito validator instance (lazy initialized)
 _cognito_validator: CognitoJWTValidator | None = None
+
+
+def _stamp_trusted_alias_source(ctx: TokenContext) -> TokenContext:
+    """Stamp the canonical trusted alias source on a service-caller context.
+
+    Issue #5419 (PMM-02). Each validated auth path maps to exactly one alias
+    source. The source is stamped here so the preference dependency can resolve
+    the caller using a single exact ``(alias_source, alias_id)`` query — never a
+    multi-source search that could cross namespaces.
+
+    The mapping:
+    - IAM / Agent Registry (``auth_source="iam"``) → ``agent_registry``
+    - Cognito client_credentials (``auth_source="jwt"``, ``account_type="service"``)
+      → ``cognito_m2m``
+
+    ``sa_registration``, ``eventbridge``, and ``github_actions`` are registrable
+    alias sources but have no self-auth adapter.  When an adapter exists, this
+    function gets a new branch.  Until then, those callers have no trusted source
+    and the preference dependency refuses them cleanly.
+    """
+    if ctx.account_type != "service":
+        return ctx
+
+    if ctx.auth_source == "iam":
+        return ctx.model_copy(update={"canonical_alias_source": "agent_registry"})
+    if ctx.auth_source == "jwt":
+        return ctx.model_copy(update={"canonical_alias_source": "cognito_m2m"})
+
+    return ctx
 
 
 def _get_cognito_validator() -> CognitoJWTValidator | None:
@@ -62,12 +92,27 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
     Convert Cognito token claims to TokenContext.
 
     Issue #133: Supports both human PKCE tokens and agent client_credentials tokens.
+    Issue #5419: For service accounts (client_credentials flow), ``user_id`` is
+    the validated ``client_id`` — never ``sub``.  Cognito client_credentials tokens
+    always carry ``client_id``; its absence on a service token is an incoherent
+    shape that must be refused, not guessed at.
+
+    The previous code checked ``not claims.username`` to decide whether to use
+    ``client_id``, but ``_parse_claims`` fills ``username`` with ``sub`` when the
+    payload has no ``username`` key (which is always the case for
+    client_credentials tokens).  That made the branch unreachable, so ``user_id``
+    was always ``sub``.  The PMM dependency resolves ``cognito_m2m`` aliases
+    using ``user_id``, so it searched for ``sub`` instead of the registered
+    ``client_id`` — and no alias ever matched.
 
     Args:
         claims: Validated Cognito token claims
 
     Returns:
         TokenContext: Token context for authorization decisions
+
+    Raises:
+        HTTPException: If account_type is "service" but client_id is missing
     """
     # Determine account type from custom claim
     account_type = claims.account_type or "human"
@@ -83,10 +128,21 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
         claims.role == "platform_admin" or claims.role == "admin" or "admins" in claims.cognito_groups or "platform-admins" in claims.cognito_groups
     )
 
-    # For service accounts, use client_id as user_id
+    # For service accounts (client_credentials flow), always use validated
+    # client_id.  This is the identifier the alias registry is keyed on:
+    # cognito_m2m aliases are registered with client_id, so resolution must
+    # look up client_id, not sub.
     user_id = claims.sub
-    if account_type == "service" and not claims.username:
-        user_id = claims.client_id or claims.sub
+    if account_type == "service":
+        if not claims.client_id:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "incoherent_service_token",
+                    "message": "Service account token is missing client_id claim.",
+                },
+            )
+        user_id = claims.client_id
 
     return TokenContext(
         user_id=user_id,
@@ -94,6 +150,7 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
         team_id=claims.team_id or "",
         department_id=claims.department_id or "",
         account_type=account_type,
+        cognito_username=claims.username or "",
         is_admin=is_admin,
         expires_at=datetime.fromtimestamp(claims.exp, UTC),
     )
@@ -134,12 +191,23 @@ async def get_current_user(
     auth_start = time.monotonic()
 
     try:
-        # Issue #260: Check for IAM identity first (AWS_IAM auth via /agent/* path)
-        # get_settings is imported at module scope (it was redundantly re-imported
-        # here, which shadowed the module attribute and made this branch untestable).
-        settings = get_settings()
-        if settings.trust_apigw_headers:
-            caller_identity = request.headers.get("x-caller-identity", "")
+        # Issue #260: IAM identity via API Gateway's AWS_IAM /agent/* route.
+        #
+        # Issue #5653 (A01): the identity assertion is read through the shared
+        # provenance helper, which returns an ARN only where the edge vouches for
+        # the header (see src/auth/caller_provenance.py). It replaces the inline
+        # `settings.trust_apigw_headers and raw header` read that trusted any
+        # client-supplied value, and it is the same helper the request middleware
+        # and the internal-endpoint guard use, so one rule governs all three.
+        #
+        # Bearer-token precedence: an assertion that FAILS provenance no longer
+        # short-circuits anything — the request falls through to the JWT branch
+        # below and authenticates as an ordinary client or not at all. Only a
+        # provenance-verified assertion is terminal (#3985's property, preserved).
+        if has_caller_identity_assertion(request):
+            # Pass this module's settings so the trust decision is resolved through
+            # the same Settings object this dependency uses for everything else.
+            caller_identity = verified_caller_identity(request, settings=get_settings())
             if caller_identity:
                 # Issue #3985: X-Caller-Identity presence is TERMINAL.
                 #
@@ -186,7 +254,11 @@ async def get_current_user(
                         },
                     )
 
-                return agent_entry_to_token_context(entry)
+                ctx = agent_entry_to_token_context(entry)
+                # Issue #5419 (PMM-02): stamp the trusted alias source so the
+                # preference dependency can resolve using an exact-source query.
+                ctx = _stamp_trusted_alias_source(ctx)
+                return ctx
 
         # Check if authorization header is present
         if not authorization:
@@ -205,6 +277,9 @@ async def get_current_user(
             )
 
         token = authorization[7:]  # Remove "Bearer " prefix
+        from src.auth.tenant_context import apply_context, split_token
+
+        token, tenant_lease = split_token(token)
 
         # Get Cognito validator
         validator = _get_cognito_validator()
@@ -219,7 +294,18 @@ async def get_current_user(
             claims = validator.validate_token(token)
 
             # Convert claims to TokenContext
-            context = _cognito_claims_to_context(claims)
+            context = await apply_context(_cognito_claims_to_context(claims), tenant_lease)
+            # Workspace discovery/exchange must remain usable after removal from
+            # the token's previous org. Each selection independently checks DB
+            # membership; product requests cannot use stale Cognito claims.
+            if tenant_lease is None and request.url.path not in {"/workspaces", "/workspaces/context", "/workspaces/select"}:
+                from src.admin.membership_revocation import require_not_revoked_context
+
+                await require_not_revoked_context(context)
+
+            # Issue #5419 (PMM-02): stamp trusted alias source for service callers
+            if context.account_type == "service":
+                context = _stamp_trusted_alias_source(context)
 
             logger.debug(f"Token validated for user: {context.user_id}, is_admin: {context.is_admin}")
             return context
@@ -237,6 +323,12 @@ async def get_current_user(
                 detail={"error": "invalid_token", "message": "Invalid or malformed token"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        except HTTPException:
+            # Preserve intentional HTTP status codes (e.g. the 401 from
+            # _cognito_claims_to_context for incoherent service tokens).
+            # Without this re-raise, the generic handler below converts them
+            # to 500 — which hides the actionable refusal from the caller.
+            raise
         except Exception as e:
             logger.error(f"Unexpected error validating Cognito token: {e}")
             raise HTTPException(

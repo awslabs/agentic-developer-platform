@@ -1,0 +1,1779 @@
+{
+  "schema_version": "1.0",
+  "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "design_document": "docs/task-api/implementation-design.md",
+  "validation_document": "docs/task-api/validation.md",
+  "description": "Maps every delivery and validation criterion to its owner, wave, evidence lane, fixture responsibility and command. V1-V5 qualification commands verify frozen evidence integrity and recorded passing verdicts; they do not replay live collection. Historical V0 review timing and its retrospective qualification remain recorded in the release matrix.",
+  "criterion_count": 92,
+  "counts_by_group": {
+    "T0": 4,
+    "T1": 5,
+    "T2": 5,
+    "T3": 5,
+    "T4": 5,
+    "T5": 5,
+    "T6": 5,
+    "T7": 5,
+    "T8": 5,
+    "V0": 8,
+    "V1": 9,
+    "V2": 8,
+    "V3": 10,
+    "V4": 7,
+    "V5": 6
+  },
+  "runnable_now": [
+    "python3 scripts/task-api/check-contracts.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers modules/gateway/tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict modules/gateway/tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index modules/gateway/tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority modules/gateway/tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report modules/gateway/tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit modules/gateway/tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically modules/gateway/tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key modules/gateway/tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone modules/gateway/tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention modules/gateway/tests/tasks/test_store.py::test_recovery_paging_is_bounded",
+    "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_dispatch_routes.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_delivery.py modules/gateway/tests/agentauth/test_task_runtime.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/agentauth/test_task_model_binding.py",
+    "PYTHONPATH=modules/agent-factory/webhook-ingress/lambda uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/webhook-ingress/lambda/common/tests/test_task_dispatch.py",
+    "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_entrypoint.py tests/task-api/test_model_message_seam.py",
+    "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_dispatch.py modules/agent-factory/agent-worker-image/tests/test_task_run_client.py",
+    "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py tests/task-api/test_model_message_seam.py",
+    "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+    "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py modules/gateway/tests/tasks/test_dynamo_read_integration.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_report_routes.py modules/gateway/tests/tasks/test_artifact_routes.py modules/gateway/tests/tasks/test_streaming.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py modules/gateway/tests/tasks/test_response.py modules/gateway/tests/tasks/test_stream_leases.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_dynamo_read_integration.py modules/gateway/tests/tasks/test_report_routes.py modules/gateway/tests/tasks/test_artifact_routes.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/tasks/test_task_commands.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_cancel_before_start.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/tasks/test_command_routes.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
+    "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py",
+    "python3 -m pytest -q tests/task-api/test_external_client.py",
+    "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+    "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+    "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+    "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v5/criterion-report.json"
+  ],
+  "fixed_thresholds": {
+    "legacy_observation_minimum": {
+      "value": 10,
+      "unit": "bounded legacy observations",
+      "source": "contracts/v1/limits.json#/coexistence_thresholds/min_bounded_legacy_observations",
+      "criteria": [
+        "T0-AC03",
+        "V5-01",
+        "V5-05"
+      ],
+      "note": "A bounded sample can detect a regression but is explicitly not a production SLO claim; limits.json records that distinction so a small sample is never quoted as an availability number."
+    },
+    "legacy_routing_or_auth_failures": {
+      "value": 0,
+      "unit": "new failures attributable to task traffic",
+      "source": "contracts/v1/limits.json#/coexistence_thresholds/max_new_task_caused_legacy_routing_or_auth_failures",
+      "criteria": [
+        "T0-AC03",
+        "V5-02",
+        "V5-03"
+      ],
+      "note": "Zero. Coexistence on the existing queue is the premise of the whole rollout, so a new legacy failure is a stop rather than a budget to spend."
+    },
+    "lambda_throttles": {
+      "value": 0,
+      "unit": "throttles",
+      "source": "contracts/v1/limits.json#/coexistence_thresholds/max_lambda_throttles",
+      "criteria": [
+        "T0-AC03",
+        "V5-05"
+      ],
+      "note": "Zero: task submissions must not starve the shared ingress."
+    },
+    "legacy_p95_latency_increase": {
+      "value": {
+        "percent": 20,
+        "absolute_seconds": 1,
+        "rule": "whichever of percent or absolute is larger"
+      },
+      "unit": "percent or seconds, whichever is larger",
+      "source": "contracts/v1/limits.json#/coexistence_thresholds",
+      "criteria": [
+        "T0-AC03",
+        "V5-01"
+      ],
+      "note": "Fixed as a pair so a small absolute baseline cannot make a trivial slowdown look like a large regression, nor a large baseline hide a real one."
+    },
+    "queue_age_recovery": {
+      "value": 5,
+      "unit": "minutes",
+      "source": "contracts/v1/limits.json#/coexistence_thresholds/queue_age_return_to_baseline_minutes",
+      "criteria": [
+        "T0-AC03",
+        "V5-05"
+      ],
+      "note": "Queue age must return to baseline within this window after task load stops."
+    },
+    "task_spend_ceiling": {
+      "value": 1,
+      "unit": "USD per task",
+      "source": "contracts/v1/limits.json#/spend/max_usd_per_task",
+      "criteria": [
+        "T0-AC03",
+        "V4-01",
+        "V4-02"
+      ],
+      "note": "Unknown spend is recorded as null, never zero, so a task with an ambiguous model handoff cannot appear free."
+    },
+    "tenant_daily_spend_ceiling": {
+      "value": 10,
+      "unit": "USD per tenant per day",
+      "source": "contracts/v1/limits.json#/spend/max_usd_per_tenant_per_day",
+      "criteria": [
+        "T0-AC03",
+        "V4-02"
+      ],
+      "note": "Fixed before measurement."
+    },
+    "qualification_run_spend_ceiling": {
+      "value": 25,
+      "unit": "USD for the whole qualification run",
+      "source": "contracts/v1/limits.json#/spend/max_usd_entire_qualification_run",
+      "criteria": [
+        "T0-AC03",
+        "V4-02"
+      ],
+      "note": "Separate from the engine development budget, so evaluation spend cannot be hidden inside it."
+    },
+    "task_lifetime": {
+      "value": 360,
+      "unit": "minutes",
+      "source": "contracts/v1/limits.json#/lifetime/task_lifetime_minutes",
+      "criteria": [
+        "T0-AC03",
+        "V4-03"
+      ],
+      "note": "Includes queue and input waits. Exceeding it is a visible deadline failure, never a silently abandoned task."
+    },
+    "max_model_turns": {
+      "value": 8,
+      "unit": "turns",
+      "source": "contracts/v1/limits.json#/lifetime/max_model_turns",
+      "criteria": [
+        "T0-AC03",
+        "V4-03"
+      ],
+      "note": "Fixed before measurement."
+    },
+    "submit_body_bytes": {
+      "value": 65536,
+      "unit": "UTF-8 encoded JSON bytes",
+      "source": "contracts/v1/limits.json#/submit_body/max_body_bytes",
+      "criteria": [
+        "T0-AC03",
+        "V1-09",
+        "V4-05"
+      ],
+      "note": "Exercised by fixtures/invalid/submit-request-body-byte-limit.json, which materializes and measures a schema-valid request above 65536 UTF-8 bytes."
+    },
+    "submit_instruction_characters": {
+      "value": 16000,
+      "unit": "characters",
+      "source": "contracts/v1/limits.json#/submit_body/max_instructions_characters",
+      "criteria": [
+        "T0-AC03",
+        "V1-09",
+        "V4-05"
+      ],
+      "note": "Exercised separately by fixtures/invalid/submit-request-body-too-large.json, which holds a real 16001-character instructions string."
+    },
+    "input_artifacts": {
+      "value": 4,
+      "unit": "artifacts per task",
+      "source": "contracts/v1/limits.json#/artifacts/max_input_artifacts",
+      "criteria": [
+        "T0-AC03",
+        "V1-09",
+        "V4-05"
+      ],
+      "note": "Fixed before measurement."
+    },
+    "progress_marker_visibility": {
+      "value": {
+        "markers": 2,
+        "within_seconds": 5
+      },
+      "unit": "distinct authored markers within N seconds",
+      "source": "contracts/v1/limits.json#/reporting_and_access",
+      "criteria": [
+        "T0-AC03",
+        "V3-04",
+        "V4-06"
+      ],
+      "note": "Neither a heartbeat nor buffered final stdout satisfies this; limits.json states both exclusions explicitly, because either would let a silent task look observable."
+    },
+    "stream_revocation": {
+      "value": 30,
+      "unit": "seconds",
+      "source": "contracts/v1/limits.json#/reporting_and_access/revocation_stream_close_seconds",
+      "criteria": [
+        "T0-AC03",
+        "V2-07"
+      ],
+      "note": "Bounded revocation is only meaningful because no presigned URL is ever issued; a presigned URL would outlive the grant that minted it."
+    },
+    "stream_authorization_recheck": {
+      "value": 15,
+      "unit": "seconds",
+      "source": "contracts/v1/limits.json#/reporting_and_access/stream_authorization_recheck_max_interval_seconds",
+      "criteria": [
+        "T0-AC03",
+        "V2-07"
+      ],
+      "note": "An open stream is re-authorized on this interval, not trusted for its lifetime."
+    },
+    "cancel_observation": {
+      "value": 5,
+      "unit": "seconds",
+      "source": "contracts/v1/limits.json#/heartbeat_and_cancellation/healthy_host_observes_cancel_within_seconds",
+      "criteria": [
+        "T0-AC03",
+        "V3-08"
+      ],
+      "note": "How quickly a healthy host must observe a durable cancel."
+    },
+    "child_stop_confirmation": {
+      "value": 30,
+      "unit": "seconds",
+      "source": "contracts/v1/limits.json#/heartbeat_and_cancellation/confirm_child_stop_within_seconds",
+      "criteria": [
+        "T0-AC03",
+        "V3-08"
+      ],
+      "note": "On expiry without a confirmed exit the outcome is cancellation_stop_unconfirmed with recovery required, not a clean cancellation."
+    },
+    "host_heartbeat_interval": {
+      "value": 30,
+      "unit": "seconds",
+      "source": "contracts/v1/limits.json#/heartbeat_and_cancellation/host_heartbeat_interval_seconds",
+      "criteria": [
+        "T0-AC03",
+        "V3-06"
+      ],
+      "note": "Past this bound execution health becomes unknown -- not unhealthy, and not healthy."
+    },
+    "recovery_generations": {
+      "value": 3,
+      "unit": "generations per task before any model send",
+      "source": "contracts/v1/limits.json#/recovery/max_pre_model_generations_per_task",
+      "criteria": [
+        "T0-AC03",
+        "V3-03",
+        "V3-09"
+      ],
+      "note": "Exhaustion produces a visible failure or a visible recovery-required state; never a quiet abandonment or an invented exit."
+    },
+    "recovery_publication_tries": {
+      "value": {
+        "tries": 5,
+        "window_minutes": 10
+      },
+      "unit": "tries within N minutes",
+      "source": "contracts/v1/limits.json#/recovery",
+      "criteria": [
+        "T0-AC03",
+        "V3-02"
+      ],
+      "note": "All recovery bounds are themselves bounded by the task deadline."
+    }
+  },
+  "proposed_amendments": [],
+  "criteria": {
+    "T0-AC01": {
+      "title": "Each O1-O8 entry carries a concrete answer, its source evidence and a named downstream owner, with no placeholder and no fake GitHub dependency.",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "T0-AC02": {
+      "title": "Versioned valid and invalid fixtures exercise one full submit-to-terminal flow including follow-up input, reconnection and cancellation, and are usable by independent implementation agents.",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/safety-evidence-omissions.json",
+        "fixtures/invalid/event-task-completed-with-progress-data.json",
+        "fixtures/invalid/internal-adapter-unknown-fields.json",
+        "fixtures/invalid/task-snapshot-completed-without-result.json",
+        "fixtures/invalid/task-snapshot-waiting-without-input.json",
+        "fixtures/valid/event-input-required.json",
+        "fixtures/valid/event-task-completed.json",
+        "fixtures/valid/internal-adapter-catalog.json",
+        "fixtures/valid/process-input-required-frame.json",
+        "fixtures/valid/process-result-frame.json",
+        "fixtures/invalid/bootstrap-request-caller-supplied-owner.json",
+        "fixtures/invalid/bootstrap-workload-identity-pod-name-only.json",
+        "fixtures/invalid/command-receipt-cancel-claiming-delivery.json",
+        "fixtures/invalid/command-receipt-consumed-without-turn.json",
+        "fixtures/invalid/control-response-carries-authority.json",
+        "fixtures/invalid/envelope-carries-credential.json",
+        "fixtures/invalid/envelope-generation-mismatch.json",
+        "fixtures/invalid/envelope-legacy-persona-in-task-kind.json",
+        "fixtures/invalid/envelope-message-id-not-invocation.json",
+        "fixtures/invalid/envelope-transport-id-as-run-id.json",
+        "fixtures/invalid/error-code-status-mismatch.json",
+        "fixtures/invalid/error-history-expired-without-gap.json",
+        "fixtures/invalid/event-cursor-foreign-task.json",
+        "fixtures/invalid/event-cursor-mismatched-sequence.json",
+        "fixtures/invalid/event-invalid-timestamp.json",
+        "fixtures/invalid/event-unknown-kind.json",
+        "fixtures/invalid/legacy-envelope-claiming-task-kind.json",
+        "fixtures/invalid/legacy-envelope-task-persona.json",
+        "fixtures/invalid/message-request-command-id-not-uuid.json",
+        "fixtures/invalid/process-cancel-frame-unintentional.json",
+        "fixtures/invalid/process-model-request-selects-model.json",
+        "fixtures/invalid/process-progress-frame-leaks-reasoning.json",
+        "fixtures/invalid/process-result-frame-claims-host-fields.json",
+        "fixtures/invalid/process-start-frame-carries-credentials.json",
+        "fixtures/invalid/result-finding-without-evidence.json",
+        "fixtures/invalid/sqs-dedup-id-is-invocation.json",
+        "fixtures/invalid/sse-snapshot-frame-advances-cursor.json",
+        "fixtures/invalid/submit-request-caller-supplied-model.json",
+        "fixtures/invalid/submit-request-caller-supplied-tenant.json",
+        "fixtures/invalid/submit-request-legacy-persona.json",
+        "fixtures/invalid/submit-request-duplicate-field.json",
+        "fixtures/invalid/submit-request-invalid-utf8.json",
+        "fixtures/invalid/submit-request-nonfinite-number.json",
+        "fixtures/invalid/submit-response-presigned-download-url.json",
+        "fixtures/invalid/task-snapshot-cancelled-claiming-completion.json",
+        "fixtures/invalid/task-snapshot-queued-with-result.json",
+        "fixtures/invalid/turn-command-listed-twice.json",
+        "fixtures/valid/artifact-upload-request.json",
+        "fixtures/valid/artifact-upload-response.json",
+        "fixtures/valid/attempt-request.json",
+        "fixtures/valid/bootstrap-request.json",
+        "fixtures/valid/bootstrap-response.json",
+        "fixtures/valid/cancel-request.json",
+        "fixtures/valid/command-receipt-accepted.json",
+        "fixtures/valid/command-receipt-cancel.json",
+        "fixtures/valid/command-receipt-consumed.json",
+        "fixtures/valid/command-receipt-rejected-expired-authority.json",
+        "fixtures/valid/control-response.json",
+        "fixtures/valid/envelope-dispatch.json",
+        "fixtures/valid/error-history-expired.json",
+        "fixtures/valid/error-idempotency-conflict.json",
+        "fixtures/valid/event-history-gap.json",
+        "fixtures/valid/event-progress.json",
+        "fixtures/valid/message-request.json",
+        "fixtures/valid/model-receipt-confirmed.json",
+        "fixtures/valid/model-receipt-unknown-handoff.json",
+        "fixtures/valid/process-cancel-frame.json",
+        "fixtures/valid/process-model-request-frame.json",
+        "fixtures/valid/process-progress-frame.json",
+        "fixtures/valid/process-start-frame.json",
+        "fixtures/valid/result-cancelled-confirmed.json",
+        "fixtures/valid/result-completed.json",
+        "fixtures/valid/sqs-publish-attributes.json",
+        "fixtures/valid/sse-snapshot-frame.json",
+        "fixtures/valid/submit-request-full.json",
+        "fixtures/valid/submit-request.json",
+        "fixtures/valid/submit-response-idempotent-replay.json",
+        "fixtures/valid/submit-response.json",
+        "fixtures/valid/task-snapshot-completed.json",
+        "fixtures/valid/task-snapshot-running.json",
+        "fixtures/valid/task-snapshot-waiting-for-input.json",
+        "fixtures/valid/turn.json",
+        "traces/cancellation.json",
+        "traces/crash-matrix.json",
+        "traces/reconnect-and-replay.json",
+        "traces/submit-to-result.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "T0-AC03": {
+      "title": "Legacy compatibility, task state integrity and same-queue rollout have executable proof plans, with numeric acceptance limits fixed before any implementation is measured.",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/safety-evidence-omissions.json",
+        "fixtures/invalid/event-task-completed-with-progress-data.json",
+        "fixtures/invalid/internal-adapter-unknown-fields.json",
+        "fixtures/invalid/task-snapshot-completed-without-result.json",
+        "fixtures/invalid/task-snapshot-waiting-without-input.json",
+        "fixtures/valid/internal-adapter-catalog.json",
+        "fixtures/invalid/attempt-request-old-attempt-live.json",
+        "fixtures/invalid/command-receipt-cancel-claiming-delivery.json",
+        "fixtures/invalid/model-binding-unverified-invocability.json",
+        "fixtures/invalid/model-receipt-unknown-permits-replay.json",
+        "fixtures/invalid/model-receipt-unknown-with-usage.json",
+        "fixtures/invalid/result-cancelled-unconfirmed-not-recovery-required.json",
+        "fixtures/invalid/result-completed-without-process-exit.json",
+        "fixtures/invalid/result-model-unknown-with-spend.json",
+        "fixtures/invalid/sse-heartbeat-counts-as-progress.json",
+        "fixtures/invalid/submit-request-body-byte-limit.json",
+        "fixtures/invalid/submit-request-body-too-large.json",
+        "fixtures/invalid/submit-request-caller-supplied-limits.json",
+        "fixtures/invalid/submit-request-too-many-artifacts.json",
+        "fixtures/invalid/task-snapshot-cancelled-claiming-completion.json",
+        "fixtures/invalid/task-snapshot-unknown-health-reported-success.json",
+        "fixtures/invalid/turn-mutable.json",
+        "fixtures/legacy/github-issue-comment-envelope.json",
+        "fixtures/legacy/github-label-envelope-with-model-directive.json",
+        "fixtures/legacy/slack-channel-envelope.json",
+        "fixtures/valid/artifact-upload-response.json",
+        "fixtures/valid/error-payload-too-large.json",
+        "fixtures/valid/error-rate-limited.json",
+        "fixtures/valid/event-progress.json",
+        "fixtures/valid/model-receipt-unknown-handoff.json",
+        "fixtures/valid/process-model-result-unknown-frame.json",
+        "fixtures/valid/result-cancelled-stop-unconfirmed.json",
+        "fixtures/valid/result-failed-model-outcome-unknown.json",
+        "fixtures/valid/sse-heartbeat-frame.json",
+        "fixtures/valid/submit-request-full.json",
+        "fixtures/valid/task-snapshot-heartbeat-lost-unknown.json",
+        "traces/cancellation.json",
+        "traces/crash-matrix.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "T0-AC04": {
+      "title": "Any departure from D01-D18 is raised as a proposed amendment for owner decision rather than silently implemented.",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "T1-AC01": {
+      "title": "Same-principal/tenant same-key/same-request concurrency yields one stable task; conflicting payload reuse returns the defined conflict",
+      "owner": "T1 persistence implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "unit and integration tests against the existing request table",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
+      "t0_artifacts": [
+        "fixtures/valid/error-idempotency-conflict.json",
+        "fixtures/valid/submit-response-idempotent-replay.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers modules/gateway/tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict modules/gateway/tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably",
+      "command_status": "runnable"
+    },
+    "T1-AC02": {
+      "title": "Failed/partial writes cannot be reported as accepted or expose an executable unbound assignment",
+      "owner": "T1 persistence implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "unit and integration tests against the existing request table",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
+      "t0_artifacts": [],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent modules/gateway/tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
+      "command_status": "runnable"
+    },
+    "T1-AC03": {
+      "title": "Legacy invocation queries have unchanged results for old fixtures and do not count internal task records as runs",
+      "owner": "T1 persistence implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "unit and integration tests against the existing request table",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
+      "t0_artifacts": [],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_task_records_are_absent_from_every_legacy_index modules/gateway/tests/tasks/test_store.py::test_legacy_invocation_queries_are_byte_identical_before_and_after_task_records",
+      "command_status": "runnable"
+    },
+    "T1-AC04": {
+      "title": "Task ownership/input/event/result integrity and stale-attempt writes are checked against the real intended IAM/authority design",
+      "owner": "T1 persistence implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "unit and integration tests against the existing request table",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
+      "t0_artifacts": [],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority modules/gateway/tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report modules/gateway/tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event modules/gateway/tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work && uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
+      "command_status": "runnable"
+    },
+    "T1-AC05": {
+      "title": "Retention, payload limits and artifact ownership are exercised; no table replacement or full-table recovery scan is introduced",
+      "owner": "T1 persistence implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "unit and integration tests against the existing request table",
+      "fixture_responsibility": "T1 supplies storage-fixtures-v1.json v1.1.0 against the frozen T0 artifacts",
+      "t0_artifacts": [],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_store.py::test_acceptance_rejects_payload_over_frozen_body_limit modules/gateway/tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically modules/gateway/tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key modules/gateway/tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone modules/gateway/tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention modules/gateway/tests/tasks/test_store.py::test_recovery_paging_is_bounded",
+      "command_status": "runnable"
+    },
+    "T2-AC01": {
+      "title": "A valid external caller receives durable 202 acceptance through the real new integration; no direct worker launch or GitHub fields are needed",
+      "owner": "T2 submission implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/submit-request-caller-supplied-tenant.json",
+        "fixtures/valid/submit-request.json",
+        "fixtures/valid/submit-response.json"
+      ],
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
+      "command_status": "not_implemented"
+    },
+    "T2-AC02": {
+      "title": "Unauthenticated/expired/revoked/wrong-scope calls and forged tenant/service names produce the specified denial with no dispatch",
+      "owner": "T2 submission implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/submit-request-body-byte-limit.json",
+        "fixtures/invalid/submit-request-body-too-large.json",
+        "fixtures/invalid/submit-request-duplicate-field.json",
+        "fixtures/invalid/submit-request-invalid-utf8.json",
+        "fixtures/invalid/submit-request-nonfinite-number.json",
+        "fixtures/valid/error-payload-too-large.json"
+      ],
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
+      "command_status": "not_implemented"
+    },
+    "T2-AC03": {
+      "title": "Idempotent retries return the existing handle and storage/authority failure cannot return false acceptance",
+      "owner": "T2 submission implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
+      "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
+      "command_status": "not_implemented"
+    },
+    "T2-AC04": {
+      "title": "Task-disabled and task-import-failure cases leave existing handler fixtures functional",
+      "owner": "T2 submission implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
+      "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 -m pytest modules/agent-factory/webhook-ingress/lambda/task_api/tests modules/agent-factory/webhook-ingress/lambda/github/tests/test_handler_task_route_isolation.py modules/agent-factory/webhook-ingress/tests/test_task_api_infra.py && python3 -m pytest modules/gateway/tests/infra/test_task_api_route.py --noconftest",
+      "command_status": "runnable"
+    },
+    "T2-AC05": {
+      "title": "Lambda and gateway agree on principal mapping; the external caller needs no worker/pod credentials",
+      "owner": "T2 submission implementer",
+      "wave": "wave 2 - platform primitives",
+      "evidence_lane": "API Gateway and Lambda integration tests plus authenticated request traces",
+      "fixture_responsibility": "T2 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "not yet implemented; requires the real T1/T3 admission, persistence, dispatch, and gateway-authority integration",
+      "command_status": "not_implemented"
+    },
+    "T3-AC01": {
+      "title": "Injected failures before/after record commit, queue send and acknowledgement recover without requiring another client request",
+      "owner": "T3 dispatch implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "queue dispatch tests and recovery-path integration tests",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/sqs-publish-attributes.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_dispatch_routes.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
+      "command_status": "runnable"
+    },
+    "T3-AC02": {
+      "title": "Duplicate/redelivered messages cannot create competing authorized owners; transport IDs never replace ADP run IDs",
+      "owner": "T3 dispatch implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "queue dispatch tests and recovery-path integration tests",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/envelope-message-id-not-invocation.json",
+        "fixtures/invalid/envelope-transport-id-as-run-id.json",
+        "fixtures/valid/envelope-dispatch.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_delivery.py modules/gateway/tests/agentauth/test_task_runtime.py",
+      "command_status": "runnable"
+    },
+    "T3-AC03": {
+      "title": "Service principal persona/model/budget/credential restrictions still apply, and unbound assignments cannot execute",
+      "owner": "T3 dispatch implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "queue dispatch tests and recovery-path integration tests",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/sqs-dedup-id-is-invocation.json",
+        "fixtures/valid/bootstrap-response.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/agentauth/test_task_model_binding.py",
+      "command_status": "runnable"
+    },
+    "T3-AC04": {
+      "title": "Recovery invocations are independently authenticated and cannot be selected by arbitrary public request content",
+      "owner": "T3 dispatch implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "queue dispatch tests and recovery-path integration tests",
+      "fixture_responsibility": "T3 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "PYTHONPATH=modules/agent-factory/webhook-ingress/lambda uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/webhook-ingress/lambda/common/tests/test_task_dispatch.py",
+      "command_status": "runnable"
+    },
+    "T3-AC05": {
+      "title": "Real key/IAM/authority isolation meets the [T0](https://github.com/aws-e/adp/issues/5793) design while preserving existing workers; failed/exhausted work has a discoverable outcome",
+      "owner": "T3 dispatch implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "queue dispatch tests and recovery-path integration tests",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/result-failed-model-outcome-unknown.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_delivery.py modules/gateway/tests/agentauth/test_task_runtime.py",
+      "command_status": "runnable"
+    },
+    "T4-AC01": {
+      "title": "A task assignment with no GitHub fields reaches its executable with GitHub network access denied and no bootstrap/token/checkout attempt",
+      "owner": "T4 worker implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "worker entrypoint tests and process-lifecycle integration tests",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/process-start-frame.json"
+      ],
+      "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_entrypoint.py tests/task-api/test_model_message_seam.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "T4-AC02": {
+      "title": "Unknown/malformed/stale task assignments cannot invoke a legacy persona or use another run grant",
+      "owner": "T4 worker implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "worker entrypoint tests and process-lifecycle integration tests",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/bootstrap-request.json"
+      ],
+      "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_dispatch.py modules/agent-factory/agent-worker-image/tests/test_task_run_client.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "T4-AC03": {
+      "title": "Progress is delivered before process exit; terminal evidence/results are persisted before successful completion acknowledgement",
+      "owner": "T4 worker implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "worker entrypoint tests and process-lifecycle integration tests",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/result-completed-without-process-exit.json",
+        "fixtures/valid/process-progress-frame.json",
+        "fixtures/valid/result-completed.json"
+      ],
+      "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py tests/task-api/test_model_message_seam.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "T4-AC04": {
+      "title": "The actual built image passes existing Claude/Codex execution/finalization fixtures",
+      "owner": "T4 worker implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "worker entrypoint tests and process-lifecycle integration tests",
+      "fixture_responsibility": "T4 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture.",
+      "collection_command": "PYTHONPATH=/fixture/python:/app:/fixture python3 -m pytest -q -p no:cacheprovider /fixture/test_installed_legacy.py /fixture/tests/test_entrypoint.py::TestEntrypointMain /fixture/tests/test_codex_review_delivery.py",
+      "command_scope": "Frozen qualified-image evidence verification; collection command requires the recorded image/fixture mount."
+    },
+    "T4-AC05": {
+      "title": "Termination/reporting failure leaves an honest recoverable or terminal state and cleans only the owned assignment",
+      "owner": "T4 worker implementer",
+      "wave": "wave 3 - dispatch and execution",
+      "evidence_lane": "worker entrypoint tests and process-lifecycle integration tests",
+      "fixture_responsibility": "T4 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 -m pytest -q modules/agent-factory/agent-worker-image/tests/test_task_host.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "T5-AC01": {
+      "title": "The selected persona completes a useful tenant-owned task with GitHub credentials absent and GitHub access denied; zero GitHub requests are observed",
+      "owner": "T5 task agent implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "task agent unit tests and recorded process-protocol transcripts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/process-start-frame.json"
+      ],
+      "command": "not yet implemented; to be registered by T5 task agent implementer",
+      "command_status": "not_implemented"
+    },
+    "T5-AC02": {
+      "title": "Substantive progress reaches the host/report API before execution finishes; raw private reasoning/secrets are not emitted",
+      "owner": "T5 task agent implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "task agent unit tests and recorded process-protocol transcripts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/process-model-request-selects-model.json",
+        "fixtures/invalid/process-start-frame-carries-credentials.json",
+        "fixtures/valid/process-progress-frame.json",
+        "fixtures/valid/task-snapshot-completed.json"
+      ],
+      "command": "not yet implemented; to be registered by T5 task agent implementer",
+      "command_status": "not_implemented"
+    },
+    "T5-AC03": {
+      "title": "The image still contains working unchanged Claude and Codex packages, and legacy execution does not initialize task-only dependencies",
+      "owner": "T5 task agent implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "task agent unit tests and recorded process-protocol transcripts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/process-input-required-frame.json",
+        "fixtures/valid/process-result-frame.json",
+        "fixtures/invalid/process-result-frame-claims-host-fields.json"
+      ],
+      "command": "not yet implemented; to be registered by T5 task agent implementer",
+      "command_status": "not_implemented"
+    },
+    "T5-AC04": {
+      "title": "The agent respects scoped model/credential/budget limits and consumes/acknowledges input and cancellation according to the frozen contract",
+      "owner": "T5 task agent implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "task agent unit tests and recorded process-protocol transcripts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/result-finding-without-evidence.json",
+        "fixtures/valid/bootstrap-response.json",
+        "fixtures/valid/model-receipt-confirmed.json",
+        "fixtures/valid/process-model-request-frame.json"
+      ],
+      "command": "not yet implemented; to be registered by T5 task agent implementer",
+      "command_status": "not_implemented"
+    },
+    "T5-AC05": {
+      "title": "Failure and malformed final output cannot be reported as successful completion",
+      "owner": "T5 task agent implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "task agent unit tests and recorded process-protocol transcripts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/process-result-frame.json",
+        "fixtures/valid/result-completed.json"
+      ],
+      "command": "not yet implemented; to be registered by T5 task agent implementer",
+      "command_status": "not_implemented"
+    },
+    "T6-AC01": {
+      "title": "Two substantive progress events are externally observable before a held-open run exits within the agreed target; heartbeat-only or buffered final output fails",
+      "owner": "T6 reporting implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "reporting and SSE integration tests with recorded event streams",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/event-input-required.json",
+        "fixtures/valid/event-task-completed.json",
+        "fixtures/valid/event-progress.json",
+        "fixtures/valid/sse-heartbeat-frame.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py",
+      "command_status": "runnable"
+    },
+    "T6-AC02": {
+      "title": "Subscribe-before-start, mid-run, completed task, backend restart and reconnect preserve retained history with no silent handoff gaps",
+      "owner": "T6 reporting implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "reporting and SSE integration tests with recorded event streams",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/sse-snapshot-frame-advances-cursor.json",
+        "fixtures/valid/error-history-expired.json",
+        "fixtures/valid/sse-snapshot-frame.json",
+        "traces/reconnect-and-replay.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py modules/gateway/tests/tasks/test_dynamo_read_integration.py",
+      "command_status": "runnable"
+    },
+    "T6-AC03": {
+      "title": "Cross-tenant/nonowner clients and wrong/stale attempts cannot read or fabricate task/events/results; expired/revoked streams terminate as specified",
+      "owner": "T6 reporting implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "reporting and SSE integration tests with recorded event streams",
+      "fixture_responsibility": "T6 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_report_routes.py modules/gateway/tests/tasks/test_artifact_routes.py modules/gateway/tests/tasks/test_streaming.py",
+      "command_status": "runnable"
+    },
+    "T6-AC04": {
+      "title": "Slow/disconnected subscribers do not indefinitely block execution; loss/gaps and missing terminal evidence are explicit",
+      "owner": "T6 reporting implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "reporting and SSE integration tests with recorded event streams",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/event-history-gap.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_streaming.py modules/gateway/tests/tasks/test_response.py modules/gateway/tests/tasks/test_stream_leases.py",
+      "command_status": "runnable"
+    },
+    "T6-AC05": {
+      "title": "Events/results are durable and correctly scoped without modifying existing GitHub persona streaming",
+      "owner": "T6 reporting implementer",
+      "wave": "wave 4 - agent and reporting",
+      "evidence_lane": "reporting and SSE integration tests with recorded event streams",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/task-snapshot-running.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_dynamo_read_integration.py modules/gateway/tests/tasks/test_report_routes.py modules/gateway/tests/tasks/test_artifact_routes.py",
+      "command_status": "runnable"
+    },
+    "T7-AC01": {
+      "title": "An external clarification is durably acknowledged, consumed according to its ID and reflected in the completed result",
+      "owner": "T7 input and cancellation implementer",
+      "wave": "wave 5 - interaction",
+      "evidence_lane": "input and cancellation integration tests with recorded receipts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/event-input-required.json",
+        "fixtures/valid/process-input-required-frame.json",
+        "fixtures/invalid/command-receipt-consumed-without-turn.json",
+        "fixtures/invalid/message-request-command-id-not-uuid.json",
+        "fixtures/valid/command-receipt-accepted.json",
+        "fixtures/valid/command-receipt-consumed.json",
+        "fixtures/valid/message-request.json",
+        "fixtures/valid/task-snapshot-completed.json",
+        "fixtures/valid/task-snapshot-waiting-for-input.json",
+        "fixtures/valid/turn.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/tasks/test_task_commands.py",
+      "command_status": "runnable"
+    },
+    "T7-AC02": {
+      "title": "Retries/attempt replacement do not cause duplicated privileged action or let an old worker consume/acknowledge another attempt command",
+      "owner": "T7 input and cancellation implementer",
+      "wave": "wave 5 - interaction",
+      "evidence_lane": "input and cancellation integration tests with recorded receipts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/attempt-request.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_runtime.py modules/gateway/tests/agentauth/test_task_model.py modules/gateway/tests/tasks/test_task_commands.py",
+      "command_status": "runnable"
+    },
+    "T7-AC03": {
+      "title": "Cancellation before queue publication, while running and racing completion produces the defined honest outcome; repeated requests are idempotent",
+      "owner": "T7 input and cancellation implementer",
+      "wave": "wave 5 - interaction",
+      "evidence_lane": "input and cancellation integration tests with recorded receipts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/command-receipt-cancel-claiming-delivery.json",
+        "fixtures/invalid/process-cancel-frame-unintentional.json",
+        "fixtures/valid/cancel-request.json",
+        "fixtures/valid/command-receipt-cancel.json",
+        "fixtures/valid/process-cancel-frame.json",
+        "fixtures/valid/result-cancelled-confirmed.json",
+        "traces/cancellation.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/agentauth/test_task_cancel_before_start.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/tasks/test_command_routes.py",
+      "command_status": "runnable"
+    },
+    "T7-AC04": {
+      "title": "cancel_requested is never equated with confirmed process exit; lost heartbeat is not cancellation or success",
+      "owner": "T7 input and cancellation implementer",
+      "wave": "wave 5 - interaction",
+      "evidence_lane": "input and cancellation integration tests with recorded receipts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/result-cancelled-unconfirmed-not-recovery-required.json",
+        "fixtures/valid/result-cancelled-stop-unconfirmed.json",
+        "fixtures/valid/task-snapshot-heartbeat-lost-unknown.json",
+        "traces/cancellation.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py modules/gateway/tests/agentauth/test_task_execution_recovery.py",
+      "command_status": "runnable"
+    },
+    "T7-AC05": {
+      "title": "Unauthorized command targets and message-based authority escalation are rejected",
+      "owner": "T7 input and cancellation implementer",
+      "wave": "wave 5 - interaction",
+      "evidence_lane": "input and cancellation integration tests with recorded receipts",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/command-receipt-rejected-expired-authority.json",
+        "fixtures/valid/control-response.json"
+      ],
+      "command": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/gateway/tests/tasks/test_command_routes.py modules/gateway/tests/tasks/test_task_commands.py",
+      "command_status": "runnable"
+    },
+    "T8-AC01": {
+      "title": "A third-party developer can run the example without GitHub issue/account setup or adp-trigger/worker credentials",
+      "owner": "T8 client and rollout implementer",
+      "wave": "wave 6 - client and rollout",
+      "evidence_lane": "client example runs and rollout qualification output",
+      "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "T8-AC02": {
+      "title": "Configuration and capability checks cannot enable task messages while incompatible workers may consume them",
+      "owner": "T8 client and rollout implementer",
+      "wave": "wave 6 - client and rollout",
+      "evidence_lane": "client example runs and rollout qualification output",
+      "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "T8-AC03": {
+      "title": "Rollback steps preserve accepted tasks, records/artifacts and existing paths, with no queue purge/table replacement/global legacy guard flip",
+      "owner": "T8 client and rollout implementer",
+      "wave": "wave 6 - client and rollout",
+      "evidence_lane": "client example runs and rollout qualification output",
+      "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "T8-AC04": {
+      "title": "Commands/fixtures identify environment, owned resources, traffic/spend bounds, cleanup and acceptance IDs; no live result is fabricated from mocks",
+      "owner": "T8 client and rollout implementer",
+      "wave": "wave 6 - client and rollout",
+      "evidence_lane": "client example runs and rollout qualification output",
+      "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "T8-AC05": {
+      "title": "Task API/error/operations documentation and fixture versions match [T0](https://github.com/aws-e/adp/issues/5793) and the implemented public contract",
+      "owner": "T8 client and rollout implementer",
+      "wave": "wave 6 - client and rollout",
+      "evidence_lane": "client example runs and rollout qualification output",
+      "fixture_responsibility": "T8 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 -m pytest -q tests/task-api/test_external_client.py",
+      "command_status": "runnable",
+      "evidence_report": "docs/task-api/evidence/2026-09-25-t4-t8/criterion-review.json",
+      "execution_note": "Component checks do not replace the recorded actual-image/live lane. Build investigator before model-message seam. T4-AC04 executes inside qualified image with recorded fixture/test dependencies mounted under /fixture."
+    },
+    "V0-01": {
+      "title": "O1\u2013O8 each have a concrete answer, rationale, evidence and downstream owner. Any departure from D01\u2013D18 has an explicit accepted decision; unresolved choices are BLOCKED",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/message-request-command-id-not-uuid.json",
+        "fixtures/invalid/submit-request-caller-supplied-limits.json",
+        "fixtures/invalid/submit-request-caller-supplied-model.json",
+        "fixtures/invalid/submit-request-caller-supplied-tenant.json",
+        "fixtures/invalid/submit-response-presigned-download-url.json",
+        "traces/submit-to-result.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "V0-02": {
+      "title": "Versioned request, response, error, assignment, process, event, command and result schemas validate their positive, invalid and legacy fixtures. Include submit, retry/conflict, progress, reconnect, follow-up input, cancellation and terminal outcomes",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/process-input-required-frame.json",
+        "fixtures/valid/process-result-frame.json",
+        "fixtures/invalid/error-code-status-mismatch.json",
+        "fixtures/invalid/event-invalid-timestamp.json",
+        "fixtures/invalid/result-finding-without-evidence.json",
+        "fixtures/invalid/submit-request-body-byte-limit.json",
+        "fixtures/invalid/submit-request-body-too-large.json",
+        "fixtures/invalid/submit-request-duplicate-field.json",
+        "fixtures/invalid/submit-request-invalid-utf8.json",
+        "fixtures/invalid/submit-request-nonfinite-number.json",
+        "fixtures/invalid/submit-request-too-many-artifacts.json",
+        "fixtures/valid/artifact-upload-request.json",
+        "fixtures/valid/artifact-upload-response.json",
+        "fixtures/valid/cancel-request.json",
+        "fixtures/valid/envelope-dispatch.json",
+        "fixtures/valid/error-history-expired.json",
+        "fixtures/valid/error-idempotency-conflict.json",
+        "fixtures/valid/error-payload-too-large.json",
+        "fixtures/valid/error-rate-limited.json",
+        "fixtures/valid/event-progress.json",
+        "fixtures/valid/message-request.json",
+        "fixtures/valid/process-progress-frame.json",
+        "fixtures/valid/result-completed.json",
+        "fixtures/valid/sqs-publish-attributes.json",
+        "fixtures/valid/sse-snapshot-frame.json",
+        "fixtures/valid/submit-request-full.json",
+        "fixtures/valid/submit-request.json",
+        "fixtures/valid/submit-response-idempotent-replay.json",
+        "fixtures/valid/submit-response.json",
+        "fixtures/valid/task-snapshot-completed.json",
+        "fixtures/valid/task-snapshot-running.json",
+        "fixtures/valid/task-snapshot-waiting-for-input.json",
+        "traces/submit-to-result.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "V0-03": {
+      "title": "Lambda, gateway and worker contracts agree on canonical principal/tenant, ownership, task/run/attempt identity and authority fences. No caller-supplied scope or fabricated GitHub identity grants access",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/safety-evidence-omissions.json",
+        "fixtures/invalid/internal-adapter-unknown-fields.json",
+        "fixtures/valid/internal-adapter-catalog.json",
+        "fixtures/invalid/attempt-request-old-attempt-live.json",
+        "fixtures/invalid/bootstrap-request-caller-supplied-owner.json",
+        "fixtures/invalid/bootstrap-workload-identity-pod-name-only.json",
+        "fixtures/invalid/control-response-carries-authority.json",
+        "fixtures/invalid/model-binding-unverified-invocability.json",
+        "fixtures/valid/attempt-request.json",
+        "fixtures/valid/bootstrap-request.json",
+        "fixtures/valid/bootstrap-response.json",
+        "fixtures/valid/command-receipt-rejected-expired-authority.json",
+        "fixtures/valid/control-response.json",
+        "fixtures/valid/process-model-request-frame.json",
+        "fixtures/valid/process-start-frame.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "V0-04": {
+      "title": "Record/index layouts, acceptance/publication recovery, lifecycle transitions, event ordering/replay/gaps and input/cancel receipts are mutually consistent. State and ownership invariants have named tests and owners",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/safety-evidence-omissions.json",
+        "fixtures/invalid/event-task-completed-with-progress-data.json",
+        "fixtures/invalid/internal-adapter-unknown-fields.json",
+        "fixtures/invalid/task-snapshot-completed-without-result.json",
+        "fixtures/invalid/task-snapshot-waiting-without-input.json",
+        "fixtures/valid/event-input-required.json",
+        "fixtures/valid/event-task-completed.json",
+        "fixtures/valid/internal-adapter-catalog.json",
+        "fixtures/invalid/command-receipt-cancel-claiming-delivery.json",
+        "fixtures/invalid/command-receipt-consumed-without-turn.json",
+        "fixtures/invalid/model-receipt-unknown-permits-replay.json",
+        "fixtures/invalid/model-receipt-unknown-with-usage.json",
+        "fixtures/invalid/result-cancelled-unconfirmed-not-recovery-required.json",
+        "fixtures/invalid/result-completed-without-process-exit.json",
+        "fixtures/invalid/result-model-unknown-with-spend.json",
+        "fixtures/invalid/task-snapshot-cancelled-claiming-completion.json",
+        "fixtures/invalid/task-snapshot-queued-with-result.json",
+        "fixtures/invalid/task-snapshot-unknown-health-reported-success.json",
+        "fixtures/invalid/turn-command-listed-twice.json",
+        "fixtures/invalid/turn-mutable.json",
+        "fixtures/valid/command-receipt-accepted.json",
+        "fixtures/valid/command-receipt-cancel.json",
+        "fixtures/valid/command-receipt-consumed.json",
+        "fixtures/valid/event-history-gap.json",
+        "fixtures/valid/model-receipt-confirmed.json",
+        "fixtures/valid/model-receipt-unknown-handoff.json",
+        "fixtures/valid/process-cancel-frame.json",
+        "fixtures/valid/process-model-result-unknown-frame.json",
+        "fixtures/valid/result-cancelled-confirmed.json",
+        "fixtures/valid/result-cancelled-stop-unconfirmed.json",
+        "fixtures/valid/result-failed-model-outcome-unknown.json",
+        "fixtures/valid/task-snapshot-heartbeat-lost-unknown.json",
+        "fixtures/valid/turn.json",
+        "traces/cancellation.json",
+        "traces/submit-to-result.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "V0-05": {
+      "title": "Streaming, revocation, cancellation, payload/event, retry, concurrency/spend and retention thresholds are fixed with units and scope before implementation measurements. The selected deployment/fixture boundaries are explicit; this report grants no live execution authority",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/envelope-carries-credential.json",
+        "fixtures/invalid/envelope-generation-mismatch.json",
+        "fixtures/invalid/envelope-message-id-not-invocation.json",
+        "fixtures/invalid/envelope-transport-id-as-run-id.json",
+        "fixtures/invalid/sqs-dedup-id-is-invocation.json",
+        "fixtures/invalid/submit-request-body-byte-limit.json",
+        "fixtures/valid/sse-heartbeat-frame.json",
+        "traces/crash-matrix.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "V0-06": {
+      "title": "A coverage manifest maps every existing T0\u2013T8 and V1\u2013V5 acceptance ID, plus V0-01\u2013V0-08, to its owner, wave, evidence lane and fixture/test responsibility. No original criterion is removed, weakened, silently deferred or counted as passing from a skipped test",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/envelope-legacy-persona-in-task-kind.json",
+        "fixtures/invalid/legacy-envelope-claiming-task-kind.json",
+        "fixtures/invalid/legacy-envelope-task-persona.json",
+        "fixtures/invalid/submit-request-legacy-persona.json",
+        "fixtures/legacy/github-issue-comment-envelope.json",
+        "fixtures/legacy/github-label-envelope-with-model-directive.json",
+        "fixtures/legacy/slack-channel-envelope.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "V0-07": {
+      "title": "An independent consistency review records cross-component contradictions and their resolution against the exact T0 source revision. No unresolved contract contradiction or required decision remains at PASS",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/error-history-expired-without-gap.json",
+        "fixtures/invalid/event-cursor-foreign-task.json",
+        "fixtures/invalid/event-cursor-mismatched-sequence.json",
+        "fixtures/invalid/event-unknown-kind.json",
+        "fixtures/invalid/sse-heartbeat-counts-as-progress.json",
+        "fixtures/invalid/sse-snapshot-frame-advances-cursor.json",
+        "traces/reconnect-and-replay.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "V0-08": {
+      "title": "T0 publishes a runnable contract-check entry point and the versioned command/evidence manifest used by later waves. Contract checks actually execute and produce the V0 criterion report. Future runtime/live commands are explicitly identified as not yet implemented until their owning stories supply th",
+      "owner": "agent-developer (contract baseline)",
+      "wave": "wave 1 - contract implementation",
+      "evidence_lane": "contract artifacts under docs/task-api/contracts/v1 checked by scripts/task-api/check-contracts.py",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/process-cancel-frame-unintentional.json",
+        "fixtures/invalid/process-model-request-selects-model.json",
+        "fixtures/invalid/process-progress-frame-leaks-reasoning.json",
+        "fixtures/invalid/process-result-frame-claims-host-fields.json",
+        "fixtures/invalid/process-start-frame-carries-credentials.json"
+      ],
+      "command": "python3 scripts/task-api/check-contracts.py",
+      "command_status": "runnable"
+    },
+    "V1-01": {
+      "title": "A valid external identity resolves to the same canonical principal/tenant in Lambda and gateway. Invalid, expired, revoked, wrong-issuer/audience and unregistered credentials are rejected",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "traces/submit-to-result.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V1-02": {
+      "title": "Body/header-supplied tenant, service identity, owner, command target or lineage cannot replace authenticated scope. Cross-tenant and same-tenant nonowner task/event/artifact access is refused",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/submit-request-caller-supplied-tenant.json",
+        "fixtures/valid/bootstrap-request.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V1-03": {
+      "title": "Only explicitly registered and permitted agent-task- implementations are accepted. Unknown task prefixes, executable/path injection and existing GitHub personas are rejected without a queue publication",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "V1 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V1-04": {
+      "title": "Concurrent same-key/same-body submissions return one stable task/dispatch. Different-body reuse conflicts. Retry after a lost acceptance response does not create fresh work. Scope keys by tenant and principal",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/error-code-status-mismatch.json",
+        "fixtures/valid/error-idempotency-conflict.json",
+        "fixtures/valid/error-rate-limited.json",
+        "fixtures/valid/submit-response-idempotent-replay.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V1-05": {
+      "title": "Acceptance-storage or authority failure cannot return a false 202 or launch an unbound run. Exercise partial transactions/prepared states and compare actual records/publications",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "V1 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V1-06": {
+      "title": "New metadata, command, idempotency and progress records do not appear as extra runs in legacy tenant/user/correlation/engine-command queries. Invocation detail never resolves to a progress record",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/task-snapshot-completed-without-result.json",
+        "fixtures/invalid/task-snapshot-queued-with-result.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V1-07": {
+      "title": "Legacy and task workers cannot overwrite protected task scope/inputs, fabricate progress/completion or redirect artifacts. Prove the actual IAM/key/integrity boundary; a mocked writer refusal alone is insufficient",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "V1 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V1-08": {
+      "title": "Rate/persona/model/budget/credential restrictions remain enforced under registered service identity. No fake GitHub installation, service-name impersonation, forged human root or disabled global guard is used",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "V1 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V1-09": {
+      "title": "Payload bounds, S3 references, retention and cleanup preserve active tasks and deny unowned artifacts. Test expired idempotency/replay records and asynchronous TTL behavior without promising exact deletion time",
+      "owner": "V1 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live deployed-environment evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/submit-request-body-byte-limit.json",
+        "fixtures/invalid/submit-request-body-too-large.json",
+        "fixtures/invalid/submit-request-duplicate-field.json",
+        "fixtures/invalid/submit-request-invalid-utf8.json",
+        "fixtures/invalid/submit-request-nonfinite-number.json",
+        "fixtures/invalid/submit-request-too-many-artifacts.json",
+        "fixtures/valid/artifact-upload-request.json",
+        "fixtures/valid/artifact-upload-response.json",
+        "fixtures/valid/error-payload-too-large.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v1-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V2-01": {
+      "title": "One image contains the unchanged existing runtime packages and the separate task package. Existing dependency versions and entry commands are preserved; the task package is not imported by legacy executions",
+      "owner": "V2 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live security and isolation evaluation evidence",
+      "fixture_responsibility": "V2 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V2-02": {
+      "title": "A task envelope with no installation/repo/issue reaches the task branch before GitHub validation, poison-message handling, token minting, checkout and comments/checks. Unknown task personas do not fall through to Claude",
+      "owner": "V2 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live security and isolation evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/bootstrap-request-caller-supplied-owner.json",
+        "fixtures/invalid/bootstrap-workload-identity-pod-name-only.json",
+        "fixtures/invalid/control-response-carries-authority.json",
+        "fixtures/invalid/envelope-carries-credential.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V2-03": {
+      "title": "Execute a useful fixture with GitHub credentials absent and GitHub network access denied/observed. Assert zero GitHub requests and no fabricated issue/installation. Packaged GitHub tools in the shared image are not evidence of integration",
+      "owner": "V2 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live security and isolation evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/bootstrap-request-caller-supplied-owner.json",
+        "fixtures/invalid/event-cursor-foreign-task.json",
+        "fixtures/invalid/submit-request-caller-supplied-tenant.json",
+        "fixtures/valid/process-start-frame.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V2-04": {
+      "title": "Existing GitHub, agent-trigger and EventBridge Lambda fixtures preserve routing, authentication, outputs and queue envelopes with task admission both off and on. Task-only import/initialization failure does not break those handlers",
+      "owner": "V2 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live security and isolation evaluation evidence",
+      "fixture_responsibility": "V2 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V2-05": {
+      "title": "Existing Claude persona and agent-codex-reviewer execution/finish fixtures preserve their behavior. Include Codex stdin/result handling and its dedicated finalization",
+      "owner": "V2 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live security and isolation evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/model-binding-unverified-invocability.json",
+        "fixtures/invalid/process-model-request-selects-model.json",
+        "fixtures/invalid/submit-request-caller-supplied-limits.json",
+        "fixtures/invalid/submit-request-caller-supplied-model.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V2-06": {
+      "title": "Task input, workspace, model access and run-bound credentials are prepared without entering the GitHub host flow. Stale/wrong-run credentials and forged task references fail before execution or reporting",
+      "owner": "V2 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live security and isolation evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/process-start-frame-carries-credentials.json",
+        "fixtures/valid/process-model-request-frame.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V2-07": {
+      "title": "The new runtime reports substantive progress before exit, produces validated final output and stores result references before acknowledging completion. Buffered final stdout alone cannot pass",
+      "owner": "V2 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live security and isolation evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/submit-response-presigned-download-url.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V2-08": {
+      "title": "Worker termination, reporting failure and cleanup leave explicit recoverable/terminal state. Tokens, subscriptions, heartbeats and temporary files are released without deleting another assignment",
+      "owner": "V2 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live security and isolation evaluation evidence",
+      "fixture_responsibility": "V2 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v1-v2/v2-criterion-report.json",
+      "command_scope": "Verifies frozen recorded qualification verdicts/artifact hashes; does not rerun live collection."
+    },
+    "V3-01": {
+      "title": "Interrupt admission before/after record commit, queue send and send acknowledgement. Automatic recovery advances accepted work without a caller retry and does not dispatch a second active owner",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "traces/crash-matrix.json",
+        "traces/submit-to-result.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-02": {
+      "title": "Duplicate/redelivered SQS messages and concurrent consumers respect task grouping, idempotency and ownership. An expired lease alone is not permission for conflicting external effects",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/envelope-transport-id-as-run-id.json",
+        "fixtures/invalid/sqs-dedup-id-is-invocation.json",
+        "traces/crash-matrix.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-03": {
+      "title": "A replaced worker/attempt cannot append new progress, complete the task or acknowledge another delivery. Recovery preserves task ID and creates explicit run/attempt history",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/attempt-request-old-attempt-live.json",
+        "fixtures/invalid/envelope-generation-mismatch.json",
+        "fixtures/valid/attempt-request.json",
+        "traces/crash-matrix.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-04": {
+      "title": "SSE covers subscribe-before-start, mid-run subscription, completed tasks, disconnect/reconnect, duplicate frames, expired cursors and backend restart. Snapshot-to-live handoff has neither silent loss nor fabricated history",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/event-task-completed-with-progress-data.json",
+        "fixtures/valid/event-task-completed.json",
+        "fixtures/invalid/error-history-expired-without-gap.json",
+        "fixtures/invalid/event-cursor-mismatched-sequence.json",
+        "fixtures/invalid/event-invalid-timestamp.json",
+        "fixtures/invalid/event-unknown-kind.json",
+        "fixtures/invalid/process-progress-frame-leaks-reasoning.json",
+        "fixtures/invalid/sse-snapshot-frame-advances-cursor.json",
+        "fixtures/valid/error-history-expired.json",
+        "fixtures/valid/sse-snapshot-frame.json",
+        "traces/reconnect-and-replay.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-05": {
+      "title": "Reconnect across the API Gateway connection limit continues the same task. Verify real flushing and heartbeat behavior; heartbeat-only traffic cannot satisfy progress latency",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/command-receipt-consumed-without-turn.json",
+        "fixtures/invalid/turn-command-listed-twice.json",
+        "fixtures/invalid/turn-mutable.json",
+        "fixtures/valid/sse-heartbeat-frame.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-06": {
+      "title": "A slow/disconnected consumer, full buffer or relay failure does not block useful agent work indefinitely. Bounds are enforced, gaps are explicit, and terminal evidence is recoverable",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/sse-heartbeat-counts-as-progress.json",
+        "fixtures/invalid/task-snapshot-unknown-health-reported-success.json",
+        "fixtures/valid/event-history-gap.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-07": {
+      "title": "Follow-up input is durable and consumed once according to its command ID. Distinguish accepted from consumed; an ordinary message cannot grant privileged authority",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/task-snapshot-waiting-without-input.json",
+        "fixtures/valid/command-receipt-accepted.json",
+        "fixtures/valid/command-receipt-consumed.json",
+        "fixtures/valid/model-receipt-unknown-handoff.json",
+        "fixtures/valid/process-model-result-unknown-frame.json",
+        "fixtures/valid/turn.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-08": {
+      "title": "Cancel-before-dispatch, during execution and racing completion produce honest states/receipts. Repeated cancellation is idempotent; cancel_requested is not reported as confirmed exit",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/result-cancelled-unconfirmed-not-recovery-required.json",
+        "fixtures/invalid/task-snapshot-cancelled-claiming-completion.json",
+        "fixtures/valid/process-cancel-frame.json",
+        "fixtures/valid/result-cancelled-confirmed.json",
+        "fixtures/valid/result-cancelled-stop-unconfirmed.json",
+        "traces/cancellation.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-09": {
+      "title": "Revoked/expired access closes active subscriptions within the agreed bound and rejects future task/command/artifact requests. No credentials are placed in URLs or events",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/command-receipt-rejected-expired-authority.json",
+        "traces/crash-matrix.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V3-10": {
+      "title": "Terminal failure, exhausted recovery and unavailable results are visible in the task API. Missing heartbeat/cost/trace data is not converted into success, exit or zero cost",
+      "owner": "V3 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "Recorded native AWS faults, installed TCP transport, native IAM Redis and cross-pod quota evidence with artifact SHA-256 bindings.",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/model-receipt-unknown-permits-replay.json",
+        "fixtures/invalid/model-receipt-unknown-with-usage.json",
+        "fixtures/invalid/result-model-unknown-with-spend.json",
+        "fixtures/valid/model-receipt-unknown-handoff.json",
+        "fixtures/valid/process-model-result-unknown-frame.json",
+        "fixtures/valid/result-failed-model-outcome-unknown.json",
+        "fixtures/valid/task-snapshot-heartbeat-lost-unknown.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v3/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live fault evidence."
+    },
+    "V4-01": {
+      "title": "Record actual API Gateway integrations, Lambda version, task module configuration, queue/KEDA target and worker image digest. Prove the Task API uses the existing gateway, Lambda, queue and image family",
+      "owner": "V4 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live limits and spend evaluation evidence",
+      "fixture_responsibility": "V4 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v4/v4-criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live public qualification."
+    },
+    "V4-02": {
+      "title": "From outside the cluster, use a registered external service to submit a task in a tenant without GitHub integration. Receive an ADP task/run handle, not an SQS message ID masquerading as a run ID",
+      "owner": "V4 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live limits and spend evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/envelope-dispatch.json"
+      ],
+      "command": "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v4/v4-criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live public qualification."
+    },
+    "V4-03": {
+      "title": "Observe two distinct authored progress markers within the agreed latency before a held-open task completes. Measure emitter and external receiver timestamps through the actual public API/SSE path",
+      "owner": "V4 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live limits and spend evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/valid/event-progress.json"
+      ],
+      "command": "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v4/v4-criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live public qualification."
+    },
+    "V4-04": {
+      "title": "Disconnect and reconnect, answer an input request, retrieve a completed result/artifact and verify its integrity. Submit a separate cancellation fixture and observe confirmed outcome",
+      "owner": "V4 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live limits and spend evaluation evidence",
+      "fixture_responsibility": "V4 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v4/v4-criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live public qualification."
+    },
+    "V4-05": {
+      "title": "Exercise denied cross-tenant, same-tenant nonowner, unregistered persona and revoked-credential cases; record zero unauthorized dispatches/reads. Verify the relevant real IAM/authority boundary",
+      "owner": "V4 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live limits and spend evaluation evidence",
+      "fixture_responsibility": "V4 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v4/v4-criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live public qualification."
+    },
+    "V4-06": {
+      "title": "Run bounded existing GitHub/Claude and Codex-reviewer regression fixtures while task traffic is active. Measure Lambda errors/throttling, queue age, worker scheduling and table latency against the agreed baseline",
+      "owner": "V4 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live limits and spend evaluation evidence",
+      "fixture_responsibility": "V4 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v4/v4-criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live public qualification."
+    },
+    "V4-07": {
+      "title": "Demonstrate platform model access, budget/cost attribution and permitted task credentials under the external service principal, with no GitHub credential bootstrap. Unknown evidence remains unknown",
+      "owner": "V4 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live limits and spend evaluation evidence",
+      "fixture_responsibility": "V4 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify_v4_evidence.py --directory docs/task-api/evidence/2026-09-25-v4",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v4/v4-criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not recollect live public qualification."
+    },
+    "V5-01": {
+      "title": "With task admission disabled, existing flows work and no task is accepted/queued. Enabling a task route does not enable legacy mutation flags or widen existing persona authorization",
+      "owner": "V5 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live coexistence and rollout evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/legacy/github-issue-comment-envelope.json",
+        "fixtures/legacy/github-label-envelope-with-model-directive.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not replay rollout changes or request new release approval."
+    },
+    "V5-02": {
+      "title": "Deploy task-capable workers before admission and prove incompatible consumers cannot receive new task messages. Exercise or explicitly exclude mixed-version queue consumption",
+      "owner": "V5 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live coexistence and rollout evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/envelope-legacy-persona-in-task-kind.json",
+        "fixtures/invalid/legacy-envelope-claiming-task-kind.json",
+        "fixtures/legacy/github-issue-comment-envelope.json",
+        "fixtures/legacy/slack-channel-envelope.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not replay rollout changes or request new release approval."
+    },
+    "V5-03": {
+      "title": "Stop admission with accepted/running tasks present. Drain, cancel or durably quarantine those tasks while preserving reads and results. Do not roll back all consumers until task messages are safely handled",
+      "owner": "V5 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live coexistence and rollout evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/invalid/envelope-legacy-persona-in-task-kind.json",
+        "fixtures/invalid/legacy-envelope-claiming-task-kind.json",
+        "fixtures/invalid/legacy-envelope-task-persona.json",
+        "fixtures/invalid/submit-request-legacy-persona.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not replay rollout changes or request new release approval."
+    },
+    "V5-04": {
+      "title": "Rollback leaves existing handlers and agents functional; no request table is replaced, shared queue purged, or legacy records/permissions destroyed. Task-only errors stay within the bounded rollout policy",
+      "owner": "V5 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live coexistence and rollout evaluation evidence",
+      "fixture_responsibility": "T0 supplies the fixtures; the owner consumes them unchanged",
+      "t0_artifacts": [
+        "fixtures/legacy/github-label-envelope-with-model-directive.json"
+      ],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not replay rollout changes or request new release approval."
+    },
+    "V5-05": {
+      "title": "Retention and cleanup remove only owned fixtures/artifacts/configuration at the appropriate time. List anything intentionally retained, such as sanitized evidence, with its expiry",
+      "owner": "V5 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live coexistence and rollout evaluation evidence",
+      "fixture_responsibility": "V5 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not replay rollout changes or request new release approval."
+    },
+    "V5-06": {
+      "title": "Produce the final matrix linking every V1-V5 acceptance ID to evidence. Record remaining limitations and obtain release acceptance; merged code or a single happy-path run cannot close the epic",
+      "owner": "V5 evaluator",
+      "wave": "wave 7 - evaluation",
+      "evidence_lane": "live coexistence and rollout evaluation evidence",
+      "fixture_responsibility": "V5 supplies its own evidence against the T0 contract artifacts",
+      "t0_artifacts": [],
+      "command": "python3 scripts/task-api/verify-qualified-report.py --report docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_status": "runnable",
+      "qualification_report": "docs/task-api/evidence/2026-09-25-v5/criterion-report.json",
+      "command_scope": "Frozen evidence integrity and recorded verdict verification; does not replay rollout changes or request new release approval."
+    }
+  },
+  "consistency_review": "docs/task-api/contracts/v1/consistency-review.json",
+  "proposed_amendments_note": "Empty by design. The consistency review found no contradiction in the accepted design revision: every defect was in the T0 artifacts and was corrected against the design. Recording a speculative amendment would misrepresent a clean encoding as a disputed one. T0-AC04 remains satisfied by the review record, which lists each finding and its resolution."
+}

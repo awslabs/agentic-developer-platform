@@ -1,0 +1,6 @@
+{
+  "binary": "/usr/bin/rsync",
+  "sha256": "42adbf68a9378565cc291111beaa2d8cd57bb021e6231e60b458b6d68c2e3af1",
+  "package": "rsync",
+  "version": "3.5.1-0+adp1"
+}

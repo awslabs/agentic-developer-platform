@@ -67,6 +67,50 @@ variable "alb_security_group_ids" {
 }
 
 # =============================================================================
+# Internal-plane ALB (Issue #4010)
+# =============================================================================
+# The internal control plane (`/internal/{proxy+}`, AWS_IAM/SigV4) is served by
+# a SEPARATE internal ALB created by k8s/ingress-internal.yaml, so that it is
+# unreachable from the CloudFront edge by routing rather than only by header
+# hygiene. CloudFront has no VPC origin for this ALB.
+#
+# Both default to empty, which makes the `/internal/{proxy+}` integration fall
+# back to the edge ALB — i.e. exactly today's behavior. This keeps the change
+# ordered and non-breaking: merging the Terraform alone cannot move the internal
+# route to an ALB that does not exist yet. wire-gateway-alb.sh populates these
+# once the internal Ingress has materialized its ALB, and only then does the
+# route move.
+#
+# `internal_plane_alb_arn` is a LOAD BALANCER ARN, not a listener ARN. Verified
+# against the live API: passing a listener ARN as `integrationTarget` fails with
+# "... is not a valid ALB or NLB arn". The AWS API/CLI/boto3/CFN reference
+# wording ("The ALB or NLB listener to send the request to") is a documentation
+# error. See docs/design-notes/4010-internal-plane-alb-separation.md
+variable "internal_plane_alb_arn" {
+  description = "Load balancer ARN (NOT a listener ARN) of the internal-plane ALB from k8s/ingress-internal.yaml. Set dynamically by wire-gateway-alb.sh. Empty falls back to internal_alb_arn (pre-#4010 behavior)."
+  type        = string
+  default     = ""
+}
+
+variable "internal_plane_alb_dns" {
+  description = "DNS name of the internal-plane ALB from k8s/ingress-internal.yaml. Set dynamically by wire-gateway-alb.sh. Empty falls back to internal_alb_dns (pre-#4010 behavior)."
+  type        = string
+  default     = ""
+}
+
+# The internal-plane ALB gets its own controller-managed security group, so the
+# VPC Link SG needs egress to it and it needs ingress from the VPC Link SG —
+# the same pairing that `alb_security_group_ids` sets up for the edge ALB.
+# Without this the `/internal/{proxy+}` route resolves to the new ALB but the
+# connection is dropped, surfacing as a ~10s timeout then 503. (The spike hit
+# exactly this failure when only one direction was opened.)
+variable "internal_plane_alb_security_group_ids" {
+  description = "Security group IDs of the internal-plane ALB. The VPC Link v2 SG gets egress to these, and these get an ingress rule from the VPC Link SG. Set dynamically by wire-gateway-alb.sh. (Issue #4010)"
+  type        = list(string)
+  default     = []
+}
+
+# =============================================================================
 # Authentication Configuration (Optional)
 # =============================================================================
 # Start with NONE authorization since the backend already validates JWT.
@@ -124,13 +168,13 @@ variable "throttle_rate_limit" {
 # =============================================================================
 
 variable "log_retention_days" {
-  description = "CloudWatch log retention in days"
+  description = "CloudWatch API Gateway access-log retention in days (minimum 365)"
   type        = number
-  default     = 30
+  default     = 365
 
   validation {
-    condition     = contains([0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653], var.log_retention_days)
-    error_message = "Log retention days must be a valid CloudWatch retention value."
+    condition     = contains([365, 400, 545, 731, 1827, 3653], var.log_retention_days)
+    error_message = "API Gateway access-log retention must be a valid CloudWatch value of at least 365 days."
   }
 }
 
@@ -138,6 +182,29 @@ variable "enable_xray_tracing" {
   description = "Enable X-Ray tracing on the API Gateway stage"
   type        = bool
   default     = true
+}
+
+# Issue #5672 — payload tracing is OFF by default, in every environment.
+#
+# `data_trace_enabled` writes full request and response payloads, headers included,
+# to CloudWatch. Headers carry caller bearer tokens and the internal-plane shared
+# secret; bodies carry prompts and completions. Anyone with log read access can
+# harvest live credentials and private conversation content from them.
+#
+# This used to be derived from `var.environment != "prod"`, which meant any
+# environment not named exactly "prod" — including every future one — was exposed
+# by default. It is now an explicit switch so that enabling it is a visible choice
+# in a plan diff rather than a consequence of how an environment was named.
+#
+# Leave this false. If a specific short-lived debugging need ever justifies it,
+# scope it to one non-production environment, treat the log group as
+# credential-bearing for its retention window, and rotate anything captured.
+# Metadata-level troubleshooting is served by the stage access log; request-level
+# detail is served by the application's own logs.
+variable "enable_payload_tracing" {
+  description = "Enable full request/response payload tracing (data_trace_enabled) on the API Gateway stage. MUST stay false: payload traces write caller credentials and private prompt/completion content to CloudWatch. Not set true in any shipped environment."
+  type        = bool
+  default     = false
 }
 
 # =============================================================================
@@ -162,8 +229,74 @@ variable "enable_broker_route" {
   default     = false
 }
 
+# =============================================================================
+# Task API submission route (Issue #5795, T2)
+# =============================================================================
+# POST /v1/tasks is an EXPLICIT method on an explicit path, not a proxy. That is
+# deliberate: /{proxy+} would route it to the gateway pod, and this route must
+# reach the ingress Lambda instead. An explicit path takes precedence over
+# /{proxy+} in API Gateway, so adding it moves exactly this one method and
+# leaves every existing route resolving as it does today.
+#
+# The route is auth NONE at the edge because the token it carries is a Cognito
+# ACCESS token, and the authority decision needs more than a valid signature:
+# the required task scope, the active alias, and the canonical principal in the
+# gateway's own identity directory. Only the gateway can make that decision, so
+# a Cognito authorizer here would add a second, weaker gate whose verdict could
+# disagree with the authoritative one. The Lambda forwards the token; the
+# gateway decides. Nothing is accepted on signature alone.
+
+variable "task_api_lambda_invoke_arn" {
+  description = "Invoke ARN of the webhook-ingress Lambda that serves POST /v1/tasks. When set (with enable_task_api_route), adds the explicit /v1/tasks route to the OpenAPI body."
+  type        = string
+  default     = ""
+}
+
+variable "task_api_lambda_function_name" {
+  description = "Function name of the webhook-ingress Lambda serving POST /v1/tasks (for aws_lambda_permission)."
+  type        = string
+  default     = ""
+}
+
+variable "enable_task_api_route" {
+  description = "Whether to publish POST /v1/tasks. Must be a plan-time-known bool (not derived from the Lambda's computed invoke ARN, which is unknown until apply) because it drives a count. Publishing the route does not accept tasks: the Lambda refuses every submission unless ADP_TASK_API_ADMISSION_ENABLED is set, so route and admission roll out independently."
+  type        = bool
+  default     = false
+}
+
 variable "cloudwatch_kms_key_arn" {
   description = "ARN of the KMS key for CloudWatch Log Group encryption (CKV_AWS_158)"
   type        = string
   default     = ""
+}
+
+# -----------------------------------------------------------------------------
+# Edge authorisation (resource policy)
+# -----------------------------------------------------------------------------
+# Both default to empty, which creates no resource policy at all — unchanged
+# behaviour. Populate them to restrict at the API Gateway edge; the IAM
+# authorization on /agent/* and the internal API key on /internal/* remain the
+# primary controls either way.
+#
+# These take CIDRs, not VPC endpoint ids. `aws:SourceVpce` looks like the natural
+# key for "only callers inside the VPC" and is not available: it requires an
+# execute-api interface endpoint, which serves only PRIVATE-type APIs and, with
+# private DNS on, breaks in-VPC calls to REGIONAL ones. On a REGIONAL API an
+# in-VPC caller egresses to the public endpoint and presents its NAT address.
+#
+# Deliberately NOT applied to /auth/github/* or /{proxy+}. The OAuth routes are
+# reached through CloudFront, whose edge addresses are neither a browser's nor the
+# NAT's and cannot be expressed here — API Gateway resource policies do not
+# support managed prefix lists.
+
+variable "agent_route_source_cidrs" {
+  type        = list(string)
+  description = "CIDRs permitted to call /agent and /agent/* — normally the NAT EIPs the VPC egresses from, since agent workers reach this REGIONAL API over the internet. Empty (default) means no source restriction."
+  default     = []
+}
+
+variable "internal_route_source_cidrs" {
+  type        = list(string)
+  description = "CIDRs permitted to call /internal/* — normally the NAT EIPs. This is the busiest path on the API (the webhook Lambda's identity resolution), so a stale value here fails agent invocation at the resolve step, which presents as a GitHub or tenant problem rather than a networking one."
+  default     = []
 }

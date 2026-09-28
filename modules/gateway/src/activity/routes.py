@@ -11,14 +11,22 @@ Endpoints:
 
 import logging
 import os
+import re
 from typing import Annotated, Literal
 
 import boto3
+import httpx
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.activity.control_schemas import (
+    ControlCommandResponse,
+    ControlPingResponse,
+    ControlStateResponse,
+)
+from src.activity.control_service import ControlError, ControlService, validate_command_body
 from src.activity.cost_service import get_cost_by_date_range, get_cost_by_run_ids
 from src.activity.schemas import (
     ChainListResponse,
@@ -57,6 +65,26 @@ def get_stats_service() -> StatsService:
     return StatsService()
 
 
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _expand_date_bound(value: str | None, *, end: bool) -> str | None:
+    """Widen a bare YYYY-MM-DD to a full-day ISO-8601 instant.
+
+    Issue #4390: `since`/`until` are compared *lexicographically* against the
+    `arrived_at` DynamoDB sort key, which stores a full ISO-8601 instant
+    (e.g. "2026-06-13T22:00:00Z"). A bare date is therefore a broken bound:
+    "2026-06-13" < "2026-06-13T22:00:00Z", so as an upper bound it silently
+    excludes the whole end day, and since == until returns zero rows.
+
+    Callers that already send a timed value (and malformed values) pass through
+    untouched — malformed input stays rejected downstream exactly as before.
+    """
+    if value and _DATE_ONLY.match(value):
+        return f"{value}T23:59:59.999Z" if end else f"{value}T00:00:00Z"
+    return value
+
+
 # ---------------------------------------------------------------------------
 # GET /me/agent-run-stats — user's aggregate dashboard stats (Issue #3630)
 # ---------------------------------------------------------------------------
@@ -80,11 +108,11 @@ async def get_my_stats(
     Status filter: excludes no_op and webhook_received (same as Issue #1658).
     Cost enrichment: graceful degradation — if Postgres fails, spend is null.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
-    result = stats_service.get_stats_by_user(user_id=canonical_user_id, days=days)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
+    result = stats_service.get_stats_by_user(user_id=canonical_user_id, tenant_id=current_user.org_id, days=days)
 
     # Enrich with cost data from Postgres (cross-store pattern)
-    result = await _enrich_stats_with_cost(db, result, stats_service, canonical_user_id, days)
+    result = await _enrich_stats_with_cost(db, result, stats_service, canonical_user_id, days, tenant_id=current_user.org_id)
     return result
 
 
@@ -108,12 +136,10 @@ async def get_admin_stats(
     any tenant_id. days=N means the N calendar days ending today (UTC).
     Same aggregation + cost enrichment as the user endpoint.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     result = stats_service.get_stats_by_tenant(tenant_id=effective_tenant_id, days=days)
 
@@ -130,6 +156,7 @@ async def _enrich_stats_with_cost(
     days: int,
     *,
     is_tenant: bool = False,
+    tenant_id: str | None = None,
 ) -> StatsResponse:
     """Enrich stats response with cost data from Postgres.
 
@@ -151,6 +178,7 @@ async def _enrich_stats_with_cost(
         items = stats_service._fetch_items_merged(
             user_id=scope_id,
             days=days,
+            tenant_id=tenant_id,
         )
 
     run_ids = [item.get("event_id", "") for item in items if item.get("event_id")]
@@ -354,11 +382,15 @@ async def get_my_invocations(
     chain (root + descendants inline), paginated over chains by root arrived_at.
     Default view=runs preserves the flat list behavior.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
+    # Issue #4390: widen bare YYYY-MM-DD bounds to full-day instants
+    since = _expand_date_bound(since, end=False)
+    until = _expand_date_bound(until, end=True)
     try:
         if view == "chains":
             chain_result = service.query_chains_by_user(
                 user_id=canonical_user_id,
+                tenant_id=current_user.org_id,
                 page_size=page_size,
                 last_key=last_key,
                 status=status,
@@ -373,6 +405,7 @@ async def get_my_invocations(
         else:
             result = service.query_by_user(
                 user_id=canonical_user_id,
+                tenant_id=current_user.org_id,
                 page_size=page_size,
                 last_key=last_key,
                 status=status,
@@ -423,16 +456,14 @@ async def get_admin_invocations(
     status no_op or webhook_received are excluded. An explicit status filter
     takes precedence.
     """
-    # Permission check — reuses USAGE_READ which all admin roles have
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
-    # Determine which tenant to query
-    if current_user.is_admin and tenant_id:
-        # Platform admin may specify any tenant
-        effective_tenant_id = tenant_id
-    else:
-        # Org admins are pinned to their own org (org_id == tenant_id in this product)
-        effective_tenant_id = current_user.org_id
+    # Issue #4390: widen bare YYYY-MM-DD bounds to full-day instants
+    since = _expand_date_bound(since, end=False)
+    until = _expand_date_bound(until, end=True)
 
     try:
         result = service.query_by_tenant(
@@ -477,10 +508,11 @@ async def get_my_invocation_chain(
     webhook_received items are excluded from the chain — same convention as
     the flat list endpoints (Issue #1658).
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     chain = service.get_chain(
         correlation_id=correlation_id,
         user_id=canonical_user_id,
+        tenant_id=current_user.org_id,
         include_non_triggering=include_non_triggering,
     )
     return await _enrich_chain_with_cost(db, chain)
@@ -493,9 +525,32 @@ async def get_my_invocation_chain(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/me/agent-invocations/tasks", response_model=InvocationListResponse)
+async def get_my_task_invocations(
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page_size: Annotated[int, Query(ge=1, le=20)] = 20,
+    last_key: Annotated[str | None, Query(max_length=80)] = None,
+) -> InvocationListResponse:
+    """Owner-only canonical Task projection, independently paginated from native runs."""
+    from src.activity import task_readthrough
+
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
+    return await task_readthrough.list_owned(
+        request,
+        db,
+        canonical_user_id=canonical_user_id,
+        tenant_id=current_user.org_id,
+        page_size=page_size,
+        after=last_key,
+    )
+
+
 @router.get("/me/agent-invocations/{invocation_id}", response_model=InvocationItem)
 async def get_my_invocation_detail(
     invocation_id: Annotated[str, Path(description="The invocation ID to fetch detail for")],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -508,10 +563,15 @@ async def get_my_invocation_detail(
 
     Returns 404 (not 403) if the run doesn't belong to the caller (existence-hiding).
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
-    item = service.get_invocation(invocation_id, user_id=canonical_user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
+    item = service.get_invocation(invocation_id, user_id=canonical_user_id, tenant_id=current_user.org_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Invocation not found")
+        from src.activity import task_readthrough
+
+        task_record = await task_readthrough.resolve(request, db, invocation_id, canonical_user_id=canonical_user_id, tenant_id=current_user.org_id)
+        if task_record is None:
+            raise HTTPException(status_code=404, detail="Invocation not found")
+        item = task_readthrough.detail(task_record, request)
 
     # Enrich with cost data
     try:
@@ -555,12 +615,10 @@ async def get_admin_invocation_chain(
     Issue #3708: When include_non_triggering is False (default), no_op and
     webhook_received items are excluded — same convention as flat list.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     chain = service.get_chain(
         correlation_id=correlation_id,
@@ -588,12 +646,10 @@ async def get_admin_invocation_detail(
 
     Issue #1653: Admin variant scoped by tenant_id.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     item = service.get_invocation(invocation_id, tenant_id=effective_tenant_id)
     if item is None:
@@ -666,6 +722,7 @@ async def _fetch_transcript(transcript_key: str) -> str:
 @router.get("/me/agent-invocations/{invocation_id}/transcript")
 async def get_my_invocation_transcript(
     invocation_id: Annotated[str, Path(description="The invocation ID to fetch transcript for")],
+    request: Request,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     service: Annotated[ActivityService, Depends(get_activity_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -675,10 +732,15 @@ async def get_my_invocation_transcript(
     Issue #3069: Resolves the transcript_key from the invocation row (never from
     the client), then proxies the S3 object. Returns text/markdown.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
-    item = service.get_invocation(invocation_id, user_id=canonical_user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
+    item = service.get_invocation(invocation_id, user_id=canonical_user_id, tenant_id=current_user.org_id)
     if item is None:
-        raise HTTPException(status_code=404, detail="Invocation not found")
+        from src.activity import task_readthrough
+
+        task_record = await task_readthrough.resolve(request, db, invocation_id, canonical_user_id=canonical_user_id, tenant_id=current_user.org_id)
+        if task_record is None:
+            raise HTTPException(status_code=404, detail="Invocation not found")
+        return PlainTextResponse(content=task_readthrough.report(task_record), media_type="text/markdown")
 
     if not item.transcript_key:
         raise HTTPException(status_code=404, detail="Transcript not available for this invocation")
@@ -706,12 +768,10 @@ async def get_admin_invocation_transcript(
 
     Issue #3069: Admin variant scoped by tenant_id. Same AuthZ as admin detail.
     """
-    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=tenant_id)
-
-    if current_user.is_admin and tenant_id:
-        effective_tenant_id = tenant_id
-    else:
-        effective_tenant_id = current_user.org_id
+    effective_tenant_id = tenant_id or current_user.org_id
+    if not effective_tenant_id or not effective_tenant_id.strip():
+        raise HTTPException(status_code=403, detail="An authorized tenant scope is required")
+    await access.check_permission(current_user, Permission.ACTIVITY_READ_ALL, target_org_id=effective_tenant_id)
 
     item = service.get_invocation(invocation_id, tenant_id=effective_tenant_id)
     if item is None:
@@ -722,3 +782,163 @@ async def get_admin_invocation_transcript(
 
     content = await _fetch_transcript(item.transcript_key)
     return PlainTextResponse(content=content, media_type="text/markdown")
+
+
+# ---------------------------------------------------------------------------
+# Live run controls — Issue #3960 (S1 foundations)
+#
+# Browsers reach these under `/api/activity/invocations/{id}/agent/...`; the
+# `/api` prefix is stripped by CloudFront before the origin, which is why the
+# router is mounted without it (the convention asserted app-wide by
+# tests/test_route_prefix_convention.py).
+#
+# Every handler is a thin adapter over `ControlService`. Nothing here decides who
+# may control a run, which status an outcome maps to, or where a request is
+# forwarded — those live in the service so this module and
+# `orchestration/controls.py` cannot drift into two different answers. The only
+# work done here is what genuinely belongs at the HTTP edge: reading the body
+# size before parsing, translating the service's typed error into an
+# `HTTPException`, and resolving the caller's canonical identity.
+# ---------------------------------------------------------------------------
+
+
+def get_control_service() -> ControlService:
+    """Provide the control service; overridden via dependency_overrides in tests."""
+    return ControlService()
+
+
+async def _control_identity(current_user: TokenContext, db: AsyncSession) -> tuple[str, str]:
+    """Resolve the (canonical user id, tenant id) the control gate authorizes on.
+
+    The canonical id is required rather than the raw token subject because
+    invocation rows are keyed by the canonical `users.id`, not by the Cognito
+    sub — the same resolution the detail endpoint performs. `org_id` is used for
+    the tenant, never `attributed_org_id`: that field is caller-influenced for
+    billing attribution, so authorizing on it would let a caller nominate the
+    tenant whose runs they may control.
+    """
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
+    return canonical_user_id, current_user.org_id
+
+
+def _raise_control_error(exc: ControlError) -> None:
+    """Translate a service-layer control error into its HTTP response."""
+    raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+async def _validated_command_body(action: str, request: Request) -> str:
+    """Read the raw body and validate it through the shared control validator.
+
+    The validation itself — the 413 byte cap applied before parsing, the 400 for
+    malformed or non-object bodies, the `extra="forbid"` schema check and the UUID
+    requirement — lives in `control_service.validate_command_body`, not here.
+    That move is #3960 review finding F1: this module had the only copy, and
+    `orchestration/controls.py`'s verb routes take no body parameter, so none of
+    it ran on that adapter. Reading the raw bytes is the one part that genuinely
+    belongs at the HTTP edge; deciding what a valid command is does not.
+    """
+    return validate_command_body(action, await request.body())
+
+
+@router.get("/activity/invocations/{invocation_id}/agent/ping", response_model=ControlPingResponse)
+async def ping_invocation_agent(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ControlPingResponse:
+    """Check whether this run's control channel is reachable.
+
+    Side-effect free, which is what makes it safe to ship before any verb works:
+    it exercises browser auth, tenant and owner authorization, target validation,
+    the NetworkPolicy and the pod's token check without changing run state.
+    """
+    user_id, tenant_id = await _control_identity(current_user, db)
+    try:
+        return await control.ping(invocation_id, user_id=user_id, tenant_id=tenant_id)
+    except ControlError as exc:
+        _raise_control_error(exc)
+
+
+@router.get("/activity/invocations/{invocation_id}/agent/state", response_model=ControlStateResponse)
+async def get_invocation_agent_state(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ControlStateResponse:
+    """Read current control capabilities, phase and bounded command history.
+
+    This is the read contract the dashboard polls. A GET never starts an
+    assistant turn and never spends model tokens — it is served from state the
+    worker already recorded.
+    """
+    user_id, tenant_id = await _control_identity(current_user, db)
+    try:
+        return await control.get_state(invocation_id, user_id=user_id, tenant_id=tenant_id)
+    except ControlError as exc:
+        _raise_control_error(exc)
+
+
+@router.get("/activity/invocations/{invocation_id}/agent/events")
+async def stream_invocation_explanations(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+):
+    from src.activity.explanation_stream import open_explanation_stream
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+    from src.shared.database import get_session_factory
+
+    if request.query_params:
+        raise HTTPException(400, "event stream accepts no query parameters")
+
+    async def reauthorize():
+        async with get_session_factory()() as db:
+            return await authorize_human_session(current_user, db)
+
+    try:
+        session = await reauthorize()
+        return await open_explanation_stream(
+            control, invocation_id, session=session, reauthorize=reauthorize, cursor=request.headers.get("last-event-id")
+        )
+    except BootstrapRefusedError:
+        raise HTTPException(404, "run not found") from None
+    except ControlError as exc:
+        _raise_control_error(exc)
+    except httpx.HTTPError:
+        raise HTTPException(503, "live explanations unavailable") from None
+
+
+@router.post("/activity/invocations/{invocation_id}/agent/{action}")
+async def command_invocation_agent(
+    invocation_id: Annotated[str, Path(min_length=1, max_length=128)],
+    action: Annotated[Literal["pause", "resume", "steer", "abort"], Path()],
+    request: Request,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    control: Annotated[ControlService, Depends(get_control_service)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ControlCommandResponse:
+    """Submit a signed human command; acceptance is distinct from application."""
+    try:
+        await _validated_command_body(action, request)
+    except ControlError as exc:
+        _raise_control_error(exc)
+
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+
+    user_id, tenant_id = await _control_identity(current_user, db)
+    try:
+        # Preserve the authorization/flag/terminal/verb status ordering before
+        # doing the additional signing and live-session checks.
+        control.authorize_command(invocation_id, action, user_id=user_id, tenant_id=tenant_id)
+        session = await authorize_human_session(current_user, db)
+        result, status = await control.command(invocation_id, action, request_body=await request.body(), session=session)
+        return JSONResponse(result.model_dump(), status_code=status, headers={"Cache-Control": "no-store"})
+    except BootstrapRefusedError:
+        raise HTTPException(status_code=404, detail="run not found") from None
+    except ControlError as exc:
+        _raise_control_error(exc)

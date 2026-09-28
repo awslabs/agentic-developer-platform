@@ -1,0 +1,28 @@
+{
+  "$fixture": {
+    "description": "A progress frame carrying raw model reasoning and a fabricated completion percentage. Progress is a bounded status message: reasoning text is not a supported public surface, and a percentage implies a measurable denominator the task does not have.",
+    "schema": "process-protocol.schema.json#/$defs/progress_frame",
+    "expect": "invalid",
+    "reason": "reasoning, thinking and percent_complete are forbidden on a progress frame",
+    "violates": [
+      "process-protocol.schema.json#/$defs/progress_frame/not"
+    ],
+    "owner": "T5",
+    "criteria": [
+      "T0-AC02",
+      "V0-02",
+      "V3-04"
+    ]
+  },
+  "protocol_version": 1,
+  "type": "progress",
+  "request_id": "1e14b86d-50d6-45e6-9cc9-5f4cc30365aa",
+  "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+  "report_id": "9a734313-2f31-484b-9349-d52c41ad2497",
+  "message": "Correlating pool timeouts with 503 responses.",
+  "stage": "analysis",
+  "producer_timestamp": "2026-09-24T14:44:05Z",
+  "reasoning": "internal chain of thought that must not be surfaced",
+  "thinking": "more internal deliberation",
+  "percent_complete": 62
+}

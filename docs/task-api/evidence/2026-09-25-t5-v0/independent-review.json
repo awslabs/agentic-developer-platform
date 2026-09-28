@@ -1,0 +1,94 @@
+{
+  "reviewer": "runtime_contracts; independent of T0 and T5 authors",
+  "reviewed_repository_sha": "228b01850d4e32825c50d45b6d87426cfbded2c5",
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "T5": {
+    "story": 5798,
+    "lane": "Built image with controlled host/model boundaries; not live useful completion",
+    "image_digest": "sha256:a500a81d38e42f12ea12e5bba5a75847153c52f8ebf14ea8a0bec6059119e697",
+    "image_source": "f41fbf61f",
+    "harness_source": "d7f11ae7989b9981eeefbe5a3cc9599a5a180ccd",
+    "criteria": {
+      "T5-AC01": "PASS",
+      "T5-AC02": "PASS",
+      "T5-AC03": "PASS",
+      "T5-AC04": "PASS",
+      "T5-AC05": "PASS"
+    },
+    "evidence": {
+      "T5-AC01": "Installed useful investigator scenario completes under deny-all pod NetworkPolicy and network request observer, with no credentials mounted and zero observed requests. Model response is controlled.",
+      "T5-AC02": "Installed host receives at least two distinct authored progress updates, publishes validated result artifact and completes only after durable artifact receipt. Child tests validate protocol/private-data restrictions.",
+      "T5-AC03": "Image retains legacy binaries and unchanged entry selectors; node syntax checks pass; investigator has no separate installed node_modules. This is package isolation proof, not live legacy model execution.",
+      "T5-AC04": "102 passing child tests and 180 host/client tests cover bounded credentials/model requests, input, cancellation and receipts; installed cancellation scenario emits cancelled without success.",
+      "T5-AC05": "Installed malformed child exits nonzero with error; corrupt artifact receipt exits75 without completion or queue acknowledgement. Lost receipt retries one artifact identity with one controlled provider response."
+    }
+  },
+  "V0": {
+    "story": 5821,
+    "lane": "Retrospective independent repository contract review; does not rewrite earlier owner waiver as historical PASS",
+    "command": "python3 scripts/task-api/check-contracts.py --format json --verbose",
+    "exit_status": 0,
+    "checks_executed": 369,
+    "checks_failed": 0,
+    "criteria": {
+      "V0-01": "PASS",
+      "V0-02": "PASS",
+      "V0-03": "PASS",
+      "V0-04": "PASS",
+      "V0-05": "PASS",
+      "V0-06": "PASS",
+      "V0-07": "PASS",
+      "V0-08": "PASS"
+    },
+    "review": "Read accepted O1\u2013O8 answers, evidence references and downstream owners; fixed limits/units, closed schemas and lifecycle/identity contracts; all seventeen recorded consistency findings are resolved. Independently verified current grant keys use invocation/generation; legacy envelope retains source_ref; cancellation uses cancel_requested and gateway-only runtime_not_started proof; host cannot author scope or terminal success. Current contract checker exercises positive/negative/legacy fixtures and complete criterion responsibility mappings. Later live commands remain separately declared and are not counted as contract runtime evidence.",
+    "limitations": "This evaluates current post-T0 amended contract at the recorded repository revision, not original pre-waiver timing. Implementation/runtime failures belong to downstream criteria and are not excused by schema PASS."
+  },
+  "test_logs": [
+    {
+      "name": "model-adapter-all.log",
+      "sha256": "ea0fdd5b51475c595f27795d19236a591278754f6e4b4ebb186ecbd1cfa8168f"
+    },
+    {
+      "name": "model-adapter-npm.log",
+      "sha256": "4d3b2e656006575563b4c2a499d90f245f7ee5fd1539ba39dce184ebc3cb7a06"
+    },
+    {
+      "name": "model-adapter-ci.log",
+      "sha256": "321b71faf96db1bcf18ed553dcff49cff2faea6492c85d4f61af42d48337c923"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "README.md",
+      "sha256": "d7eced1b37a4951ac6d218dfd8be168ddc1a2327074c472e1db5195f976eacfe"
+    },
+    {
+      "path": "adapter-result.json",
+      "sha256": "7e54b2587b9af6b94bfa3206e5230a1461dbe1482b788a4c87f03bb21cc1f30a"
+    },
+    {
+      "path": "cleanup-check.json",
+      "sha256": "844adc79b88204fb650a175e14a6eb8946bceb5cde57d484d4971fc996c56850"
+    },
+    {
+      "path": "host-result.json",
+      "sha256": "60a527b782bde46668c45b25463b4e9975948a8c5eb608f13060f91ebe896fba"
+    },
+    {
+      "path": "network-probe.json",
+      "sha256": "b4eb15f67d5ab07613e9ad433d9c349151c398b82d5fa077e6ec97f3af54f687"
+    },
+    {
+      "path": "provenance.json",
+      "sha256": "7170c60d824d040b71231959650a350ffc3410c3f65c7c31290535b80931d7d7"
+    },
+    {
+      "path": "result.json",
+      "sha256": "15af9935d67bf8a027d663103a6e805dff5e2d45d798370c23cdb682bd5a735c"
+    },
+    {
+      "path": "v0-contract-checks.json",
+      "sha256": "b9f1e7c139c5b4797d70fcaee85ab33f477a124aad7c529bd12768a61fada66c"
+    }
+  ]
+}

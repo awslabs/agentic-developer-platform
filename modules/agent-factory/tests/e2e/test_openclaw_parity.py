@@ -2,7 +2,7 @@
 OpenClaw parity test suite — live regression tests for agent-gateway use cases.
 
 Maps to the 50 use cases documented in docs/openclaw-use-cases.md and
-docs/openclaw-fit-assessment.md.  Tests for supported use cases exercise
+docs/research/openclaw-fit-assessment.md.  Tests for supported use cases exercise
 real WS connections against the dev environment.  Partial use cases are
 xfail.  Missing use cases are skip.
 

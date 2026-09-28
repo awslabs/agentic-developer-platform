@@ -1,7 +1,7 @@
 """Transactional organization CRUD service.
 
 Issue #387: Single authoritative writer for tenant records.
-Pattern: Postgres transaction first, then DDB write-through + Cognito side-effects post-commit.
+Pattern: validate Postgres and require the Cognito group, then commit and project DDB.
 """
 
 import logging
@@ -9,7 +9,9 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.shared.models.organization import Department, Organization, Team
+from src.admin.installations.guards import assert_new_installation_ids_claimable_by, lock_installation_organization
+from src.shared.exceptions import BedrockGatewayError
+from src.shared.models.organization import CREATED_VIA_OPERATOR, Department, Organization, Team
 from src.shared.models.vault import ChannelTenantMap
 
 from .cognito_sync import CognitoSyncService
@@ -65,9 +67,10 @@ class OrganizationsService:
     async def create_organization(self, req: OrganizationCreateRequest) -> OrganizationResponse:
         """Create org + default dept + team + channel_tenant_map in one transaction.
 
-        Post-commit: DDB write-through + Cognito group creation.
+        The Cognito group must succeed before commit; DDB projection follows.
         """
         github_ids = _extract_github_installation_ids(req.channels)
+        await assert_new_installation_ids_claimable_by(req.id, new_ids=github_ids, old_ids=[], db=self._db)
 
         # Build settings JSON
         settings = {
@@ -85,6 +88,11 @@ class OrganizationsService:
             settings=settings,
             github_installation_ids=github_ids,
             cognito_client_ids=[],
+            # Issue #4842 (R6=a): stamped, not inherited. This is the canonical
+            # org-create route (D4=A) and it is platform-admin gated, so the
+            # tenant is operator-provisioned by definition. Stating the value
+            # keeps the trust decision in code rather than in a column default.
+            created_via=CREATED_VIA_OPERATOR,
         )
         self._db.add(org)
 
@@ -116,6 +124,15 @@ class OrganizationsService:
                     ChannelTenantMap(
                         provider="github",
                         provider_scope_id=entry.installation_id,
+                        # Issue #4070 (·A0): the canonical installation -> tenant
+                        # key, agreeing with _attach_org_installation. This writer
+                        # historically put the installation id in
+                        # provider_scope_id while the other put a GitHub ACCOUNT
+                        # id there — disjoint number spaces, so the unique
+                        # constraint on provider_scope_id never fired and two
+                        # tenants could both claim one installation. Uniqueness
+                        # now lives on this column (migration 027).
+                        installation_id=str(entry.installation_id),
                         org_id=req.id,
                     )
                 )
@@ -138,6 +155,19 @@ class OrganizationsService:
                     )
                 )
 
+        # Validate database constraints first, then require the idempotent group
+        # operation to succeed. An IAM failure must not return a successful org.
+        # A group left behind by a later DB failure is safe on the same-id retry.
+        await self._db.flush()
+        if not await self._cognito_sync.ensure_org_group(req.id):
+            await self._db.rollback()
+            raise BedrockGatewayError(
+                "cognito_provisioning_failed",
+                "Cognito organization group creation failed. Retry the same organization request.",
+                502,
+                {"org_id": req.id},
+            )
+
         # Commit the transaction
         await self._db.commit()
         await self._db.refresh(org)
@@ -151,9 +181,6 @@ class OrganizationsService:
             github_installation_ids=github_ids,
             cognito_client_ids=[],
         )
-
-        # Step 7: Cognito group creation (idempotent)
-        await self._cognito_sync.ensure_org_group(req.id)
 
         # Step 8: Audit event
         logger.info(
@@ -181,8 +208,7 @@ class OrganizationsService:
 
     async def update_organization(self, org_id: str, req: OrganizationUpdateRequest) -> OrganizationResponse | None:
         """Update an organization. Returns None if not found."""
-        result = await self._db.execute(select(Organization).where(Organization.id == org_id))
-        org = result.scalar_one_or_none()
+        org = await lock_installation_organization(self._db, org_id)
         if org is None:
             return None
 
@@ -195,8 +221,32 @@ class OrganizationsService:
         if req.plan is not None:
             settings["plan"] = req.plan
         if req.channels is not None:
-            settings["channels"] = req.channels.model_dump()
             new_github_ids = _extract_github_installation_ids(req.channels)
+
+            # Issue #4072 (#11, HIGH): verify the caller may claim each NEWLY
+            # ADDED installation before touching anything.
+            #
+            # Placement is the whole point. The delete below is unscoped by
+            # provider: it removes EVERY channel_tenant_map row for this org,
+            # GitHub and Slack alike, and only the github/slack entries present
+            # in this request body are re-inserted. So a request that names a
+            # victim's installation is destructive twice over — it steals the
+            # victim's GitHub routing AND, if it is rejected only after the
+            # delete has run, silently drops the target org's Slack routing on
+            # the way out. Guarding before the delete (and before any field
+            # assignment) means a refused claim leaves the row set untouched.
+            #
+            # ·A0's resolver (#4070) is the single source of the ownership rule;
+            # the 409/403 mapping is shared with PUT /admin/organizations/{id}
+            # via admin/installations/guards.py so the two writers cannot drift.
+            await assert_new_installation_ids_claimable_by(
+                org_id,
+                new_ids=new_github_ids,
+                old_ids=old_github_ids,
+                db=self._db,
+            )
+
+            settings["channels"] = req.channels.model_dump()
             org.github_installation_ids = new_github_ids
 
             # Update channel_tenant_map: delete old, insert new
@@ -207,6 +257,9 @@ class OrganizationsService:
                         ChannelTenantMap(
                             provider="github",
                             provider_scope_id=entry.installation_id,
+                            # Issue #4070 (·A0): same column, same meaning as
+                            # _attach_org_installation and the create path above.
+                            installation_id=str(entry.installation_id),
                             org_id=org_id,
                         )
                     )

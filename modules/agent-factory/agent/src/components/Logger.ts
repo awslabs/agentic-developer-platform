@@ -1,9 +1,10 @@
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { Config, LogContext } from '../types';
+import { resolveAgentLogGroup } from '../lib/logGroup';
 
 export class Logger {
   private client: CloudWatchLogsClient;
-  private logGroupName = '/github-ccsdk-agent/logs';
+  private logGroupName = resolveAgentLogGroup();
   private logStreamName: string;
   private sequenceToken: string | undefined;
   private config: Config;

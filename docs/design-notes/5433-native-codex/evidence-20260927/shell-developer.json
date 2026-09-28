@@ -1,0 +1,26 @@
+{
+  "status": "pr_created",
+  "repository": "aws-e/adp",
+  "issue": 6590,
+  "branch": "agent/codex-issue-6590",
+  "commit": "cecf2a84706cbb02c15e9ce851026199d4ef82db",
+  "prUrl": "https://github.com/aws-e/adp/pull/6592",
+  "threadId": "01a0e368-e12a-7650-a75a-b33bc21ffce0",
+  "summary": "Added `--timeout-minutes` to the standalone Codex developer command. It accepts whole minutes from 1 to 60, rejects invalid values before cloning or model execution, and keeps the 30-minute default when omitted. The option is documented and tested.\n\nCommitted and pushed as `cecf2a847`. Ready PR: https://github.com/aws-e/adp/pull/6592\n\n`npm run build` passed; `npm test` passed (132 tests, 0 failures). npm warned that the local Node v22 is below the package\u2019s declared Node \u226524 requirement.",
+  "usage": {
+    "input_tokens": 286889,
+    "cached_input_tokens": 255814,
+    "cache_write_input_tokens": 31049,
+    "output_tokens": 6291,
+    "reasoning_output_tokens": 2976
+  },
+  "adapter_source": "86a8fc510",
+  "sdk": "@openai/codex-sdk@0.155.1",
+  "model": "openai.gpt-6-sol",
+  "transport": "authenticated ADP gateway /api/openai/v1/responses",
+  "execution": "standalone SDK developer on dev box; real GitHub and inference, native shell tools",
+  "validation": "132 package tests passed in the SDK run",
+  "output_pr_base": "fix/codex-developer-issue-flow",
+  "webhook_fleet_deployed": false,
+  "validation_service_used": false
+}

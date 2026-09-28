@@ -1,0 +1,1 @@
+ARC 0.14.2 would delete scale set arc-runner-agent labelled 0.13.1; complete the coordinated chart/CRD migration first

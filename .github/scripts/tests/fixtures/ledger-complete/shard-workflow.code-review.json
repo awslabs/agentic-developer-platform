@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "run_date": "2026-08-30",
+  "stage": "workflow.code-review",
+  "stage_type": "workflow",
+  "generated_at": "2026-08-30T02:41:00Z",
+  "fields": {
+    "identified_raw": 7,
+    "identified_new_after_dedup": 2,
+    "new_finding_ids": ["f-a1c2", "f-b3d4"],
+    "run_duration_seconds": 1800
+  }
+}

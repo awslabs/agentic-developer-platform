@@ -1,355 +1,474 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
-# install.sh - Install Bedrock Gateway CLI tools
+# install.sh — install the `adp` CLI (Issue #4852, Phase 1).
 #
-# This script installs bg-auth.sh to ~/bin/ and ensures it's in the PATH.
+# Installs `adp` plus the two files it wraps — `bg-cognito-auth.sh` (the auth
+# core) and `bg-gateway-proxy.py` (the Codex auth proxy) — SIDE BY SIDE into
+# ~/.adp/bin, because `adp` resolves both as siblings of itself rather than via
+# PATH. ~/.adp/bin is what goes on PATH. ~/bin is deliberately never touched, so
+# an existing hand-installed bg-cognito-auth.sh keeps working untouched.
+#
+# Primary path (the /setup page renders this with its own origin filled in):
+#
+#   curl -fsSL https://<gateway>/api/cli/install.sh | sh -s -- --gateway-url https://<gateway>
+#
+# The download route serves a STATIC file, so this script cannot be templated
+# per-request — the gateway URL is passed in and persisted to
+# ~/.bedrock-gateway/config.json (key `gateway_url`), the same key
+# bg-cognito-auth.sh already reads. That is what lets `adp login` take no flags
+# on first run and `adp update` know where to re-pull from.
+#
+# POSIX sh, not bash: the documented install line pipes into `sh`, which ignores
+# this shebang, and on Debian-family systems /bin/sh is dash. So: no arrays, no
+# [[ ]], no BASH_SOURCE, no `echo -e`.
 #
 # Usage:
-#   ./install.sh                 # Install to ~/bin/
-#   ./install.sh --prefix /path  # Install to custom directory
-#   ./install.sh --uninstall     # Remove installation
+#   ./install.sh --gateway-url https://gw.example.com   # from a repo checkout
+#   curl -fsSL <gw>/api/cli/install.sh | sh -s -- --gateway-url <gw>
+#   ./install.sh --prefix /path/to/bin                  # custom install dir
+#   ./install.sh --uninstall
 #
-# Requirements:
-#   - curl (for API calls)
-#   - jq (for JSON parsing)
-#   - aws cli (for credential management)
+# Requirements: curl, jq, python3. Deliberately NOT the aws CLI — ordinary gateway users
+# hold no AWS credentials, and the point of the gateway-routed refresh (#4846) is
+# that they need none. The previous version of this script installed the
+# deprecated bg-auth.sh and hard-required `aws`.
+
+set -eu
+
+VERSION="2.0.0"
+DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
+
+# The files that must land side by side.
+ADP_SCRIPT="adp"
+CORE_SCRIPT="bg-cognito-auth.sh"
+PROXY_SCRIPT="bg-gateway-proxy.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-superplane-onboarding.py adp-models.py adp-flow.py adp-doctor.py command-manifest.json adp-tenant.py adp-vault.py adp-access.py adp-usage.py adp-agent.py adp-task.py adp_task_client.py adp-hierarchy.py adp-budget.py adp-ratelimit.py adp-model-policy.py adp-machine.py adp-knowledge.py adp-gitlab.py adp-superplane-research.py adp-platform.py adp-superplane-lifecycle.py adp-chat.py"
+
+# The auth store this install writes its gateway URL into.
 #
+# BG_CONFIG_DIR is honoured because `adp update` runs this script as a child and
+# exports the SELECTED deployment's pin (Issue #5413). Without that, an
+# `adp --deployment prod update` rewrote the LEGACY store's gateway_url to prod's
+# URL while leaving the legacy refresh token in place beside it — so the next
+# refresh sent one deployment's credential to another deployment's gateway. A
+# standalone `curl | sh` install has no pin and keeps the original default.
+CONFIG_DIR="${BG_CONFIG_DIR:-${HOME}/.bedrock-gateway}"
+CONFIG_FILE="${CONFIG_DIR}/config.json"
 
-set -euo pipefail
+# Issue #5039: the version this install is PINNED to. When set, the CLI version
+# that actually lands must equal it or nothing is installed — an install that
+# silently delivered a different version than the one asked for is the failure
+# mode being closed here. Recorded in the manifest so `adp update --to <v>` and
+# `--rollback --to <v>` can be version-explicit rather than "one generation back".
+VERSION_PIN="${ADP_VERSION_PIN:-}"
+MANIFEST_FILE_NAME=".adp-manifest.json"
 
-# Constants
-readonly VERSION="1.0.0"
-readonly SCRIPT_NAME="bg-install"
-readonly DEFAULT_INSTALL_DIR="$HOME/bin"
-
-# Global variables
-INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
+GATEWAY_URL="${ADP_GATEWAY_URL:-}"
 UNINSTALL=false
-FORCE=false
+NO_PATH_EDIT=false
+# Set by `adp update`: keep the outgoing copies as *.prev so `adp update
+# --rollback` has something to restore.
+KEEP_PREVIOUS="${ADP_KEEP_PREVIOUS:-0}"
 
-# Colors for output (if terminal supports it)
-if [[ -t 1 ]]; then
-    readonly RED='\033[0;31m'
-    readonly GREEN='\033[0;32m'
-    readonly YELLOW='\033[1;33m'
-    readonly BLUE='\033[0;34m'
-    readonly NC='\033[0m' # No Color
-else
-    readonly RED=''
-    readonly GREEN=''
-    readonly YELLOW=''
-    readonly BLUE=''
-    readonly NC=''
-fi
+log_info() { printf '[INFO] %s\n' "$*" >&2; }
+log_success() { printf '[OK] %s\n' "$*" >&2; }
+log_warn() { printf '[WARN] %s\n' "$*" >&2; }
+log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 
-# Logging functions
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $*"
-}
-
-log_success() {
-    echo -e "${GREEN}[OK]${NC} $*"
-}
-
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $*"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $*"
-}
-
-# Print usage information
 usage() {
     cat << EOF
-$SCRIPT_NAME v$VERSION - Install Bedrock Gateway CLI tools
+install.sh v${VERSION} — install the adp CLI
 
-Usage: $SCRIPT_NAME [OPTIONS]
+Usage: install.sh [OPTIONS]
 
 Options:
-  --prefix DIR    Install to custom directory (default: ~/bin/)
-  --uninstall     Remove bg-auth.sh from installation directory
-  --force         Overwrite existing installation without prompting
-  -h, --help      Show this help message
-  -v, --version   Show version
+  --gateway-url URL   Your gateway's base URL (or set ADP_GATEWAY_URL).
+                      Persisted so 'adp login' and 'adp update' need no flags.
+  --prefix DIR        Install directory (default: ${DEFAULT_INSTALL_DIR})
+  --uninstall         Remove the installed files
+  --no-path-edit      Do not touch your shell rc; just print the PATH line
+  -h, --help          Show this message
+  -v, --version       Show the installer version
 
 Examples:
-  # Default installation
-  ./install.sh
+  curl -fsSL https://gw.example.com/api/cli/install.sh | sh -s -- \\
+      --gateway-url https://gw.example.com
 
-  # Install to custom directory
-  ./install.sh --prefix /usr/local/bin
-
-  # Uninstall
-  ./install.sh --uninstall
+  # Prefer to read it first? Download, inspect, then run:
+  curl -fsSL https://gw.example.com/api/cli/install.sh -o install.sh
+  less install.sh
+  sh install.sh --gateway-url https://gw.example.com
 EOF
 }
 
-# Parse command line arguments
 parse_args() {
-    while [[ $# -gt 0 ]]; do
+    while [ $# -gt 0 ]; do
         case "$1" in
+            --gateway-url)
+                if [ -z "${2:-}" ]; then log_error "--gateway-url requires a URL"; exit 1; fi
+                GATEWAY_URL="$2"; shift 2 ;;
             --prefix)
-                if [[ -z "${2:-}" ]]; then
-                    log_error "--prefix requires a directory argument"
-                    exit 1
-                fi
-                INSTALL_DIR="$2"
-                shift 2
-                ;;
-            --uninstall)
-                UNINSTALL=true
-                shift
-                ;;
-            --force)
-                FORCE=true
-                shift
-                ;;
-            -h|--help)
-                usage
-                exit 0
-                ;;
-            -v|--version)
-                echo "$SCRIPT_NAME v$VERSION"
-                exit 0
-                ;;
-            *)
-                log_error "Unknown option: $1"
-                usage
-                exit 1
-                ;;
+                if [ -z "${2:-}" ]; then log_error "--prefix requires a directory"; exit 1; fi
+                INSTALL_DIR="$2"; shift 2 ;;
+            --version-pin)
+                if [ -z "${2:-}" ]; then log_error "--version-pin requires a version"; exit 1; fi
+                VERSION_PIN="$2"; shift 2 ;;
+            --uninstall) UNINSTALL=true; shift ;;
+            --no-path-edit) NO_PATH_EDIT=true; shift ;;
+            -h|--help) usage; exit 0 ;;
+            -v|--version) echo "install.sh v${VERSION}"; exit 0 ;;
+            *) log_error "Unknown option: $1"; usage; exit 1 ;;
         esac
     done
 }
 
-# Check for required dependencies
 check_dependencies() {
-    local missing=()
-    local dep_status=true
-
-    log_info "Checking dependencies..."
-
-    for cmd in curl jq aws; do
-        if command -v "$cmd" &>/dev/null; then
-            log_success "$cmd found: $(command -v "$cmd")"
-        else
-            log_error "$cmd not found"
-            missing+=("$cmd")
-            dep_status=false
-        fi
-    done
-
-    if [[ "$dep_status" == "false" ]]; then
-        echo ""
-        log_error "Missing required dependencies: ${missing[*]}"
-        echo ""
-        log_info "Install missing dependencies:"
-        for dep in "${missing[@]}"; do
-            case "$dep" in
-                curl)
-                    echo "  - curl: sudo yum install curl  (or: sudo apt install curl)"
-                    ;;
-                jq)
-                    echo "  - jq: sudo yum install jq  (or: sudo apt install jq)"
-                    ;;
-                aws)
-                    echo "  - aws: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
-                    ;;
-            esac
-        done
+    missing=""
+    command -v curl >/dev/null 2>&1 || missing="curl"
+    command -v jq >/dev/null 2>&1 || missing="${missing:+${missing} }jq"
+    command -v python3 >/dev/null 2>&1 || missing="${missing:+${missing} }python3"
+    if [ -n "${missing}" ]; then
+        log_error "Missing required dependencies: ${missing}"
+        log_info "Install them with your package manager (e.g. 'brew install ${missing}' or 'sudo apt install ${missing}')."
         exit 1
     fi
-
-    log_success "All dependencies found"
 }
 
-# Get the directory where this script is located
-get_script_dir() {
-    local source="${BASH_SOURCE[0]}"
-    local dir
-
-    # Resolve symlinks
-    while [[ -L "$source" ]]; do
-        dir="$(cd -P "$(dirname "$source")" && pwd)"
-        source="$(readlink "$source")"
-        [[ "$source" != /* ]] && source="$dir/$source"
-    done
-
-    cd -P "$(dirname "$source")" && pwd
+# Directory this script lives in, or empty when it has no on-disk source — which
+# is the `curl | sh` case, where the script arrives on stdin and the files must
+# be fetched from the gateway instead of copied from a checkout.
+script_dir() {
+    case "$0" in
+        ""|sh|bash|dash|-*|/dev/fd/*|/proc/self/fd/*) return 0 ;;
+    esac
+    [ -f "$0" ] || return 0
+    (cd -P "$(dirname "$0")" && pwd)
 }
 
-# Install bg-auth.sh
-install_bg_auth() {
-    local script_dir
-    script_dir="$(get_script_dir)"
-    local source_file="$script_dir/bg-auth.sh"
-    local target_file="$INSTALL_DIR/bg-auth.sh"
+# The gateway serves everything the CLI needs under an /api prefix
+# (/api/cli/* here, /api/auth/cli/* for login + refresh). bg-cognito-auth.sh
+# reads the stored gateway_url and appends /auth/... to it directly, so the
+# canonical form MUST end in /api. Accept the URL with OR without it — a bare
+# https://<gateway> is exactly what the /setup page and this file's own examples
+# show — and normalize to the /api form. Without this a bare URL breaks two
+# things: the download below 403s (or, worse, the SPA fallback returns index.html
+# with a 200 and we would install HTML as `adp`), and the bare URL then gets
+# persisted, so `adp login` afterwards also hits the wrong path.
+normalize_gateway_url() {
+    [ -z "${GATEWAY_URL}" ] && return 0
+    GATEWAY_URL="${GATEWAY_URL%/}"
+    case "${GATEWAY_URL}" in
+        */api) : ;;
+        *) GATEWAY_URL="${GATEWAY_URL}/api" ;;
+    esac
+}
 
-    log_info "Installing bg-auth.sh..."
+# Resolve the gateway URL: flag/env, else the one a previous install persisted.
+# Never guessed — a wrong origin would silently install a CLI pointed at another
+# deployment.
+resolve_gateway_url() {
+    if [ -z "${GATEWAY_URL}" ] && [ -f "${CONFIG_FILE}" ]; then
+        GATEWAY_URL=$(jq -r '.gateway_url // empty' "${CONFIG_FILE}" 2>/dev/null || true)
+    fi
+    normalize_gateway_url
+}
 
-    # Check source file exists
-    if [[ ! -f "$source_file" ]]; then
-        log_error "Source file not found: $source_file"
-        log_error "Make sure you're running this script from the cli/ directory"
+require_gateway_url() {
+    if [ -n "${GATEWAY_URL}" ]; then return 0; fi
+    log_error "No gateway URL supplied and none stored."
+    log_info "Re-run with your gateway's URL — the /setup page shows this line with it filled in:"
+    printf '\n    curl -fsSL https://<gateway>/api/cli/install.sh | sh -s -- --gateway-url https://<gateway>\n\n' >&2
+    exit 1
+}
+
+# Check before staging binaries: a reinstall may refresh an existing binding,
+# but must never place an old deployment's credentials beside a new endpoint.
+check_existing_binding() {
+    [ -e "${CONFIG_FILE}" ] || [ -e "${CONFIG_DIR}/tokens.json" ] || return 0
+    if ! python3 - "${CONFIG_FILE}" "${GATEWAY_URL}" <<'PY'
+import json, sys
+from urllib.parse import urlsplit
+
+def canonical(value):
+    url = urlsplit(value)
+    if not url.hostname or url.scheme not in ("https", "http") or url.username or url.password or url.query or url.fragment:
+        raise ValueError("invalid binding")
+    port = url.port or (443 if url.scheme == "https" else 80)
+    path = url.path.rstrip("/")
+    if not path.endswith("/api"):
+        path += "/api"
+    return url.scheme.lower(), url.hostname.lower(), port, path
+
+try:
+    with open(sys.argv[1]) as config:
+        existing = json.load(config)["gateway_url"]
+    if canonical(existing) != canonical(sys.argv[2]):
+        raise ValueError("different binding")
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(1)
+PY
+    then
+        log_error "Existing deployment state cannot be rebound by the installer. Nothing was installed."
+        log_info "Use 'adp deployment add <name> --url <gateway>' for a different deployment."
         exit 1
     fi
-
-    # Create install directory if it doesn't exist
-    if [[ ! -d "$INSTALL_DIR" ]]; then
-        log_info "Creating directory: $INSTALL_DIR"
-        mkdir -p "$INSTALL_DIR"
-    fi
-
-    # Check if target already exists
-    if [[ -f "$target_file" ]] && [[ "$FORCE" != "true" ]]; then
-        log_warn "bg-auth.sh already exists at $target_file"
-        read -r -p "Overwrite? [y/N] " response
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            log_info "Installation cancelled"
-            exit 0
-        fi
-    fi
-
-    # Copy the file
-    cp "$source_file" "$target_file"
-    chmod +x "$target_file"
-
-    log_success "Installed: $target_file"
 }
 
-# Uninstall bg-auth.sh
-uninstall_bg_auth() {
-    local target_file="$INSTALL_DIR/bg-auth.sh"
+# Persist the URL under the key bg-cognito-auth.sh already reads, so a first
+# `adp login` needs no --gateway-url. MERGES rather than overwrites: an existing
+# config carries a live session's client_id / refresh_via, and clobbering those
+# would break refresh for a user who is merely updating.
+persist_gateway_url() {
+    mkdir -p "${CONFIG_DIR}"
+    chmod 700 "${CONFIG_DIR}"
 
-    log_info "Uninstalling bg-auth.sh..."
-
-    if [[ ! -f "$target_file" ]]; then
-        log_warn "bg-auth.sh not found at $target_file"
-        log_info "Nothing to uninstall"
-        exit 0
+    existing='{}'
+    if [ -f "${CONFIG_FILE}" ]; then
+        existing=$(jq '.' "${CONFIG_FILE}" 2>/dev/null || echo '{}')
     fi
 
-    rm -f "$target_file"
-    log_success "Removed: $target_file"
+    tmp=$(mktemp "${CONFIG_FILE}.XXXXXX")
+    printf '%s' "${existing}" | jq --arg url "${GATEWAY_URL}" '.gateway_url = $url' > "${tmp}"
+    chmod 600 "${tmp}"
+    mv -f "${tmp}" "${CONFIG_FILE}"
 }
 
-# Check if install directory is in PATH
-check_path() {
-    local path_updated=false
+# Space-separated list of temp files staged this run. cleanup_staged removes any
+# that survive an early exit, so a failed install leaves nothing behind — never a
+# usable `adp` without the core script it depends on.
+STAGED_TMPS=""
 
-    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-        log_warn "$INSTALL_DIR is not in your PATH"
-        echo ""
+cleanup_staged() {
+    for f in ${STAGED_TMPS}; do
+        rm -f "${f}"
+    done
+}
 
-        # Determine which shell config to update
-        local shell_config=""
-
-        if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == */zsh ]]; then
-            shell_config="$HOME/.zshrc"
-        elif [[ -n "${BASH_VERSION:-}" ]] || [[ "$SHELL" == */bash ]]; then
-            if [[ -f "$HOME/.bash_profile" ]]; then
-                shell_config="$HOME/.bash_profile"
-            else
-                shell_config="$HOME/.bashrc"
-            fi
+# Reject a "download" that isn't actually one of our artifacts. A misrouted request
+# (e.g. the gateway URL missing its /api prefix) can come back as the SPA's
+# index.html with a 200, which curl -f happily accepts — installing that as `adp`
+# is the partial/broken install we are guarding against. Scripts require a
+# shebang; the checked command manifest requires its versioned JSON shape.
+validate_staged() {
+    name="$1"; tmp="$2"
+    if [ ! -s "${tmp}" ]; then
+        log_error "Downloaded ${name} is empty — refusing to install a broken copy."
+        exit 1
+    fi
+    if [ "${name}" = "command-manifest.json" ]; then
+        if ! jq -e '
+            type == "object"
+            and ((.schema_version | type) == "string")
+            and ((.schema_version | length) > 0)
+            and ((.commands | type) == "array")
+            and ((.commands | length) > 0)
+        ' "${tmp}" >/dev/null 2>&1; then
+            log_error "Downloaded ${name} is not a valid command manifest. Nothing was installed."
+            exit 1
         fi
+        return 0
+    fi
+    first_line=$(head -n 1 "${tmp}" 2>/dev/null || true)
+    case "${first_line}" in
+        "#!"*) : ;;
+        *)
+            log_error "Downloaded ${name} is not a script — the gateway URL is likely wrong or missing its /api path. Nothing was installed."
+            exit 1 ;;
+    esac
+}
 
-        if [[ -n "$shell_config" ]]; then
-            log_info "Add $INSTALL_DIR to your PATH by adding this line to $shell_config:"
-            echo ""
-            echo "    export PATH=\"\$PATH:$INSTALL_DIR\""
-            echo ""
+# Fetch one file into a temp (from the repo checkout when we are running inside
+# one, else from the gateway's download route) and validate it. Registers the
+# temp so cleanup_staged can reclaim it if a later file fails.
+stage_file() {
+    name="$1"
+    tmp="${INSTALL_DIR}/.${name}.tmp.$$"
+    STAGED_TMPS="${STAGED_TMPS} ${tmp}"
+    src_dir=$(script_dir)
 
-            if [[ "$FORCE" == "true" ]]; then
-                # Auto-add to shell config
-                {
-                    echo ""
-                    echo "# Added by Bedrock Gateway installer"
-                    echo "export PATH=\"\$PATH:$INSTALL_DIR\""
-                } >> "$shell_config"
-                log_success "Added to $shell_config"
-                path_updated=true
-            else
-                read -r -p "Add this line automatically? [y/N] " response
-                if [[ "$response" =~ ^[Yy]$ ]]; then
-                    {
-                        echo ""
-                        echo "# Added by Bedrock Gateway installer"
-                        echo "export PATH=\"\$PATH:$INSTALL_DIR\""
-                    } >> "$shell_config"
-                    log_success "Added to $shell_config"
-                    path_updated=true
-                fi
-            fi
-        else
-            log_info "Add this to your shell configuration:"
-            echo "    export PATH=\"\$PATH:$INSTALL_DIR\""
-        fi
-
-        if [[ "$path_updated" == "true" ]]; then
-            echo ""
-            log_info "Run this to apply the change:"
-            echo "    source $shell_config"
-        fi
+    if [ -n "${src_dir}" ] && [ -f "${src_dir}/${name}" ]; then
+        cp -f "${src_dir}/${name}" "${tmp}"
     else
-        log_success "$INSTALL_DIR is already in PATH"
+        require_gateway_url
+        url="${GATEWAY_URL}/cli/${name}"
+        if ! curl -fsSL "${url}" -o "${tmp}"; then
+            log_error "Could not download ${name} from ${url}"
+            exit 1
+        fi
+        validate_staged "${name}" "${tmp}"
     fi
+
+    # Only the entrypoints need +x; the proxy is run as `python3 <file>`.
+    case "${name}" in
+        "${ADP_SCRIPT}"|"${CORE_SCRIPT}") chmod 755 "${tmp}" ;;
+        *) chmod 644 "${tmp}" ;;
+    esac
 }
 
-# Print post-installation instructions
+# Move a previously staged temp into its final place. Only run once every file
+# has staged successfully, so the install lands all-or-nothing.
+commit_file() {
+    name="$1"
+    target="${INSTALL_DIR}/${name}"
+    tmp="${INSTALL_DIR}/.${name}.tmp.$$"
+
+    if [ "${KEEP_PREVIOUS}" = "1" ] && [ -f "${target}" ]; then
+        cp -f "${target}" "${target}.prev"
+    fi
+    mv -f "${tmp}" "${target}"
+    log_success "Installed ${target}"
+}
+
+# The ADP_VERSION the STAGED `adp` declares — read from the staged temp, not the
+# installed copy, so the pin is checked against what would land.
+staged_adp_version() {
+    sed -n 's/^readonly ADP_VERSION="\([^"]*\)".*/\1/p' "${INSTALL_DIR}/.${ADP_SCRIPT}.tmp.$$" 2>/dev/null | head -n 1
+}
+
+# Record what this install actually landed, so a later `adp update --to <v>` /
+# `--rollback --to <v>` can verify a version rather than trusting a filename.
+# Not a secret and not a session: plain metadata beside the binaries.
+write_manifest() {
+    installed_version="$1"
+    previous_version=""
+    if [ "${KEEP_PREVIOUS}" = "1" ] && [ -f "${INSTALL_DIR}/${MANIFEST_FILE_NAME}" ]; then
+        previous_version=$(jq -r '.version // empty' "${INSTALL_DIR}/${MANIFEST_FILE_NAME}" 2>/dev/null || true)
+    fi
+    tmp=$(mktemp "${INSTALL_DIR}/${MANIFEST_FILE_NAME}.XXXXXX")
+    jq -n --arg v "${installed_version}" --arg p "${previous_version}" --arg url "${GATEWAY_URL}" \
+        '{version: $v, previous_version: $p, gateway_url: $url}' > "${tmp}"
+    chmod 644 "${tmp}"
+    mv -f "${tmp}" "${INSTALL_DIR}/${MANIFEST_FILE_NAME}"
+}
+
+do_install() {
+    resolve_gateway_url
+    require_gateway_url
+    check_existing_binding
+
+    mkdir -p "${INSTALL_DIR}"
+
+    # Stage-then-commit: fetch and validate all three files first, and only move
+    # them into place once every one has succeeded. A mid-way failure trips the
+    # trap, cleanup_staged wipes the temps, and the previous install (if any) is
+    # left untouched — no half-finished state where `adp` exists but its core
+    # script does not.
+    trap cleanup_staged EXIT INT TERM
+
+    for name in ${CLI_FILES}; do stage_file "${name}"; done
+
+    # Issue #5039: verify the pin BEFORE anything is committed, so a mismatch
+    # leaves the working CLI untouched rather than installing a version the
+    # caller did not ask for and then reporting it.
+    staged_version=$(staged_adp_version)
+    if [ -n "${VERSION_PIN}" ] && [ "${staged_version}" != "${VERSION_PIN}" ]; then
+        log_error "Version pin mismatch: asked for ${VERSION_PIN}, but ${GATEWAY_URL} serves ${staged_version:-an unreadable version}."
+        log_info "Nothing was installed. Your gateway serves one CLI version; pin that one, or omit --version-pin."
+        exit 1
+    fi
+
+    for name in ${CLI_FILES}; do commit_file "${name}"; done
+
+    write_manifest "${staged_version}"
+
+    trap - EXIT INT TERM
+    STAGED_TMPS=""
+
+    persist_gateway_url
+    log_success "Gateway URL saved: ${GATEWAY_URL}"
+}
+
+do_uninstall() {
+    removed=0
+    for name in ${CLI_FILES}; do
+        if [ -f "${INSTALL_DIR}/${name}" ]; then
+            rm -f "${INSTALL_DIR}/${name}" "${INSTALL_DIR}/${name}.prev"
+            removed=1
+        fi
+    done
+    if [ "${removed}" -eq 0 ]; then
+        log_warn "Nothing to uninstall in ${INSTALL_DIR}"
+        return 0
+    fi
+    log_success "Removed the adp CLI from ${INSTALL_DIR}"
+    # Deliberately left alone: ~/.bedrock-gateway (your session) and the shell rc
+    # PATH line. Deleting a live session on an uninstall would be a surprise.
+    log_info "Your session in ${CONFIG_DIR} was left in place — 'rm -rf ${CONFIG_DIR}' to clear it."
+}
+
+# The rc file for the user's login shell. $SHELL is what the terminal launched,
+# which is what matters here — this script itself always runs under sh/bash
+# regardless of the user's interactive shell.
+shell_rc_file() {
+    case "${SHELL:-}" in
+        */zsh) echo "${HOME}/.zshrc" ;;
+        */bash)
+            if [ -f "${HOME}/.bash_profile" ]; then echo "${HOME}/.bash_profile"; else echo "${HOME}/.bashrc"; fi ;;
+        *) echo "" ;;
+    esac
+}
+
+ensure_on_path() {
+    path_line="export PATH=\"\$PATH:${INSTALL_DIR}\""
+
+    case ":${PATH}:" in
+        *":${INSTALL_DIR}:"*) log_success "${INSTALL_DIR} is already on your PATH"; return 0 ;;
+    esac
+
+    rc=$(shell_rc_file)
+
+    if [ "${NO_PATH_EDIT}" = "true" ] || [ -z "${rc}" ]; then
+        log_warn "${INSTALL_DIR} is not on your PATH. Add this line to your shell config:"
+        printf '\n    %s\n\n' "${path_line}" >&2
+        return 0
+    fi
+
+    # Idempotent: re-running the installer must not append the line twice.
+    if [ -f "${rc}" ] && grep -Fq "${INSTALL_DIR}" "${rc}"; then
+        log_success "${INSTALL_DIR} is already in ${rc}"
+    else
+        {
+            echo ""
+            echo "# Added by the adp CLI installer"
+            echo "${path_line}"
+        } >> "${rc}"
+        log_success "Added ${INSTALL_DIR} to your PATH in ${rc}"
+    fi
+
+    log_info "Reload your shell to pick it up:  source ${rc}"
+}
+
 print_next_steps() {
-    echo ""
-    echo "=============================================="
-    echo "  Installation Complete!"
-    echo "=============================================="
-    echo ""
-    echo "Next steps:"
-    echo ""
-    echo "1. Configure your gateway URL:"
-    echo "   export BG_GATEWAY_URL=\"https://your-gateway.example.com\""
-    echo ""
-    echo "2. Ensure you're logged in to AWS:"
-    echo "   aws sso login --profile your-profile"
-    echo ""
-    echo "3. Test the authentication:"
-    echo "   bg-auth.sh --profile your-profile"
-    echo ""
-    echo "4. Configure Claude Code (copy cli/claude-settings.example.json):"
-    echo "   cp cli/claude-settings.example.json ~/.claude/settings.json"
-    echo "   # Edit the file and set your gateway URL"
-    echo ""
-    echo "For M2M (EKS containers), see cli/examples/ for Dockerfile and K8s manifests."
-    echo ""
+    cat << EOF
+
+  adp is installed. Next:
+
+    "${INSTALL_DIR}/adp" login    # works immediately, before reloading PATH
+    adp status         # confirm you are signed in
+    adp codex setup    # or: adp claude setup
+    codex              # or: claude
+
+  First-time platform administrator (before GitHub is configured):
+    "${INSTALL_DIR}/adp" admin setup
+
+  One login is shared by every tool — adding a second tool is just its setup verb.
+
+EOF
 }
 
-# Main function
 main() {
-    echo ""
-    echo "Bedrock Gateway CLI Installer v$VERSION"
-    echo "========================================"
-    echo ""
-
     parse_args "$@"
+    check_dependencies
 
-    if [[ "$UNINSTALL" == "true" ]]; then
-        uninstall_bg_auth
-        log_success "Uninstallation complete"
+    if [ "${UNINSTALL}" = "true" ]; then
+        do_uninstall
         exit 0
     fi
 
-    check_dependencies
-    echo ""
-
-    install_bg_auth
-    echo ""
-
-    check_path
-    echo ""
-
+    do_install
+    ensure_on_path
     print_next_steps
 }
 
-# Run main if not being sourced
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+main "$@"

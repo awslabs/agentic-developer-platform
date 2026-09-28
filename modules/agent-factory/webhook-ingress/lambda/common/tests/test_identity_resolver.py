@@ -4,7 +4,9 @@ Issue #702: Tests for Postgres safety-net, v2 flag, drift detection,
 kill-switches, and envelope correctness.
 """
 
+import importlib
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +27,8 @@ def _reset_module(monkeypatch):
     monkeypatch.setenv("GATEWAY_API_URL", "http://gateway.internal:8080")
     monkeypatch.setenv("BG_INTERNAL_API_KEY", "test-key")
     monkeypatch.setenv("INTERNAL_API_KEY_ARN", "")
+    # Issue #4047: explicit TTL so tests do not depend on the ambient env.
+    monkeypatch.setenv("INSTALLATION_NEGATIVE_CACHE_TTL_SECONDS", "300")
 
     # Clear module caches
     mods_to_clear = [
@@ -32,15 +36,27 @@ def _reset_module(monkeypatch):
         for k in sys.modules
         if k.startswith("common.identity_resolver")
         or k.startswith("common.gateway_client")
+        or k.startswith("common.negative_cache")
     ]
     for mod in mods_to_clear:
         del sys.modules[mod]
+    monkeypatch.setattr(
+        importlib.import_module("common.gateway_client"),
+        "resolve_installation_by_id",
+        lambda installation_id: {
+            "state": "resolved",
+            "revocation_checked": True,
+            "tenant_id": "pranavsharma1000",
+            "created_via": "operator",
+        },
+    )
     yield
     mods_to_clear = [
         k
         for k in sys.modules
         if k.startswith("common.identity_resolver")
         or k.startswith("common.gateway_client")
+        or k.startswith("common.negative_cache")
     ]
     for mod in mods_to_clear:
         del sys.modules[mod]
@@ -73,7 +89,7 @@ LEGACY_USER_ITEM = {
     "identity_type": "github_user",
     "identity_value": str(SENDER_ID),
     "user_id": ORPHAN_USER_ID,
-    "org_id": "sophos-test",
+    "org_id": "acme-test",
 }
 
 PG_RESULT_CANONICAL = {
@@ -81,6 +97,20 @@ PG_RESULT_CANONICAL = {
     "org_id": "pranavsharma1000",
     "team_id": "",
     "is_shadow": False,
+    # #5664 (A10): the canonical lookup now carries provenance, and it is the
+    # field human authority is decided from. A fixture without it would resolve
+    # as unproven and quietly stop exercising the legitimate proven path.
+    "verification_method": "oauth",
+}
+
+# The resolver consumes the tri-state `resolve_user_state` rather than the
+# collapse-to-None wrapper, so that a 404 (authoritative "no proven link") is
+# distinguishable from an unreachable gateway. Tests patch the same seam the
+# resolver calls; patching the wrapper would pass while asserting nothing.
+PG_STATE_CANONICAL = {
+    "state": "resolved",
+    "revocation_checked": True,
+    "user": PG_RESULT_CANONICAL,
 }
 
 
@@ -89,9 +119,9 @@ def _mock_ddb_get_item(items_by_table):
     mock_resource = MagicMock()
 
     def make_table(table_name):
-        mock_table = MagicMock()
+        mock_table = _guarded_transaction_table(MagicMock())
 
-        def get_item(Key=None):  # noqa: N803  # boto3 DDB API uses uppercase Key
+        def get_item(Key=None, **kwargs):  # noqa: N803  # boto3 DDB API uses uppercase Key
             table_items = items_by_table.get(table_name, {})
             # Build lookup key from the Key dict values
             key_str = "|".join(str(v) for v in Key.values())
@@ -108,6 +138,19 @@ def _mock_ddb_get_item(items_by_table):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def _guarded_transaction_table(table):
+    def transact(*, TransactItems):  # noqa: N803
+        check = TransactItems[0]["ConditionCheck"]
+        assert check["Key"]["identity_type"] == "github_installation_revoked"
+        assert check["ConditionExpression"] == "attribute_not_exists(identity_type)"
+        operation = dict(TransactItems[1]["Put"])
+        operation.pop("TableName")
+        return table.put_item(**operation)
+
+    table.meta.client.transact_write_items.side_effect = transact
+    return table
 
 
 class TestResolveUsesV2WhenFlagOn:
@@ -131,8 +174,8 @@ class TestResolveUsesV2WhenFlagOn:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -162,8 +205,8 @@ class TestResolveFallsBackToPostgresWhenV2Misses:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -186,7 +229,7 @@ class TestResolveTrustsPostgresOnDrift:
             "provider": "github",
             "provider_user_id": str(SENDER_ID),
             "user_id": ORPHAN_USER_ID,
-            "org_id": "sophos-test",
+            "org_id": "acme-test",
         }
         ddb_items = {
             "adp-dev-identity-index": {
@@ -202,8 +245,8 @@ class TestResolveTrustsPostgresOnDrift:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch("boto3.client", return_value=mock_cw):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     identity_resolver._cloudwatch = None
                     result, reason = identity_resolver.resolve(
@@ -213,11 +256,15 @@ class TestResolveTrustsPostgresOnDrift:
         assert reason == "ok"
         assert result is not None
         assert result.user_id == CANONICAL_USER_ID  # Postgres wins
-        # Drift metric emitted
-        mock_cw.put_metric_data.assert_called_once()
-        call_args = mock_cw.put_metric_data.call_args
-        metric_name = call_args[1]["MetricData"][0]["MetricName"]
-        assert metric_name == "IdentityIndexDrift"
+        # Drift metric emitted. Asserted by membership, not call_count: this test
+        # does not stub resolve_installation_by_id, so the #2769 drift safety-net
+        # also fires and (since #4046) emits InstallationResolveError on the same
+        # mocked CloudWatch client when that call fails.
+        metric_names = [
+            c[1]["MetricData"][0]["MetricName"]
+            for c in mock_cw.put_metric_data.call_args_list
+        ]
+        assert "IdentityIndexDrift" in metric_names
 
 
 class TestKillSwitchDisablesGatewayCall:
@@ -246,7 +293,7 @@ class TestKillSwitchDisablesGatewayCall:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
+                "common.gateway_client.resolve_user_state",
             ) as mock_resolve:
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -310,8 +357,8 @@ class TestEnvelopeUsesCanonicalUserId:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=PG_RESULT_CANONICAL,
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -371,8 +418,8 @@ class TestPostgres404TreatedAsNoMatch:
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
-                "common.gateway_client.resolve_user_by_identity",
-                return_value=None,  # 404 from gateway
+                "common.gateway_client.resolve_user_state",
+                return_value={"state": "not_found"},  # 404 from gateway
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
@@ -420,11 +467,18 @@ class TestInstallationPostgresFallback:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value={"tenant_id": "pranavsharma1000"},
+                return_value={
+                    "state": "resolved",
+                    "revocation_checked": True,
+                    "tenant_id": "pranavsharma1000",
+                    # Issue #2724: an operator-onboarded tenant. The backfill gate
+                    # must not tighten this path — it is the normal #2950 case.
+                    "created_via": "operator",
+                },
             ):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     result, reason = identity_resolver.resolve(
                         INSTALLATION_ID, SENDER_ID
@@ -442,8 +496,18 @@ class TestInstallationPostgresFallback:
         assert backfill_calls[0]["identity_value"] == str(INSTALLATION_ID)
         assert backfill_calls[0]["org_id"] == "pranavsharma1000"
 
-    def test_returns_unknown_when_both_ddb_and_postgres_miss(self, monkeypatch):
-        """DDB miss + Postgres miss → unknown_installation."""
+    @pytest.mark.parametrize(
+        "pg_result",
+        [
+            {"state": "not_found"},
+            {"state": "error", "reason": "http_500"},
+            {"state": "error", "reason": "gateway_url_not_configured"},
+        ],
+        ids=["not_found", "error_5xx", "error_config"],
+    )
+    def test_denies_absent_or_unavailable_canonical_installation(
+        self, monkeypatch, pg_result
+    ):
         from common import identity_resolver
 
         identity_resolver._dynamodb = None
@@ -460,15 +524,18 @@ class TestInstallationPostgresFallback:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value=None,  # Postgres also misses
+                return_value=pg_result,  # Postgres also misses / is unreachable
             ):
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
         assert result is None
-        assert reason == "unknown_installation"
+        assert reason == (
+            "installation_unavailable"
+            if pg_result["state"] == "error"
+            else "unknown_installation"
+        )
 
-    def test_falls_back_only_when_gateway_flag_enabled(self, monkeypatch):
-        """With RESOLVE_CANONICAL_VIA_GATEWAY=false, DDB miss → unknown immediately."""
+    def test_legacy_flag_cannot_disable_installation_admission(self, monkeypatch):
         monkeypatch.setenv("RESOLVE_CANONICAL_VIA_GATEWAY", "false")
         mods = [k for k in sys.modules if k.startswith("common.identity_resolver")]
         for m in mods:
@@ -494,11 +561,9 @@ class TestInstallationPostgresFallback:
                 result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
 
         assert result is None
-        assert reason == "unknown_installation"
-        mock_resolve.assert_not_called()
+        mock_resolve.assert_called_once()
 
-    def test_backfill_failure_does_not_block_resolution(self, monkeypatch):
-        """If DDB backfill fails, resolution still proceeds with the Postgres tenant."""
+    def test_failed_guarded_backfill_denies_resolution(self, monkeypatch):
         from common import identity_resolver
 
         identity_resolver._dynamodb = None
@@ -530,27 +595,29 @@ class TestInstallationPostgresFallback:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value={"tenant_id": "pranavsharma1000"},
+                return_value={
+                    "state": "resolved",
+                    "revocation_checked": True,
+                    "tenant_id": "pranavsharma1000",
+                },
             ):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     result, reason = identity_resolver.resolve(
                         INSTALLATION_ID, SENDER_ID
                     )
 
         # Resolution still succeeds despite backfill failure
-        assert reason == "ok"
-        assert result is not None
-        assert result.tenant_id == "pranavsharma1000"
+        assert result is None
+        assert reason == "installation_unavailable"
 
 
 class TestInstallationTenantDriftSafetyNet:
     """Issue #2769: read-time installation → tenant drift check against Postgres."""
 
-    def test_trusts_postgres_and_emits_metric_on_installation_drift(self, monkeypatch):
-        """DDB tenant A, Postgres tenant B → resolve to B + emit drift metric."""
+    def test_conflicting_projected_owner_denies_resolution(self, monkeypatch):
         from common import identity_resolver
 
         identity_resolver._dynamodb = None
@@ -582,7 +649,11 @@ class TestInstallationTenantDriftSafetyNet:
         mock_cw = MagicMock()
 
         def _resolve_installation(installation_id):
-            return {"tenant_id": "pranavsharma1000"}
+            return {
+                "state": "resolved",
+                "revocation_checked": True,
+                "tenant_id": "pranavsharma1000",
+            }
 
         with patch("boto3.resource", return_value=mock_ddb):
             with patch("boto3.client", return_value=mock_cw):
@@ -591,32 +662,27 @@ class TestInstallationTenantDriftSafetyNet:
                     side_effect=_resolve_installation,
                 ):
                     with patch(
-                        "common.gateway_client.resolve_user_by_identity",
-                        return_value={
-                            "user_id": CANONICAL_USER_ID,
-                            "org_id": "pranavsharma1000",
-                            "team_id": "",
-                            "is_shadow": False,
-                        },
+                        "common.gateway_client.resolve_user_state",
+                        return_value=PG_STATE_CANONICAL,
                     ):
                         identity_resolver._cloudwatch = None
                         result, reason = identity_resolver.resolve(
                             INSTALLATION_ID, SENDER_ID
                         )
 
-        assert reason == "ok"
-        assert result is not None
-        assert result.tenant_id == "pranavsharma1000"  # Postgres wins
-        assert result.org_id == "pranavsharma1000"
-        # InstallationTenantDrift metric emitted
-        metric_names = [
-            c[1]["MetricData"][0]["MetricName"]
-            for c in mock_cw.put_metric_data.call_args_list
-        ]
-        assert "InstallationTenantDrift" in metric_names
+        assert result is None
+        assert reason == "installation_owner_mismatch"
 
-    def test_fail_open_keeps_ddb_answer_on_gateway_error(self, monkeypatch):
-        """Gateway miss/error → keep the DDB tenant (no hard RDS dependency)."""
+    @pytest.mark.parametrize(
+        "pg_result",
+        [
+            {"state": "not_found"},
+            {"state": "error", "reason": "http_500"},
+            {"state": "error", "reason": "transport_error"},
+        ],
+        ids=["not_found", "error_5xx", "error_transport"],
+    )
+    def test_canonical_failure_denies_even_cached_owner(self, monkeypatch, pg_result):
         from common import identity_resolver
 
         identity_resolver._dynamodb = None
@@ -635,11 +701,184 @@ class TestInstallationTenantDriftSafetyNet:
         with patch("boto3.resource", return_value=mock_ddb):
             with patch(
                 "common.gateway_client.resolve_installation_by_id",
-                return_value=None,  # gateway miss/error
+                return_value=pg_result,
             ):
                 with patch(
-                    "common.gateway_client.resolve_user_by_identity",
-                    return_value=PG_RESULT_CANONICAL,
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
+                ):
+                    result, reason = identity_resolver.resolve(
+                        INSTALLATION_ID, SENDER_ID
+                    )
+
+        assert result is None
+        assert reason == (
+            "installation_unavailable"
+            if pg_result["state"] == "error"
+            else "unknown_installation"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Negative cache on the DDB-miss backfill path (Issue #4047, #2724 slice C)
+# ---------------------------------------------------------------------------
+
+NEGATIVE_TYPE = "github_installation_negative"
+
+
+class TestInstallationNegativeCache:
+    """The resolver's DDB-miss → gateway fallback is the SECOND resolve path.
+
+    The #2724 architect ruling flagged it as bypassing
+    ``_auto_register_installation`` entirely, so without the same negative
+    cache here the mitigation is trivially sidestepped on any cold/evicted
+    row: an attacker's events would keep reaching the gateway through it.
+    """
+
+    @staticmethod
+    def _ddb(negative_row=None, forward_row=None):
+        """Mock DDB resource + a list accumulating every put_item Item.
+
+        The identity-index misses the forward row unless ``forward_row`` is
+        given, which is what sends resolve() down the gateway-fallback path.
+        """
+        writes = []
+        index = {}
+        if negative_row is not None:
+            index[f"{NEGATIVE_TYPE}|{INSTALLATION_ID}"] = negative_row
+        if forward_row is not None:
+            index[f"github_installation_id|{INSTALLATION_ID}"] = forward_row
+        items = {
+            "adp-dev-identity-index": index,
+            "adp-dev-user-identity-index": {f"github|{SENDER_ID}": V2_USER_ITEM},
+        }
+
+        mock_resource = MagicMock()
+
+        def make_table(table_name):
+            table = _guarded_transaction_table(MagicMock())
+
+            def get_item(Key=None, **kwargs):  # noqa: N803
+                key_str = "|".join(str(v) for v in Key.values())
+                item = items.get(table_name, {}).get(key_str)
+                return {"Item": item} if item else {}
+
+            def put_item(Item=None, **kwargs):  # noqa: N803
+                writes.append(Item)
+                return {}
+
+            table.get_item = get_item
+            table.put_item = put_item
+            return table
+
+        mock_resource.Table = make_table
+        return mock_resource, writes
+
+    @staticmethod
+    def _negative_row(offset=300):
+        return {
+            "identity_type": NEGATIVE_TYPE,
+            "identity_value": str(INSTALLATION_ID),
+            "ttl": int(time.time()) + offset,
+        }
+
+    @staticmethod
+    def _negatives(writes):
+        return [w for w in writes if w["identity_type"] == NEGATIVE_TYPE]
+
+    def test_canonical_denial_does_not_write_authority(self):
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, writes = self._ddb()
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "not_found"},
+            ):
+                result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert result is None
+        assert reason == "unknown_installation"
+        assert writes == []
+
+    @pytest.mark.parametrize(
+        "reason_str",
+        ["http_500", "transport_error", "gateway_url_not_configured"],
+    )
+    def test_error_state_is_never_cached(self, reason_str):
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, writes = self._ddb()
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "error", "reason": reason_str},
+            ):
+                result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert result is None
+        assert reason == "installation_unavailable"
+        assert writes == []
+
+    def test_negative_cache_cannot_replace_current_canonical_check(self):
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, _ = self._ddb(negative_row=self._negative_row())
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id"
+            ) as mock_resolve:
+                result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        mock_resolve.assert_called_once()
+        assert result is None
+
+    def test_expired_negative_row_still_calls_the_gateway(self):
+        """DDB TTL deletion is lazy, so expiry must be enforced on read."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, _ = self._ddb(negative_row=self._negative_row(offset=-1))
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "not_found"},
+            ) as mock_resolve:
+                identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        mock_resolve.assert_called_once()
+
+    def test_resolved_state_backfills_but_writes_no_negative_row(self):
+        """Regression: #2950 backfill still happens and stays uncontaminated."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, writes = self._ddb()
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "revocation_checked": True,
+                    "tenant_id": "pranavsharma1000",
+                },
+            ):
+                with patch(
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
                 ):
                     result, reason = identity_resolver.resolve(
                         INSTALLATION_ID, SENDER_ID
@@ -647,5 +886,287 @@ class TestInstallationTenantDriftSafetyNet:
 
         assert reason == "ok"
         assert result is not None
-        # DDB tenant retained
+        # Backfill of the FORWARD row still occurs (#2950)...
+        forward = [w for w in writes if w["identity_type"] == "github_installation_id"]
+        assert forward
+        # ...and no negative row was written.
+        assert not self._negatives(writes)
+
+    def test_known_installation_never_touches_the_cache(self):
+        """A DDB hit resolves before the fallback — cache is off that path."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, writes = self._ddb(forward_row=TENANT_ITEM)
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "revocation_checked": True,
+                    "tenant_id": "pranavsharma1000",
+                },
+            ):
+                with patch(
+                    "common.gateway_client.resolve_user_state",
+                    return_value=PG_STATE_CANONICAL,
+                ):
+                    result, reason = identity_resolver.resolve(
+                        INSTALLATION_ID, SENDER_ID
+                    )
+
+        assert reason == "ok"
+        assert not self._negatives(writes)
+
+    def test_cache_read_failure_degrades_to_a_gateway_call(self):
+        """A DDB failure on the cache read must not fail resolution."""
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        mock_ddb, _ = self._ddb()
+        original = mock_ddb.Table
+
+        def make_table(table_name):
+            table = original(table_name)
+            inner = table.get_item
+
+            def get_item(Key=None, **kwargs):  # noqa: N803
+                if Key["identity_type"] == NEGATIVE_TYPE:
+                    raise RuntimeError("DDB throttled")
+                return inner(Key=Key)
+
+            table.get_item = get_item
+            return table
+
+        mock_ddb.Table = make_table
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "not_found"},
+            ) as mock_resolve:
+                result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        mock_resolve.assert_called_once()
+        assert reason == "unknown_installation"
+
+    def test_disabled_cache_restores_pre_slice_behaviour(self, monkeypatch):
+        """TTL=0 kill-switch: gateway always consulted, nothing cached."""
+        monkeypatch.setenv("INSTALLATION_NEGATIVE_CACHE_TTL_SECONDS", "0")
+        for mod in [k for k in sys.modules if k.startswith("common.negative_cache")]:
+            del sys.modules[mod]
+
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+        # Even with a live row present, the disabled cache must not read it.
+        mock_ddb, writes = self._ddb(negative_row=self._negative_row())
+
+        with patch("boto3.resource", return_value=mock_ddb):
+            with patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={"state": "not_found"},
+            ) as mock_resolve:
+                result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        mock_resolve.assert_called_once()
+        assert reason == "unknown_installation"
+        assert not self._negatives(writes)
+
+
+class TestInstallationBackfillGate:
+    """Issue #2724 (slice B): the resolver's backfill is the SECOND write path.
+
+    ``identity_resolver.resolve`` writes a DDB installation → tenant row on a
+    Postgres hit (the #2950 fallback), entirely independently of the handler's
+    ``_auto_register_installation``. Gating only the handler would leave the
+    trust boundary open on any cold or evicted row — whichever writer fires
+    first wins, and the resolver fires on every webhook, not just
+    ``installation created``. Both call the same ``installation_gate``.
+    """
+
+    def _ddb_missing_installation(self):
+        return _mock_ddb_get_item(
+            {
+                "adp-dev-identity-index": {},
+                "adp-dev-user-identity-index": {
+                    f"github|{SENDER_ID}": V2_USER_ITEM,
+                },
+            }
+        )
+
+    def _tracked(self, mock_ddb, writes):
+        original_table = mock_ddb.Table
+
+        def make_tracked_table(table_name):
+            table = original_table(table_name)
+            table.put_item = lambda Item=None: writes.append(Item)  # noqa: N803
+            return table
+
+        mock_ddb.Table = make_tracked_table
+        return mock_ddb
+
+    def test_denies_backfill_for_self_created_shell(self, monkeypatch):
+        """install_autocreate provenance + flag off → no backfill, unknown_installation.
+
+        This is the bypass the handler-only gate would have left: an attacker's
+        org has a Postgres shell (their own unauthenticated install callback made
+        it) but no DDB row, so any later webhook would have backfilled a routable
+        identity row without ever passing through ``_auto_register_installation``.
+        """
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        writes = []
+        mock_ddb = self._tracked(self._ddb_missing_installation(), writes)
+
+        with (
+            patch("boto3.resource", return_value=mock_ddb),
+            patch("boto3.client", return_value=MagicMock()),
+            patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "revocation_checked": True,
+                    "tenant_id": "attacker-org",
+                    "created_via": "install_autocreate",
+                },
+            ),
+            patch(
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
+            ),
+        ):
+            result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert result is None
+        assert reason == "unknown_installation"
+        # Nothing routable was persisted.
+        assert writes == []
+
+    def test_allows_backfill_for_self_created_shell_when_open_onboarding_on(
+        self, monkeypatch
+    ):
+        """The same single flag reopens this path, exactly as it does the handler's."""
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "true")
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        writes = []
+        mock_ddb = self._tracked(self._ddb_missing_installation(), writes)
+
+        with (
+            patch("boto3.resource", return_value=mock_ddb),
+            patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "revocation_checked": True,
+                    "tenant_id": "hackathon-org",
+                    "created_via": "install_autocreate",
+                },
+            ),
+            patch(
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
+            ),
+        ):
+            result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert reason == "ok"
+        assert result is not None
+        assert result.tenant_id == "hackathon-org"
+        assert len(writes) == 1
+
+    def test_backfills_when_provenance_absent(self, monkeypatch):
+        """Rollout window: gateway not yet redeployed → unknown is not untrusted.
+
+        The Lambda and the gateway are separate deploy units, so between the
+        Lambda republish and the gateway redeploy a resolved result legitimately
+        carries no ``created_via``. Denying here would break routing for every
+        cold row in that window.
+        """
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        writes = []
+        mock_ddb = self._tracked(self._ddb_missing_installation(), writes)
+
+        with (
+            patch("boto3.resource", return_value=mock_ddb),
+            patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "revocation_checked": True,
+                    "tenant_id": "pranavsharma1000",
+                },
+            ),
+            patch(
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
+            ),
+        ):
+            result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert reason == "ok"
+        assert result is not None
+        assert len(writes) == 1
+
+    def test_existing_ddb_row_is_never_gated(self, monkeypatch):
+        """Grandfathering: the gate runs on the DDB-miss branch only.
+
+        A tenant that already has an identity row keeps resolving regardless of
+        provenance — this change must not retroactively evict live tenants, only
+        refuse NEW untrusted registrations.
+        """
+        monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "false")
+        from common import identity_resolver
+
+        identity_resolver._dynamodb = None
+        identity_resolver._cloudwatch = None
+
+        mock_ddb = _mock_ddb_get_item(
+            {
+                "adp-dev-identity-index": {
+                    f"github_installation_id|{INSTALLATION_ID}": TENANT_ITEM,
+                },
+                "adp-dev-user-identity-index": {
+                    f"github|{SENDER_ID}": V2_USER_ITEM,
+                },
+            }
+        )
+
+        with (
+            patch("boto3.resource", return_value=mock_ddb),
+            patch(
+                "common.gateway_client.resolve_installation_by_id",
+                return_value={
+                    "state": "resolved",
+                    "revocation_checked": True,
+                    "tenant_id": "pranavsharma1000",
+                    "created_via": "install_autocreate",
+                },
+            ),
+            patch(
+                "common.gateway_client.resolve_user_state",
+                return_value=PG_STATE_CANONICAL,
+            ),
+        ):
+            result, reason = identity_resolver.resolve(INSTALLATION_ID, SENDER_ID)
+
+        assert reason == "ok"
+        assert result is not None
         assert result.tenant_id == "pranavsharma1000"

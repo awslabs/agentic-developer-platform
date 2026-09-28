@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "run_date": "2026-08-29",
+  "stage": "triage",
+  "stage_type": "triage",
+  "generated_at": "2026-08-29T03:05:00Z",
+  "fields": {
+    "daily_epic": 4901,
+    "stories_created": 2,
+    "story_ids": [4902, 4903],
+    "findings_covered": ["f-1122", "f-3344"]
+  }
+}

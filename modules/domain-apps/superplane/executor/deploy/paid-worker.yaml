@@ -1,0 +1,114 @@
+# Render reviewed placeholders through the release process; this source does not
+# activate a queue, change IAM, install a migration or enable governed admission.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: superplane-paid-worker
+  namespace: superplane-system
+spec:
+  pollingInterval: 15
+  minReplicaCount: 0
+  maxReplicaCount: 4
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTargetRef:
+    backoffLimit: 0
+    parallelism: 1
+    completions: 1
+    activeDeadlineSeconds: 3600
+    ttlSecondsAfterFinished: 86400
+    template:
+      metadata:
+        annotations:
+          karpenter.sh/do-not-disrupt: "true"
+      spec:
+        serviceAccountName: superplane-paid-worker
+        automountServiceAccountToken: false
+        restartPolicy: Never
+        securityContext:
+          fsGroup: 65532
+          seccompProfile: {type: RuntimeDefault}
+        initContainers:
+          - name: scoped-controller
+            # The native sidecar stops when the trusted paid-worker exits.
+            restartPolicy: Always
+            image: ${REVIEWED_CONTROLLER_IMAGE_DIGEST}
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65532
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: {drop: [ALL]}
+            env:
+              - {name: SUPERPLANE_TASK_ASSIGNMENT_FILE, value: /run/task/assignment.json}
+              - {name: SUPERPLANE_EXECUTION_SOCKET, value: /run/task/execution.sock}
+              - {name: SUPERPLANE_EXECUTION_CREDENTIALS_DIR, value: /run/task/tokens}
+            volumeMounts:
+              - {name: task, mountPath: /run/task}
+            resources:
+              requests: {cpu: 50m, memory: 64Mi}
+              limits: {cpu: '1', memory: 256Mi}
+        containers:
+          - name: paid-worker
+            # Image ENTRYPOINT is superplane-paid-worker; no command/args override
+            # is permitted by the actual Gateway workload verifier.
+            image: ${REVIEWED_PAID_WORKER_IMAGE_DIGEST}
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65531
+              runAsGroup: 65532
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: {drop: [ALL]}
+            envFrom:
+              - configMapRef: {name: superplane-paid-worker-config}
+            env:
+              - {name: ADP_AGENT_AUTHORITY_ENABLED, value: 'true'}
+              - {name: ADP_RUN_CREDENTIAL_FILE, value: /run/private/run-credential}
+              - {name: ADP_WORKLOAD_TOKEN_FILE, value: /run/workload/token}
+              - {name: SUPERPLANE_DOMAIN_DSN_FILE, value: /run/database/domain-dsn}
+              - {name: SUPERPLANE_EXECUTION_DSN_FILE, value: /run/database/execution-dsn}
+              - {name: SUPERPLANE_DATABASE_CA_FILE, value: /run/database/ca.pem}
+              - {name: SUPERPLANE_RUN_HANDOFF_FILE, value: /run/private/handoff.json}
+              - {name: SUPERPLANE_TASK_ASSIGNMENT_FILE, value: /run/task/assignment.json}
+              - {name: SUPERPLANE_EXECUTION_SOCKET, value: /run/task/execution.sock}
+              - {name: SUPERPLANE_EXECUTION_CREDENTIALS_DIR, value: /run/task/tokens}
+              - {name: SUPERPLANE_WORKER_GID, value: '65532'}
+              - {name: SUPERPLANE_WORKSPACE_CREDENTIALS_DIR, value: /run/workspaces}
+              - {name: SKYPILOT_SERVICE_TOKEN_FILE, value: /run/provider/skypilot-token}
+              - {name: SUPERPLANE_LIFECYCLE_POLICY_FILE, value: /run/policy/lifecycle.json}
+              - {name: SUPERPLANE_LIFECYCLE_STATE_DIR, value: /run/state}
+            volumeMounts:
+              - {name: task, mountPath: /run/task}
+              - {name: private, mountPath: /run/private}
+              - {name: state, mountPath: /run/state}
+              - {name: workload, mountPath: /run/workload, readOnly: true}
+              - {name: database, mountPath: /run/database, readOnly: true}
+              - {name: workspaces, mountPath: /run/workspaces, readOnly: true}
+              - {name: provider, mountPath: /run/provider, readOnly: true}
+              - {name: policy, mountPath: /run/policy, readOnly: true}
+              - {name: temporary, mountPath: /tmp}
+            resources:
+              requests: {cpu: 250m, memory: 256Mi}
+              limits: {cpu: '2', memory: 2Gi}
+        volumes:
+          - {name: task, emptyDir: {medium: Memory}}
+          - {name: private, emptyDir: {medium: Memory}}
+          - {name: state, persistentVolumeClaim: {claimName: superplane-lifecycle-state}}
+          - {name: temporary, emptyDir: {}}
+          - name: workload
+            projected:
+              defaultMode: 0440
+              sources:
+                - serviceAccountToken: {path: token, audience: adp-agent-bootstrap, expirationSeconds: 3600}
+          - {name: database, secret: {secretName: superplane-paid-database, defaultMode: 0440}}
+          - {name: workspaces, secret: {secretName: superplane-workspace-credentials, defaultMode: 0440}}
+          - {name: provider, secret: {secretName: superplane-paid-provider, defaultMode: 0440}}
+          - {name: policy, configMap: {name: superplane-lifecycle-policy, defaultMode: 0440}}
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef: {name: superplane-paid-queue-observer}
+      metadata:
+        queueURL: ${PAID_OPERATION_QUEUE_URL}
+        awsRegion: ${AWS_REGION}
+        queueLength: '1'

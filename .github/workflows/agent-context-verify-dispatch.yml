@@ -6,10 +6,27 @@ on:
 jobs:
   verify:
     name: Verify agent-context artifacts
+    if: github.ref == 'refs/heads/main'
+    environment: adp-deploy-dev
+    permissions:
+      contents: read
+      id-token: write
     runs-on: arc-runner-org
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Configure AWS + kubectl
         run: |

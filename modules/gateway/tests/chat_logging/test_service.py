@@ -4,7 +4,9 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from botocore.exceptions import ClientError
 
+from src.chat_logging.comprehend_client import ComprehendPiiDetector, PiiDetectionResult
 from src.chat_logging.config import ScrubLevel
 from src.chat_logging.service import ChatLoggingService, StreamingResponseBuffer
 
@@ -38,7 +40,7 @@ class TestChatLoggingService:
     def mock_comprehend_detector(self):
         """Create mock Comprehend detector."""
         detector = MagicMock()
-        detector.detect_and_redact_dict = AsyncMock(return_value=({}, MagicMock(redactions_count=0, pii_types_found=[])))
+        detector.detect_and_redact_dict = AsyncMock(return_value=({}, PiiDetectionResult(content="")))
         return detector
 
     @pytest.fixture
@@ -347,8 +349,7 @@ class TestStreamingResponseBuffer:
 
         assert response["content"] == []
         assert response["stop_reason"] is None
-        assert response["usage"]["input_tokens"] == 0
-        assert response["usage"]["output_tokens"] == 0
+        assert response["usage"] == {}
 
     def test_chunk_count(self):
         """Test chunk counting."""
@@ -376,3 +377,435 @@ class TestStreamingResponseBuffer:
 
         # Original should be unchanged
         assert buffer.usage["input_tokens"] == 10
+
+
+class TestComprehendFailureIsLoudAndStillRedacts:
+    """Issue #5672: a failed PII pass must be visible, and must not store clear text.
+
+    Comprehend can be unavailable in an account — service not enabled, workload role
+    missing comprehend:DetectPiiEntities, or quota exhausted. That used to produce a
+    WARNING and a silent downgrade to regex-only redaction, so an environment could
+    run for months believing it had person-name and postal-address coverage it never
+    had. These tests use the REAL scrub pipeline, so they also prove the stored
+    record is still redacted when the external service is gone.
+    """
+
+    @pytest.fixture
+    def failing_comprehend(self):
+        detector = MagicMock()
+        detector.detect_and_redact_dict = AsyncMock(side_effect=RuntimeError("AccessDeniedException: comprehend:DetectPiiEntities"))
+        return detector
+
+    @pytest.fixture
+    def service_with_real_pipeline(self, failing_comprehend):
+        from src.chat_logging.scrubber import ScrubPipeline
+
+        writer = MagicMock()
+        writer.write_log = AsyncMock(return_value=True)
+        writer.is_healthy = True
+
+        service = ChatLoggingService(
+            s3_writer=writer,
+            scrub_pipeline=ScrubPipeline(),
+            comprehend_detector=failing_comprehend,
+            scrub_level=ScrubLevel.STANDARD,
+            exclude_models=[],
+            enabled=True,
+        )
+        service._bucket_name = "test-bucket"
+        return service
+
+    @pytest.mark.asyncio
+    async def test_failure_is_logged_at_error_not_warning(self, service_with_real_pipeline, sample_timestamp, caplog):
+        with caplog.at_level("ERROR"):
+            service_with_real_pipeline.log_chat_async(
+                request_id="req-pii-fail",
+                timestamp=sample_timestamp,
+                org_id="org-1",
+                user_id="user-1",
+                team_id="team-1",
+                account_type="human",
+                model="claude-3-sonnet",
+                api_format="anthropic",
+                latency_ms=10.0,
+                request_body={"messages": [{"role": "user", "content": "hello"}]},
+                response_body={"content": []},
+            )
+            await asyncio.sleep(0.1)
+
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert errors, "a failed PII pass must reach alerting, not sit at WARNING"
+        assert "Comprehend PII detection failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_failed_detection_sanitizes_invalid_transcript(self, service_with_real_pipeline, sample_timestamp, caplog):
+        private_content = "PRIVATE-CONTENT-SENTINEL"
+
+        with caplog.at_level("ERROR"):
+            await service_with_real_pipeline._log_chat_impl(
+                request_id="req-invalid-transcript",
+                timestamp=sample_timestamp,
+                org_id="org-1",
+                user_id="user-1",
+                team_id="team-1",
+                account_type="human",
+                model="claude-3-sonnet",
+                api_format="anthropic",
+                latency_ms=10.0,
+                request_body={"messages": private_content},
+                response_body={"content": []},
+            )
+
+        assert private_content not in caplog.text
+        service_with_real_pipeline._s3_writer.write_log.assert_called_once()
+        log_data = service_with_real_pipeline._s3_writer.write_log.call_args.kwargs["log_data"]
+        assert private_content not in str(log_data)
+        assert log_data["request"]["messages"] == [{"content": "[PII:DETECTION_FAILED]"}]
+
+    @pytest.mark.asyncio
+    async def test_record_is_still_written_and_marks_the_degradation(self, service_with_real_pipeline, sample_timestamp):
+        """The audit record remains available without retaining unverified content."""
+        service_with_real_pipeline.log_chat_async(
+            request_id="req-pii-fail",
+            timestamp=sample_timestamp,
+            org_id="org-1",
+            user_id="user-1",
+            team_id="team-1",
+            account_type="human",
+            model="claude-3-sonnet",
+            api_format="anthropic",
+            latency_ms=10.0,
+            request_body={"messages": [{"role": "user", "content": "Alice Example"}]},
+            response_body={"content": [{"type": "text", "text": "123 Example Street"}]},
+        )
+        await asyncio.sleep(0.1)
+
+        service_with_real_pipeline._s3_writer.write_log.assert_called_once()
+        log_data = service_with_real_pipeline._s3_writer.write_log.call_args.kwargs["log_data"]
+        stored = str(log_data)
+        assert "Alice Example" not in stored
+        assert "123 Example Street" not in stored
+        assert stored.count("[PII:DETECTION_FAILED]") >= 2
+        assert log_data["scrubbing"]["pii_detection_failed"] is True
+
+    @pytest.mark.asyncio
+    async def test_regex_layer_still_redacts_when_comprehend_is_gone(self, service_with_real_pipeline, sample_timestamp):
+        """The acceptance case: degraded environment must not store clear personal data."""
+        service_with_real_pipeline.log_chat_async(
+            request_id="req-pii-fail",
+            timestamp=sample_timestamp,
+            org_id="org-1",
+            user_id="user-1",
+            team_id="team-1",
+            account_type="human",
+            model="claude-3-sonnet",
+            api_format="anthropic",
+            latency_ms=10.0,
+            request_body={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "email jane.doe@example.com, phone (555) 123-4567, SSN 123-45-6789, card 4111111111111111",
+                    }
+                ]
+            },
+            response_body={"content": [{"type": "text", "text": "Noted for jane.doe@example.com"}]},
+        )
+        await asyncio.sleep(0.1)
+
+        log_data = service_with_real_pipeline._s3_writer.write_log.call_args.kwargs["log_data"]
+        stored = str(log_data)
+        for secret in ["jane.doe@example.com", "(555) 123-4567", "123-45-6789", "4111111111111111"]:
+            assert secret not in stored, f"{secret!r} was stored in the clear"
+
+    @pytest.mark.asyncio
+    async def test_numeric_tool_data_is_redacted_before_persistence(self, sample_timestamp):
+        from src.chat_logging.scrubber import ScrubPipeline
+
+        writer = MagicMock()
+        writer.write_log = AsyncMock(return_value=True)
+        comprehend_client = MagicMock()
+        comprehend_client.detect_pii_entities.return_value = {"Entities": []}
+        detector = ComprehendPiiDetector()
+        detector._client = comprehend_client
+
+        service = ChatLoggingService(
+            s3_writer=writer,
+            scrub_pipeline=ScrubPipeline(),
+            comprehend_detector=detector,
+            scrub_level=ScrubLevel.STANDARD,
+            exclude_models=[],
+            enabled=True,
+        )
+        service._bucket_name = "test-bucket"
+
+        service.log_chat_async(
+            request_id="req-numeric-pii",
+            timestamp=sample_timestamp,
+            org_id="org-1",
+            user_id="user-1",
+            team_id="team-1",
+            account_type="human",
+            model="claude-3-sonnet",
+            api_format="anthropic",
+            latency_ms=10.0,
+            request_body={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tool-1",
+                                "content": {"ssn": 123456789, "attempt": 2},
+                            }
+                        ],
+                    }
+                ],
+                "max_tokens": 128,
+            },
+            response_body={
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-2",
+                        "name": "charge_card",
+                        "input": {"card_number": 4111111111111111, "status_code": 200},
+                    }
+                ],
+                "usage": {"input_tokens": 123456789, "output_tokens": 16},
+            },
+        )
+        await asyncio.sleep(0.1)
+
+        log_data = writer.write_log.call_args.kwargs["log_data"]
+        stored = str(log_data)
+        assert "4111111111111111" not in stored
+        assert log_data["request"]["messages"][0]["content"][0]["content"]["ssn"] == "[REDACTED:NATIONAL_ID]"
+        assert log_data["request"]["messages"][0]["content"][0]["content"]["attempt"] == 2
+        assert log_data["response"]["content"][0]["input"]["card_number"] == "[REDACTED:PAYMENT_CARD]"
+        assert log_data["response"]["content"][0]["input"]["status_code"] == 200
+        assert log_data["response"]["usage"]["input_tokens"] == 123456789
+
+    @pytest.mark.asyncio
+    async def test_healthy_comprehend_does_not_mark_degradation(self, sample_timestamp):
+        """The flag must mean something: it stays false on the success path."""
+        from src.chat_logging.scrubber import ScrubPipeline
+
+        writer = MagicMock()
+        writer.write_log = AsyncMock(return_value=True)
+        detector = MagicMock()
+        detector.detect_and_redact_dict = AsyncMock(side_effect=lambda data: (data, PiiDetectionResult(content="")))
+
+        service = ChatLoggingService(
+            s3_writer=writer,
+            scrub_pipeline=ScrubPipeline(),
+            comprehend_detector=detector,
+            scrub_level=ScrubLevel.STANDARD,
+            exclude_models=[],
+            enabled=True,
+        )
+        service._bucket_name = "test-bucket"
+
+        service.log_chat_async(
+            request_id="req-ok",
+            timestamp=sample_timestamp,
+            org_id="org-1",
+            user_id="user-1",
+            team_id="team-1",
+            account_type="human",
+            model="claude-3-sonnet",
+            api_format="anthropic",
+            latency_ms=10.0,
+            request_body={"messages": [{"role": "user", "content": "hello"}]},
+            response_body={"content": []},
+        )
+        await asyncio.sleep(0.1)
+
+        log_data = writer.write_log.call_args.kwargs["log_data"]
+        assert log_data["scrubbing"]["pii_detection_failed"] is False
+
+    @pytest.mark.asyncio
+    async def test_comprehend_runs_on_both_request_and_response(self, sample_timestamp):
+        """Acceptance: the PII pass covers both sides of the transcript, not just the prompt."""
+        from src.chat_logging.scrubber import ScrubPipeline
+
+        writer = MagicMock()
+        writer.write_log = AsyncMock(return_value=True)
+        detector = MagicMock()
+        detector.detect_and_redact_dict = AsyncMock(side_effect=lambda data: (data, PiiDetectionResult(content="")))
+
+        service = ChatLoggingService(
+            s3_writer=writer,
+            scrub_pipeline=ScrubPipeline(),
+            comprehend_detector=detector,
+            scrub_level=ScrubLevel.STANDARD,
+            exclude_models=[],
+            enabled=True,
+        )
+        service._bucket_name = "test-bucket"
+
+        service.log_chat_async(
+            request_id="req-both",
+            timestamp=sample_timestamp,
+            org_id="org-1",
+            user_id="user-1",
+            team_id="team-1",
+            account_type="human",
+            model="claude-3-sonnet",
+            api_format="anthropic",
+            latency_ms=10.0,
+            request_body={"messages": [{"role": "user", "content": "hello"}]},
+            response_body={"content": [{"type": "text", "text": "hi"}]},
+        )
+        await asyncio.sleep(0.1)
+
+        assert detector.detect_and_redact_dict.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_request_failure_does_not_skip_response_redaction(self, sample_timestamp):
+        from src.chat_logging.scrubber import ScrubPipeline
+
+        writer = MagicMock()
+        writer.write_log = AsyncMock(return_value=True)
+        detector = MagicMock()
+        detector.detect_and_redact_dict = AsyncMock(
+            side_effect=[
+                RuntimeError("request detection unavailable"),
+                (
+                    {"content": [{"type": "text", "text": "[PII:NAME] lives at [PII:ADDRESS]"}]},
+                    PiiDetectionResult(content="", redactions_count=2, pii_types_found=["NAME", "ADDRESS"]),
+                ),
+            ]
+        )
+
+        service = ChatLoggingService(
+            s3_writer=writer,
+            scrub_pipeline=ScrubPipeline(),
+            comprehend_detector=detector,
+            scrub_level=ScrubLevel.STANDARD,
+            exclude_models=[],
+            enabled=True,
+        )
+        service._bucket_name = "test-bucket"
+
+        service.log_chat_async(
+            request_id="req-request-fails",
+            timestamp=sample_timestamp,
+            org_id="org-1",
+            user_id="user-1",
+            team_id="team-1",
+            account_type="human",
+            model="claude-3-sonnet",
+            api_format="anthropic",
+            latency_ms=10.0,
+            request_body={"messages": [{"role": "user", "content": "hello"}]},
+            response_body={"content": [{"type": "text", "text": "Alice Example lives at 123 Example Street"}]},
+        )
+        await asyncio.sleep(0.1)
+
+        assert detector.detect_and_redact_dict.await_count == 2
+        log_data = writer.write_log.call_args.kwargs["log_data"]
+        assert "Alice Example" not in str(log_data["response"])
+        assert "123 Example Street" not in str(log_data["response"])
+        assert log_data["scrubbing"]["pii_detection_failed"] is True
+
+    @pytest.mark.asyncio
+    async def test_production_error_result_marks_degradation(self, sample_timestamp):
+        from src.chat_logging.scrubber import ScrubPipeline
+
+        writer = MagicMock()
+        writer.write_log = AsyncMock(return_value=True)
+        comprehend_client = MagicMock()
+        comprehend_client.detect_pii_entities.side_effect = ClientError(
+            {"Error": {"Code": "AccessDeniedException", "Message": "denied"}},
+            "DetectPiiEntities",
+        )
+        detector = ComprehendPiiDetector()
+        detector._client = comprehend_client
+
+        service = ChatLoggingService(
+            s3_writer=writer,
+            scrub_pipeline=ScrubPipeline(),
+            comprehend_detector=detector,
+            scrub_level=ScrubLevel.STANDARD,
+            exclude_models=[],
+            enabled=True,
+        )
+        service._bucket_name = "test-bucket"
+
+        service.log_chat_async(
+            request_id="req-returned-error",
+            timestamp=sample_timestamp,
+            org_id="org-1",
+            user_id="user-1",
+            team_id="team-1",
+            account_type="human",
+            model="claude-3-sonnet",
+            api_format="anthropic",
+            latency_ms=10.0,
+            request_body={"messages": [{"role": "user", "content": "Alice Example"}]},
+            response_body={"content": [{"type": "text", "text": "123 Example Street"}]},
+        )
+        await asyncio.sleep(0.1)
+
+        assert comprehend_client.detect_pii_entities.call_count >= 2
+        log_data = writer.write_log.call_args.kwargs["log_data"]
+        stored = str(log_data)
+        assert "Alice Example" not in stored
+        assert "123 Example Street" not in stored
+        assert stored.count("[PII:DETECTION_FAILED]") >= 2
+        assert log_data["scrubbing"]["pii_detection_failed"] is True
+
+    @pytest.mark.asyncio
+    async def test_short_request_and_response_pii_are_detected(self, sample_timestamp):
+        from src.chat_logging.scrubber import ScrubPipeline
+
+        writer = MagicMock()
+        writer.write_log = AsyncMock(return_value=True)
+        comprehend_client = MagicMock()
+
+        def detect_pii_entities(**kwargs):
+            text = kwargs["Text"]
+            entity_types = {"John Doe": "NAME", "1 Main St": "ADDRESS"}
+            entity_type = entity_types.get(text)
+            if entity_type is None:
+                return {"Entities": []}
+            return {"Entities": [{"Type": entity_type, "Score": 0.99, "BeginOffset": 0, "EndOffset": len(text)}]}
+
+        comprehend_client.detect_pii_entities.side_effect = detect_pii_entities
+        detector = ComprehendPiiDetector()
+        detector._client = comprehend_client
+
+        service = ChatLoggingService(
+            s3_writer=writer,
+            scrub_pipeline=ScrubPipeline(),
+            comprehend_detector=detector,
+            scrub_level=ScrubLevel.STANDARD,
+            exclude_models=[],
+            enabled=True,
+        )
+        service._bucket_name = "test-bucket"
+
+        service.log_chat_async(
+            request_id="req-short-pii",
+            timestamp=sample_timestamp,
+            org_id="org-1",
+            user_id="user-1",
+            team_id="team-1",
+            account_type="human",
+            model="claude-3-sonnet",
+            api_format="anthropic",
+            latency_ms=10.0,
+            request_body={"messages": [{"role": "user", "content": "John Doe"}]},
+            response_body={"content": [{"type": "text", "text": "1 Main St"}]},
+        )
+        await asyncio.sleep(0.1)
+
+        log_data = writer.write_log.call_args.kwargs["log_data"]
+        stored = str(log_data)
+        assert "John Doe" not in stored
+        assert "1 Main St" not in stored
+        assert "[PII:NAME]" in stored
+        assert "[PII:ADDRESS]" in stored
+        assert log_data["scrubbing"]["pii_detection_failed"] is False

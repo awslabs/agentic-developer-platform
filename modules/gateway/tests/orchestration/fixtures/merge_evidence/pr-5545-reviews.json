@@ -1,0 +1,17 @@
+{
+  "source": "repos/aws-e/adp/pulls/5545/reviews?per_page=100",
+  "captured_at": "2026-09-19T22:36:36.455426+00:00",
+  "response": [
+    {
+      "id": 5257869897,
+      "state": "APPROVED",
+      "commit_id": "922b7245ab6eb7af616158cd729c9bc9ae1590cd",
+      "submitted_at": "2026-09-19T21:43:50Z",
+      "user": {
+        "id": 276998840,
+        "login": "aws-e-adp-agent-dev[bot]",
+        "type": "Bot"
+      }
+    }
+  ]
+}

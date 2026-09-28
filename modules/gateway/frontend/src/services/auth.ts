@@ -5,6 +5,8 @@
  * (Proof Key for Code Exchange) for secure authentication with AWS Cognito.
  */
 
+import { deploymentSetting } from '@/config/runtime';
+
 import { apiClient } from './api';
 import { AdminRole, Permission } from '@/types';
 import type {
@@ -26,6 +28,9 @@ const ID_TOKEN_KEY = 'cognito_id_token';
 const REFRESH_TOKEN_KEY = 'cognito_refresh_token';
 const TOKEN_EXPIRY_KEY = 'cognito_token_expiry';
 const PKCE_VERIFIER_KEY = 'pkce_code_verifier';
+// Issue #4133: nonce binding the GitHub broker login attempt to this browser
+// session, mirroring what PKCE_VERIFIER_KEY does for the password path.
+const BROKER_STATE_KEY = 'github_broker_state';
 
 // Role to permissions mapping (matching backend)
 const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
@@ -46,6 +51,8 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     Permission.USER_READ,
     Permission.USER_MANAGE,
     Permission.METRICS_READ,
+    // Issue #4200: mirrors ROLE_PERMISSIONS[PLATFORM_ADMIN] in src/admin/config.py.
+    Permission.PLAN_APPROVE,
   ],
   [AdminRole.ORG_ADMIN]: [
     Permission.ORG_READ,
@@ -59,6 +66,8 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     Permission.LOGS_EXPORT,
     Permission.USER_READ,
     Permission.USER_MANAGE,
+    // Issue #4200: mirrors ROLE_PERMISSIONS[ORG_ADMIN] in src/admin/config.py.
+    Permission.PLAN_APPROVE,
   ],
   [AdminRole.DEPT_ADMIN]: [
     Permission.BUDGET_READ,
@@ -67,6 +76,10 @@ const ROLE_PERMISSIONS: Record<AdminRole, Permission[]> = {
     Permission.LOGS_READ,
     Permission.USER_READ,
   ],
+  // Issue #4019: mirrors the backend's ROLE_PERMISSIONS[AdminRole.MEMBER]
+  // (src/admin/config.py) exactly. A member has no admin authority — granting
+  // anything more here would show admin nav to users the API will 403.
+  [AdminRole.MEMBER]: [Permission.USAGE_READ],
 };
 
 // ============================================================================
@@ -173,14 +186,114 @@ export async function buildLoginUrl(): Promise<string> {
  * endpoint. The broker handles the GitHub OAuth flow and returns Cognito tokens.
  *
  * The broker URL is configured via VITE_GITHUB_AUTH_BROKER_URL env var.
+ *
+ * Issue #4133: also generates a nonce, stores it in sessionStorage, and passes it
+ * to the broker as `app_state`. The broker signs it into its state token and
+ * echoes it back on the callback, so AuthCallback can reject a callback this
+ * browser never initiated (login CSRF / session fixation).
  */
 export async function buildGitHubLoginUrl(): Promise<string> {
-  const brokerUrl = import.meta.env.VITE_GITHUB_AUTH_BROKER_URL;
+  const brokerUrl = deploymentSetting('VITE_GITHUB_AUTH_BROKER_URL');
   if (!brokerUrl) {
     throw new Error('GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL not set)');
   }
+  const appState = generateBrokerState();
+  storeBrokerState(appState);
   // The broker's /start endpoint handles state generation and redirects to GitHub
-  return `${brokerUrl.replace(/\/$/, '')}/start`;
+  const params = new URLSearchParams({ app_state: appState });
+  return `${brokerUrl.replace(/\/$/, '')}/start?${params.toString()}`;
+}
+
+/**
+ * Generate the broker login nonce (Issue #4133).
+ *
+ * Uses a charset WITHOUT "." — the broker's signed state token is dot-delimited,
+ * so a dot in the nonce would make its fields ambiguous (the broker rejects such
+ * values outright, which would break login rather than weaken it).
+ */
+function generateBrokerState(): string {
+  const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_~';
+  const randomValues = new Uint8Array(32);
+  crypto.getRandomValues(randomValues);
+  return Array.from(randomValues)
+    .map((v) => charset[v % charset.length])
+    .join('');
+}
+
+const POST_LOGIN_REDIRECT_KEY = 'post_login_redirect';
+
+/**
+ * Remember where an unauthenticated user was headed, across the external
+ * OAuth round-trip (GitHub broker or Cognito hosted UI both leave the SPA
+ * entirely, so router state does not survive). Deep links like the CLI
+ * approval page (/cli-auth?code=...) land here via ProtectedRoute → Login.
+ */
+export function storePostLoginRedirect(path: string): void {
+  sessionStorage.setItem(POST_LOGIN_REDIRECT_KEY, path);
+}
+
+/**
+ * Retrieve and clear the stored destination. Single-use, and validated to be
+ * an internal path ("/x..." but not "//host") so a crafted value can never
+ * turn the login flow into an open redirect.
+ */
+export function consumePostLoginRedirect(): string | null {
+  const path = sessionStorage.getItem(POST_LOGIN_REDIRECT_KEY);
+  sessionStorage.removeItem(POST_LOGIN_REDIRECT_KEY);
+  if (!path || !path.startsWith('/') || path.startsWith('//')) {
+    return null;
+  }
+  return path;
+}
+
+/**
+ * Store the broker login nonce for the callback (Issue #4133)
+ */
+export function storeBrokerState(state: string): void {
+  sessionStorage.setItem(BROKER_STATE_KEY, state);
+}
+
+/**
+ * Retrieve and clear the broker login nonce (Issue #4133).
+ *
+ * Single-use, like getPKCEVerifier: clearing on read means a replayed callback
+ * URL finds nothing to match against.
+ */
+export function getBrokerState(): string | null {
+  const state = sessionStorage.getItem(BROKER_STATE_KEY);
+  sessionStorage.removeItem(BROKER_STATE_KEY);
+  return state;
+}
+
+/**
+ * Exchange a broker handoff code for Cognito tokens (Issue #4133).
+ *
+ * The broker no longer puts tokens in the redirect URL; it hands over a
+ * single-use code which we POST back (alongside the nonce that code was bound
+ * to) to receive the tokens in a response body instead.
+ */
+export async function exchangeBrokerCode(
+  code: string,
+  appState: string
+): Promise<CognitoTokenResponse> {
+  const brokerUrl = deploymentSetting('VITE_GITHUB_AUTH_BROKER_URL');
+  if (!brokerUrl) {
+    throw new Error('GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL not set)');
+  }
+
+  // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of our own configured broker endpoint; SSRF is not a client-side vulnerability
+  const response = await fetch(`${brokerUrl.replace(/\/$/, '')}/exchange`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, app_state: appState }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || 'Failed to complete GitHub sign-in');
+  }
+
+  return response.json();
 }
 
 /**
@@ -384,18 +497,27 @@ export function parseIdTokenForUser(idToken: string): User | null {
   const payload = parseTokenPayload<CognitoIdTokenPayload>(idToken);
   if (!payload) return null;
 
-  // Determine role from custom attribute. Leave undefined when the JWT
+  // Platform groups match backend authority, including after a workspace switch.
+  // Otherwise determine role from custom attribute. Leave undefined when the JWT
   // carries no claim — the UI hides the role badge in that case rather
   // than showing a misleading default like "org admin" for users who
   // haven't been approved/assigned yet.
   let role: AdminRole | undefined;
   const customRole = payload['custom:role'];
-  if (customRole === 'platform_admin') {
+  const groups = payload['cognito:groups'] ?? [];
+  if (customRole === 'platform_admin' || customRole === 'admin' || groups.includes('admins') || groups.includes('platform-admins')) {
     role = AdminRole.PLATFORM_ADMIN;
   } else if (customRole === 'org_admin') {
     role = AdminRole.ORG_ADMIN;
   } else if (customRole === 'dept_admin') {
     role = AdminRole.DEPT_ADMIN;
+  } else if (customRole === 'member' || customRole === 'user' || customRole === 'viewer') {
+    // Issue #4389: without this branch `role` stayed undefined for a member and
+    // ROLE_PERMISSIONS[AdminRole.MEMBER] above was unreachable, so every member
+    // resolved `permissions: []` and any USAGE_READ-gated view rendered blank.
+    // The three strings are the synonym set the backend treats as MEMBER
+    // (_MEMBERSHIP_ROLE_TO_ADMIN_ROLE in src/admin/config.py) — keep in sync.
+    role = AdminRole.MEMBER;
   }
 
   // Extract GitHub identity info if present
@@ -433,8 +555,12 @@ export function parseIdTokenForUser(idToken: string): User | null {
     name: displayName,
     role,
     orgId: payload['custom:org_id'],
+    teamId: payload['custom:team_id'],
     deptId: payload['custom:department_id'],
-    permissions: role ? ROLE_PERMISSIONS[role] : [],
+    // Issue #4389: `?? []` keeps this total. A role present in the AdminRole enum
+    // but absent from ROLE_PERMISSIONS would otherwise yield `undefined`, and
+    // AuthContext.hasPermission does `user.permissions.includes(...)` unguarded.
+    permissions: role ? (ROLE_PERMISSIONS[role] ?? []) : [],
     createdAt: new Date(payload.auth_time * 1000).toISOString(),
     avatarUrl,
     githubLogin,
@@ -460,12 +586,15 @@ export function getCurrentUserFromToken(): User | null {
  */
 export async function getCurrentUser(): Promise<User | null> {
   try {
+    // Issue #4389: `role` and `permissions` are optional because /auth/me does not
+    // currently return them. Declaring them required was the type lie that hid the
+    // undefined-permissions bug handled below.
     const response = await apiClient.get<{
       user_id: string;
-      role: AdminRole;
+      role?: AdminRole;
       org_id?: string;
       dept_id?: string;
-      permissions: Permission[];
+      permissions?: Permission[];
       created_at: string;
       email?: string;
       name?: string;
@@ -476,7 +605,13 @@ export async function getCurrentUser(): Promise<User | null> {
       role: response.role,
       orgId: response.org_id,
       deptId: response.dept_id,
-      permissions: response.permissions || ROLE_PERMISSIONS[response.role],
+      // Issue #4389: GET /auth/me (src/auth/routes.py) returns neither `role` nor
+      // `permissions`, so the old `response.permissions || ROLE_PERMISSIONS[response.role]`
+      // evaluated to ROLE_PERMISSIONS[undefined] === undefined — which would make
+      // AuthContext.hasPermission throw on `.includes()`. Latent today only because
+      // this function has no production caller. Always resolve to an array.
+      permissions:
+        response.permissions ?? (response.role ? (ROLE_PERMISSIONS[response.role] ?? []) : []),
       createdAt: response.created_at,
       email: response.email,
       name: response.name,
@@ -552,7 +687,23 @@ export async function handleOAuthCallback(code: string): Promise<LoginResponse> 
 /**
  * Refresh the current session using stored refresh token
  */
-export async function refreshToken(): Promise<{ token: string; expiresAt: string }> {
+let pendingRefresh: Promise<{ token: string; expiresAt: string }> | null = null;
+
+export async function refreshToken(options: { fresh?: boolean } = {}): Promise<{ token: string; expiresAt: string }> {
+  // A workspace switch needs a refresh started AFTER the server saved claims.
+  // Serialize against the background timer so an older response cannot later
+  // overwrite the new session tokens.
+  if (options.fresh && pendingRefresh) await pendingRefresh.catch(() => undefined);
+  if (pendingRefresh) return pendingRefresh;
+  pendingRefresh = performTokenRefresh();
+  try {
+    return await pendingRefresh;
+  } finally {
+    pendingRefresh = null;
+  }
+}
+
+async function performTokenRefresh(): Promise<{ token: string; expiresAt: string }> {
   const storedRefreshToken = getRefreshToken();
   if (!storedRefreshToken) {
     throw new Error('No refresh token available');

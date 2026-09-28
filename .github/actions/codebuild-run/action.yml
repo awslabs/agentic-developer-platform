@@ -3,9 +3,8 @@ description: |
   Upload source to a per-build-unique S3 key and trigger a CodeBuild build
   with --source-location-override to prevent source-race conditions.
 
-  The source key is: codebuild/src/${sha}-${run_id}.zip
-  This ensures each build reads exactly its own source, regardless of
-  concurrent builds or workflow re-runs.
+  The source key includes the verified source revision, run ID, and run attempt.
+  This ensures each build reads exactly its own source, including workflow reruns.
 
 inputs:
   project_name:
@@ -27,6 +26,27 @@ inputs:
     description: Seconds between build status polls
     required: false
     default: '15'
+  source_revision:
+    description: Verified source revision to archive; defaults to the workflow revision
+    required: false
+    default: ''
+  child_state_uri:
+    description: Optional S3 object URI where the started build ID is recorded for cleanup
+    required: false
+    default: ''
+
+  service_role_arn:
+    description: Optional restricted service role override for nonpublishing checks
+    required: false
+    default: ''
+  source_namespace:
+    description: Optional isolated source namespace; defaults to the project name
+    required: false
+    default: ''
+  buildspec:
+    description: Optional buildspec override within the verified source archive
+    required: false
+    default: ''
 
 outputs:
   build_id:
@@ -45,22 +65,62 @@ runs:
       env:
         STATE_BUCKET: ${{ inputs.state_bucket }}
         AWS_REGION: ${{ inputs.region }}
+        REQUESTED_SOURCE: ${{ inputs.source_revision }}
+        SOURCE_NAMESPACE: ${{ inputs.source_namespace }}
+        PROJECT_NAME: ${{ inputs.project_name }}
+        CHILD_STATE_URI: ${{ inputs.child_state_uri }}
       run: |
         set -euo pipefail
-        SHA="${GITHUB_SHA}"
-        RUN_ID="${GITHUB_RUN_ID}"
-        SOURCE_KEY="codebuild/src/${SHA}-${RUN_ID}.zip"
+        SOURCE_REVISION="${REQUESTED_SOURCE:-${GITHUB_SHA}}"
+        if [[ ! "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::CodeBuild source revision must be a full lowercase commit SHA"
+          exit 1
+        fi
+        CHECKED_OUT=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+        if [ "$CHECKED_OUT" != "$SOURCE_REVISION" ]; then
+          echo "::error::Checked-out source $CHECKED_OUT differs from requested CodeBuild source $SOURCE_REVISION"
+          exit 1
+        fi
+        if [[ ! "$GITHUB_JOB" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "::error::GitHub job name is unsafe for a source object key"
+          exit 1
+        fi
+        [[ "$PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+        SOURCE_NAMESPACE="${SOURCE_NAMESPACE:-$PROJECT_NAME}"
+        [[ "$SOURCE_NAMESPACE" =~ ^[A-Za-z0-9_-]+$ ]]
+        SOURCE_KEY="codebuild/src/${SOURCE_NAMESPACE}/${SOURCE_REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
+        export SOURCE_KEY SOURCE_REVISION
+        ARCHIVE="${RUNNER_TEMP}/adp-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
 
-        bash "${GITHUB_WORKSPACE}/platform/scripts/zip-source.sh" \
-          "${GITHUB_WORKSPACE}" /tmp/adp-source-${RUN_ID}.zip
+        ARCHIVE_ARGS=("${GITHUB_WORKSPACE}" "$ARCHIVE")
+        case "$PROJECT_NAME" in
+          adp-*-grype-scan|adp-*-syft-scan) ARCHIVE_ARGS+=(--security-scan) ;;
+        esac
+        bash "${GITHUB_WORKSPACE}/platform/scripts/zip-source.sh" "${ARCHIVE_ARGS[@]}"
 
-        aws s3 cp "/tmp/adp-source-${RUN_ID}.zip" \
+        aws s3 cp "$ARCHIVE" \
           "s3://${STATE_BUCKET}/${SOURCE_KEY}" \
           --region "${AWS_REGION}"
-        rm -f "/tmp/adp-source-${RUN_ID}.zip"
+        rm -f "$ARCHIVE"
 
         echo "source_key=${SOURCE_KEY}" >> "$GITHUB_OUTPUT"
-        echo "Uploaded source to s3://${STATE_BUCKET}/${SOURCE_KEY}"
+        echo "source_revision=${SOURCE_REVISION}" >> "$GITHUB_OUTPUT"
+        if [ -n "$CHILD_STATE_URI" ]; then
+          STATE_FILE="${RUNNER_TEMP}/codebuild-child-${GITHUB_JOB}.json"
+          python3 - <<'PY' > "$STATE_FILE"
+        import json
+        import os
+        print(json.dumps({
+            "build_id": None,
+            "project_name": os.environ["PROJECT_NAME"],
+            "source_key": os.environ["SOURCE_KEY"],
+            "source_revision": os.environ["SOURCE_REVISION"],
+            "status_at_recording": "START_PENDING",
+        }, sort_keys=True))
+        PY
+          aws s3 cp "$STATE_FILE" "$CHILD_STATE_URI" --region "$AWS_REGION"
+        fi
+        echo "Uploaded verified source to s3://${STATE_BUCKET}/${SOURCE_KEY}"
 
     - name: Start CodeBuild with source override
       id: start
@@ -70,32 +130,78 @@ runs:
         AWS_REGION: ${{ inputs.region }}
         PROJECT_NAME: ${{ inputs.project_name }}
         SOURCE_KEY: ${{ steps.upload.outputs.source_key }}
+        SOURCE_REVISION: ${{ steps.upload.outputs.source_revision }}
         ENV_VARS: ${{ inputs.environment_variables }}
+        SERVICE_ROLE_ARN: ${{ inputs.service_role_arn }}
+        BUILDSPEC: ${{ inputs.buildspec }}
+        CHILD_STATE_URI: ${{ inputs.child_state_uri }}
       run: |
         set -euo pipefail
 
-        # Build the start-build command
         CMD=(aws codebuild start-build
           --region "${AWS_REGION}"
           --project-name "${PROJECT_NAME}"
           --source-location-override "${STATE_BUCKET}/${SOURCE_KEY}"
           --environment-variables-override
-            "name=ADP_SOURCE_SHA,value=${GITHUB_SHA},type=PLAINTEXT"
+            "name=ADP_SOURCE_SHA,value=${SOURCE_REVISION},type=PLAINTEXT"
         )
 
-        # Append caller-provided env var overrides
         if [ -n "${ENV_VARS}" ]; then
-          # ENV_VARS is space-separated quoted entries like:
-          #   "name=FOO,value=bar" "name=BAZ,value=qux"
           eval "VARS_ARRAY=(${ENV_VARS})"
           CMD+=("${VARS_ARRAY[@]}")
         fi
 
-        CMD+=(--query 'build.id' --output text)
+        if [ -n "${SERVICE_ROLE_ARN:-}" ]; then
+          CMD+=(--service-role-override "$SERVICE_ROLE_ARN")
+        fi
+        if [ -n "${BUILDSPEC:-}" ]; then
+          CMD+=(--buildspec-override "$BUILDSPEC")
+        fi
 
-        BUILD_ID=$("${CMD[@]}")
+        IDEMPOTENCY_TOKEN=$(printf '%s\0' "${CMD[@]}" | sha256sum | cut -d' ' -f1)
+        CMD+=(--idempotency-token "$IDEMPOTENCY_TOKEN" --query 'build.id' --output text)
+        BUILD_ID=""
+        for ATTEMPT in 1 2 3; do
+          if BUILD_ID=$("${CMD[@]}") && [ -n "$BUILD_ID" ] && [ "$BUILD_ID" != "None" ]; then
+            break
+          fi
+          BUILD_ID=""
+          sleep "$ATTEMPT"
+        done
+        if [ -z "$BUILD_ID" ]; then
+          echo "::error::CodeBuild returned no build ID after idempotent retries"
+          exit 1
+        fi
         echo "build_id=${BUILD_ID}" >> "$GITHUB_OUTPUT"
-        echo "Started CodeBuild: ${BUILD_ID} (source: ${SOURCE_KEY})"
+
+        if [ -n "$CHILD_STATE_URI" ]; then
+          STATE_FILE="${RUNNER_TEMP}/codebuild-child-${GITHUB_JOB}.json"
+          BUILD_ID="$BUILD_ID" python3 - <<'PY' > "$STATE_FILE"
+        import json
+        import os
+        print(json.dumps({
+            "build_id": os.environ["BUILD_ID"],
+            "project_name": os.environ["PROJECT_NAME"],
+            "source_key": os.environ["SOURCE_KEY"],
+            "source_revision": os.environ["SOURCE_REVISION"],
+            "status_at_recording": "IN_PROGRESS",
+        }, sort_keys=True))
+        PY
+          RECORDED=false
+          for ATTEMPT in 1 2 3; do
+            if aws s3 cp "$STATE_FILE" "$CHILD_STATE_URI" --region "$AWS_REGION"; then
+              RECORDED=true
+              break
+            fi
+            sleep "$ATTEMPT"
+          done
+          if [ "$RECORDED" != true ]; then
+            aws codebuild stop-build --id "$BUILD_ID" --region "$AWS_REGION" || true
+            echo "::error::Started child could not be recorded; stop requested"
+            exit 1
+          fi
+        fi
+        echo "Started CodeBuild: ${BUILD_ID} (verified source: ${SOURCE_KEY})"
 
     - name: Wait for CodeBuild completion
       shell: bash
@@ -109,19 +215,20 @@ runs:
         while true; do
           RESULT=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
             --region "${AWS_REGION}" \
-            --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json 2>/dev/null)
-          STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])" 2>/dev/null || echo "IN_PROGRESS")
-          CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])" 2>/dev/null || echo "")
+            --query 'builds[0].{s:buildStatus,p:currentPhase}' --output json)
+          STATUS=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['s'])")
+          CUR_PHASE=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('p') or '')")
           [ "$CUR_PHASE" != "$PHASE" ] && [ -n "$CUR_PHASE" ] && echo "Phase: $CUR_PHASE" && PHASE="$CUR_PHASE"
           case "$STATUS" in
             SUCCEEDED) echo "Build succeeded"; exit 0 ;;
             FAILED|FAULT|STOPPED|TIMED_OUT)
               LOG=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
                 --region "${AWS_REGION}" \
-                --query 'builds[0].logs.deepLink' --output text 2>/dev/null || echo "")
+                --query 'builds[0].logs.deepLink' --output text || true)
               echo "Build failed ($STATUS). Logs: $LOG" >&2
               exit 1
               ;;
-            *) sleep "${POLL_INTERVAL}" ;;
+            IN_PROGRESS) sleep "${POLL_INTERVAL}" ;;
+            *) echo "::error::Unexpected CodeBuild status: $STATUS"; exit 1 ;;
           esac
         done

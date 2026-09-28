@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Option D — Portfolio · Orchestration Graph Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light;
+    --surface:#fcfcfb; --plane:#f4f4f1; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --baseline:#c3c2b7; --ring:rgba(11,11,11,.10);
+    --blue:#2a78d6;
+    --good:#0ca30c; --good-text:#006300; --warn:#fab219; --warn-text:#8a6200;
+    --serious:#ec835a; --serious-text:#b0431f; --critical:#d03b3b;
+  }
+  *{box-sizing:border-box; margin:0}
+  body{background:var(--plane); color:var(--ink); font-family:"Hanken Grotesk", system-ui, sans-serif; font-size:15px; line-height:1.5}
+  .mono{font-family:"Spline Sans Mono", ui-monospace, monospace}
+
+  header{background:var(--ink); color:#fff; padding:18px 32px; display:flex; align-items:center; gap:16px; flex-wrap:wrap}
+  header h1{font-size:20px; font-weight:800; letter-spacing:-.01em}
+  header .sub{color:#c3c2b7; font-size:13px}
+  header .sub a{color:#fff}
+  header .spacer{flex:1}
+  .live{color:#fab219; font-size:12.5px; font-weight:600; letter-spacing:.12em; text-transform:uppercase}
+
+  .nav-strip{background:#232320; color:#c3c2b7; padding:7px 32px; font-size:12.5px; display:flex; gap:18px}
+  .nav-strip a{color:#fff; text-decoration:none; font-weight:600}
+  .nav-strip a.here{color:#fab219}
+
+  main{max-width:1160px; margin:0 auto; padding:26px 32px 64px}
+  .eyebrow{font-size:11.5px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:var(--muted); margin-bottom:8px}
+  a.ext{color:var(--blue); text-decoration:none; font-weight:600}
+  a.ext:hover{text-decoration:underline}
+
+  /* ── origin strip: the one flow that produced everything ── */
+  .origin{background:var(--surface); border:1px solid var(--ring); border-radius:12px; padding:16px 20px; margin-bottom:14px; display:flex; align-items:center; gap:0; flex-wrap:wrap}
+  .origin .node{display:flex; flex-direction:column; gap:1px; padding:0 18px}
+  .origin .node:first-child{padding-left:0}
+  .origin .k{font-size:11px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--muted)}
+  .origin .v{font-size:14.5px; font-weight:700}
+  .origin .v .ok{color:var(--good-text)}
+  .origin .s{font-size:12px; color:var(--ink-2)}
+  .origin .arrow{color:var(--baseline); font-size:20px; font-weight:400; padding:0 2px}
+  .origin .fan{display:flex; flex-direction:column; gap:4px; padding-left:18px; border-left:2px solid var(--grid)}
+  .origin .fan .v{font-size:13.5px}
+
+  .origin .docsrow{flex-basis:100%; display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:14px; padding-top:12px; border-top:1px solid var(--grid)}
+  .origin .docsrow .k{margin-right:4px}
+  .doc{display:inline-flex; flex-direction:column; gap:0; text-decoration:none; border:1px solid var(--ring); border-radius:8px; padding:6px 12px; background:#fff}
+  .doc:hover{border-color:var(--blue)}
+  .doc .dn{font-size:12.5px; font-weight:700; color:var(--ink)}
+  .doc .dn::before{content:"📄 "; font-size:11px}
+  .doc .ds{font-size:11px; color:var(--muted)}
+  .doc.pending{opacity:.55; border-style:dashed}
+
+  /* ── the agreed plan (one-shot wave map) ── */
+  .plan{background:var(--surface); border:1px solid var(--ring); border-radius:12px; padding:18px 20px; margin-bottom:26px; overflow-x:auto}
+  .plan-hd{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:14px}
+  .plan-hd h2{font-size:15px; font-weight:800}
+  .plan-hd .att{font-size:12.5px; color:var(--ink-2)}
+  .plan-hd .ok{color:var(--good-text); font-weight:700; font-size:12.5px}
+  .plan-grid{display:grid; grid-template-columns:150px 1fr 34px 1fr 34px 1fr; gap:10px 0; min-width:900px; align-items:stretch}
+  .plan-grid .wavehd{font-size:11.5px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); padding:0 12px 2px}
+  .plan-grid .epiclbl{font-size:12.5px; font-weight:700; padding:10px 10px 0 0; color:var(--ink-2)}
+  .plan-grid .epiclbl a{display:block; font-size:12px}
+  .cell{border:1px dashed var(--grid); border-radius:10px; padding:8px 10px; margin:0 12px 0 0; display:flex; flex-direction:column; gap:6px; min-height:54px}
+  .cell.left{margin-left:12px; margin-right:0}
+  .gatecol{display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:15px}
+  .gatecol .gs{font-size:9.5px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); text-align:center; line-height:1.3}
+  .gatecol.approved .gs{color:var(--good-text)}
+  .gatecol.yours .gs{color:var(--warn-text)}
+  .schip{display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; text-decoration:none; color:var(--ink); background:#fff; border:1px solid var(--ring); border-left-width:4px; border-radius:7px; padding:4px 9px}
+  .schip:hover{border-color:var(--blue)}
+  .schip .ss{margin-left:auto; font-size:10.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; white-space:nowrap}
+  .schip.c-done{border-left-color:var(--good)} .schip.c-done .ss{color:var(--good-text)}
+  .schip.c-run{border-left-color:var(--blue)} .schip.c-run .ss{color:var(--blue)}
+  .schip.c-stall{border-left-color:var(--serious); background:#fdf6f2} .schip.c-stall .ss{color:var(--serious-text)}
+  .schip.c-gate{border-left-color:var(--warn); background:#fffcf3} .schip.c-gate .ss{color:var(--warn-text)}
+  .schip.c-q{border-left-color:var(--baseline)} .schip.c-q .ss{color:var(--muted)}
+  .plan-note{font-size:12px; color:var(--muted); margin-top:12px}
+
+  /* ── engine strip: orchestration made visible ── */
+  .engine{background:var(--surface); border:1px solid var(--ring); border-radius:12px; padding:14px 20px; margin-bottom:26px; display:grid; grid-template-columns:auto 1fr 1.6fr; gap:24px; align-items:center}
+  @media (max-width:900px){ .engine{grid-template-columns:1fr} }
+  .engine .pulse{display:flex; align-items:center; gap:10px; font-weight:800; font-size:14.5px}
+  .engine .pulse .dotc{width:12px; height:12px; border-radius:50%; background:var(--good); flex:none; animation:eblink 2s ease infinite}
+  @keyframes eblink{50%{opacity:.25}}
+  @media (prefers-reduced-motion: reduce){ .engine .pulse .dotc{animation:none} }
+  .engine .pulse .s{display:block; font-size:11.5px; font-weight:600; color:var(--muted)}
+  .engine .k{font-size:11px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--muted); margin-bottom:3px}
+  .engine .watch{font-size:13.5px; color:var(--ink-2)}
+  .engine ol{margin:0; padding-left:18px; font-size:13.5px; color:var(--ink-2)}
+  .engine ol li{padding:1px 0}
+  .engine ol .you{color:var(--warn-text); font-weight:700}
+  .bchip{display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; color:var(--muted); text-decoration:none; border:1px dashed var(--baseline); border-radius:99px; padding:2px 9px; margin-top:2px; align-self:flex-start}
+  .bchip:hover{color:var(--ink-2); border-color:var(--muted)}
+
+  /* ── one-shot rollup ── */
+  .rollup{background:var(--surface); border:1px solid var(--ring); border-radius:12px; padding:20px 22px 18px; margin-bottom:26px}
+  .rollup-top{display:flex; align-items:baseline; gap:26px; flex-wrap:wrap; margin-bottom:14px}
+  .big{font-size:34px; font-weight:800; letter-spacing:-.01em}
+  .big small{font-size:14px; font-weight:600; color:var(--ink-2); letter-spacing:0}
+  .rollup-top .k{font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); display:block}
+  .allbar{display:flex; height:26px; border-radius:7px; overflow:hidden; gap:2px; background:var(--plane)}
+  .allbar div{display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; color:#fff; min-width:26px}
+  .seg-done{background:var(--good)} .seg-run{background:var(--blue)} .seg-gate{background:var(--warn); color:#5c4200 !important} .seg-stall{background:var(--serious)} .seg-q{background:var(--baseline); color:#52514e !important}
+  .allkey{display:flex; gap:18px; flex-wrap:wrap; margin-top:10px; font-size:12.5px; color:var(--ink-2)}
+  .allkey span{display:inline-flex; align-items:center; gap:6px}
+  .kdot{width:10px; height:10px; border-radius:3px}
+
+  /* ── EPIC cards ── */
+  .epic{background:var(--surface); border:1px solid var(--ring); border-radius:12px; margin-bottom:22px; overflow:hidden}
+  .epic-hd{display:flex; align-items:center; gap:14px; padding:16px 20px; border-bottom:1px solid var(--grid); flex-wrap:wrap}
+  .epic-hd .num{font-family:"Spline Sans Mono",monospace; font-size:13px; font-weight:600; color:var(--muted)}
+  .epic-hd h2{font-size:17px; font-weight:800}
+  .epic-hd .spacer{flex:1}
+  .pill{font-size:12px; font-weight:700; padding:3px 11px; border-radius:99px; display:inline-flex; align-items:center; gap:6px}
+  .p-run{background:#e8f1fc; color:#1b579d} .p-wait{background:#fdf6df; color:#7a5800}
+  .epic-hd .cost{font-family:"Spline Sans Mono",monospace; font-size:13.5px; font-weight:600}
+
+  /* plain-language journey line (kept from A, no metaphor) */
+  .journey{padding:22px 20px 2px; overflow-x:auto}
+  .stages{display:flex; align-items:flex-start; min-width:760px}
+  .stage{flex:1; position:relative; text-align:center}
+  .stage .track{position:absolute; top:9px; left:50%; right:-50%; height:5px; background:var(--good); border-radius:3px}
+  .stage:last-child .track{display:none}
+  .stage.ahead .track, .stage.here .track{background:transparent; border-top:4px dashed var(--baseline); height:0; top:10px}
+  .stage .mark{position:relative; z-index:1; width:22px; height:22px; margin:0 auto; border-radius:50%; background:var(--good); border:3px solid var(--good); display:flex; align-items:center; justify-content:center; color:#fff; font-size:11px; font-weight:800}
+  .stage.gatestep .mark{background:#fff; border-color:var(--ink); color:var(--ink)}
+  .stage.here .mark{background:#fff; border-color:var(--blue); color:var(--blue)}
+  .stage.ahead .mark{background:#fff; border-color:var(--baseline); color:var(--muted)}
+  .stage.gatewait .mark{background:#fff; border-color:var(--warn); color:var(--warn-text)}
+  @keyframes ripple{0%{box-shadow:0 0 0 0 rgba(42,120,214,.35)} 100%{box-shadow:0 0 0 12px rgba(42,120,214,0)}}
+  .stage.here .mark{animation:ripple 1.8s ease-out infinite}
+  @media (prefers-reduced-motion: reduce){ .stage.here .mark{animation:none} }
+  .stage .name{font-size:12.5px; font-weight:700; margin-top:8px}
+  .stage .sub{font-size:11.5px; color:var(--muted)}
+  .stage.ahead .name{color:var(--ink-2)}
+
+  /* story table */
+  .stories{width:100%; border-collapse:collapse}
+  .stories th{font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); text-align:left; padding:12px 14px 8px; border-bottom:1px solid var(--grid)}
+  .stories td{padding:10px 14px; border-bottom:1px solid var(--grid); font-size:14px; vertical-align:top}
+  .stories tr:last-child td{border-bottom:none}
+  .stories tr.haslog{cursor:pointer}
+  .stories tr.haslog:hover{background:#f6f6f3}
+  .st{font-size:11.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; white-space:nowrap; display:inline-flex; gap:5px}
+  .st-done{color:var(--good-text)} .st-run{color:var(--blue)} .st-gate{color:var(--warn-text)} .st-stall{color:var(--serious-text)} .st-q{color:var(--muted)}
+  td .title{font-weight:600}
+  td .why{font-size:12.5px; color:var(--ink-2); margin-top:1px}
+  td.links{white-space:nowrap; font-size:13px}
+  td.links a{margin-right:10px}
+  td .cost{font-family:"Spline Sans Mono",monospace; font-size:12.5px}
+  td .cost.unk{color:var(--muted)}
+  .logbtn{font:inherit; font-size:12px; font-weight:700; border-radius:7px; padding:4px 11px; cursor:pointer; border:1px solid var(--ring); background:#fff; color:var(--ink); white-space:nowrap}
+  .logbtn:hover{border-color:var(--ink)}
+  .logbtn:focus-visible, a:focus-visible{outline:2px solid var(--blue); outline-offset:2px}
+
+  /* run drawer (Agent-Activity-style log) */
+  .scrim{position:fixed; inset:0; background:rgba(11,11,11,.42); z-index:40; opacity:0; pointer-events:none; transition:opacity .2s}
+  .drawer{position:fixed; top:0; right:0; bottom:0; width:min(520px,94vw); background:var(--surface); border-left:1px solid var(--ring); z-index:41; transform:translateX(103%); transition:transform .22s ease; display:flex; flex-direction:column; box-shadow:-12px 0 40px rgba(0,0,0,.12)}
+  body.drawer-open .scrim{opacity:1; pointer-events:auto}
+  body.drawer-open .drawer{transform:none}
+  @media (prefers-reduced-motion: reduce){ .drawer,.scrim{transition:none} }
+  .drawer .dhead{padding:18px 22px 14px; border-bottom:1px solid var(--grid); position:relative}
+  .drawer .dhead h3{font-size:16px; font-weight:800; line-height:1.35}
+  .drawer .dhead .dmeta{font-family:"Spline Sans Mono",monospace; font-size:12px; color:var(--ink-2); margin-top:6px}
+  .drawer .dclose{position:absolute; top:12px; right:14px; border:none; background:none; font-size:20px; padding:4px 8px; color:var(--muted); cursor:pointer}
+  .drawer .dbody{flex:1; overflow:auto; padding:16px 22px; display:flex; flex-direction:column; gap:14px}
+  .dlog{background:#141413; color:#c3c2b7; border-radius:8px; padding:12px 14px; font-family:"Spline Sans Mono",monospace; font-size:11.5px; line-height:1.7; overflow:auto; max-height:44vh}
+  .dlog .t{color:#898781} .dlog .w{color:var(--serious)} .dlog .g{color:#3fbf3f}
+  .dtrans{font-size:13px}
+  .dtrans div{padding:5px 0; border-bottom:1px solid var(--grid); display:flex; gap:10px}
+  .dtrans .t{color:var(--muted); font-family:"Spline Sans Mono",monospace; font-size:11.5px; flex:none; width:60px; padding-top:1px}
+  .drawer .dfoot{border-top:1px solid var(--grid); padding:14px 22px; display:flex; gap:8px; flex-wrap:wrap}
+  .drawer button{font:inherit; font-size:13px; font-weight:700; border-radius:8px; padding:6px 14px; cursor:pointer; border:1px solid var(--ring); background:#fff; color:var(--ink)}
+  .drawer button.primary{background:var(--ink); color:#fff; border-color:var(--ink)}
+  .drawer button:disabled{opacity:.5; cursor:not-allowed}
+  footer{max-width:1160px; margin:0 auto; padding:0 32px 40px; color:var(--muted); font-size:12.5px}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Delivery from intent <a class="mono" style="color:#8ab6ee; text-decoration:none" href="https://github.com/aws-e/adp/issues/4120">#4120 ↗</a></h1>
+    <div class="sub">Durable orchestration graph · dev / embark1 · one AIDLC flow, run once → <strong style="color:#fff">2 EPICs · 12 stories</strong>, each at its own stage</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="live mono" aria-live="polite">● Live · Wed 02 Sep 2026 · 14:32 UTC</div>
+</header>
+<div class="nav-strip">
+  <span>Mockup options:</span>
+  <a href="option-a-transit.html">A · Transit</a>
+  <a href="option-b-mission-control.html">B · Mission Control</a>
+  <a href="option-c-ledger.html">C · Ledger</a>
+  <a class="here" href="option-d-portfolio.html">D · Portfolio</a>
+  <a href="option-e-inception.html">E · Inception</a>
+  <a href="index.html" style="margin-left:auto">↩ all options</a>
+</div>
+
+<main>
+  <!-- ── the origin: one flow, run once ── -->
+  <div class="eyebrow">How this work came to be — one flow, run once</div>
+  <div class="origin">
+    <div class="node"><span class="k">Intent</span><span class="v"><a class="ext" href="https://github.com/aws-e/adp/issues/4120">#4120 ↗</a></span><span class="s">filed by Pranav · 24 Aug</span></div>
+    <span class="arrow">→</span>
+    <div class="node"><span class="k">AIDLC inception</span><span class="v"><span class="ok">✓ Completed 26 Aug</span></span><span class="s">5 stages · 4 approvals by Pranav · $31.50</span></div>
+    <span class="arrow">→</span>
+    <div class="fan">
+      <span class="k">Produced — now each at its own stage</span>
+      <span class="v">EPIC <a class="ext" href="#">#4121 ↗</a> — engine &amp; ledger · <span style="color:var(--blue)">▶ building, wave 2 of 3</span></span>
+      <span class="v">EPIC <a class="ext" href="#">#4122 ↗</a> — control surface · <span style="color:var(--warn-text)">🚦 waiting on your design review</span></span>
+    </div>
+    <div class="docsrow">
+      <span class="k">Documents, by stage</span>
+      <a class="doc" href="https://github.com/aws-e/adp/blob/agent/issue-4120/aidlc/spaces/issue-4120/inception/problem-frame.md"><span class="dn">Problem frame</span><span class="ds">approved by Pranav · 24 Aug 20:24</span></a>
+      <a class="doc" href="https://github.com/aws-e/adp/blob/agent/issue-4120/aidlc/spaces/issue-4120/inception/reverse-engineering.md"><span class="dn">Code survey</span><span class="ds">approved by Pranav · 24 Aug 22:42</span></a>
+      <a class="doc" href="https://github.com/aws-e/adp/blob/agent/issue-4120/aidlc/spaces/issue-4120/inception/requirements.md"><span class="dn">Requirements</span><span class="ds">approved by Pranav · 25 Aug</span></a>
+      <a class="doc" href="https://github.com/aws-e/adp/blob/agent/issue-4120/aidlc/spaces/issue-4120/inception/delivery-plan.md"><span class="dn">Delivery plan</span><span class="ds">approved by Pranav · 26 Aug</span></a>
+      <a class="doc" href="#"><span class="dn">Loop proposal</span><span class="ds">approved by Pranav · 26 Aug 10:12</span></a>
+    </div>
+  </div>
+
+  <!-- ── the one-shot answer ── -->
+  <div class="eyebrow">Where things are — all EPICs, one view</div>
+  <div class="rollup">
+    <div class="rollup-top">
+      <div><span class="k">EPICs</span><span class="big">2</span></div>
+      <div><span class="k">Stories</span><span class="big">12</span></div>
+      <div><span class="k">Complete</span><span class="big" style="color:var(--good-text)">4</span></div>
+      <div><span class="k">In progress</span><span class="big" style="color:var(--blue)">2</span></div>
+      <div><span class="k">Waiting</span><span class="big" style="color:var(--warn-text)">5 <small>(1 on you)</small></span></div>
+      <div><span class="k">Stalled</span><span class="big" style="color:var(--serious-text)">1</span></div>
+      <div style="margin-left:auto"><span class="k">Cost to date</span><span class="big mono" style="font-size:28px">$107.55</span></div>
+    </div>
+    <div class="allbar" role="img" aria-label="12 stories: 4 complete, 2 in progress, 1 waiting on a gate, 4 queued, 1 stalled">
+      <div class="seg-done" style="flex:4">4</div>
+      <div class="seg-run" style="flex:2">2</div>
+      <div class="seg-gate" style="flex:1">1</div>
+      <div class="seg-stall" style="flex:1">1</div>
+      <div class="seg-q" style="flex:4">4</div>
+    </div>
+    <div class="allkey">
+      <span><span class="kdot" style="background:var(--good)"></span>✓ Complete</span>
+      <span><span class="kdot" style="background:var(--blue)"></span>▶ In progress</span>
+      <span><span class="kdot" style="background:var(--warn)"></span>🚦 Waiting on a gate</span>
+      <span><span class="kdot" style="background:var(--serious)"></span>⚠ Stalled — needs help</span>
+      <span><span class="kdot" style="background:var(--baseline)"></span>○ Queued (waiting on dependencies)</span>
+    </div>
+  </div>
+
+
+
+  <!-- ── the engine: orchestration built in ── -->
+  <div class="eyebrow">The engine — orchestration is built into the system, not an issue anyone runs</div>
+  <div class="engine">
+    <div class="pulse"><span class="dotc"></span><span>Engine healthy<span class="s">last tick 12 s ago · runs every 60 s</span></span></div>
+    <div><div class="k">Watching right now</div><div class="watch">2 live runs (1 healthy · 1 stalled — alert sent), 1 automatic check queued, 1 review waiting on you</div></div>
+    <div><div class="k">What it does next, per the agreed plan</div>
+      <ol>
+        <li>Start the wave-2 checks the moment #4207 and #4208 both land</li>
+        <li>When checks pass, <span class="you">open your W2→W3 approval</span> — nothing proceeds without it</li>
+        <li>Keep escalating #4207's stall until resumed, aborted, or recovered</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- ── the agreed plan: unified wave map ── -->
+  <div class="eyebrow">The agreed plan — how this gets built, in one view</div>
+  <div class="plan">
+    <div class="plan-hd">
+      <h2>Loop proposal, as approved</h2>
+      <span class="att">approved by Pranav · 26 Aug 10:12 · <a class="ext" href="#">view proposal ↗</a></span>
+      <span class="ok" style="margin-left:auto">Colors show today’s progress against this plan</span>
+    </div>
+    <div class="plan-grid">
+      <div></div><div class="wavehd" style="padding-left:12px">Wave 1</div><div></div><div class="wavehd" style="padding-left:12px">Wave 2</div><div></div><div class="wavehd" style="padding-left:12px">Wave 3</div>
+
+      <div class="epiclbl">EPIC #4121<a class="ext" href="#">engine &amp; ledger ↗</a></div>
+      <div class="cell left">
+        <a class="schip c-done" href="#">#4203 · state vocabulary<span class="ss">✓ done</span></a>
+        <a class="schip c-done" href="#">#4204 · accepted-plan store<span class="ss">✓ done</span></a>
+        <a class="schip c-done" href="#">#4205 · attribution table<span class="ss">✓ done</span></a>
+        <a class="bchip" href="#" title="This wave ran before the engine existed, so a temporary orchestrator issue drove it — kept for the record">ran via bootstrap orchestrator #4217 ↗</a>
+      </div>
+      <div class="gatecol approved"><span>🚦</span><span class="gs">approved<br>30 Aug</span></div>
+      <div class="cell">
+        <a class="schip c-done" href="#">#4206 · run-ledger schema<span class="ss">✓ done</span></a>
+        <a class="schip c-run" href="#">#4208 · tick engine<span class="ss">▶ 38m</span></a>
+        <a class="schip c-stall" href="#">#4207 · transition guard<span class="ss">⚠ stalled</span></a>
+        <a class="schip c-run" href="#">#4209 · wave-2 checks<span class="ss">▶ auto</span></a>
+      </div>
+      <div class="gatecol yours"><span>🚦</span><span class="gs">yours<br>after checks</span></div>
+      <div class="cell">
+        <a class="schip c-q" href="#">#4215 · engine dispatch<span class="ss">○ queued</span></a>
+        <a class="schip c-q" href="#">#4216 · issue projection<span class="ss">○ queued</span></a>
+      </div>
+
+      <div class="epiclbl">EPIC #4122<a class="ext" href="#">control surface ↗</a></div>
+      <div class="cell left">
+        <a class="schip c-done" href="#">#4210a · design spike<span class="ss">✓ done</span></a>
+        <a class="schip c-gate" href="#">#4210 · UX review<span class="ss">🚦 on you</span></a>
+      </div>
+      <div class="gatecol yours"><span>🚦</span><span class="gs">your<br>review</span></div>
+      <div class="cell">
+        <a class="schip c-q" href="#">#4211 · portfolio view<span class="ss">○ queued</span></a>
+        <a class="schip c-q" href="#">#4212 · run drawer + logs<span class="ss">○ queued</span></a>
+      </div>
+      <div class="gatecol"><span>·</span></div>
+      <div class="cell">
+        <a class="schip c-q" href="#">#4213 · gate &amp; resume controls<span class="ss">○ queued</span></a>
+        <a class="schip c-q" href="#">#4214 · stall alerts (SLO)<span class="ss">○ queued</span></a>
+      </div>
+    </div>
+    <div class="plan-note">This map is the plan of record — the engine dispatches, watches, and gates each wave itself; <strong>waves have no orchestrator issues</strong>. Waves that ran before the engine existed link their temporary bootstrap orchestrator for the record. Hand-edits to issues don’t change this map; a story running outside it shows up flagged as off-plan.</div>
+  </div>
+
+  <!-- ── EPIC 1 ── -->
+  <section class="epic">
+    <div class="epic-hd">
+      <span class="num">EPIC</span>
+      <h2>#4121 — Orchestration engine &amp; run ledger</h2>
+      <a class="ext" href="#" title="mock link">open issue ↗</a>
+      <div class="spacer"></div>
+      <span class="pill p-run">▶ In progress — wave 2 of 3</span>
+      <span class="st st-done">✓ 4</span><span class="st st-run">▶ 2</span><span class="st st-stall">⚠ 1</span><span class="st st-q">○ 0</span>
+      <span class="cost mono">$57.65</span>
+    </div>
+    <div class="journey" aria-label="EPIC 4121 progress: created from the agreed plan, wave 1 done, wave 2 running, wave 3 ahead, then done">
+      <div class="stages">
+        <div class="stage gatestep"><div class="track"></div><div class="mark">✓</div><div class="name">Created</div><div class="sub">from the agreed plan · 26 Aug</div></div>
+        <div class="stage"><div class="track"></div><div class="mark">✓</div><div class="name">Wave 1 · Foundations</div><div class="sub">3 stories · approved</div></div>
+        <div class="stage here"><div class="track"></div><div class="mark">▶</div><div class="name">Wave 2 · Engine core</div><div class="sub">now · 2 running, 1 stalled</div></div>
+        <div class="stage gatewait ahead"><div class="track"></div><div class="mark">🚦</div><div class="name">Your approval</div><div class="sub">opens after checks pass</div></div>
+        <div class="stage ahead"><div class="track"></div><div class="mark">○</div><div class="name">Wave 3 · Dispatch</div><div class="sub">2 stories planned</div></div>
+        <div class="stage ahead"><div class="mark">○</div><div class="name">Done</div><div class="sub">est. 09 Sep</div></div>
+      </div>
+    </div>
+    <table class="stories">
+      <thead><tr><th style="width:130px">Status</th><th>Story</th><th style="width:70px">Wave</th><th style="width:80px">Cost</th><th style="width:200px">Read / watch</th></tr></thead>
+      <tbody>
+        <tr><td><span class="st st-done">✓ Complete</span></td><td><span class="title">#4203 — state vocabulary &amp; transition rules</span></td><td>1</td><td><span class="cost">$8.90</span></td><td class="links"><a class="ext" href="#">issue ↗</a><a class="ext" href="#">PR ↗</a></td></tr>
+        <tr><td><span class="st st-done">✓ Complete</span></td><td><span class="title">#4204 — accepted-plan store (spec of record)</span></td><td>1</td><td><span class="cost">$12.10</span></td><td class="links"><a class="ext" href="#">issue ↗</a><a class="ext" href="#">PR ↗</a></td></tr>
+        <tr><td><span class="st st-done">✓ Complete</span></td><td><span class="title">#4205 — attribution table + migration 026</span></td><td>1</td><td><span class="cost">$9.75</span></td><td class="links"><a class="ext" href="#">issue ↗</a><a class="ext" href="#">PR ↗</a></td></tr>
+        <tr class="haslog" data-run="s4206" tabindex="0" role="button" aria-label="Story 4206, complete after one defect cycle. Open agent log.">
+          <td><span class="st st-done">✓ Complete</span></td>
+          <td><span class="title">#4206 — run-ledger schema &amp; graph address</span><div class="why">1 defect cycle (allowed 3): check failed → fixed → passed</div></td>
+          <td>2</td><td><span class="cost">$19.50</span></td>
+          <td class="links"><a class="ext" href="#">issue ↗</a><a class="ext" href="#">PR ↗</a><button class="logbtn">Agent log</button></td></tr>
+        <tr class="haslog" data-run="s4208" tabindex="0" role="button" aria-label="Story 4208, in progress. Open live agent log.">
+          <td><span class="st st-run">▶ In progress</span></td>
+          <td><span class="title">#4208 — scheduled tick engine</span><div class="why">38 min in · healthy · last activity 6 s ago</div></td>
+          <td>2</td><td><span class="cost">$6.55</span></td>
+          <td class="links"><a class="ext" href="#">issue ↗</a><button class="logbtn">Live log</button></td></tr>
+        <tr class="haslog" data-run="s4207" tabindex="0" role="button" aria-label="Story 4207, stalled 52 minutes. Open agent log and recovery actions.">
+          <td><span class="st st-stall">⚠ Stalled 52m</span></td>
+          <td><span class="title">#4207 — engine writes: transition guard in CI</span><div class="why">No agent activity for 52 min — alerted 14:03. One-click resume available.</div></td>
+          <td>2</td><td><span class="cost unk">⌀ unknown</span></td>
+          <td class="links"><a class="ext" href="#">issue ↗</a><button class="logbtn">Log + resume</button></td></tr>
+        <tr><td><span class="st st-run">▶ In progress</span></td><td><span class="title">#4209 — checks for wave 2 (13 adversarial)</span><div class="why">runs automatically as stories land</div></td><td>2</td><td><span class="cost">$0.85</span></td><td class="links"><a class="ext" href="#">issue ↗</a></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ── EPIC 2 ── -->
+  <section class="epic">
+    <div class="epic-hd">
+      <span class="num">EPIC</span>
+      <h2>#4122 — Graph control surface (dashboard)</h2>
+      <a class="ext" href="#" title="mock link">open issue ↗</a>
+      <div class="spacer"></div>
+      <span class="pill p-wait">🚦 Waiting — mockup review is yours</span>
+      <span class="st st-done">✓ 0</span><span class="st st-gate">🚦 1</span><span class="st st-q">○ 4</span>
+      <span class="cost mono">$18.40</span>
+    </div>
+    <div class="journey" aria-label="EPIC 4122 progress: design spike done, waiting on your mockup review, four stories queued behind it">
+      <div class="stages">
+        <div class="stage gatestep"><div class="track"></div><div class="mark">✓</div><div class="name">Created</div><div class="sub">from the agreed plan · 26 Aug</div></div>
+        <div class="stage"><div class="track"></div><div class="mark">✓</div><div class="name">Design spike</div><div class="sub">3 mockups delivered</div></div>
+        <div class="stage here gatewait"><div class="track"></div><div class="mark" style="border-color:var(--warn); color:var(--warn-text)">🚦</div><div class="name">Your review</div><div class="sub">waiting 2 days — pick a direction</div></div>
+        <div class="stage ahead"><div class="track"></div><div class="mark">○</div><div class="name">Build views</div><div class="sub">3 stories queued</div></div>
+        <div class="stage ahead"><div class="track"></div><div class="mark">○</div><div class="name">Controls &amp; alerts</div><div class="sub">1 story queued</div></div>
+        <div class="stage ahead"><div class="mark">○</div><div class="name">Done</div><div class="sub">est. after wave 3</div></div>
+      </div>
+    </div>
+    <table class="stories">
+      <thead><tr><th style="width:130px">Status</th><th>Story</th><th style="width:70px">Wave</th><th style="width:80px">Cost</th><th style="width:200px">Read / watch</th></tr></thead>
+      <tbody>
+        <tr><td><span class="st st-gate">🚦 Waiting on you</span></td><td><span class="title">#4210 — UX direction review</span><div class="why">3 mockups ready · nothing below starts until this is decided</div></td><td>1</td><td><span class="cost">$18.40</span></td><td class="links"><a class="ext" href="#">issue ↗</a><a class="ext" href="#">mockups ↗</a></td></tr>
+        <tr><td><span class="st st-q">○ Queued</span></td><td><span class="title">#4211 — portfolio view (this screen)</span></td><td>2</td><td><span class="cost unk">—</span></td><td class="links"><a class="ext" href="#">issue ↗</a></td></tr>
+        <tr><td><span class="st st-q">○ Queued</span></td><td><span class="title">#4212 — run drawer + Agent Activity links</span></td><td>2</td><td><span class="cost unk">—</span></td><td class="links"><a class="ext" href="#">issue ↗</a></td></tr>
+        <tr><td><span class="st st-q">○ Queued</span></td><td><span class="title">#4213 — gate approve &amp; loop resume controls</span></td><td>3</td><td><span class="cost unk">—</span></td><td class="links"><a class="ext" href="#">issue ↗</a></td></tr>
+        <tr><td><span class="st st-q">○ Queued</span></td><td><span class="title">#4214 — stall alerts (SLO) + notifications</span></td><td>3</td><td><span class="cost unk">—</span></td><td class="links"><a class="ext" href="#">issue ↗</a></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <p style="font-size:12.5px; color:var(--muted); max-width:720px">Counts and the bar above are computed from the engine's record, not from issue labels. Every EPIC and story deep-links to its GitHub issue (one-way documentation); every run deep-links to its log here and to the full Agent Activity screen. A missing cost is shown as unknown, never $0.00.</p>
+</main>
+
+<footer>Mockup D of 4 · static, illustrative data · AIDLC UX spike input, 2026-08-26</footer>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Agent log">
+  <div class="dhead">
+    <div class="eyebrow" id="d-eyebrow"></div>
+    <h3 id="d-title"></h3>
+    <div class="dmeta" id="d-meta"></div>
+    <button class="dclose" id="d-close" aria-label="Close">✕</button>
+  </div>
+  <div class="dbody">
+    <div>
+      <div class="eyebrow">Agent log <span id="d-live" style="color:var(--good-text)"></span></div>
+      <div class="dlog" id="d-log" aria-live="polite"></div>
+    </div>
+    <div>
+      <div class="eyebrow">Engine record for this story</div>
+      <div class="dtrans" id="d-trans"></div>
+    </div>
+  </div>
+  <div class="dfoot" id="d-actions"></div>
+</aside>
+<script>
+const RUNS={
+ s4206:{eyebrow:'Story #4206 · developer · complete',title:'Run-ledger schema & graph address',
+  meta:'run_88ab02 + run_91cc07 · agent/issue-4206 · $19.50 total',
+  log:[["11:02:14","clone + setup complete"],["11:38:20","turn 96: alembic revision 026 written"],["11:40:55","✓ run_88ab02 complete — PR opened","g"],["12:22:03","⚠ check failed: missing FK — defect cycle 1 of 3 opened","w"],["12:58:47","fix run: FK + index added · tests 52/52 green"],["13:04:19","✓ checks passed — engine marked story complete","g"]],
+  trans:[["11:01","Started by the engine as wave 2 opened"],["12:22","Check failed → defect cycle 1 of 3"],["13:04","Complete — all checks passed; no human vouching needed"]],
+  actions:['Open issue ↗','Open PR ↗','Open in Agent Activity ↗'],stream:null},
+ s4208:{eyebrow:'Story #4208 · developer · in progress 38m',title:'Scheduled tick engine',
+  meta:'run_c07d11 · agent/issue-4208 · $6.55 so far (live)',
+  log:[["14:28:40","tests 41/41 green (unit)"],["14:30:12","turn 213 completed"],["14:31:58","turn 214: Write engine/tick.py"]],
+  trans:[["13:54","Started by the engine (2 of 3 parallel stories)"],["14:20","Healthy · cost checkpoint $4.10"]],
+  actions:['Open issue ↗','Open in Agent Activity ↗'],stream:'run'},
+ s4207:{eyebrow:'Story #4207 · developer · stalled 52m',title:'Engine writes: transition guard in CI',
+  meta:'run_9f21c4 · agent/issue-4207 · cost unknown (record pending)',
+  log:[["13:39:41","turn 340 completed"],["13:39:44","turn 341 started (Bash)"],["14:03:02","⚠ no activity for 15 min — alert sent to #adp-ops","w"],["14:31:56","still silent: 52 min (turn 341)","w"]],
+  trans:[["13:12","Started by the engine (3 of 3 parallel stories)"],["14:03","Marked stalled (cause: API retry loop) · on-call notified"]],
+  actions:['primary:Resume from checkpoint (safe to repeat)','Abort run','Open issue ↗','Open in Agent Activity ↗'],stream:'stall'}
+};
+let timer=null, stallSecs=3120, turn=214;
+const $=id=>document.getElementById(id);
+function esc(x){return x.replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+function line(t,m,c){return `<div><span class="t">${t}</span>  <span class="${c||''}">${esc(m)}</span></div>`}
+function openRun(id){
+  const r=RUNS[id]; if(!r) return;
+  $('d-eyebrow').textContent=r.eyebrow; $('d-title').textContent=r.title; $('d-meta').textContent=r.meta;
+  $('d-log').innerHTML=r.log.map(l=>line(l[0],l[1],l[2])).join('');
+  $('d-trans').innerHTML=r.trans.map(t=>`<div><span class="t">${t[0]}</span><span>${esc(t[1])}</span></div>`).join('');
+  $('d-actions').innerHTML=r.actions.map(a=>{const p=a.startsWith('primary:');a=a.replace('primary:','');
+    return `<button class="${p?'primary':''}">${a}</button>`}).join('');
+  $('d-live').textContent = r.stream ? '· streaming' : '';
+  document.body.classList.add('drawer-open');
+  clearInterval(timer);
+  if(r.stream && !matchMedia('(prefers-reduced-motion: reduce)').matches){
+    timer=setInterval(()=>{
+      const log=$('d-log');
+      if(r.stream==='stall'){ stallSecs+=30;
+        log.insertAdjacentHTML('beforeend', line('14:32:'+String((stallSecs/30|0)%60).padStart(2,'0'), `still silent: ${Math.round(stallSecs/60)} min (turn 341)`, 'w'));
+      } else { turn+=1;
+        const acts=['Bash: pytest engine/tests -q','Write engine/tick.py','Read gateway/app.py','Bash: ruff check engine/'];
+        log.insertAdjacentHTML('beforeend', line('14:32:'+String((turn*7)%60).padStart(2,'0'), `turn ${turn}: ${acts[turn%acts.length]}`));
+      }
+      log.scrollTop=log.scrollHeight;
+    }, 2200);
+  }
+}
+function closeRun(){ document.body.classList.remove('drawer-open'); clearInterval(timer); }
+document.querySelectorAll('[data-run]').forEach(el=>{
+  el.addEventListener('click',e=>{ if(e.target.tagName!=='A') openRun(el.dataset.run)});
+  el.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();openRun(el.dataset.run)}});
+});
+$('scrim').addEventListener('click',closeRun); $('d-close').addEventListener('click',closeRun);
+addEventListener('keydown',e=>{ if(e.key==='Escape') closeRun(); });
+if(location.hash && RUNS[location.hash.slice(1)]) openRun(location.hash.slice(1));
+</script>
+</body>
+</html>

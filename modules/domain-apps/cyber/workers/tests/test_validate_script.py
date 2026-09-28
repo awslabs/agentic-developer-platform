@@ -8,8 +8,7 @@ import pytest
 
 # Load validate_script from the skill directory using importlib
 _SKILL_DIR = (
-    Path(__file__).resolve().parents[3]
-    / "cyber"
+    Path(__file__).resolve().parents[2]
     / "agent"
     / "skills"
     / "stage-3-static"

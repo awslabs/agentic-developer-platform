@@ -1,17 +1,55 @@
 ---
-# cfn-nag global deny-list (passed via --deny-list-path).
+# cfn-nag GLOBAL deny-list -- intentionally NOT passed to cfn_nag_scan.
 #
-# IMPORTANT: this file MUST contain a top-level `RuleSuppression:` key mapping
-# to a list. cfn-nag 0.8.x deserializes the deny-list into a GlobalDenyList; an
-# all-comments (or empty) file parses to `nil` and cfn-nag aborts every
-# template with "Deny list is malformed" — a FATAL that the job previously
-# swallowed (`|| true`), silently zeroing cfn-nag coverage (issue #3587).
-# Keep at least an empty `RuleSuppression: []` here.
+# Keep this file ASCII-only. cfn_nag reads a deny-list with plain File.read, so a
+# non-ASCII byte can raise during YAML parse under the runner's locale, and that
+# raise becomes a FATAL aborting every template. This file previously held an em
+# dash in a comment (issue #5618).
 #
-# Per-resource suppressions are preferred and live inline in each template's
-# `Metadata.cfn_nag.rules_to_suppress` (see aws/scoped-write.cfn.yaml and
-# aws/full-admin.cfn.yaml). Add a GLOBAL entry below only when a rule must be
-# waived across every scanned template, each with a justification.
+# WHY THE WORKFLOW PASSES NO --deny-list-path
+#
+# There are no global suppressions, and cfn_nag has no way to say that. Its
+# DenyListLoader (lib/cfn-nag/deny_list_loader.rb) raises on every way you might
+# try to express an empty one:
+#
+#   RulesToSuppress: []         -> "Missing RulesToSuppress key in deny list"
+#                                  (it checks `.empty?`, not presence)
+#   all-comments / empty file   -> "Deny list is malformed" (YAML parses to nil
+#                                  and the loader requires a Hash)
+#   RuleSuppression: []         -> also "Missing RulesToSuppress key": this key
+#                                  name is NOT read by cfn_nag at all
+#
+# Each raise is caught by filter_violations_by_deny_list_and_profile and turned
+# into `Violation.fatal_violation`, which cfn_nag attaches to EVERY scanned file
+# while still exiting 0. That is exactly what happened on 2026-09-21: this file
+# used the unread `RuleSuppression` key (the earlier #3587 fix named the wrong
+# key), so all three templates aborted unscanned and the job reported success.
+#
+# Omitting the flag is the correct expression of "suppress nothing globally":
+# ViolationFiltering#filter_violations_by_deny_list returns violations untouched
+# when `deny_list_definition` is nil. No FATAL, and full template coverage.
+#
+# WHERE ACCEPTED FINDINGS ACTUALLY LIVE
+#
+# Per-resource, inline in each template's Metadata.cfn_nag.rules_to_suppress, each
+# with a justification -- see aws/scoped-write.cfn.yaml (F4) and
+# aws/full-admin.cfn.yaml (W43). That mechanism is preferred because the waiver
+# sits beside the resource it applies to and is reviewed with it, rather than
+# silently disabling a rule across every template.
+#
+# IF YOU EVER NEED A GLOBAL SUPPRESSION
+#
+# Add the real key below with at least one entry, then add --deny-list-path back
+# to the cfn-nag job in .github/workflows/security-scan.yml. A global waiver
+# disables the rule for every template, so prefer an inline per-resource
+# suppression first. Global disposition of scanner findings is owned by S21
+# (#5620); do not add entries here to make findings disappear.
+#
+#   RulesToSuppress:
+#     - id: W12          # must be a real cfn_nag rule id, or that FATALs too
+#       reason: why this rule is waived across every scanned template
 #
 # Format: https://github.com/stelligent/cfn_nag#global-rule-suppression
-RuleSuppression: []
+#
+# Deliberately carries no active RulesToSuppress key. See above before adding one.
+{}

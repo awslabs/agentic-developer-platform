@@ -16,6 +16,7 @@ Authentication:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 
@@ -25,6 +26,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.internal.auth_deps import verify_internal_or_irsa
+from src.internal.credential_binding_metrics import observe_identity_binding
+from src.knowledge.ingestion_callback_grant import GrantError, verify_ingestion_grant
 from src.shared.database_agent_context import get_agent_context_db
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,9 @@ router = APIRouter(prefix="/internal/v1", tags=["internal-status-callback"])
 
 # Valid status values the worker can write (subset of the knowledge_assets lifecycle)
 _VALID_CALLBACK_STATUSES = frozenset({"indexing", "complete", "failed"})
+
+# Issue #5663 (A09): route label for the identity-binding counters.
+_STATUS_CALLBACK_ROUTE = "knowledge-assets-status-callback"
 
 
 # ---------------------------------------------------------------------------
@@ -53,9 +59,21 @@ class StatusCallbackRequest(BaseModel):
     tenant_id: str | None = Field(
         None,
         description=(
-            "Owning tenant of the asset. Issue #3985 (A2): added to the UPDATE's "
-            "WHERE clause so a leaked/guessed asset_id alone cannot write across "
-            "tenants. Optional for legacy assets whose row has a NULL tenant_id."
+            "Owning tenant of the asset, as the caller believes it to be. Issue "
+            "#5663 (A09): this is a CHECKED ASSERTION ONLY and never selects which "
+            "row is written. The authoritative tenant comes from the signed "
+            "callback_grant the gateway minted at dispatch; if this field is present "
+            "and disagrees with the grant, the request is refused rather than "
+            "resolved in the caller's favour."
+        ),
+    )
+    callback_grant: str | None = Field(
+        None,
+        description=(
+            "Server-minted authority for exactly this asset (issue #5663, A09). "
+            "Produced by src/knowledge/dispatch.py, carried through the SQS "
+            "envelope, and opaque to the worker. This is what makes the caller's "
+            "asset_id/tenant_id checkable instead of authoritative."
         ),
     )
 
@@ -110,37 +128,90 @@ async def status_callback(
     # No read of repositories/index_runs/index_run_stages (cross-DB join forbidden)
     now = datetime.now(UTC)
 
-    # Issue #3985 (A2): scope the UPDATE by tenant so a leaked or guessed
-    # asset_id cannot be used to write another tenant's row.
-    #
-    # Two compatibility constraints shape this predicate:
-    #   1. knowledge_assets.tenant_id is NULLABLE (agent-context migration 007),
-    #      and pre-existing/shared assets have NULL. Requiring an exact match
-    #      would make those rows permanently un-updatable, so a NULL row tenant
-    #      is still accepted.
-    #   2. The worker image that sends tenant_id ships separately from this
-    #      gateway change. Until it rolls out, callbacks arrive with no
-    #      tenant_id; rejecting those would stall ingestion for every
-    #      tenant-scoped asset. So an absent tenant_id leaves the predicate
-    #      unconstrained (previous behavior) and is logged for observability.
-    #
-    # Once the worker image is fully rolled out, the `else` branch below should
-    # be tightened to reject an absent tenant_id — tracked as a follow-up.
-    # NOTE: tenant_clause is interpolated into the SQL below, but it is one of
-    # two fixed literals chosen by a boolean — never caller-controlled text. The
-    # tenant value itself is passed as a bound parameter.
-    tenant_clause = ""
+    # Only a signed, current server-dispatched attempt can update this row.
     tenant_params: dict[str, str] = {}
-    if body.tenant_id:
-        tenant_clause = "AND (tenant_id = :tenant_id OR tenant_id IS NULL)"
-        tenant_params["tenant_id"] = body.tenant_id
+
+    grant = None
+    if body.callback_grant:
+        try:
+            grant = verify_ingestion_grant(body.callback_grant)
+        except GrantError:
+            # An unverifiable grant is worse than none: something presented
+            # authority it does not hold. Refused in both modes — there is no
+            # compatibility story for a forged or expired token, and "fall back to
+            # the caller's claim" would make the grant optional in practice.
+            observe_identity_binding(route=_STATUS_CALLBACK_ROUTE, outcome="denied", enforced=True)
+            logger.warning(
+                "status_callback DENIED — callback grant did not verify asset=%s status=%s",
+                body.asset_id,
+                body.status,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "callback_grant_invalid",
+                    "message": "The callback grant presented is not valid.",
+                },
+            ) from None
+
+    if grant is not None:
+        if grant.asset_id != body.asset_id:
+            # The grant names the row. A caller asking to write a different one is
+            # the confused-deputy case this whole change exists to stop.
+            observe_identity_binding(route=_STATUS_CALLBACK_ROUTE, outcome="denied", enforced=True)
+            logger.warning(
+                "status_callback DENIED — grant is for another asset requested=%s status=%s",
+                body.asset_id,
+                body.status,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "callback_grant_asset_mismatch",
+                    "message": "The callback grant is not for the requested asset.",
+                },
+            )
+
+        if body.tenant_id is not None and body.tenant_id != (grant.tenant_id or ""):
+            # The assertion is checked, not honoured. A caller that names a tenant
+            # other than the one the gateway recorded for this asset is refused
+            # rather than silently corrected, because the disagreement itself is
+            # evidence that one side is wrong about what is being written.
+            observe_identity_binding(route=_STATUS_CALLBACK_ROUTE, outcome="denied", enforced=True)
+            logger.warning(
+                "status_callback DENIED — asserted tenant contradicts the grant asset=%s status=%s",
+                body.asset_id,
+                body.status,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "callback_grant_tenant_mismatch",
+                    "message": "The asserted tenant does not match this asset's recorded tenant.",
+                },
+            )
+
+        observe_identity_binding(route=_STATUS_CALLBACK_ROUTE, outcome="allowed", enforced=True)
+        if grant.is_shared_scope:
+            # Explicit authorization of a shared-scope asset, on the grant's word.
+            tenant_clause = "AND tenant_id IS NULL"
+        else:
+            tenant_clause = "AND tenant_id = :tenant_id"
+            tenant_params["tenant_id"] = grant.tenant_id
     else:
-        logger.info(
-            "status_callback_untenanted asset=%s status=%s — tenant predicate skipped (pre-rollout worker)",
+        observe_identity_binding(route=_STATUS_CALLBACK_ROUTE, outcome="denied", enforced=True)
+        logger.warning(
+            "status_callback DENIED — no callback grant presented asset=%s status=%s",
             body.asset_id,
             body.status,
         )
-
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "callback_grant_required",
+                "message": "This callback is not bound to an asset.",
+            },
+        )
     if body.status == "failed":
         # On failure: update status, status_detail, last_error, increment retry_count
         result = await db.execute(
@@ -152,7 +223,9 @@ async def status_callback(
                     retry_count = retry_count + 1,
                     updated_at = :now
                 WHERE id = :asset_id
-                  AND status != 'removed'
+                  AND status IN ('registered', 'queued', 'indexing')
+                  AND ingestion_attempt_id = CAST(:attempt_id AS uuid)
+                  AND callback_grant_sha256 = :grant_digest
                   {tenant_clause}
                 RETURNING id
             """),
@@ -162,6 +235,8 @@ async def status_callback(
                 "error": body.error[:1000] if body.error else None,
                 "asset_id": body.asset_id,
                 "now": now,
+                "attempt_id": grant.attempt_id,
+                "grant_digest": hashlib.sha256(body.callback_grant.encode()).hexdigest(),
                 **tenant_params,
             },
         )
@@ -175,7 +250,9 @@ async def status_callback(
                     last_error = NULL,
                     updated_at = :now
                 WHERE id = :asset_id
-                  AND status != 'removed'
+                  AND status IN ('registered', 'queued', 'indexing')
+                  AND ingestion_attempt_id = CAST(:attempt_id AS uuid)
+                  AND callback_grant_sha256 = :grant_digest
                   {tenant_clause}
                 RETURNING id
             """),
@@ -184,6 +261,8 @@ async def status_callback(
                 "status_detail": _json_dumps(body.status_detail),
                 "asset_id": body.asset_id,
                 "now": now,
+                "attempt_id": grant.attempt_id,
+                "grant_digest": hashlib.sha256(body.callback_grant.encode()).hexdigest(),
                 **tenant_params,
             },
         )

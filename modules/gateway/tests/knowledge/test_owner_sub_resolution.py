@@ -11,7 +11,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -134,6 +134,7 @@ class TestSQSEnvelopeCarriesCanonicalId:
 
     @pytest.mark.anyio
     async def test_dispatch_envelope_contains_canonical_owner_sub(self, monkeypatch):
+        monkeypatch.setenv("AGENT_RUN_CREDENTIAL_KEY", "offline-dispatch-key" * 3)
         """dispatch_ingestion passes the canonical owner_sub into the SQS message."""
 
         @dataclass
@@ -159,7 +160,7 @@ class TestSQSEnvelopeCarriesCanonicalId:
 
         canonical_id = str(uuid.uuid4())
         fake_db = AsyncMock()
-        fake_db.execute = AsyncMock()
+        fake_db.execute = AsyncMock(return_value=MagicMock())
         fake_db.commit = AsyncMock()
 
         try:

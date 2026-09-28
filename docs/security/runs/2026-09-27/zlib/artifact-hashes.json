@@ -1,0 +1,42 @@
+{
+  "authentication/deb.debian.org_debian_dists_trixie_InRelease": {
+    "sha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+    "bytes": 140421
+  },
+  "authentication/debian-archive-keyring.gpg": {
+    "sha256": "506b815cbb32d9b6066b4a2aa524071e071761e7e7f68c3ac74f3061ba852017",
+    "bytes": 55918
+  },
+  "Sources": {
+    "sha256": "ae99131b13c7e61c53a52c33a2f9088a1bc5db15a664f5d90cc3753ad9b65606",
+    "bytes": 57389881
+  },
+  "Packages.xz": {
+    "sha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+    "bytes": 9678380
+  },
+  "upstream-v1.3.1-gzwrite.c": {
+    "sha256": "469b1e58932ea11bdda2a153f6655f7b3c13254240fae157181b49ed1bc93b47",
+    "bytes": 19237
+  },
+  "upstream-fix.json": {
+    "sha256": "78624fd71c2a0b3de9ea2d60aa0cc4c9412e9114fbd5800fa36dcb66bfb748ad",
+    "bytes": 4319
+  },
+  "zlib_1.3.dfsg+really1.3.1-1.dsc": {
+    "sha256": "ede2791e29c1d3b422f9208bdd7edf040c20445ea1e7453a72037576e64fa197",
+    "bytes": 2637
+  },
+  "zlib_1.3.dfsg+really1.3.1.orig.tar.gz": {
+    "sha256": "60dd315c07f616887caa029408308a018ace66e3d142726a97db164b3b8f69fb",
+    "bytes": 1325737
+  },
+  "zlib_1.3.dfsg+really1.3.1-1.debian.tar.xz": {
+    "sha256": "9ed525955ce9fb0c1b39be8ff98f73450dbfc6305a9a27e6149c8972d38a0a9e",
+    "bytes": 16576
+  },
+  "zlib1g_1%3a1.3.dfsg+really1.3.1-1+b1_amd64.deb": {
+    "sha256": "015be740d6236ad114582dea500c1d907f29e16d6db00566ca32fb68d71ac90d",
+    "bytes": 88892
+  }
+}

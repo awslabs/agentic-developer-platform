@@ -13,40 +13,39 @@ spec:
       app: litellm-proxy
   template:
     metadata:
+      annotations:
+        cloudwatch.aws.amazon.com/auto-annotate-java: "false"
+        instrumentation.opentelemetry.io/inject-java: "false"
+        # ADOT injection shadows packaged typing_extensions and breaks AnyIO
+        # startup. Keep LiteLLM on its built and tested Python dependencies.
+        cloudwatch.aws.amazon.com/auto-annotate-python: "false"
+        instrumentation.opentelemetry.io/inject-python: "false"
       labels:
         app: litellm-proxy
         app.kubernetes.io/part-of: agent-context-platform
     spec:
+      # API token is unnecessary; IRSA uses its separate projected web-identity token.
+      automountServiceAccountToken: false
       serviceAccountName: ${SERVICE_ACCOUNT}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: litellm
         image: ${LITELLM_IMAGE}
-        command: ["/bin/sh", "-c"]
-        args:
-          - |
-            pip install --no-cache-dir 'litellm[proxy]' &&
-            python3 << 'PATCH'
-            # Patch LiteLLM health check: don't send max_tokens for embedding models.
-            # LiteLLM bug: _update_litellm_params_for_health_check() adds max_tokens=1
-            # for ALL models, but Bedrock embedding API rejects extraneous keys.
-            # Fix: after the line that sets max_tokens=1, add a check to remove it
-            # if the model mode is 'embedding'.
-            import litellm.proxy.health_check as hc
-            import inspect, re
-            src_file = inspect.getfile(hc)
-            with open(src_file, 'r') as f:
-                src = f.read()
-            old = '        litellm_params["max_tokens"] = 1'
-            new = old + '\n    # Patch: Bedrock embedding API rejects max_tokens\n    if model_info.get("mode") == "embedding":\n        litellm_params.pop("max_tokens", None)'
-            if old in src and 'Patch: Bedrock' not in src:
-                src = src.replace(old, new, 1)
-                with open(src_file, 'w') as f:
-                    f.write(src)
-                print("Applied LiteLLM health check patch for embedding models")
-            else:
-                print("Patch already applied or target not found, skipping")
-            PATCH
-            litellm --config /config/config.yaml --port ${LITELLM_PORT} --host 0.0.0.0
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        # Dependencies and the embedding health check fix are baked into the image.
+        command: ["litellm"]
+        args: ["--config", "/config/config.yaml", "--port", "${LITELLM_PORT}", "--host", "0.0.0.0"]
         ports:
         - containerPort: ${LITELLM_PORT}
           name: http
@@ -63,6 +62,10 @@ spec:
             cpu: "500m"
             memory: "1Gi"
         volumeMounts:
+        - name: home
+          mountPath: /home/appuser
+        - name: tmp
+          mountPath: /tmp
         - name: config
           mountPath: /config
           readOnly: true
@@ -83,6 +86,12 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 3
       volumes:
+      - name: home
+        emptyDir:
+          sizeLimit: 256Mi
+      - name: tmp
+        emptyDir:
+          sizeLimit: 256Mi
       - name: config
         configMap:
           name: litellm-config
@@ -103,3 +112,17 @@ spec:
     targetPort: ${LITELLM_PORT}
     name: http
   type: ClusterIP
+
+---
+# Keep one ready replica through voluntary node consolidation. Deployment
+# rollouts still follow the strategy configured above.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: litellm-proxy
+  namespace: ${NAMESPACE}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: litellm-proxy

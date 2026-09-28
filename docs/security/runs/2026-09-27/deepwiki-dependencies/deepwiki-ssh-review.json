@@ -1,0 +1,58 @@
+{
+  "scope": "exact candidate only; not live closure",
+  "docker_root_descriptor": "sha256:78a44243c46039dfdbda40c7e74259b7b067d1d5d20f8aac261cd97c447ba1ab",
+  "config_digest": "sha256:4196fbcf3d4c82401e37e7e22beb6fb5ea06587fb918e83b7d2ddd82e7eb4ec1",
+  "raw_receipt": {
+    "image": "security27/deepwiki:dependencies-clean",
+    "docker_root_descriptor": "sha256:78a44243c46039dfdbda40c7e74259b7b067d1d5d20f8aac261cd97c447ba1ab",
+    "config_digest": "sha256:4196fbcf3d4c82401e37e7e22beb6fb5ea06587fb918e83b7d2ddd82e7eb4ec1",
+    "time": "2026-09-27T11:06:23.197228+00:00",
+    "packages": 603,
+    "native_counts": {
+      "Negligible": 136,
+      "High": 118,
+      "Critical": 25,
+      "Medium": 124,
+      "Low": 31
+    },
+    "sbom_sha256": "1b17c2ef937cfcd03a487cf73017db56f777c0d0975fe8b76f70d8c2ddbe9716",
+    "grype_sha256": "faf16654fe900e91e35883352927e87fe8cd11a7c7cfbcf3f08bfd1aba871419",
+    "archive_sha256": "75d6c2407b30d535d7ebda1a4d529a7c27e9fc6f18e8084eb64f3738433bdf01"
+  },
+  "binary_observation": {
+    "sha256": "040d6afdb0e3194a3afca73981e4be57c8acb5898ed4108ea2b051232d0001c1",
+    "version": "1:10.0p1-7+deb13u4+adp.security.1",
+    "source_lock": {
+      "source_package": "openssh",
+      "version": "1:10.0p1-7+deb13u4",
+      "downstream_version": "1:10.0p1-7+deb13u4+adp.security.1",
+      "upstream_commit": "e8bdfb151a356d0171fea4194dd205fbb252be23",
+      "upstream_patch_sha256": "b88393504c4fb6cee75e0553aa5fc29b4b44a7f37b4c9e986ff90eeebce34be7",
+      "backport_patch_sha256": "d35735e1bcf1dbb99e624ee94747edf7fb20eca4c12a3aea1317522e0fb5dffe",
+      "source_sha256": {
+        "openssh_10.0p1-7+deb13u4.dsc": "73fed3fd77d60925ed342bcb0afd3c037e4ea0d39333107bf617aa90f859910f",
+        "openssh_10.0p1.orig.tar.gz": "021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c",
+        "openssh_10.0p1-7+deb13u4.debian.tar.xz": "102e1065030c6002acabd7f896eeba1462bf54b4d7393bac34b0308312868ec6"
+      },
+      "backport_adjustments": [
+        "Exclude upstream RCS revision-banner hunks",
+        "Retain Debian GSSAPI local declarations while applying identical lifetime changes"
+      ],
+      "scope": "CVE-2026-60002 only; no client functionality removal, library patch or server deployment"
+    }
+  },
+  "source_validation_sha256": "4bd8f8aa4375496781cf24d0620f44df282214a5de31dc76c011fa0fe6258782",
+  "dispositions": [
+    {
+      "native_match_index": 46,
+      "id": "CVE-2026-60002",
+      "severity": "Critical",
+      "artifact_id": "101fa8f69e6e2380",
+      "package": "openssh-client",
+      "version": "1:10.0p1-7+deb13u4+adp.security.1",
+      "status": "fixed-in-candidate",
+      "binary": "/usr/bin/ssh",
+      "binary_sha256": "040d6afdb0e3194a3afca73981e4be57c8acb5898ed4108ea2b051232d0001c1"
+    }
+  ]
+}

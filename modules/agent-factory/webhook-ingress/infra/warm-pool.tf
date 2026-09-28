@@ -23,7 +23,7 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# RBAC for the kubectl-apply runner SA (github-runner-sa in arc-runners).
+# RBAC for the separately admitted adp:trusted-deployment group.
 # The existing runner-keda-manage Role only covers KEDA CRDs; the warm pool also
 # needs Deployments (namespaced) + the cluster-scoped PriorityClass.
 # -----------------------------------------------------------------------------
@@ -64,9 +64,9 @@ resource "kubernetes_role_binding" "runner_warm_pool_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -114,9 +114,9 @@ resource "kubernetes_cluster_role_binding" "runner_priorityclass_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -175,12 +175,12 @@ locals {
               # balloon reserves an agent-sized slot the real pod can take over.
               resources:
                 requests:
-                  cpu: "1"
-                  memory: 4Gi
+                  cpu: "4"
+                  memory: ${var.agent_worker_memory_request}
                   ephemeral-storage: 50Gi
                 limits:
-                  cpu: "1"
-                  memory: 4Gi
+                  cpu: "4"
+                  memory: ${var.agent_worker_memory_request}
                   ephemeral-storage: 50Gi
               securityContext:
                 allowPrivilegeEscalation: false
@@ -195,17 +195,15 @@ resource "null_resource" "agent_warm_pool" {
     manifest_sha   = sha256(local.agent_warm_pool_yaml)
     replicas       = var.agent_warm_pool_replicas
     namespace      = kubernetes_namespace.adp_agents.metadata[0].name
-    cluster_name   = var.eks_cluster_name
+    cluster_name   = local.eks_cluster_name
     cluster_region = var.aws_region
   }
 
   provisioner "local-exec" {
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${local.eks_cluster_name} --region ${var.aws_region} --kubeconfig "$KUBECONFIG" >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.agent_warm_pool_yaml}
 EOF
@@ -216,7 +214,12 @@ EOF
   provisioner "local-exec" {
     when       = destroy
     on_failure = continue
-    command    = "kubectl delete deployment agent-warm-pool -n ${self.triggers.namespace} --ignore-not-found && kubectl delete priorityclass adp-agent-overprovision --ignore-not-found || true"
+    command    = <<-CMD
+      set -e
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${self.triggers.cluster_name} --region ${self.triggers.cluster_region} --kubeconfig "$KUBECONFIG" >/dev/null
+      kubectl delete deployment agent-warm-pool -n ${self.triggers.namespace} --ignore-not-found && kubectl delete priorityclass adp-agent-overprovision --ignore-not-found || true
+    CMD
   }
 
   # Namespace must exist; RBAC must let the runner SA create the Deployment +
@@ -308,17 +311,15 @@ resource "null_resource" "agent_image_prepull" {
   triggers = {
     manifest_sha   = sha256(local.agent_image_prepull_yaml)
     namespace      = kubernetes_namespace.adp_agents.metadata[0].name
-    cluster_name   = var.eks_cluster_name
+    cluster_name   = local.eks_cluster_name
     cluster_region = var.aws_region
   }
 
   provisioner "local-exec" {
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${local.eks_cluster_name} --region ${var.aws_region} --kubeconfig "$KUBECONFIG" >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.agent_image_prepull_yaml}
 EOF
@@ -329,7 +330,12 @@ EOF
   provisioner "local-exec" {
     when       = destroy
     on_failure = continue
-    command    = "kubectl delete daemonset agent-image-prepull -n ${self.triggers.namespace} --ignore-not-found || true"
+    command    = <<-CMD
+      set -e
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${self.triggers.cluster_name} --region ${self.triggers.cluster_region} --kubeconfig "$KUBECONFIG" >/dev/null
+      kubectl delete daemonset agent-image-prepull -n ${self.triggers.namespace} --ignore-not-found || true
+    CMD
   }
 
   depends_on = [

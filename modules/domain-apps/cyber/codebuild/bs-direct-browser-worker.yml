@@ -1,0 +1,5 @@
+version: 0.2
+phases:
+  build:
+    commands:
+      - python3 modules/domain-apps/cyber/scripts/publish-direct-browser-image.py

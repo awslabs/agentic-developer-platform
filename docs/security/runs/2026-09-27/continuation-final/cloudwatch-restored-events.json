@@ -1,0 +1,20 @@
+{
+    "events": [
+        {
+            "timestamp": 1790520087782,
+            "ingestionTime": 1790520093228,
+            "stream": "i-0035436287e77c68e-application.var.log.containers.bedrockgateway-577f865c56-8ltlj_adp-gateway_bedrockgateway-a0d9d8717b92055697452146f7f5f971e83375ca89bb5cf04adeab1ee334a6d9.log"
+        },
+        {
+            "timestamp": 1790520087922,
+            "ingestionTime": 1790520093228,
+            "stream": "i-0035436287e77c68e-application.var.log.containers.bedrockgateway-577f865c56-8ltlj_adp-gateway_bedrockgateway-a0d9d8717b92055697452146f7f5f971e83375ca89bb5cf04adeab1ee334a6d9.log"
+        },
+        {
+            "timestamp": 1790520088459,
+            "ingestionTime": 1790520093233,
+            "stream": "i-0035436287e77c68e-application.var.log.containers.fluent-bit-hwdbd_amazon-cloudwatch_fluent-bit-806524bcffe9227028627add0b2f20a1fbe22737ccbb41ca30a157d35a32269d.log"
+        }
+    ],
+    "nextTokenPresent": true
+}

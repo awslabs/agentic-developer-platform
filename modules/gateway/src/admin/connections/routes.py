@@ -14,6 +14,7 @@ Endpoints:
     GET    /admin/connections/github/app/register-callback  (platform_admin via state nonce)
     POST   /admin/connections/github/app/register-manual   (platform_admin only)
     GET    /admin/connections/github/app/status             (platform_admin only)
+    POST   /admin/connections/github/app/revalidate         (platform_admin only)
     POST   /admin/connections/github/app/rotate-key         (platform_admin only)
     POST   /admin/connections/github/app/disconnect         (platform_admin only)
 """
@@ -22,12 +23,17 @@ from __future__ import annotations
 
 import logging
 import urllib.parse
+from html import escape
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
+from src.admin.audit import write_admin_audit
+from src.admin.audit_operation import AuditedAdminRoute, callback_result, mark_admin_effects
 from src.admin.exceptions import AccessDeniedError
 from src.auth.dependencies import get_current_user
 from src.auth.magic_link import (
@@ -40,6 +46,8 @@ from src.auth.org_id_resolver import resolve_effective_org_id
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
+from . import service as connection_service
+from .maintenance import AppKeyRequest, AppMaintenanceRequest, maintenance_status, require_revision, rotate_supplied_key
 from .schemas import (
     AppStatusResponse,
     ConnectionsListResponse,
@@ -50,6 +58,7 @@ from .schemas import (
     RegisterAppStartResponse,
     RegisterManualRequest,
     RegisterManualResponse,
+    RevalidateAppResponse,
     RotateKeyResponse,
     SwitchTenantRequest,
     SwitchTenantResponse,
@@ -64,6 +73,7 @@ from .service import (
     register_app_callback,
     register_app_manual,
     register_app_start,
+    revalidate_app_config,
     rotate_app_key,
 )
 
@@ -75,6 +85,30 @@ async def _get_access_control(db: AsyncSession = Depends(get_db)) -> AccessContr
     return AccessControl(db)
 
 
+async def _app_lifecycle_lock(db: AsyncSession = Depends(get_db)):
+    """Hold a dedicated transaction across service commits and provider writes."""
+    if db.get_bind().dialect.name == "postgresql":
+        async with db.bind.begin() as connection:
+            await connection.execute(text("SELECT pg_advisory_xact_lock(5634, 1)"))
+            yield
+    else:
+        yield
+
+
+class _SecretSafeRoute(AuditedAdminRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def safe(request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                # FastAPI normally echoes invalid field inputs, including keys.
+                return JSONResponse(status_code=422, content={"detail": "Invalid App maintenance request"})
+
+        return safe
+
+
 # NOTE: prefix is "/admin/connections", NOT "/api/admin/connections". CloudFront
 # fronts the gateway with an /api/* behavior whose viewer-request function strips
 # the leading /api before forwarding to the ALB — so the SPA calls
@@ -83,6 +117,7 @@ async def _get_access_control(db: AsyncSession = Depends(get_db)) -> AccessContr
 # /api/admin/... made GitHub's Setup-URL redirect and the SPA's calls 404 after
 # the strip → the connections UI never populated.
 router = APIRouter(
+    route_class=AuditedAdminRoute,
     prefix="/admin/connections",
     tags=["connections"],
 )
@@ -136,11 +171,26 @@ async def github_install_start(
     The caller redirects to install_url to start the GitHub App install flow.
     """
     try:
-        return await install_start(
+        if current_user.account_type != "human":
+            raise HTTPException(status_code=403, detail="A signed-in human identity is required")
+        mark_admin_effects()
+        result = await install_start(
             cognito_sub=current_user.user_id,
-            user_id=current_user.user_id,
+            org_id=current_user.org_id,
+            cognito_username=current_user.cognito_username,
             db=db,
         )
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_install_start",
+            target_type="github_connection",
+            target_id=current_user.org_id,
+            best_effort=True,
+        )
+        return result
+    except connection_service.SetupAuthorityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
         # Issue #2700: install_start raises a deliberate HTTPException(503,
         # "GitHub App not configured…") when the slug can't be resolved. The
@@ -178,16 +228,49 @@ async def github_install_callback(
             state=state,
             db=db,
         )
-        # Issue #2952: No-nonce path returns a generic HTML success page
-        # (no redirect — the user has no ADP session to redirect into).
+        callback_result(
+            action="connection_install_callback", target_id=installation_id, complete=bool(result.get("success", True) and not result.get("partial"))
+        )
+        # Issue #2952: No-nonce path returns a generic HTML page (no redirect —
+        # the user has no ADP session to redirect into).
+        #
+        # Issue #4016: the page now reports the OUTCOME. It previously said
+        # "Installation complete" even when the handler had persisted nothing at
+        # all, so the one person who could have escalated the problem was
+        # actively told it had worked.
         if result.get("no_nonce"):
             from fastapi.responses import HTMLResponse
 
+            # `partial` is its own signal: #2724 contracts a promotion refusal as
+            # a successful-but-not-vouched-for install, so success stays True
+            # there. The page must still not say "complete".
+            if result.get("success") and not result.get("partial"):
+                return HTMLResponse(
+                    content=(
+                        "<html><body><h1>Installation complete</h1>"
+                        "<p>The GitHub App has been installed successfully. "
+                        "Sign in to ADP to get started.</p></body></html>"
+                    ),
+                    status_code=200,
+                )
+
+            detail = result.get("error_message") or "The installation could not be completed."
+            logger.warning(
+                "event=install_callback_no_nonce_incomplete installation_id=%d error_code=%s partial=%s",
+                installation_id,
+                result.get("error_code") or "unknown",
+                bool(result.get("partial")),
+            )
+            # 200, not an error status: GitHub has completed the install on its
+            # side and this is the operator's browser, not an API client. The
+            # honesty has to be in the page body, not the status code.
             return HTMLResponse(
                 content=(
-                    "<html><body><h1>Installation complete</h1>"
-                    "<p>The GitHub App has been installed successfully. "
-                    "Sign in to ADP to get started.</p></body></html>"
+                    "<html><body><h1>Installation needs attention</h1>"
+                    f"<p>{escape(detail)}</p>"
+                    "<p>The app is installed on GitHub, but this ADP deployment has not "
+                    "finished connecting it. Contact your platform operator and quote "
+                    f"installation ID <code>{installation_id}</code>.</p></body></html>"
                 ),
                 status_code=200,
             )
@@ -211,6 +294,12 @@ async def github_install_callback(
         logger.warning("install-callback unresolved user jti=%s: %s", state, exc)
         return _redirect_error("unauthorized", "Installation link was not issued for a known user.")
 
+    except connection_service.SetupAuthorityError as exc:
+        return _redirect_error("github_control_required", str(exc))
+
+    except HTTPException as exc:
+        return _redirect_error("github_verification_unavailable", str(exc.detail))
+
     except PermissionError as exc:
         logger.warning("install-callback cross-tenant conflict installation_id=%d: %s", installation_id, exc)
         return _redirect_error("tenant_conflict", str(exc))
@@ -231,54 +320,26 @@ async def get_connections(
     the user is a member of (via tenant_memberships). Each connection is tagged
     with tenant_id, tenant_name, and is_active_tenant. Falls back to single-org
     behavior when no membership rows exist (legacy path).
-    """
-    from sqlalchemy import select
 
-    from src.shared.models.onboarding import TenantMembership
-    from src.shared.models.organization import User
+    Issue #4016: This is deliberately where onboarding verification is hosted,
+    rather than on /github/app/status — status is platform-admin-only, so it
+    hides the signal from the tenant admin who actually experiences the broken
+    install. Per-connection checks go to every caller; the deployment-wide
+    ``platform_verification`` block goes only to admins (the ``caller_is_admin``
+    argument below is what gates it).
+    """
 
     try:
         effective_org_id = await resolve_effective_org_id(current_user, db)
 
-        # Issue #3018: Resolve the Postgres users.id from the Cognito sub.
-        # current_user.user_id is the Cognito 'sub' claim, but TenantMembership.user_id
-        # FKs to users.id (a Postgres UUID). We must resolve via cognito_sub.
-        # Graceful fallback: if resolution fails, proceed with single-org behavior.
-        member_tenant_ids: list[str] | None = None
-        pg_user_id: str | None = None
+        from src.shared.identity.workspaces import memberships_for_login
 
-        try:
-            user_stmt = select(User.id).where(User.cognito_sub == current_user.user_id)
-            pg_user_id = (await db.execute(user_stmt)).scalar_one_or_none()
-
-            if pg_user_id:
-                membership_stmt = select(
-                    TenantMembership.tenant_id,
-                    TenantMembership.is_active,
-                ).where(
-                    TenantMembership.user_id == pg_user_id,
-                )
-                rows = (await db.execute(membership_stmt)).all()
-                tenant_ids = [row[0] for row in rows]
-                if len(tenant_ids) > 1:
-                    member_tenant_ids = tenant_ids
-
-                # Issue #3071: Prefer the DB is_active row over the token claim
-                # for determining the caller's active tenant. After a switch-tenant
-                # call, the token still holds the old org_id until refresh — but the
-                # DB is the source of truth for which workspace is active.
-                active_rows = [row for row in rows if row[1]]
-                if active_rows:
-                    effective_org_id = active_rows[0][0]
-        except Exception as exc:
-            # Non-fatal: fall back to single-org behavior if membership lookup fails.
-            # Issue #3031: logged at INFO with greppable event name for post-deploy
-            # smoke diagnostics. Previously debug-only.
-            logger.info(
-                "membership_lookup_fallback reason=exception user=%s error=%s",
-                current_user.user_id,
-                exc,
-            )
+        login, memberships = await memberships_for_login(db, current_user.user_id, username=current_user.cognito_username)
+        member_tenant_ids = list(memberships) or None
+        active = memberships.get(effective_org_id)
+        pg_user_id = active[0].id if active else None
+        # The signed token, not another session's is_active flag, pins this
+        # request's workspace until the frontend refreshes its credentials.
 
         return await list_connections(
             caller_org_id=effective_org_id,
@@ -302,87 +363,21 @@ async def switch_tenant(
     current_user: TokenContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> SwitchTenantResponse:
-    """Switch the caller's active tenant (workspace).
+    """Compatibility route; callers must refresh tokens after this switch."""
+    from src.auth.workspaces import get_workspace_claims, select_workspace
 
-    Issue #3071: One-click workspace switching from the Connections page.
-    Atomically flips is_active on TenantMembership rows — deactivates the
-    current active row and activates the target. Verifies the caller has a
-    membership row for the target tenant before switching.
-
-    After the switch, get_connections prefers the DB is_active row over the
-    token claim, so a page refresh reflects the new active tenant without
-    requiring re-login.
-    """
-    from sqlalchemy import select, update
-
-    from src.shared.models.onboarding import TenantMembership
-    from src.shared.models.organization import User
-
-    try:
-        # Resolve Postgres user ID from Cognito sub (same pattern as get_connections)
-        user_stmt = select(User.id).where(User.cognito_sub == current_user.user_id)
-        pg_user_id = (await db.execute(user_stmt)).scalar_one_or_none()
-
-        if not pg_user_id:
-            raise HTTPException(
-                status_code=403,
-                detail="User not found — cannot switch tenant.",
-            )
-
-        # Verify caller has a membership row for the target tenant
-        target_membership_stmt = select(TenantMembership).where(
-            TenantMembership.user_id == pg_user_id,
-            TenantMembership.tenant_id == body.tenant_id,
-        )
-        target_membership = (await db.execute(target_membership_stmt)).scalar_one_or_none()
-
-        if not target_membership:
-            raise HTTPException(
-                status_code=403,
-                detail="No membership for the target tenant.",
-            )
-
-        # If already active, no-op
-        if target_membership.is_active:
-            return SwitchTenantResponse(active_tenant_id=body.tenant_id)
-
-        # Atomically switch: deactivate all caller's active memberships,
-        # then activate the target. Single transaction, explicit commit.
-        deactivate_stmt = (
-            update(TenantMembership)
-            .where(
-                TenantMembership.user_id == pg_user_id,
-                TenantMembership.is_active == True,  # noqa: E712
-            )
-            .values(is_active=False)
-        )
-        await db.execute(deactivate_stmt)
-
-        activate_stmt = (
-            update(TenantMembership)
-            .where(
-                TenantMembership.user_id == pg_user_id,
-                TenantMembership.tenant_id == body.tenant_id,
-            )
-            .values(is_active=True)
-        )
-        await db.execute(activate_stmt)
-
-        # Explicit commit — not just flush (#3058 lesson)
-        await db.commit()
-
-        return SwitchTenantResponse(active_tenant_id=body.tenant_id)
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(
-            "switch-tenant failed for user=%s target=%s: %s",
-            current_user.user_id,
-            body.tenant_id,
-            exc,
-        )
-        raise HTTPException(status_code=500, detail="Failed to switch tenant") from exc
+    mark_admin_effects()
+    selected = await select_workspace(db, current_user, body.tenant_id, get_workspace_claims())
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="connection_switch_tenant",
+        target_type="tenant",
+        target_id=selected.org_id,
+        org_id=selected.org_id,
+        best_effort=True,
+    )
+    return SwitchTenantResponse(active_tenant_id=selected.org_id)
 
 
 @router.delete("/github/{installation_id}", response_model=DeleteConnectionResponse)
@@ -397,27 +392,33 @@ async def disconnect_github(
     tenant ownership (unchanged) AND (workspace admin OR the user who installed
     the connection). Non-admin installers can manage their own connection.
     """
-    from sqlalchemy import select
-
-    from src.shared.models.organization import User
+    from src.shared.identity.workspaces import workspace_user
 
     try:
-        # Resolve the caller's Postgres user ID from their Cognito sub.
-        # Same pattern as get_connections (Issue #3021).
-        pg_user_id: str | None = None
-        try:
-            user_stmt = select(User.id).where(User.cognito_sub == current_user.user_id)
-            pg_user_id = (await db.execute(user_stmt)).scalar_one_or_none()
-        except Exception as exc:
-            logger.debug("disconnect_github: could not resolve PG user_id: %s", exc)
+        effective_org_id = await resolve_effective_org_id(current_user, db)
+        caller = await workspace_user(db, current_user.user_id, effective_org_id, username=current_user.cognito_username)
+        pg_user_id = caller.id if caller else None
 
-        return await delete_connection(
+        mark_admin_effects()
+        result = await delete_connection(
             installation_id=installation_id,
-            caller_org_id=current_user.org_id,
+            caller_org_id=effective_org_id,
             db=db,
             caller_user_id=pg_user_id,
             caller_is_admin=current_user.is_admin,
         )
+        result = DeleteConnectionResponse.model_validate(result)
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_disconnect",
+            target_type="github_connection",
+            target_id=str(installation_id),
+            org_id=effective_org_id,
+            outcome="reconciliation_required" if result.residual else "success",
+            best_effort=True,
+        )
+        return result
     except HTTPException:
         # Issue #2700: surface deliberate HTTPExceptions instead of masking
         # them as a generic 500 (same audit as install-start).
@@ -453,6 +454,8 @@ async def github_app_register_start(
     Platform-admin only. Returns a manifest to POST to GitHub, or
     'already_registered' if an App already exists for this deployment.
     """
+    if current_user.account_type != "human":
+        raise HTTPException(status_code=403, detail="A signed-in human identity is required")
     try:
         access.require_platform_admin(current_user)
     except AccessDeniedError:
@@ -462,15 +465,27 @@ async def github_app_register_start(
         )
 
     try:
-        return await register_app_start(
+        mark_admin_effects()
+        result = await register_app_start(
             owner_type=body.owner_type,
             org=body.org,
             app_name=body.app_name,
             visibility=body.visibility,
             cognito_sub=current_user.user_id,
-            user_id=current_user.user_id,
+            cognito_username=current_user.cognito_username,
             db=db,
         )
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_register_app_start",
+            target_type="github_app",
+            target_id=body.app_name or "manifest",
+            best_effort=True,
+        )
+        return result
+    except connection_service.SetupAuthorityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -478,7 +493,7 @@ async def github_app_register_start(
         raise HTTPException(status_code=500, detail="Failed to initiate GitHub App registration") from exc
 
 
-@router.get("/github/app/register-callback")
+@router.get("/github/app/register-callback", dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_register_callback(
     code: str = "",
     state: str = "",
@@ -512,6 +527,7 @@ async def github_app_register_callback(
             state=state,
             db=db,
         )
+        callback_result(action="connection_register_app_callback", target_id="deployment")
         return RedirectResponse(url=redirect_url, status_code=302)
 
     except (NonceNotFoundError, TokenExpiredError) as exc:
@@ -521,6 +537,14 @@ async def github_app_register_callback(
     except NonceAlreadyConsumedError as exc:
         logger.warning("register-app-callback replayed state jti=%s: %s", state, exc)
         return _redirect_error("state_replayed", "Registration link already used. Please start a new registration.")
+
+    except connection_service.SetupAuthorityError as exc:
+        # Issue #5664: the state token was valid but the principal it was issued to
+        # may not replace the deployment's shared App/webhook/sign-in secrets — or
+        # an App is already registered. Logged with a greppable event name because
+        # this is the containment for the credential-replacement path.
+        logger.warning("event=register_app_callback_denied jti=%s reason=%s", state, exc)
+        return _redirect_error("not_authorized", str(exc))
 
     except HTTPException as exc:
         logger.error("register-app-callback HTTP error: %s", exc.detail)
@@ -536,11 +560,12 @@ async def github_app_register_callback(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/github/app/register-manual", response_model=RegisterManualResponse)
+@router.post("/github/app/register-manual", response_model=RegisterManualResponse, dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_register_manual(
     body: RegisterManualRequest,
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
 ) -> RegisterManualResponse:
     """Import an existing GitHub App by providing its credentials.
 
@@ -556,12 +581,21 @@ async def github_app_register_manual(
         )
 
     try:
+        mark_admin_effects()
         result = await register_app_manual(
             app_id=body.app_id,
             private_key=body.private_key,
             webhook_secret=body.webhook_secret,
             client_id=body.client_id,
             client_secret=body.client_secret,
+        )
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_register_app_manual",
+            target_type="github_app",
+            target_id=str(body.app_id),
+            best_effort=True,
         )
         return RegisterManualResponse(**result)
     except HTTPException:
@@ -602,10 +636,52 @@ async def github_app_status(
         raise HTTPException(status_code=500, detail="Failed to retrieve App status") from exc
 
 
-@router.post("/github/app/rotate-key", response_model=RotateKeyResponse)
+@router.post("/github/app/revalidate", response_model=RevalidateAppResponse, dependencies=[Depends(_app_lifecycle_lock)])
+async def github_app_revalidate(
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
+) -> RevalidateAppResponse:
+    """Re-check the App's live configuration on GitHub (Issue #4017).
+
+    Platform-admin only. GitHub fires no event when an admin edits App settings,
+    so this is the operator's on-demand "is my App still configured correctly?"
+    action. Read-only against GitHub; the only thing it writes is the
+    expected-config record in the App metadata secret — never credentials, never
+    Lambda environment.
+    """
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(
+            status_code=403,
+            detail="Platform administrator privileges required",
+        )
+
+    try:
+        mark_admin_effects()
+        result = await revalidate_app_config(actor=current_user.user_id)
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_revalidate_app",
+            target_type="github_app",
+            target_id="deployment",
+            best_effort=True,
+        )
+        return RevalidateAppResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("app-revalidate failed for user=%s: %s", current_user.user_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to re-validate App configuration") from exc
+
+
+@router.post("/github/app/rotate-key", response_model=RotateKeyResponse, dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_rotate_key(
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
 ) -> RotateKeyResponse:
     """Rotate the GitHub App's private key.
 
@@ -621,7 +697,17 @@ async def github_app_rotate_key(
         )
 
     try:
-        return await rotate_app_key()
+        mark_admin_effects()
+        result = await rotate_app_key()
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_rotate_app_key",
+            target_type="github_app",
+            target_id="deployment",
+            best_effort=True,
+        )
+        return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -629,10 +715,11 @@ async def github_app_rotate_key(
         raise HTTPException(status_code=500, detail="Failed to rotate App key") from exc
 
 
-@router.post("/github/app/disconnect", response_model=DisconnectAppResponse)
+@router.post("/github/app/disconnect", response_model=DisconnectAppResponse, dependencies=[Depends(_app_lifecycle_lock)])
 async def github_app_disconnect(
     current_user: TokenContext = Depends(get_current_user),
     access: AccessControl = Depends(_get_access_control),
+    db: AsyncSession = Depends(get_db),
 ) -> DisconnectAppResponse:
     """Disconnect (deregister) the GitHub App from this deployment.
 
@@ -648,9 +735,77 @@ async def github_app_disconnect(
         )
 
     try:
-        return await disconnect_app()
+        mark_admin_effects()
+        result = await disconnect_app()
+        await write_admin_audit(
+            db,
+            actor=current_user,
+            action="connection_disconnect_app",
+            target_type="github_app",
+            target_id="deployment",
+            best_effort=True,
+        )
+        return result
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("app-disconnect failed for user=%s: %s", current_user.user_id, exc)
         raise HTTPException(status_code=500, detail="Failed to disconnect App") from exc
+
+
+async def _maintenance_admin(
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+):
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(403, "Platform administrator privileges required") from None
+    return current_user
+
+
+@router.get("/github/app/maintenance", dependencies=[Depends(_maintenance_admin)])
+async def github_app_maintenance_status():
+    return await maintenance_status()
+
+
+async def github_app_activate_supplied_key(
+    request: AppKeyRequest,
+    current_user: TokenContext = Depends(_maintenance_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    mark_admin_effects()
+    result = await rotate_supplied_key(request)
+    await write_admin_audit(
+        db,
+        actor=current_user,
+        action="connection_activate_supplied_key",
+        target_type="github_app",
+        target_id=request.expected_app_id,
+        best_effort=True,
+    )
+    return result
+
+
+@router.post("/github/app/maintenance/disconnect", dependencies=[Depends(_app_lifecycle_lock)])
+async def github_app_disconnect_reviewed(
+    request: AppMaintenanceRequest,
+    current_user: TokenContext = Depends(_maintenance_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_revision(request)
+    mark_admin_effects()
+    result = await disconnect_app()
+    await write_admin_audit(
+        db, actor=current_user, action="connection_disconnect_app", target_type="github_app", target_id=request.expected_app_id, best_effort=True
+    )
+    return result
+
+
+router.add_api_route(
+    "/github/app/maintenance/rotate-key",
+    github_app_activate_supplied_key,
+    methods=["POST"],
+    dependencies=[Depends(_app_lifecycle_lock)],
+    route_class_override=_SecretSafeRoute,
+)

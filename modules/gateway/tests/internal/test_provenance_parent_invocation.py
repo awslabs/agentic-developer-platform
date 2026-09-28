@@ -21,7 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.provenance_routes import router
+from src.internal.run_identity import ServerRunIdentity
 from src.shared.database import get_db
 from src.shared.models.base import Base
 from src.shared.models.organization import Department, Organization, Team, User
@@ -100,12 +102,31 @@ def _make_app(db_session: AsyncSession) -> TestClient:
     """Build a minimal FastAPI test app with the provenance router."""
     app = FastAPI()
     app.include_router(router)
+    app.dependency_overrides[verify_internal_or_irsa] = lambda: None
+    app.state.parent_invocation_id = None
 
     async def _get_db():
         yield db_session
 
     app.dependency_overrides[get_db] = _get_db
     return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture(autouse=True)
+def verified_parent_identity(monkeypatch):
+    async def identity(request):
+        return ServerRunIdentity(
+            "fixture-run",
+            "org-test",
+            "user-bot",
+            "corr-abc123",
+            "user-alice",
+            True,
+            request.app.state.parent_invocation_id,
+            triggered_by="user-alice",
+        )
+
+    monkeypatch.setattr("src.internal.run_identity.verified_run_identity", identity)
 
 
 def _settings_mock() -> MagicMock:
@@ -181,6 +202,7 @@ class TestParentInvocationId:
         """Bot event with parent_invocation_id from upstream run is stored."""
         client = _make_app(db)
         parent_id = "upstream-run-msg-id-abc123"
+        client.app.state.parent_invocation_id = parent_id
         body = _valid_body(parent_invocation_id=parent_id)
         with patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()):
             resp = client.post(
@@ -203,6 +225,7 @@ class TestParentInvocationId:
         # We can't easily predict the UUID that will be generated,
         # but we can patch new_uuid to return a known value
         known_id = "known-row-id-12345"
+        client.app.state.parent_invocation_id = known_id
         body = _valid_body(parent_invocation_id=known_id)
         with (
             patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),

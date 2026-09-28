@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arc-deployment
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trusted-deployment-runner
+  namespace: arc-deployment
+automountServiceAccountToken: false
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-inbound
+  namespace: arc-deployment
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress: []
+---
+# EKS Auto Mode: independent nodes so repository jobs do not share the trusted
+# runner's kernel. It receives AWS authority only from approved GitHub OIDC.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: adp-trusted-deployment
+spec:
+  template:
+    metadata:
+      labels:
+        adp.aws/trust: deployment
+    spec:
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: default
+      taints:
+        - key: adp.aws/trust
+          value: deployment
+          effect: NoSchedule
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
+  limits:
+    cpu: '16'

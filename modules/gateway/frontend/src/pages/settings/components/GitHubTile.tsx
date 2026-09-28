@@ -14,8 +14,13 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { type GitHubConnectionItem } from '@/services/connections';
-import type { AppStatusResponse, RegisterManualResponse } from '@/services/connections';
+import type {
+  AppStatusResponse,
+  PlatformVerification,
+  RegisterManualResponse,
+} from '@/services/connections';
 import { InstallationCard } from './InstallationCard';
+import { VerificationRow, hasUnhealthyCheck } from './VerificationRow';
 
 interface GitHubTileProps {
   connections: GitHubConnectionItem[];
@@ -45,6 +50,17 @@ interface GitHubTileProps {
     client_id?: string;
     client_secret?: string;
   }) => Promise<RegisterManualResponse>;
+  /**
+   * Issue #4016: Deployment-wide onboarding checks. The API returns this only to
+   * callers who can manage connections, so null means "not available to me",
+   * not "healthy" — the panel is simply not rendered in that case.
+   */
+  platformVerification?: PlatformVerification | null;
+  /**
+   * Issue #4017: re-check the App's configuration against GitHub on demand.
+   * Optional — when omitted the button is not rendered.
+   */
+  onRevalidateApp?: () => Promise<void>;
 }
 
 export function GitHubTile({
@@ -61,6 +77,8 @@ export function GitHubTile({
   onDisconnectApp,
   onSwitchTenant,
   onRegisterManual,
+  platformVerification = null,
+  onRevalidateApp,
 }: GitHubTileProps) {
   // For non-platform-admins, appStatus is null (they can't call the status endpoint).
   // In that case, assume registered so the existing install UI is shown.
@@ -170,12 +188,19 @@ export function GitHubTile({
             </div>
           )}
 
+          {/* Issue #4016: deployment-wide onboarding checks. Rendered only when
+              something is not verified-green, so a healthy deployment sees no
+              new noise. */}
+          <PlatformVerificationPanel verification={platformVerification} />
+
           {/* App info (platform admin only) */}
           {isPlatformAdmin && appStatus && (
             <AppInfoPanel
               appStatus={appStatus}
               onRotateKey={onRotateKey}
               onDisconnectApp={onDisconnectApp}
+              onRevalidate={onRevalidateApp}
+              platformVerification={platformVerification}
             />
           )}
 
@@ -190,6 +215,104 @@ export function GitHubTile({
         </>
       )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PlatformVerificationPanel — deployment-wide onboarding health (Issue #4016)
+//
+// Only rendered when at least one check is not verified-green. The API already
+// gates this data to callers who can manage connections, so no role check is
+// repeated here — an absent prop simply renders nothing.
+// ---------------------------------------------------------------------------
+
+function PlatformVerificationPanel({
+  verification,
+}: {
+  verification?: PlatformVerification | null;
+}) {
+  if (!verification) return null;
+
+  const {
+    login_credentials,
+    webhook_secret,
+    app_webhook_url_matches,
+    app_permissions_match,
+    app_events_match,
+    app_config_warnings,
+  } = verification;
+  if (
+    !hasUnhealthyCheck([
+      login_credentials,
+      webhook_secret,
+      app_webhook_url_matches,
+      app_permissions_match,
+      app_events_match,
+    ])
+  )
+    return null;
+
+  // Red only when something is authoritatively broken; amber when we merely
+  // could not verify it.
+  const hasDefinite =
+    login_credentials === false ||
+    webhook_secret === false ||
+    app_webhook_url_matches === false ||
+    app_permissions_match === false ||
+    app_events_match === false;
+  const boxClass = hasDefinite
+    ? 'border-red-200 bg-red-50 dark:border-red-700 dark:bg-red-900/20'
+    : 'border-amber-200 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20';
+  const titleClass = hasDefinite
+    ? 'text-red-800 dark:text-red-200'
+    : 'text-amber-800 dark:text-amber-200';
+
+  return (
+    <div className={`mt-4 rounded-lg border p-4 ${boxClass}`}>
+      <p className={`text-sm font-medium ${titleClass}`}>
+        {hasDefinite
+          ? 'This deployment is not fully wired for GitHub'
+          : 'Some deployment checks could not be verified'}
+      </p>
+      <ul className="mt-2 space-y-1.5">
+        <VerificationRow
+          label="GitHub sign-in credentials"
+          state={login_credentials}
+          brokenDetail="No OAuth credentials are stored, so “Sign in with GitHub” will fail for everyone."
+        />
+        <VerificationRow
+          label="Webhook signing secret"
+          state={webhook_secret}
+          brokenDetail="The secret is missing or still the deploy-time placeholder, so GitHub deliveries will be rejected and agents will never be triggered."
+        />
+        {/* Issue #4017: App settings can be edited on GitHub at any time and no
+            event fires when they are, so these are diffed at read time. */}
+        <VerificationRow
+          label="App webhook URL"
+          state={app_webhook_url_matches}
+          brokenDetail="The App is delivering events to a different URL than this deployment listens on, so no agent will ever be triggered."
+        />
+        <VerificationRow
+          label="App permissions"
+          state={app_permissions_match}
+          brokenDetail="The App no longer grants every permission the platform needs, so some agent operations will fail with 403."
+        />
+        <VerificationRow
+          label="App event subscriptions"
+          state={app_events_match}
+          brokenDetail="The App is no longer subscribed to every event the platform needs, so some triggers will silently never fire."
+        />
+      </ul>
+      {app_config_warnings && app_config_warnings.length > 0 && (
+        <ul className="mt-3 space-y-1 border-t border-current/10 pt-3">
+          {app_config_warnings.map((warning) => (
+            <li key={warning} className="text-xs text-gray-700 dark:text-gray-300">
+              {warning}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -438,14 +561,21 @@ function AppInfoPanel({
   appStatus,
   onRotateKey,
   onDisconnectApp,
+  onRevalidate,
+  platformVerification = null,
 }: {
   appStatus: AppStatusResponse;
   onRotateKey: () => Promise<void>;
   onDisconnectApp: () => Promise<void>;
+  /** Issue #4017: re-check App config against GitHub on demand. */
+  onRevalidate?: () => Promise<void>;
+  /** Issue #4017: source of the expected callback URL + OAuth settings deep-link. */
+  platformVerification?: PlatformVerification | null;
 }) {
   const [isRotating, setIsRotating] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [isRevalidating, setIsRevalidating] = useState(false);
 
   const handleRotate = async () => {
     setIsRotating(true);
@@ -453,6 +583,16 @@ function AppInfoPanel({
       await onRotateKey();
     } finally {
       setIsRotating(false);
+    }
+  };
+
+  const handleRevalidate = async () => {
+    if (!onRevalidate) return;
+    setIsRevalidating(true);
+    try {
+      await onRevalidate();
+    } finally {
+      setIsRevalidating(false);
     }
   };
 
@@ -483,9 +623,20 @@ function AppInfoPanel({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {onRevalidate && (
+            <Button
+              onClick={handleRevalidate}
+              disabled={isRotating || isDisconnecting || isRevalidating}
+              isLoading={isRevalidating}
+              variant="outline"
+              size="sm"
+            >
+              Re-validate config
+            </Button>
+          )}
           <Button
             onClick={handleRotate}
-            disabled={isRotating || isDisconnecting}
+            disabled={isRotating || isDisconnecting || isRevalidating}
             isLoading={isRotating}
             variant="outline"
             size="sm"
@@ -494,7 +645,7 @@ function AppInfoPanel({
           </Button>
           <Button
             onClick={handleDisconnect}
-            disabled={isRotating || isDisconnecting}
+            disabled={isRotating || isDisconnecting || isRevalidating}
             isLoading={isDisconnecting}
             variant={confirmDisconnect ? 'danger' : 'outline'}
             size="sm"
@@ -503,6 +654,42 @@ function AppInfoPanel({
           </Button>
         </div>
       </div>
+
+      {/* Issue #4017: the OAuth callback URL, reported for eyeball comparison.
+          GitHub exposes no API to read an App's callback URL back, so this is
+          deliberately NOT a pass/fail check — rendering it as one would produce
+          permanent false-positive drift. A genuine mismatch surfaces at login
+          time as redirect_uri_mismatch. */}
+      {platformVerification?.expected_callback_url && (
+        <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-700">
+          <p className="text-xs font-medium text-gray-700 dark:text-gray-300">
+            Expected OAuth callback URL
+          </p>
+          <code className="mt-1 block break-all text-xs text-gray-600 dark:text-gray-400">
+            {platformVerification.expected_callback_url}
+          </code>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            GitHub does not expose an App&apos;s callback URL to the API, so this cannot be checked
+            automatically.{' '}
+            {platformVerification.app_oauth_settings_url ? (
+              <>
+                Compare it against{' '}
+                <a
+                  href={platformVerification.app_oauth_settings_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-gray-700 dark:hover:text-gray-300"
+                >
+                  the App&apos;s OAuth settings on GitHub
+                </a>
+                .
+              </>
+            ) : (
+              <>Compare it against the App&apos;s OAuth settings on GitHub.</>
+            )}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

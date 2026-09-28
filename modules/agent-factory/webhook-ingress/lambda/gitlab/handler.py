@@ -80,7 +80,7 @@ def _response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_token(headers: dict[str, str]) -> bool:
+def _validate_token(headers: dict[str, str], *, secret: str | None = None) -> bool:
     """Validate the X-Gitlab-Token header against the stored secret.
 
     GitLab sends the configured secret token in the X-Gitlab-Token header.
@@ -92,18 +92,81 @@ def _validate_token(headers: dict[str, str]) -> bool:
         logger.warning("Missing X-Gitlab-Token header")
         return False
 
-    secret = _resolve_webhook_secret()
+    secret = _resolve_webhook_secret() if secret is None else secret
     if not secret:
         logger.error("No GitLab webhook secret configured")
         return False
 
-    # Historical setup placeholders are not valid authentication values.
+    # A fresh Terraform deployment historically installed this public value.
+    # Never treat it as authentication, even before webhook setup is complete.
     if hmac.compare_digest(secret, PLACEHOLDER_WEBHOOK_SECRET):
         logger.error("GitLab webhook secret is still the insecure placeholder")
         return False
 
     # Constant-time comparison to prevent timing attacks
     return hmac.compare_digest(token, secret)
+
+
+def _project_registry(rows: Any) -> list[dict]:
+    """Validate the complete operator registry before authenticating any token."""
+    if not isinstance(rows, list) or len(rows) > 100:
+        raise ValueError("Invalid project registry")
+    tokens = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid project registration")
+        token = row.get("token")
+        if (
+            not isinstance(token, str)
+            or len(token) < 32
+            or token == PLACEHOLDER_WEBHOOK_SECRET
+            or token in tokens
+            or type(row.get("project_id")) is not int
+            or row["project_id"] < 1
+            or not isinstance(row.get("instance"), str)
+            or not row["instance"].startswith("https://")
+        ):
+            raise ValueError("Invalid project registration")
+        tokens.add(token)
+    return rows
+
+
+def _registered_project(headers: dict, rows: list[dict] | None = None) -> dict | None:
+    """Authenticate one project; a shared scalar never establishes a root."""
+    try:
+        rows = _project_registry(json.loads(_resolve_webhook_secret()) if rows is None else rows)
+        token = headers.get("x-gitlab-token", "")
+        if not isinstance(token, str) or not token:
+            return None
+        matches = [row for row in rows if hmac.compare_digest(token, row["token"])]
+        return matches[0] if len(matches) == 1 else None
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _mixed_registry() -> tuple[str, list[dict]] | None:
+    """Explicit v1 envelope opts projects in while retaining the legacy secret.
+
+    Old scalars and globally protected JSON lists retain their existing modes.
+    A malformed envelope fails closed rather than falling back to its shared token.
+    """
+    if os.environ.get("ADP_GITLAB_PROJECT_REGISTRY_ENABLED", "false").lower() != "true":
+        return None
+    document = json.loads(_resolve_webhook_secret())
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"version", "legacy_token", "projects"}
+        or type(document["version"]) is not int
+        or document["version"] != 1
+        or not isinstance(document["legacy_token"], str)
+        or not document["legacy_token"]
+        or document["legacy_token"] == PLACEHOLDER_WEBHOOK_SECRET
+    ):
+        raise ValueError("Invalid mixed project registry")
+    rows = _project_registry(document["projects"])
+    if any(hmac.compare_digest(document["legacy_token"], row["token"]) for row in rows):
+        raise ValueError("Shared token cannot authenticate protected projects")
+    return document["legacy_token"], rows
 
 
 def _build_sqs_message(parsed_event) -> dict[str, Any]:
@@ -184,10 +247,28 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     headers = event.get("headers") or {}
     headers = {k.lower(): v for k, v in headers.items()}
 
-    # Validate token
-    if not _validate_token(headers):
+    # The global protected rollout remains strict. The explicit mixed envelope
+    # opts in individual projects without granting shared tokens protected roots.
+    protected = os.environ.get("ADP_GITLAB_MODEL_POLICY_ENABLED", "false").lower() == "true"
+    try:
+        mixed = _mixed_registry()
+    except (ValueError, TypeError, AttributeError):
+        return _response(401, {"error": "Invalid webhook authentication configuration"})
+    registrations = mixed[1] if mixed is not None else []
+    registration = (
+        _registered_project(headers, registrations)
+        if mixed is not None
+        else _registered_project(headers)
+        if protected
+        else None
+    )
+    if registration is not None:
+        protected = True
+    elif protected or not _validate_token(headers, secret=mixed[0] if mixed is not None else None):
         logger.warning("GitLab webhook token validation failed")
         return _response(401, {"error": "Invalid or missing token"})
+
+    registration = registration or {}
 
     # Parse body
     body = event.get("body", "")
@@ -201,6 +282,20 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError) as e:
         logger.error("Failed to parse request body: %s", e)
         return _response(400, {"error": "Invalid JSON body"})
+
+    if not isinstance(payload, dict):
+        return _response(400, {"error": "Invalid webhook body"})
+    project = payload.get("project", {})
+    if not isinstance(project, dict):
+        return _response(400, {"error": "Invalid webhook project"})
+    if (mixed is not None or protected) and (
+        type(project.get("id")) is not int or project["id"] < 1
+    ):
+        return _response(400, {"error": "Immutable numeric project ID required"})
+    if not protected and any(project.get("id") == row["project_id"] for row in registrations):
+        return _response(403, {"error": "Project requires its registered webhook token"})
+    if protected and project.get("id") != registration["project_id"]:
+        return _response(403, {"error": "Webhook project does not match registration"})
 
     # Parse the event
     from event_parser import parse_event
@@ -217,15 +312,42 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # If not actionable, acknowledge but don't queue
     if not parsed.is_actionable:
-        return _response(200, {
-            "status": "ignored",
-            "reason": parsed.reason,
-        })
+        return _response(
+            200,
+            {
+                "status": "ignored",
+                "reason": parsed.reason,
+            },
+        )
 
     # Build and publish SQS message
     envelope = _build_sqs_message(parsed)
     sqs_publisher = _get_sqs_publisher()
-    message_id = sqs_publisher.publish_envelope(envelope)
+    if protected:
+        user_id = payload.get("user", {}).get("id")
+        if type(user_id) is not int or user_id < 1 or payload.get("user", {}).get("bot") is True:
+            return _response(403, {"error": "Canonical human identity required"})
+        from common.personas import MENTION_TO_PERSONA
+
+        requested = envelope["persona"]
+        envelope["persona"] = (
+            "developer"
+            if requested == "agent"
+            else MENTION_TO_PERSONA.get(f"@agent-{requested}", requested)
+        )
+        envelope["intent"]["persona"] = envelope["persona"]
+        envelope["message_id"] = envelope["correlation"]["correlation_id"]
+        message_id = sqs_publisher.publish_envelope(
+            envelope,
+            model_root={
+                "source": "gitlab",
+                "subject": str(user_id),
+                "instance": registration["instance"],
+                "project_id": registration["project_id"],
+            },
+        )
+    else:
+        message_id = sqs_publisher.publish_envelope(envelope)
 
     if message_id:
         logger.info(
@@ -235,10 +357,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             parsed.note_id or 0,
             message_id,
         )
-        return _response(200, {
-            "status": "accepted",
-            "message_id": message_id,
-        })
+        return _response(
+            200,
+            {
+                "status": "accepted",
+                "message_id": message_id,
+            },
+        )
     else:
         logger.error(
             "Failed to queue GitLab event: project=%s issue=%d",

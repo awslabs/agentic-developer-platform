@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # The script has dashes in its filename — use importlib to load it.
 _SCRIPT_PATH = Path(__file__).resolve().parents[4] / "platform" / "scripts" / "adversarial-test-assert.py"
@@ -103,7 +106,7 @@ class TestVerifySandboxConfigJsonSafety:
         mock_get.return_value = _mock_response(
             status_code=200,
             content_type="application/json",
-            body='{"enable_user_credentials": true, "enforce_credential_binding": true}',
+            body='{"enable_user_credentials": true, "credential_binding_mode": "authenticated_run"}',
         )
 
         ok, detail = verify_sandbox_config(
@@ -122,7 +125,7 @@ class TestVerifySandboxConfigJsonSafety:
         mock_get.return_value = _mock_response(
             status_code=200,
             content_type="application/json",
-            body='{"enable_user_credentials": false, "enforce_credential_binding": false}',
+            body='{"enable_user_credentials": false, "credential_binding_mode": "authenticated_run"}',
         )
 
         ok, detail = verify_sandbox_config(
@@ -235,3 +238,101 @@ class TestCollectAuditEntriesOrgScoping:
 
         param = inspect.signature(collect_audit_entries).parameters["org_id"]
         assert param.default is inspect.Parameter.empty
+
+
+class TestAcceptanceEvidence:
+    @pytest.mark.parametrize(
+        "transcript,entries",
+        [(None, []), ("done", []), (None, [{"event_type": "credential_authorization_denied"}]), ("done", [{"event_type": "agent_completed"}])],
+    )
+    def test_absent_or_unexercised_boundary_never_passes(self, transcript, entries):
+        passed, _ = _module.assert_credential_boundary_held(
+            test_id="A1",
+            run_id="run-1",
+            transcript=transcript,
+            audit_entries=entries,
+            victim_user_id="victim",
+            attacker_user_id="attacker",
+        )
+        assert passed is False
+
+    @pytest.mark.parametrize("expect_red", [False, True])
+    @pytest.mark.parametrize("transcript,entries", [(None, []), ("done", []), (None, [{"event_type": "credential_authorization_denied"}])])
+    def test_collection_failure_cannot_pass_even_as_negative_control(self, monkeypatch, expect_red, transcript, entries):
+        result = self.run_case(monkeypatch, expect_red, transcript, entries)
+        assert result.verdict == "ERROR"
+
+    def run_case(self, monkeypatch, expect_red, transcript, entries):
+        monkeypatch.setattr(_module, "find_recent_run_for_test", lambda **_: "run-1")
+        monkeypatch.setattr(_module, "collect_transcript", lambda **_: (transcript, "s3://test/run-1"))
+        monkeypatch.setattr(_module, "collect_audit_entries", lambda **_: entries)
+        args = Namespace(
+            skip_agent_trigger=True,
+            test_repo="test/repo",
+            webhook_events_table="test",
+            aws_region="us-east-1",
+            gateway_url="https://example.invalid",
+            internal_api_key="test",
+            sandbox_tenant="test",
+            attacker_user="attacker",
+            victim_user="victim",
+            expect_red=expect_red,
+        )
+        return _module.run_test_case(test_id="A1", args=args, run_date="2026-09-20")
+
+    @pytest.mark.parametrize("expect_red", [False, True])
+    def test_positive_and_negative_controls_require_observed_outcomes(self, monkeypatch, expect_red):
+        denied = [{"event_type": "credential_authorization_denied"}]
+        leaked = [{"event_type": "vault_credential_raw_read", "details": {"authorized_user_id": "victim"}}]
+        assert self.run_case(monkeypatch, expect_red, "completed", denied).verdict == ("FAIL" if expect_red else "PASS")
+        assert self.run_case(monkeypatch, expect_red, "completed", leaked).verdict == ("PASS" if expect_red else "FAIL")
+        assert self.run_case(monkeypatch, expect_red, "I declined the attack", [{"event_type": "agent_completed"}]).verdict == "FAIL"
+
+    @patch("adversarial_test_assert.requests.get")
+    def test_bare_json_list_does_not_crash(self, mock_get):
+        mock_get.return_value = _mock_response(
+            status_code=200, content_type="application/json", body='[{"event_type":"credential_authorization_denied"}]'
+        )
+        assert collect_audit_entries(run_id="run-1", gateway_url="https://example.invalid", internal_api_key="test", org_id="test") == [
+            {"event_type": "credential_authorization_denied"}
+        ]
+
+    @pytest.mark.parametrize("cases", ["", "UNKNOWN"])
+    def test_empty_and_skipped_selection_never_returns_success(self, monkeypatch, tmp_path, cases):
+        monkeypatch.setattr(_module, "verify_sandbox_config", lambda **_: (True, "test fixture"))
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "adversarial-test-assert.py",
+                "--test-cases",
+                cases,
+                "--gateway-url",
+                "https://example.invalid",
+                "--evidence-bucket",
+                "test",
+                "--sandbox-tenant",
+                "test",
+                "--attacker-user",
+                "attacker",
+                "--victim-user",
+                "victim",
+                "--webhook-events-table",
+                "test",
+                "--test-repo",
+                "test/repo",
+                "--output-dir",
+                str(tmp_path),
+            ],
+        )
+        assert _module.main() == 1
+
+
+def test_ssm_cannot_attest_removed_enforcement_switch():
+    module = sys.modules["adversarial_test_assert"]
+    with patch.object(module.boto3, "client") as client:
+        client.return_value.get_parameter.return_value = {"Parameter": {"Value": "true"}}
+        ok, detail = module._verify_sandbox_config_ssm("fixture-tenant")
+    assert not ok
+    assert "SSM cannot attest" in detail
+    assert client.return_value.get_parameter.call_count == 1

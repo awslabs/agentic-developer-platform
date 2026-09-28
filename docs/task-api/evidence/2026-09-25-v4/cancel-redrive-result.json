@@ -1,0 +1,9 @@
+{
+  "task_id": "tsk_5700d7d9-2fa9-4de8-91c3-2ec3b2367742",
+  "native_ack_status": "confirmed",
+  "native_ack_request_id": "0a5dd4d9-c666-5ad8-855a-b7e9c2a834c6",
+  "original_dlq_message_id": "44142426-3731-4b48-a6c0-9413c20a7a87",
+  "dlq_delete_http_status": 200,
+  "dlq_delete_request_id": "625f505c-9b00-5d8b-80b8-336c9e409a4b",
+  "unrelated_messages_deleted": 0
+}

@@ -72,6 +72,14 @@ class TestParseAssumedRoleArn:
 class TestAgentEntryToTokenContext:
     """Tests for agent_entry_to_token_context function."""
 
+    def test_display_name_cannot_impersonate_a_human_or_change_identity(self):
+        entry = {"agent_id": "registry-id", "agent_name": "victim-human-id", "org_id": "attacker-org", "team_id": ""}
+        before = agent_entry_to_token_context(entry)
+        entry["agent_name"] = "victim-cognito-sub"
+        after = agent_entry_to_token_context(entry)
+        assert before.user_id == after.user_id == "iam-agent:registry-id"
+        assert after.account_type == "service"
+
     def test_converts_entry_to_token_context(self):
         """Test converting agent registry entry to TokenContext."""
         entry: AgentRegistryEntry = {
@@ -84,6 +92,7 @@ class TestAgentEntryToTokenContext:
             "scope": "shared",
             "budget_config_id": "",
             "allowed_models": ["claude-sonnet"],
+            "credential_scopes": [],
             "status": "active",
             "description": "Test agent",
             "image_uri": "",
@@ -95,14 +104,70 @@ class TestAgentEntryToTokenContext:
 
         context = agent_entry_to_token_context(entry)
 
-        assert context.user_id == "test-agent"
+        assert context.user_id == "iam-agent:00000000-0000-0000-0000-000000000001"
         assert context.org_id == "test-org"
         assert context.team_id == "test-team"
+        assert context.agent_registry_id == "00000000-0000-0000-0000-000000000001"
+        assert context.registered_allowed_models == ["claude-sonnet"]
         assert context.department_id == ""
         assert context.account_type == "service"
         assert context.is_admin is False
         assert context.auth_source == "iam"
         assert context.expires_at > datetime.now(UTC)
+        # Issue #4131: no grant in the registry entry means no credential scopes.
+        assert context.credential_scopes == []
+
+    def test_carries_credential_scopes_from_entry(self):
+        """Issue #4131 (grant step): a granted scope must reach the TokenContext.
+
+        The credential routes' scope decision is moving off the caller-supplied
+        X-Agent-Scopes header and onto the registry entry. If this plumb-through
+        drops, enforcement (follow-on PR) sees an empty grant and 403s every
+        legitimate internal credential call.
+        """
+        entry: AgentRegistryEntry = {
+            "agent_id": "scaledjob-worker",
+            "role_arn": "arn:aws:iam::123456789012:role/adp-dev-agent-scaledjob-role",
+            "agent_name": "scaledjob-worker",
+            "org_id": "__platform__",
+            "team_id": "__agents__",
+            "owner": "platform",
+            "scope": "internal",
+            "budget_config_id": "",
+            "allowed_models": ["*"],
+            "credential_scopes": ["credential:raw-read"],
+            "status": "active",
+            "description": "Hosted agent worker pods",
+            "image_uri": "",
+            "code_repo": "",
+            "workflow_name": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }
+
+        context = agent_entry_to_token_context(entry)
+
+        assert context.credential_scopes == ["credential:raw-read"]
+
+    def test_credential_scopes_default_when_key_absent(self):
+        """A registry entry predating the grant has no key at all — must not raise.
+
+        Rows seeded before #4131 lack the attribute entirely, so the parse falls
+        back to an absent key. Converting such an entry must yield an empty grant
+        rather than a KeyError that would 500 the whole auth path.
+        """
+        entry = {
+            "agent_id": "legacy-id",
+            "agent_name": "legacy-agent",
+            "org_id": "test-org",
+            "team_id": "test-team",
+            "scope": "internal",
+        }
+
+        context = agent_entry_to_token_context(entry)  # type: ignore[arg-type]
+
+        assert context.credential_scopes == []
+        assert context.agent_registry_id == "legacy-id"
 
 
 class TestAgentRegistryService:
@@ -152,6 +217,44 @@ class TestAgentRegistryService:
                 assert entry["agent_name"] == "test-agent"
                 assert entry["org_id"] == "test-org"
                 assert entry["status"] == "active"
+
+    def test_parses_credential_scopes_string_set(self, mock_dynamodb_response):
+        """Issue #4131: a seeded credential_scopes SS parses onto the entry.
+
+        Mirrors the allowed_models SS parse — same DynamoDB string-set shape, same
+        .get("SS", []) fallback.
+        """
+        item = dict(mock_dynamodb_response["Items"][0])
+        item["credential_scopes"] = {"SS": ["credential:raw-read"]}
+
+        service = AgentRegistryService(table_name="test-table")
+        entry = service._parse_dynamodb_item(item)
+
+        assert entry["credential_scopes"] == ["credential:raw-read"]
+
+    def test_parses_credential_scopes_absent(self, mock_dynamodb_response):
+        """A row seeded before #4131 has no credential_scopes attribute at all.
+
+        DynamoDB stores no empty string sets, so "no grant" is an absent attribute
+        rather than an empty one. It must parse to [] and never raise.
+        """
+        item = mock_dynamodb_response["Items"][0]
+        assert "credential_scopes" not in item
+
+        service = AgentRegistryService(table_name="test-table")
+        entry = service._parse_dynamodb_item(item)
+
+        assert entry["credential_scopes"] == []
+
+    def test_parses_credential_scopes_empty_set(self, mock_dynamodb_response):
+        """An empty SS parses to an empty grant, not to a missing key."""
+        item = dict(mock_dynamodb_response["Items"][0])
+        item["credential_scopes"] = {"SS": []}
+
+        service = AgentRegistryService(table_name="test-table")
+        entry = service._parse_dynamodb_item(item)
+
+        assert entry["credential_scopes"] == []
 
     def test_get_agent_by_role_arn_not_found(self):
         """Test agent lookup when not found."""
@@ -227,10 +330,33 @@ class TestAgentRegistryService:
 
 
 class TestExtractIamIdentityFromHeaders:
-    """Tests for extract_iam_identity_from_headers function."""
+    """Tests for extract_iam_identity_from_headers function.
+
+    Issue #5653 (A01): this function now reads X-Caller-Identity through the shared
+    provenance helper, which honours an assertion only where the edge vouches for
+    it. The tests below exercise what happens *after* provenance passes — ARN
+    parsing, registry lookup, org attribution — so they enable header trust via the
+    autouse fixture. The provenance gate itself is covered separately in
+    tests/auth/test_caller_provenance.py, including the case where trust is off.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _trust_edge_header(self):
+        """Treat the assertion as edge-written for this class.
+
+        Before #5653 this function read the raw header unconditionally, so these
+        tests needed no settings at all. They are not asserting that an untrusted
+        header is honoured — they assume a request that already cleared the edge.
+        """
+        settings = MagicMock()
+        settings.trust_apigw_headers = True
+        settings.apigw_provenance_secret = "test-edge-provenance"
+        with patch("src.auth.middleware.get_settings", return_value=settings):
+            yield
 
     def _create_mock_request(self, headers: dict) -> Request:
         """Create a mock request with the given headers."""
+        headers = {**headers, "X-Adp-Edge-Provenance": "test-edge-provenance"}
         scope = {
             "type": "http",
             "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
@@ -256,6 +382,7 @@ class TestExtractIamIdentityFromHeaders:
             "scope": "shared",
             "budget_config_id": "",
             "allowed_models": ["claude-sonnet"],
+            "credential_scopes": [],
             "status": "active",
             "description": "Test agent",
             "image_uri": "",
@@ -273,45 +400,42 @@ class TestExtractIamIdentityFromHeaders:
             context = extract_iam_identity_from_headers(request)
 
             assert context is not None
-            assert context.user_id == "test-agent"
+            assert context.user_id == "iam-agent:00000000-0000-0000-0000-000000000001"
             assert context.org_id == "test-org"
             assert context.auth_source == "iam"
 
-    def test_extracts_identity_from_x_amzn_iam_user_arn(self):
-        """Test extracting IAM identity from X-Amzn-Iam-User-Arn header."""
+    def test_x_amzn_iam_user_arn_no_longer_authenticates(self):
+        """X-Amzn-Iam-User-Arn is NOT an identity source (inverted by #5653).
+
+        This test previously asserted the opposite — that presenting this header
+        authenticated the named agent. That assertion encoded the vulnerability, so
+        it is inverted rather than deleted, to pin the fix.
+
+        No route in infra/modules/api-gateway/main.tf has ever set this header. The
+        only places it appears in the whole infrastructure are the CloudFront lines
+        that *delete* it. So nothing trusted ever wrote it, which means every value
+        it has ever carried was supplied by a client — and it was accepted as a
+        fall-back identity source equal in authority to the edge-written header.
+
+        Being a fall-back made it MORE dangerous, not less: blanking
+        X-Caller-Identity at the edge would have left this as an open second door
+        that the edge fix does not cover, because API Gateway only overwrites the
+        header it is told about.
+        """
         headers = {
             API_GATEWAY_HEADER_IAM_USER_ARN: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
         }
         request = self._create_mock_request(headers)
 
-        mock_entry: AgentRegistryEntry = {
-            "agent_id": "00000000-0000-0000-0000-000000000001",
-            "role_arn": "arn:aws:iam::123456789012:role/test-agent",
-            "agent_name": "test-agent",
-            "org_id": "test-org",
-            "team_id": "test-team",
-            "owner": "system",
-            "scope": "shared",
-            "budget_config_id": "",
-            "allowed_models": ["claude-sonnet"],
-            "status": "active",
-            "description": "Test agent",
-            "image_uri": "",
-            "code_repo": "",
-            "workflow_name": "",
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-01T00:00:00Z",
-        }
-
         with patch("src.auth.agent_registry.get_agent_registry_service") as mock_get_service:
             mock_service = MagicMock()
-            mock_service.get_agent_by_role_arn.return_value = mock_entry
             mock_get_service.return_value = mock_service
 
             context = extract_iam_identity_from_headers(request)
 
-            assert context is not None
-            assert context.user_id == "test-agent"
+            # No identity, and the registry was never even consulted.
+            assert context is None
+            mock_service.get_agent_by_role_arn.assert_not_called()
 
     def test_returns_none_when_no_iam_headers(self):
         """Test returns None when no IAM identity headers present."""
@@ -341,10 +465,16 @@ class TestExtractIamIdentityFromHeaders:
             assert "not registered" in exc_info.value.message.lower()
 
     def test_accepts_x_agent_org_id_for_internal_scope(self):
-        """Test that internal-scope agents can override org_id via X-Agent-OrgId header.
+        """X-Agent-OrgId moves ATTRIBUTION for internal-scope agents, not authorization.
 
-        Issue #747: Internal agents (scaledjob-worker) pass the triggering tenant's
-        org_id so usage_logs attribute calls to the correct tenant.
+        Issue #747: internal agents (scaledjob-worker) pass the triggering tenant's
+        org_id so usage/billing attribute to the correct tenant.
+
+        Issue #4132 rewrote this test: it previously asserted
+        ``context.org_id == "customer-tenant-123"``, i.e. that a caller-supplied
+        header rewrote the AUTHENTICATED org. That is the defect. The header must
+        now land on attributed_org_id only, and org_id must keep the value the
+        agent registry assigned.
         """
         headers = {
             API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
@@ -354,6 +484,51 @@ class TestExtractIamIdentityFromHeaders:
 
         mock_entry: AgentRegistryEntry = {
             "agent_id": "00000000-0000-0000-0000-000000000001",
+            "role_arn": "arn:aws:iam::123456789012:role/test-agent",
+            "agent_name": "scaledjob-worker",
+            "org_id": "__platform__",
+            "team_id": "__agents__",
+            "owner": "platform",
+            "scope": "internal",
+            "budget_config_id": "",
+            "allowed_models": ["*"],
+            "credential_scopes": [],
+            "status": "active",
+            "description": "Internal worker",
+            "image_uri": "",
+            "code_repo": "",
+            "workflow_name": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }
+
+        with patch("src.auth.agent_registry.get_agent_registry_service") as mock_get_service:
+            mock_service = MagicMock()
+            mock_service.get_agent_by_role_arn.return_value = mock_entry
+            mock_get_service.return_value = mock_service
+
+            context = extract_iam_identity_from_headers(request)
+
+            assert context is not None
+            # THE EXPLOIT: the authenticated org must NOT follow the header.
+            assert context.org_id == "__platform__"
+            assert context.org_id != "customer-tenant-123"
+            # #747 preserved: attribution still follows the header.
+            assert context.attributed_org_id == "customer-tenant-123"
+            assert context.user_id == "iam-agent:00000000-0000-0000-0000-000000000001"
+
+    def test_internal_scope_without_header_attributes_to_authenticated_org(self):
+        """Issue #4132: absent the header, attributed_org_id defaults to org_id.
+
+        Proves the new field is inert for every caller that does not opt in.
+        """
+        headers = {
+            API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
+        }
+        request = self._create_mock_request(headers)
+
+        mock_entry: AgentRegistryEntry = {
+            "agent_id": "00000000-0000-0000-0000-000000000003",
             "role_arn": "arn:aws:iam::123456789012:role/test-agent",
             "agent_name": "scaledjob-worker",
             "org_id": "__platform__",
@@ -379,14 +554,71 @@ class TestExtractIamIdentityFromHeaders:
             context = extract_iam_identity_from_headers(request)
 
             assert context is not None
-            assert context.org_id == "customer-tenant-123"
-            assert context.user_id == "scaledjob-worker"
+            assert context.org_id == "__platform__"
+            assert context.attributed_org_id == "__platform__"
+
+    def test_x_agent_org_id_cannot_buy_organization_access(self):
+        """Issue #4132: the header must not purchase authorization to the named org.
+
+        require_organization_access gates on the AUTHENTICATED org_id, so an
+        internal agent that names another tenant in X-Agent-OrgId is still denied
+        access to that tenant's org-scoped routes.
+        """
+        from fastapi import HTTPException
+
+        from src.auth.middleware import require_organization_access
+
+        headers = {
+            API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
+            "X-Agent-OrgId": "victim-tenant",
+        }
+        request = self._create_mock_request(headers)
+
+        mock_entry: AgentRegistryEntry = {
+            "agent_id": "00000000-0000-0000-0000-000000000004",
+            "role_arn": "arn:aws:iam::123456789012:role/test-agent",
+            "agent_name": "scaledjob-worker",
+            "org_id": "__platform__",
+            "team_id": "__agents__",
+            "owner": "platform",
+            "scope": "internal",
+            "budget_config_id": "",
+            "allowed_models": ["*"],
+            "status": "active",
+            "description": "Internal worker",
+            "image_uri": "",
+            "code_repo": "",
+            "workflow_name": "",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+        }
+
+        with patch("src.auth.agent_registry.get_agent_registry_service") as mock_get_service:
+            mock_service = MagicMock()
+            mock_service.get_agent_by_role_arn.return_value = mock_entry
+            mock_get_service.return_value = mock_service
+
+            context = extract_iam_identity_from_headers(request)
+
+        assert context is not None
+        assert context.attributed_org_id == "victim-tenant"
+
+        # The header named victim-tenant, so access to victim-tenant must fail.
+        with pytest.raises(HTTPException) as exc_info:
+            require_organization_access("victim-tenant", context)
+        assert exc_info.value.status_code == 403
+
+        # ...while access to the authenticated org still succeeds.
+        assert require_organization_access("__platform__", context) is context
 
     def test_rejects_x_agent_org_id_for_external_scope(self):
         """Test that non-internal agents cannot override org_id via X-Agent-OrgId.
 
         Issue #747: Security guard — only internal-scope agents may claim arbitrary
         org_ids. External/shared agents must use their registry-assigned org_id.
+
+        Issue #4132: the header is ignored *entirely* for non-internal scope —
+        neither org_id nor attributed_org_id may follow it.
         """
         headers = {
             API_GATEWAY_HEADER_CALLER_IDENTITY: "arn:aws:sts::123456789012:assumed-role/external-agent/session",
@@ -404,6 +636,7 @@ class TestExtractIamIdentityFromHeaders:
             "scope": "shared",
             "budget_config_id": "",
             "allowed_models": ["claude-sonnet"],
+            "credential_scopes": [],
             "status": "active",
             "description": "External agent",
             "image_uri": "",
@@ -424,6 +657,10 @@ class TestExtractIamIdentityFromHeaders:
             # org_id should remain the registry-assigned value, NOT the spoofed one
             assert context.org_id == "real-org"
             assert context.org_id != "spoofed-tenant-id"
+            # Issue #4132: attribution must not follow the header either — a
+            # non-internal agent cannot bill another tenant.
+            assert context.attributed_org_id == "real-org"
+            assert context.attributed_org_id != "spoofed-tenant-id"
 
     def test_returns_none_for_invalid_arn(self):
         """Test returns None when ARN cannot be parsed."""

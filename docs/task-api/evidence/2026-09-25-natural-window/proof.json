@@ -1,0 +1,14 @@
+{
+  "accepted_design_sha": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "command": "python3 /home/ubuntu/task-delivery-tmp/live-run/window_probe.py",
+  "exit_status": 0,
+  "criterion": "V3-05 natural connection window/reconnect subscenario",
+  "outcome": "PASS",
+  "source_qualification": "Public transport observations; initial servingpod unknown. Reconnect cohort snapshot9ready dda452. Does not qualify forthcoming write-timeout fix.",
+  "new_tasks": 0,
+  "writes": 0,
+  "first_connection_seconds": 601.0458327460219,
+  "real_comment_heartbeats": 39,
+  "same_durable_cursor_after_reconnect": true,
+  "second_snapshot_and_heartbeat": true
+}

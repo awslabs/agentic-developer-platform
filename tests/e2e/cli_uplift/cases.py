@@ -1,0 +1,675 @@
+"""The acceptance cases of #5199 (plus #5413's two), their owners, and grading.
+
+Every function here is pure: no AWS, no gateway, no filesystem. The offline
+suite exercises the whole grading contract with sockets disabled, because the
+part that must never be wrong is the part that decides whether a run is allowed
+to report success.
+
+Two rules drive the design and are asserted directly in the offline tests:
+
+1. A case that is BLOCKED or NOT_RUN is not a pass. `blocked` exists so a
+   missing fixture is reported honestly instead of being silently skipped, and
+   it still keeps full acceptance from succeeding.
+2. A partial (named-suite) run can never satisfy full acceptance, however green
+   it looks. `accept()` requires every case in the matrix to be present AND
+   passed AND for the run to have declared itself a full run.
+
+#5413 adds E16/E17 (the `multi-deployment` suite) rather than a second harness,
+and adds them INSIDE the matrix rather than beside it as C01 is. That placement
+is the point: three real deployment bindings do not exist yet, so these two grade
+BLOCKED, and because BLOCKED is not PASSED a `full` run stays red until the live
+multi-deployment evidence is actually collected. A checkpoint outside the matrix
+would instead have let full acceptance go green with those two never run.
+
+#5637 adds E18 (the `superplane` suite) on the same terms and for the same
+reason. Its live acceptance needs a deployed domain service behind the gateway,
+which no environment in this harness's config provides yet, so E18 grades BLOCKED
+and keeps `full` red until that evidence exists. The offline contract tests in
+`modules/gateway/tests/cli/test_superplane_contract.py` prove the requests match
+the gateway allowlist and the domain's request models; they cannot prove a live
+service accepts them, and E18 is where that distinction is recorded rather than
+assumed away.
+"""
+
+from __future__ import annotations
+
+PASSED = "passed"
+FAILED = "failed"
+BLOCKED = "blocked"
+NOT_RUN = "not_run"
+
+STATUSES = (PASSED, FAILED, BLOCKED, NOT_RUN)
+
+# Suites are the dispatchable groupings of cases. `--suite full` is the only one
+# that can satisfy full acceptance; the others exist so an operator can make
+# progress while a fixture class is still blocked.
+SUITES = (
+    "full",
+    "nightly",
+    "capability-contrast",
+    "usage-exports",
+    "hosted-coding",
+    "hosted-chat",
+    "vault-lifecycle",
+    "knowledge-lifecycle",
+    "machine-lifecycle",
+    "budget-lifecycle",
+    "hierarchy-lifecycle",
+    "story-reads",
+    "research",
+    "tenant-isolation",
+    "login",
+    "install",
+    "admin",
+    "personal-aws",
+    "routing",
+    "inference",
+    "github",
+    "parity",
+    "harness",
+    # #5413. One installed CLI serving three deployments at once, which no other
+    # suite can express: every suite above runs a single deployment, so a crossed
+    # endpoint, token or proxy is invisible to all of them.
+    "multi-deployment",
+    # #5637. The served CLI's Superplane commands driven THROUGH the gateway to the
+    # real domain service. `parity` covers the routes ADP itself serves; this suite
+    # exists because the domain sits behind the gateway's forwarding allowlist, and
+    # a request that satisfies the allowlist can still be rejected by the domain's
+    # own schemas — which is exactly the class of defect #5637 repaired.
+    "superplane",
+)
+
+
+class Case:
+    """One acceptance row: a stable ID, the story that owns it, and its suite."""
+
+    def __init__(self, case_id, owner, suite, summary, requires=()):
+        self.id = case_id
+        self.owner = owner
+        self.suite = suite
+        self.summary = summary
+        # Fixture classes this case cannot run without. Preflight maps a missing
+        # class to BLOCKED for exactly the cases that name it, so one absent
+        # fixture does not mark the whole matrix blocked.
+        self.requires = tuple(requires)
+
+    def __repr__(self):
+        return f"Case({self.id})"
+
+
+# Fixture classes. Preflight proves each of these independently; a case is
+# blocked when any class it requires is unavailable.
+SUPERPLANE_RESEARCH = "superplane_research_read_fixture"
+PLATFORM = "platform"
+DESTINATION = "destination"
+SECOND_DESTINATION = "second_destination"
+EC2 = "ec2"
+COGNITO = "cognito"
+GITHUB_APP = "github_app"
+GITHUB_REPO = "github_repo"
+HOSTED = "hosted"
+HUMAN_TASK_CODING = "human_task_coding"
+HUMAN_TASK_CHAT = "human_task_chat"
+VAULT_LIFECYCLE = "vault_lifecycle"
+KNOWLEDGE_LIFECYCLE = "knowledge_lifecycle"
+BUDGET_LIFECYCLE = "budget_lifecycle"
+MACHINE_LIFECYCLE = "machine_lifecycle"
+HIERARCHY_LIFECYCLE = "hierarchy_lifecycle"
+# #5413: three separately-reachable ADP deployments and a sign-in fixture for
+# each. Deliberately its own class rather than a count on DESTINATION — those are
+# AWS accounts a rule routes TO, whereas these are three gateways the CLI signs in
+# to independently, and one cannot stand in for the other. Absent, E16/E17 BLOCK:
+# approximating three deployments with one URL registered under three names would
+# pass while every crossed-endpoint defect the story exists to prevent survived.
+THREE_DEPLOYMENTS = "three_deployments"
+# A capability requirement, deliberately never granted by current preflight.
+# Gateway availability does not prove enforcement of inference spend limits.
+MULTI_DEPLOYMENT_MODEL_LIMITS = "multi_deployment_model_limits"
+# #5621 (CLI-08-AC-04): a deployment where one module is deliberately DISABLED
+# and one is enabled, plus an ordinary non-admin identity alongside the admin one.
+#
+# Its own class rather than a flag on PLATFORM, because the criterion is a
+# CONTRAST: proving the CLI distinguishes "switched off" from "not permitted" from
+# "available" needs a deployment configured to exhibit all three at once, and a
+# second identity that genuinely lacks a permission the first holds. A single
+# admin on a fully-enabled platform can demonstrate none of them — every answer
+# would be "available", so the four axes could all be collapsed into one boolean
+# and the case would still pass. Absent, E18 BLOCKS rather than testing the one
+# state that proves nothing.
+CAPABILITY_CONTRAST = "capability_contrast"
+# #5637: a deployed Superplane domain service reachable through the gateway's
+# forwarding allowlist, plus an ordinary and an admin identity in it.
+#
+# Its own class, not an extension of PLATFORM: the gateway is deployed in dev and
+# still forwards to a domain service that may not be. Folding this into PLATFORM
+# would mark E18 runnable whenever the gateway answers, and the case would then
+# fail mid-journey on a 502 from the proxy — reporting "the product is broken" for
+# what is actually an absent fixture. And it cannot be inferred from the allowlist
+# either: the allowlist is checked-in source, so it is present on every revision
+# whether or not anything is listening behind it.
+SUPERPLANE_DOMAIN = "superplane_domain"
+TENANT_ISOLATION = "tenant_isolation"
+
+CASES = (
+    Case(
+        "E01",
+        "#5185",
+        "install",
+        "Unauthenticated discovery/download return 200; fresh EC2 install is immediately executable with matching hashes",
+        (EC2, PLATFORM),
+    ),
+    Case(
+        "E02",
+        "#5185",
+        "admin",
+        "Real adp admin login completes fresh-password and MFA challenges; bad credentials and non-admin operations fail; refresh works",
+        (EC2, COGNITO),
+    ),
+    Case(
+        "E03",
+        "#5185",
+        "admin",
+        "adp admin setup reports ready/pending/failed accurately; interruption and rerun complete missing steps without duplicates",
+        (EC2, COGNITO),
+    ),
+    Case(
+        "E04",
+        "#5182",
+        "personal-aws",
+        "adp aws connect provisions/imports compatible roles; list/verify match live records; mismatch fails; disconnect keeps the AWS role",
+        (EC2, DESTINATION),
+    ),
+    Case(
+        "E05",
+        "#5182",
+        "personal-aws",
+        "Download then separate AWS-admin apply then resume connects with AWS access disabled in ADP; CloudTrail identifies the EC2 provisioner",
+        (EC2, DESTINATION),
+    ),
+    Case(
+        "E06",
+        "#5181",
+        "routing",
+        "Bedrock CLI direct/reuse/download/apply/resume verifies before assignment; failure prevents assignment; rerun is idempotent",
+        (EC2, DESTINATION),
+    ),
+    Case(
+        "E07",
+        "#5181",
+        "routing",
+        "User beats team beats org beats platform default; removing overrides exposes the next rung without affecting another user",
+        (EC2, DESTINATION, SECOND_DESTINATION),
+    ),
+    Case(
+        "E08",
+        "#5181",
+        "inference",
+        "Real personal Claude/Codex inference at each rung returns the unique marker with matching AWS and ADP usage evidence",
+        (EC2, DESTINATION),
+    ),
+    Case(
+        "E09",
+        "#5181",
+        "inference",
+        "Real hosted Claude via authenticated ingress yields owner/tenant/task/run IDs with matching routing and usage at each rung",
+        (EC2, HOSTED),
+    ),
+    Case(
+        "E10",
+        "#5183",
+        "github",
+        "Native-admin journey creates a fresh GitHub App and reuses an existing App in separate fixtures with real OAuth/webhook readiness",
+        (EC2, GITHUB_APP),
+    ),
+    Case(
+        "E11",
+        "#5184",
+        "github",
+        "Real adp login OAuth/browser approval connects user and repository; wrong repo, cross-tenant and nonce replay fail",
+        (EC2, GITHUB_APP, GITHUB_REPO),
+    ),
+    Case(
+        "E12",
+        "#5183 #5184",
+        "github",
+        "Dedicated repo completes one bounded existing agent-development task after CLI onboarding with webhook/run and commit/PR evidence",
+        (EC2, GITHUB_APP, GITHUB_REPO),
+    ),
+    Case(
+        "E13",
+        "all",
+        "parity",
+        "Live API field/type/ownership assertions derive from actual CLI/UI consumers; UI-created and CLI-created resources are equivalently usable",
+        (EC2, PLATFORM),
+    ),
+    Case(
+        "E14",
+        "all",
+        "parity",
+        "Update/rollback/interrupted download preserve a usable installation; adp codex/claude forwarding, setup and launch pass",
+        (EC2, PLATFORM),
+    ),
+    Case(
+        "E15",
+        "harness",
+        "harness",
+        "Two fresh full runs pass on one deployed revision; interrupt, resume and repeat cleanup leave no duplicates or unowned mutations",
+        (EC2, PLATFORM),
+    ),
+    Case(
+        "E16",
+        "#5413",
+        "multi-deployment",
+        "One install, three deployments, three concurrent tool sessions (two Codex + Claude and the reverse mix): every marker has an authenticated request and usage receipt at its own deployment for its own user, and none at the other two",
+        (EC2, PLATFORM, THREE_DEPLOYMENTS, MULTI_DEPLOYMENT_MODEL_LIMITS),
+    ),
+    Case(
+        "E17",
+        "#5413",
+        "multi-deployment",
+        "Live default switch, refresh, and logout of one deployment leave the other two correctly routed; the logged-out one fails labelled without borrowing a session; teardown leaves no deployment state",
+        (EC2, PLATFORM, THREE_DEPLOYMENTS, MULTI_DEPLOYMENT_MODEL_LIMITS),
+    ),
+    Case(
+        "E18",
+        "#5637",
+        "superplane",
+        "Served CLI traverses the gateway to the real domain: workspace create/read/kubeconfig/cost/events/quota/deploy and the provider credential handoff carry both identifiers; a failed second-stage registration compensates only its own credential; account registration reports unavailable without writing",
+        (EC2, PLATFORM, SUPERPLANE_DOMAIN),
+    ),
+    Case(
+        "E19",
+        "#5621",
+        "parity",
+        "Freshly served CLI on EC2: adp capabilities distinguishes an enabled operation from an intentionally disabled one and from one the caller may not perform; adp doctor reports read-only bounded findings with no mutation and no paid inference; a foreign request ID is indistinguishable from an absent one",
+        (EC2, PLATFORM, CAPABILITY_CONTRAST),
+    ),
+    Case(
+        "E20",
+        "#5621",
+        "story-reads",
+        "Served capabilities has distinct operation IDs; bounded auth/API doctor checks succeed",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E21",
+        "#5628",
+        "story-reads",
+        "Own usage views and bounded JSON/NDJSON/CSV exports preserve scope, shape and continuation/exit status; no spend reconciliation claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E22",
+        "#5629",
+        "story-reads",
+        "Own Activity pagination and missing-run status/state/detail errors are structured; no active-control claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E23",
+        "#5622",
+        "story-reads",
+        "Served tenant membership/current selection and unknown-selector refusal without global workspace changes",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E24",
+        "#5631",
+        "story-reads",
+        "Credential/identity metadata and mutation previews use the served CLI without reading secrets or writing provider claims",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E25",
+        "#5639",
+        "story-reads",
+        "Served research reads preserve scoped findings/proposal IDs and pagination; no scan, mutation or decision",
+        (EC2, PLATFORM, COGNITO, SUPERPLANE_RESEARCH),
+    ),
+    Case(
+        "E26",
+        "#5589",
+        "story-reads",
+        "Own daily/weekly/monthly budget reads retain periods and uncapped semantics; no paid inference or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E27",
+        "#5622",
+        "tenant-isolation",
+        "Two owned memberships retain explicit tenant scope during concurrent reads, local default changes and Cognito refresh; no model inference claim",
+        (EC2, PLATFORM, COGNITO, TENANT_ISOLATION),
+    ),
+    Case(
+        "E28",
+        "#5634",
+        "story-reads",
+        "GitHub maintenance status and reviewed previews never read supplied keys or change the shared App",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E29",
+        "#5623",
+        "story-reads",
+        "Bounded administrator hierarchy reads preserve organization scope; no mutation lifecycle acceptance claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E30",
+        "#5635",
+        "story-reads",
+        "GitLab approved-provider discovery and invalid project refusal through the served CLI; no provider writes",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E31",
+        "#5624",
+        "story-reads",
+        "Explicit SQL IAM, IAM registry and Cognito client metadata reads retain tenant scope; no secret or mutation lifecycle claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E32",
+        "#5632",
+        "story-reads",
+        "Served knowledge discovery/status errors and soft-delete previews; live indexing and retrieval acceptance held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E33",
+        "#5625",
+        "story-reads",
+        "Tenant access status and bounded authorized request review; decision and revocation fixtures remain separate",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E34",
+        "#5633",
+        "story-reads",
+        "Personal Bedrock reset preview preserves billing/source readback and exact team-target refusal; real routing inference remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E35",
+        "#5626",
+        "story-reads",
+        "Own person limits retain source and self-write refusal; no spend-through or enforcement claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E36",
+        "#5627",
+        "story-reads",
+        "Own rate-limit hierarchy and unavailable TPM are explicit; no inference or saved-limit mutation",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E37",
+        "#5630",
+        "story-reads",
+        "Flow reads and malformed recovery refusal through served CLI; owned accepted-flow recovery remains fixture-gated",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E38",
+        "#5636",
+        "story-reads",
+        "Persona cost/catalog readback retains unknown amounts and capability evidence; no platform mutation/inference claim",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E39",
+        "#5638",
+        "story-reads",
+        "Superplane workspace lifecycle preview and scoped audit reads; no provider mutation or compute qualification",
+        (EC2, PLATFORM, COGNITO, SUPERPLANE_DOMAIN),
+    ),
+    Case(
+        "E40",
+        "#5640",
+        "story-reads",
+        "Hosted chat readiness and bounded own history; live multi-turn acceptance remains held",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E41",
+        "#5641",
+        "story-reads",
+        "Platform status distinguishes selected-gateway capability metadata from unverified AWS/artifact readiness; no deployment invocation",
+        (EC2, PLATFORM, COGNITO),
+    ),
+    Case(
+        "E42",
+        "#5516",
+        "hosted-coding",
+        "One enrolled human repository Task uses canonical submit, replay, monitor and control with terminal readback",
+        (EC2, PLATFORM, COGNITO, HUMAN_TASK_CODING),
+    ),
+)
+
+# A small execution checkpoint, deliberately outside the E01–E15 acceptance
+# matrix. A basic login must never be presented as the full E02 challenge test.
+LOGIN_CHECKPOINT = Case(
+    "C01",
+    "#5199",
+    "login",
+    "Native Cognito admin login and refresh work on fresh EC2; no seeded session",
+    (EC2, COGNITO),
+)
+DIAGNOSTICS = (
+    Case(
+        "D04",
+        "#5632",
+        "knowledge-lifecycle",
+        "Owned document registration, watch, same-key reindex and terminal cleanup",
+        (EC2, PLATFORM, COGNITO, KNOWLEDGE_LIFECYCLE),
+    ),
+    Case(
+        "D06",
+        "#5589/#5627",
+        "budget-lifecycle",
+        "Owned ordinary budget periods/ledgers and rate-limit dimensions with revision-fenced cleanup; no inference",
+        (EC2, PLATFORM, COGNITO, BUDGET_LIFECYCLE),
+    ),
+    Case(
+        "D05",
+        "#5624/#5625",
+        "machine-lifecycle",
+        "Owned canonical principal lifecycle with ordinary access and session review boundary",
+        (EC2, PLATFORM, COGNITO, MACHINE_LIFECYCLE),
+    ),
+    Case(
+        "D03",
+        "#5623/#5622",
+        "hierarchy-lifecycle",
+        "Owned hierarchy lifecycle and ordinary tenant revocation/restoration",
+        (EC2, PLATFORM, COGNITO, HIERARCHY_LIFECYCLE),
+    ),
+    Case(
+        "D01",
+        "#5640",
+        "hosted-chat",
+        "Two bounded hosted chat turns with durable recovery and owned cleanup",
+        (EC2, PLATFORM, COGNITO, HUMAN_TASK_CHAT),
+    ),
+    Case(
+        "D02",
+        "#5631",
+        "vault-lifecycle",
+        "Owned synthetic credential and unverified identity lifecycle with cleanup",
+        (EC2, PLATFORM, COGNITO, VAULT_LIFECYCLE),
+    ),
+)
+BY_ID = {case.id: case for case in (*CASES, LOGIN_CHECKPOINT, *DIAGNOSTICS)}
+
+
+def suite_cases(suite):
+    """Resolve a suite name to its ordered cases. 'full' is every case."""
+    if suite not in SUITES:
+        raise ValueError(f"Unknown suite {suite!r}; choose from {', '.join(SUITES)}")
+    if suite == "full":
+        return CASES
+    if suite == "nightly":
+        return (
+            BY_ID["E01"],
+            LOGIN_CHECKPOINT,
+            *(
+                case
+                for case in CASES
+                if case.suite in {"story-reads", "hosted-coding", "tenant-isolation"}
+            ),
+        )
+    if suite == "capability-contrast":
+        return (BY_ID["E19"],)
+    if suite == "usage-exports":
+        return (BY_ID["E21"],)
+    if suite == "research":
+        return (BY_ID["E25"],)
+    if suite == "login":
+        return (BY_ID["E01"], LOGIN_CHECKPOINT)
+    return tuple(case for case in (*CASES, *DIAGNOSTICS) if case.suite == suite)
+
+
+def resolve_suites(names):
+    """Union of several suites, in canonical matrix order, deduplicated."""
+    if not names:
+        raise ValueError("Select at least one suite")
+    selected = set()
+    for name in names:
+        selected.update(case.id for case in suite_cases(name))
+    return tuple(case for case in BY_ID.values() if case.id in selected)
+
+
+def is_full(names):
+    """Only an explicit 'full' selection may satisfy full acceptance.
+
+    Deliberately not 'the union happens to cover every case': a run assembled
+    from named suites has not proven it ran as one uninterrupted matrix on one
+    revision, which is what E15 is about.
+    """
+    return "full" in tuple(names)
+
+
+def new_matrix(names):
+    """Start every selected case at NOT_RUN so omissions stay visible.
+
+    Pre-seeding is what makes a crashed or cancelled run report honestly: a case
+    that never executed is NOT_RUN in the report rather than absent from it.
+    """
+    return {
+        case.id: {
+            "status": NOT_RUN,
+            "owner": case.owner,
+            "suite": case.suite,
+            "detail": {},
+        }
+        for case in resolve_suites(names)
+    }
+
+
+def record(matrix, case_id, status, detail=None):
+    """Set one case's outcome. Unknown IDs and statuses are programming errors."""
+    if case_id not in BY_ID:
+        raise ValueError(f"Unknown case {case_id!r}")
+    if status not in STATUSES:
+        raise ValueError(f"Unknown status {status!r}")
+    if case_id not in matrix:
+        raise ValueError(f"Case {case_id} is not in the selected matrix")
+    matrix[case_id] = {**matrix[case_id], "status": status, "detail": detail or {}}
+    return matrix[case_id]
+
+
+def block_missing_fixtures(matrix, available):
+    """Mark every not-yet-run case BLOCKED when a fixture class it needs is absent.
+
+    Called by preflight before any mutation. Returns the mapping of case ID to
+    the sorted fixture classes that blocked it, for the report and the summary.
+    """
+    available = set(available)
+    blocked = {}
+    for case_id, entry in matrix.items():
+        if entry["status"] != NOT_RUN:
+            continue
+        missing = sorted(set(BY_ID[case_id].requires) - available)
+        if missing:
+            record(matrix, case_id, BLOCKED, {"missing_fixtures": missing})
+            blocked[case_id] = missing
+    return blocked
+
+
+def tally(matrix):
+    """Count cases per status. Keys are always present, so a report never omits one."""
+    counts = dict.fromkeys(STATUSES, 0)
+    for entry in matrix.values():
+        counts[entry["status"]] += 1
+    return counts
+
+
+def stage_problems(stages):
+    """Stages that did not complete, as sorted `name: state` strings.
+
+    Acceptance requires every stage to have completed, not merely that the cases
+    look green. The distinction matters most on resume: a passed case is
+    preserved across attempts, so if a later attempt's preflight rejects the
+    target — a changed or unreachable deployment — the matrix still reads
+    fifteen passes. Grading on the matrix alone certifies revision B using
+    results collected against revision A.
+
+    The rule is deliberately "not complete" rather than a list of bad states.
+    `failed` and `timed_out` are the obvious ones, but `skipped` (a stage with no
+    implementation registered), `pending` (never reached) and `running` (the
+    process died mid-stage) must all veto too, and enumerating the bad states
+    means a state added later defaults to being treated as success.
+    """
+    return sorted(
+        f"{name}: {state}"
+        for name, state in (stages or {}).items()
+        if state != "complete"
+    )
+
+
+def accept(matrix, names, *, cleanup_ok=True, stages=None):
+    """Decide the run's overall verdict.
+
+    Returns (status, reasons). `status` is 'passed' when all selected cases
+    passed, every stage completed and cleanup succeeded. Full acceptance also
+    requires an explicit full selection, as reported by report.build(). Reasons are
+    stable, sorted strings so the offline tests can assert on them and the
+    summary can print them.
+
+    `stages` is the run document's stage map. It is keyword-optional so a caller
+    grading a bare matrix (the schema check, unit tests) still works, but the
+    runner always passes it — see test_publish_carries_stage_state_into_the_verdict.
+    """
+    reasons = []
+    if not matrix:
+        reasons.append("no cases were selected")
+
+    incomplete = stage_problems(stages)
+    if incomplete:
+        # Named individually so the report says which stage broke and how,
+        # rather than a bare "something failed".
+        reasons.append("stages did not complete: " + ", ".join(incomplete))
+
+    expected = {case.id for case in resolve_suites(names)} if names else set()
+    missing = sorted(expected - set(matrix))
+    if missing:
+        reasons.append("cases missing from the matrix: " + ", ".join(missing))
+
+    for status, label in (
+        (FAILED, "failed"),
+        (BLOCKED, "blocked"),
+        (NOT_RUN, "did not run"),
+    ):
+        offenders = sorted(
+            case_id for case_id, entry in matrix.items() if entry["status"] == status
+        )
+        if offenders:
+            reasons.append(f"{label}: " + ", ".join(offenders))
+
+    if not cleanup_ok:
+        reasons.append("cleanup did not complete")
+
+    if reasons:
+        return FAILED, sorted(reasons)
+    return PASSED, []

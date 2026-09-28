@@ -1,0 +1,30 @@
+{
+  "fixture_version": "1.0",
+  "authority_locator": {
+    "pk": "TASK_WORK_ID#b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+    "sk": "BINDING",
+    "record_type": "TASK_WORK_BINDING",
+    "work_kind": "dispatch",
+    "tenant": "t-4821",
+    "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+    "invocation_id": "5e7a9c31-4d6f-4813-ba25-9c1e3f5a7d40",
+    "generation": 1,
+    "work_event_id": "TASK_WORK#tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+    "work_arrived_at": "DISPATCH#b5e9835b-fc24-4231-96f2-e8b8ca3681be"
+  },
+  "request_work": {
+    "event_id": "TASK_WORK#tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+    "arrived_at": "DISPATCH#b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+    "work_id": "b5e9835b-fc24-4231-96f2-e8b8ca3681be",
+    "work_kind": "dispatch",
+    "contains_full_envelope": true,
+    "envelope_digest_matches_locator": true,
+    "publication_and_recovery_leases_are_distinct": true
+  },
+  "replacement_rules": {
+    "reconcile_sort_key": "RECONCILE",
+    "new_work_id_required": true,
+    "old_locator_retargeted": false,
+    "old_leases_retained": false
+  }
+}

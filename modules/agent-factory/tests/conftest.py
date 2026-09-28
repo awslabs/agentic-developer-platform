@@ -128,6 +128,44 @@ def make_apigw_event():
     return mock_apigw_event
 
 
+def start_webchat_session(
+    handler, claims: dict | None = None, connection_id: str = "test-conn-abc123"
+) -> str:
+    """Start a webchat session the way a real browser does, and return its id.
+
+    #5615 (S16): webchat session ids are issued by the server. A browser now
+    asks for one (`create-session`) before it can send a message, and the
+    message path REFUSES an id it never issued — so a test that invents an id
+    and sends a message is exercising a flow that cannot happen in production.
+
+    Use this helper for any webchat test whose subject is what happens to a
+    message (classification, dispatch, tenant propagation, invocation logging).
+    It drives the real route rather than seeding the table directly, so the row
+    is built by production code and the test stays honest about the contract.
+
+    Tests specifically ABOUT ownership or refusal should keep building rows and
+    ids explicitly — that is the point of those tests.
+
+    Pass `claims=None` to mimic production more closely still: a real $default
+    frame carries NO authorizer context, and the handler re-injects the claims it
+    persisted at $connect. Tests that already drove a $connect should use that
+    form so the identity under test is the stored one.
+    """
+    event = mock_apigw_event(
+        body={"action": "create-session"},
+        connection_id=connection_id,
+        authorizer_claims=claims,
+    )
+    result = handler.lambda_handler(event, None)
+    body = json.loads(result["body"])
+    session_id = body.get("session_id")
+    if not session_id:
+        raise AssertionError(
+            f"create-session did not issue an id: {result['statusCode']} {body}"
+        )
+    return session_id
+
+
 # ---------------------------------------------------------------------------
 # JWT helpers
 # ---------------------------------------------------------------------------

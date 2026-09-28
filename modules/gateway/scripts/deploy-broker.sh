@@ -16,7 +16,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./deploy-broker.sh [--env dev] [--region us-east-1] [--dry-run]
-#                      [--skip-package] [--skip-update]
+#                      [--skip-package] [--skip-update] [--package-only]
 #
 # Env (flags win; otherwise resolved from config/deployment.yml or runtime):
 #   ADP_ENV / --env            environment (default dev)
@@ -34,6 +34,7 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 DRY_RUN=false
 SKIP_PACKAGE=false
 SKIP_UPDATE=false
+PACKAGE_ONLY=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)      DRY_RUN=true; shift ;;
     --skip-package) SKIP_PACKAGE=true; shift ;;
     --skip-update)  SKIP_UPDATE=true; shift ;;
+    --package-only) PACKAGE_ONLY=true; shift ;;
     -h|--help)      sed -n '4,30p' "$0"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -53,13 +55,20 @@ warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 run()  { if [ "$DRY_RUN" = true ]; then echo -e "${BLUE}[dry-run]${NC} $*"; else eval "$@"; fi; }
 
+if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+  python3 "$REPO_ROOT/platform/scripts/release/artifacts.py" broker --directory "$ADP_RELEASE_DIR"
+  exit 0
+fi
+
 command -v aws &>/dev/null || fail "AWS CLI not installed"
 command -v pip &>/dev/null || command -v pip3 &>/dev/null || fail "pip not installed"
 PIP=$(command -v pip3 || command -v pip)
 [ -d "$LAMBDA_SRC_DIR" ] || fail "Broker source dir not found: $LAMBDA_SRC_DIR"
 
 # Resolve account / state bucket (mirror build-lambda-layers.sh).
-if [ -z "${ADP_STATE_BUCKET:-}" ]; then
+if [ "$PACKAGE_ONLY" = true ]; then
+  STATE_BUCKET="package-only"
+elif [ -z "${ADP_STATE_BUCKET:-}" ]; then
   ACCOUNT_ID="${ADP_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
   STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
 else
@@ -91,10 +100,17 @@ else
   # Copy the handler + sibling modules flat into the build dir.
   if [ "$DRY_RUN" = false ]; then
     ( cd "$LAMBDA_SRC_DIR" && for f in *.py; do [ -f "$f" ] && cp "$f" build/; done )
+    # Issue #4849: the shared membership-eligibility reader lives outside this dir
+    # (lambda/shared/) so the pre-signup Lambda can package the same file instead
+    # of a divergent copy. Must stay in lockstep with
+    # .github/workflows/github-auth-broker-deploy.yml — this script is documented
+    # as replicating that workflow exactly, and a file added to one but not the
+    # other means the CI deploy and the manual deploy ship different code.
+    cp "${MODULE_ROOT}/lambda/shared/membership_eligibility.py" "${BUILD_DIR}/"
     ( cd "$BUILD_DIR" && find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true; \
       rm -f "$ZIP_PATH"; zip -r -q "$ZIP_PATH" . )
   else
-    echo -e "${BLUE}[dry-run]${NC} cp *.py -> build/ ; zip -r broker.zip ."
+    echo -e "${BLUE}[dry-run]${NC} cp *.py + shared/membership_eligibility.py -> build/ ; zip -r broker.zip ."
   fi
   [ "$DRY_RUN" = false ] && ok "Built $(du -h "$ZIP_PATH" 2>/dev/null | cut -f1) $ZIP_PATH"
 fi
@@ -102,6 +118,7 @@ fi
 # -----------------------------------------------------------------------------
 # 2. Upload to S3
 # -----------------------------------------------------------------------------
+[ "$PACKAGE_ONLY" = false ] || exit 0
 run "aws s3 cp '$ZIP_PATH' 's3://${STATE_BUCKET}/${S3_KEY}' --region '$AWS_REGION'"
 [ "$DRY_RUN" = false ] && ok "Uploaded to s3://${STATE_BUCKET}/${S3_KEY}"
 

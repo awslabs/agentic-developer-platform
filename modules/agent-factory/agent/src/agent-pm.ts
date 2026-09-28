@@ -1,3 +1,4 @@
+import { hasRepositoryWritePermission } from './utils/comment-authority';
 /**
  * @agent-pm - AIDLC Workflow Orchestrator
  *
@@ -11,6 +12,7 @@
  * 7. PM continues workflow until complete or 30-minute timeout
  */
 
+import { loadHumanCommunication } from './human-communication';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
@@ -92,14 +94,17 @@ import {
 
 // Token refresh module - handles GitHub App token expiration (tokens expire after 1 hour)
 import { refreshGitHubToken, saveToS3Fallback } from './utils/ghPost';
+import { resolveAgentLogGroup } from './lib/logGroup';
 import {
   initTokenManager,
+  canInitTokenManager,
   getToken,
   needsRefresh,
   getTokenStatus,
-  setToken,
+  adoptBootstrapToken,
   forceRefresh,
 } from './token-refresh';
+import { isBrokerEnabled } from './lib/githubTokenBroker';
 
 // ============================================================================
 // Configuration
@@ -141,8 +146,14 @@ configureMonitoring({
 
 // Beads configuration - distributed state management
 const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false';
-const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || 'adp-agent-state';
-const BEADS_S3_REGION = process.env.BEADS_S3_REGION || 'us-west-2';
+// Issue #4184: this is the LIVE hardcoded-region defect (the issue pointed at
+// beads.ts:37, which configureBeads() overwrites before any bd command runs).
+// `us-west-2` was wrong for us-east-1 infra, and `adp-agent-state` is a bucket
+// in a foreign account that no IAM statement here permits. Empty bucket is the
+// safe default: beads syncPull/syncPush already guard on it and skip cleanly,
+// whereas a wrong name degrades to a denied write.
+const BEADS_S3_BUCKET = process.env.BEADS_S3_BUCKET || '';
+const BEADS_S3_REGION = process.env.BEADS_S3_REGION || process.env.AWS_REGION || 'us-east-1';
 const BEADS_S3_PATH = process.env.BEADS_S3_PATH || `beads/${REPO_NAME}`;
 configureBeads({
   enabled: BEADS_ENABLED,
@@ -156,26 +167,41 @@ configureBeads({
 setBeadsLogger(log);
 
 // Token refresh configuration - GitHub App tokens expire after 1 hour
-const TOKEN_REFRESH_ENABLED = process.env.TOKEN_REFRESH_ENABLED === 'true';
+const TOKEN_REFRESH_ENABLED = process.env.ADP_TOKEN_MODE !== 'pat' && (isBrokerEnabled() || process.env.TOKEN_REFRESH_ENABLED === 'true');
 const GH_APP_ID = process.env.GH_APP_ID || '';
 const GH_APP_PRIVATE_KEY = process.env.GH_APP_PRIVATE_KEY || '';
 
-if (TOKEN_REFRESH_ENABLED && GH_APP_ID && GH_APP_PRIVATE_KEY) {
+// Issue #4272: in broker mode the private key is not in this process — the
+// gateway gatekeeper mints. Requiring the key here would leave the token manager
+// uninitialised and the PM's long-running loop would die at the 1-hour mark.
+const GH_TOKEN_BROKER_MODE = isBrokerEnabled();
+
+// canInitTokenManager() rather than a hand-written predicate: the decision is
+// tested once in token-refresh.ts, so it cannot drift from the agent-worker copy.
+if (TOKEN_REFRESH_ENABLED && canInitTokenManager()) {
   initTokenManager({
     appId: GH_APP_ID,
-    privateKey: GH_APP_PRIVATE_KEY,
+    privateKey: GH_TOKEN_BROKER_MODE ? undefined : GH_APP_PRIVATE_KEY,
+    brokerMode: GH_TOKEN_BROKER_MODE,
     owner: REPO_OWNER,
     repo: REPO_NAME,
+    installationId: process.env.GH_APP_INSTALLATION_ID || undefined,
     workDir: CWD,
-    refreshThresholdMs: 15 * 60 * 1000, // Refresh 15 min before expiry
+    // Issue #4369: 20 min for both modes. The old 15-min local value left too
+    // little headroom to notice and recover a failed re-mint before the token
+    // actually died — a local mint is no more reliable than a broker round-trip.
+    refreshThresholdMs: 20 * 60 * 1000,
   });
   // Set the initial token (from workflow)
-  if (GH_APP_TOKEN) {
-    setToken(GH_APP_TOKEN, 60 * 60 * 1000); // Assume 1 hour expiry
-  }
+  adoptBootstrapToken();
   console.log('[TokenRefresh] Initialized - tokens will auto-refresh before expiry');
 } else if (TOKEN_REFRESH_ENABLED) {
-  console.warn('[TokenRefresh] Enabled but missing GH_APP_ID or GH_APP_PRIVATE_KEY');
+  if (GH_TOKEN_BROKER_MODE) throw new Error('Brokered GitHub renewal configuration unavailable');
+  console.warn(
+    GH_TOKEN_BROKER_MODE
+      ? '[TokenRefresh] Enabled but missing GH_APP_ID (broker mode needs no private key)'
+      : '[TokenRefresh] Enabled but missing GH_APP_ID or GH_APP_PRIVATE_KEY',
+  );
 }
 
 // Module-level variable for bd prime context (set in main after Beads init)
@@ -560,7 +586,7 @@ function getErrorSummary(): string {
 // Logging
 // ============================================================================
 
-const LOG_GROUP = '/github-ccsdk-agent/logs';
+const LOG_GROUP = resolveAgentLogGroup();
 const LOG_STREAM = `agent-pm-issue-${ISSUE_NUMBER}-${Date.now()}`;
 const cwClient = new CloudWatchLogsClient({ region: AWS_REGION });
 let cwBuffer: { timestamp: number; message: string }[] = [];
@@ -837,6 +863,8 @@ function loadRules(): string {
   if (agentMemoryContext) {
     rules.push(agentMemoryContext);
   }
+
+  rules.push(loadHumanCommunication([path.join(rulesDir, 'personas')]));
 
   return rules.join('\n\n---\n\n');
 }
@@ -1771,7 +1799,9 @@ async function pollForReassessmentChoice(): Promise<{ choice: UserReassessmentCh
           // Try to parse as a reassessment command
           const choice = parseReassessmentResponse(comment.body);
 
-          if (choice.action !== 'unknown') {
+          if (choice.action !== 'unknown' && await hasRepositoryWritePermission(
+            REPO_OWNER, REPO_NAME, comment.author, process.env.GITHUB_TOKEN || GITHUB_TOKEN,
+          )) {
             log('INFO', `User choice detected: ${choice.action}`);
             console.log(`User choice: ${choice.action}`);
             return { choice, comment: comment.body };
@@ -2529,6 +2559,8 @@ async function executeQuickTask(issue: Issue, assessment: DepthAssessment): Prom
 
   const prompt = `You are @agent-pm executing a ${assessment.depth.toUpperCase()} task directly.
 
+${loadHumanCommunication([path.join(CWD, '.adp-rules', 'personas')])}
+
 ## Task
 **Issue #${issue.number}: ${issue.title}**
 
@@ -2577,14 +2609,11 @@ OR if you determine this needs a specialist agent:
 - **WebSearch/WebFetch**: Research if needed
 
 ## Completion
-When done, post a comment to issue #${issue.number} with:
-\`\`\`
-## ✅ Quick Task Complete
-
-**What was done**: [Brief summary]
-**Changes**: [Files changed or PR link]
-**Verification**: [How it was tested]
-\`\`\`
+Post one outcome comment to issue #${issue.number}. Start with the capability
+and its actual state, including any blocker. Link the PR or artifact, describe
+checks run and checks still missing, and name the next owner/action. Separate
+implementation, merge, deployment and acceptance. Do not call the task complete
+merely because this run ended.
 
 Then close the issue if the work is complete, or explain next steps if follow-up is needed.
 
@@ -2902,9 +2931,10 @@ Now proceeding to assign agents to ready work...`);
 
           if (monitoringResult.completed) {
             log('INFO', 'All agents completed successfully');
-            await postComment(`## All Agents Complete
+            await postComment(`## Coordination run ended
 
-All triggered agents have completed their work.
+The monitor reports all tracked work complete. Review the linked task outcomes
+for capability readiness; this notice does not verify deployment or acceptance.
 
 **Next Steps:**
 - Review the changes made by each agent

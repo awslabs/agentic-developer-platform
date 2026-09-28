@@ -60,8 +60,9 @@ class LoggingMiddleware:
         should_skip = _should_skip(path)
 
         # Extract or generate request ID from headers
-        headers_list = scope.get("headers", [])
-        request_id = _extract_request_id(headers_list) or str(uuid.uuid4())
+        token_context = scope.get("state", {}).get("token_context")
+        policy_request_id = getattr(token_context, "_policy_request_id", None)
+        request_id = scope.get("state", {}).get("request_id") or policy_request_id or str(uuid.uuid4())
 
         # Set logging context
         set_request_context(request_id=request_id)
@@ -110,7 +111,11 @@ class LoggingMiddleware:
                     token_context = state.get("token_context")
                     if token_context and isinstance(token_context, TokenContext):
                         set_request_context(
-                            org_id=token_context.org_id,
+                            # Issue #4132: request logs are an attribution
+                            # surface (per-tenant activity views). The
+                            # authenticated principal is still recorded as
+                            # user_id below.
+                            org_id=token_context.attributed_org_id,
                             user_id=token_context.user_id,
                             team_id=token_context.team_id,
                             department_id=token_context.department_id,
@@ -161,6 +166,8 @@ def _log_request_start(request: Request) -> None:
         "method": request.method,
         "path": request.url.path,
     }
+    if request.scope.get("state", {}).get("client_request_id"):
+        extra["client_request_id"] = request.scope["state"]["client_request_id"]
     query = str(request.query_params) if request.query_params else None
     if query:
         extra["query_string"] = query

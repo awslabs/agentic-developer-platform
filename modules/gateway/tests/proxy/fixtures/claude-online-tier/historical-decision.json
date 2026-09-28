@@ -1,0 +1,78 @@
+{
+  "decision_version": 2,
+  "policy_version": 2,
+  "request_id": "claudepricing_cache_5m_read_c89fcee8a294484484e94fe4d96476fc",
+  "org_id": "pranavsharma1000",
+  "generation_id": 4,
+  "pointer_revision": 4,
+  "snapshot_version": "2026-09-12.2",
+  "source_kind": "database",
+  "variant_key": [
+    "anthropic.claude-haiku-4-5-20251001-v1:0",
+    "global_cris",
+    "batch",
+    "flat",
+    "us-east-1"
+  ],
+  "rates": {
+    "input_price_per_1k_tokens": "0.0005000000",
+    "output_price_per_1k_tokens": "0.0025000000",
+    "cache_read_price_per_1k_tokens": null,
+    "cache_write_price_per_1k_tokens": null,
+    "cache_write_policy": "unpublished",
+    "effective_cache_read_price_per_1k_tokens": "0.0005000000",
+    "effective_cache_write_price_per_1k_tokens": "0.0005000000",
+    "cache_write_1h_price_per_1k_tokens": null,
+    "effective_cache_write_1h_price_per_1k_tokens": "0.0005000000",
+    "effective_cache_write_unconfirmed_price_per_1k_tokens": "0.0005000000",
+    "context_max_input_tokens": 200000
+  },
+  "verified_at": "2026-09-12T12:17:07.290848+00:00",
+  "source": "pricing_page",
+  "source_url": "https://aws.amazon.com/bedrock/pricing/#anthropic;token-map=https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/bedrockfoundationmodels/USD/current/bedrockfoundationmodels.json",
+  "source_content_sha256": "7cc4f9f2f8be2a5a86ab9b92a94b60af2cfeae7d86caa7ec28313e88d6396bb9",
+  "usage": {
+    "api_format": "anthropic",
+    "input_semantics": "additive",
+    "total_input_tokens": 28183,
+    "uncached_input_tokens": 13,
+    "cache_read_input_tokens": 28170,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 6,
+    "raw": {
+      "input_tokens": 13,
+      "output_tokens": 6,
+      "cache_read_input_tokens": 28170,
+      "cache_creation_input_tokens": 0,
+      "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 0
+      },
+      "confirmed_cache_write_ttl": null
+    },
+    "valid": true,
+    "cache_creation_5m_input_tokens": 0,
+    "cache_creation_1h_input_tokens": 0,
+    "cache_creation_unconfirmed_input_tokens": 0
+  },
+  "routing": {
+    "original_model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "billing_model_id": "anthropic.claude-haiku-4-5-20251001-v1:0",
+    "forwarded_model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "endpoint_region": "us-east-1",
+    "execution_region": null,
+    "endpoint_host": "bedrock-runtime.us-east-1.amazonaws.com",
+    "geography": "global_cris",
+    "requested_service_tier": null,
+    "served_service_tier_raw": null,
+    "served_service_tier": null
+  },
+  "confidence": "estimated",
+  "estimate_reasons": [
+    "unconfirmed_service_tier",
+    "unpublished_cache_read_rate"
+  ],
+  "exact_cost_usd": "0.0141065000",
+  "ledger_cost_usd": "0.014107",
+  "content_sha256": "dbde057057049f0949db1a09ad9c60e04bb151141ebbc2f8d96f2033e8d296b2"
+}

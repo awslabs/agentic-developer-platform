@@ -3,7 +3,7 @@
 # =============================================================================
 # Issue #230: Copied from modules/agent-factory/infra/gateway-main.tf
 # One role, one ServiceAccount. Both ScaledJobs reference the same SA.
-# Permissions: SQS consume/send, DDB write, S3 read samples, Secrets read.
+# Permissions: SQS consume/send, DDB results, public YARA rules only.
 # Hard invariant #3: No Bedrock, no other tenant's S3 prefix, no broad Secrets.
 # =============================================================================
 
@@ -12,11 +12,27 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "cyber_worker" {
-  name = "${local.name_prefix}-worker-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.name_prefix}-worker-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      {
+        # Auto Mode uses the managed Pod Identity agent. Keep trust bound to
+        # this cluster and worker service account, including transitive tags.
+        Sid       = "CyberWorkerPodIdentity"
+        Effect    = "Allow"
+        Principal = { Service = "pods.eks.amazonaws.com" }
+        Action    = ["sts:AssumeRole", "sts:TagSession"]
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/eks-cluster-arn"            = aws_eks_cluster.cyber.arn
+            "aws:RequestTag/kubernetes-namespace"       = "cyber-workers"
+            "aws:RequestTag/kubernetes-service-account" = "cyber-worker"
+          }
+        }
+      },
       {
         # IRSA: worker pods assume this role via their ServiceAccount
         Effect = "Allow"
@@ -46,6 +62,13 @@ resource "aws_iam_role" "cyber_worker" {
     Name      = "${local.name_prefix}-worker-role"
     Component = "cyber-worker"
   }
+}
+
+resource "aws_eks_pod_identity_association" "cyber_worker" {
+  cluster_name    = aws_eks_cluster.cyber.name
+  namespace       = "cyber-workers"
+  service_account = "cyber-worker"
+  role_arn        = aws_iam_role.cyber_worker.arn
 }
 
 # ---------------------------------------------------------------------------
@@ -123,7 +146,7 @@ resource "aws_iam_role_policy" "cyber_worker_dynamodb" {
 }
 
 # ---------------------------------------------------------------------------
-# S3 — read sample artifacts from the chat artifacts bucket
+# S3 — public rule data only; sample reads use broker capabilities
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role_policy" "cyber_worker_s3" {
@@ -133,12 +156,6 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Sid      = "ReadSampleArtifacts"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::adp-${var.environment}-chat-artifacts-*/o/*/in/*"
-      },
       {
         # Issue #272: Workers fetch YARA rules from S3 via initContainer
         Sid    = "ReadYaraRulesPublic"
@@ -150,34 +167,34 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
         ]
       },
       {
-        # Issue #278: Workers need to read samples from cape-assets bucket
-        # (smoke-test samples, future: any sample staged for analysis)
-        Sid      = "ReadCapeAssetsSamples"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::adp-${var.environment}-cape-assets/smoke-test/*"
-      }
+        Sid         = "DenyAmbientObjectReads", Effect = "Deny",
+        Action      = ["s3:GetObject", "s3:GetObjectVersion"],
+        NotResource = "arn:aws:s3:::adp-${var.environment}-cape-assets/yara-rules/public/*"
+      },
+      {
+        Sid    = "DenyOtherIdentities", Effect = "Deny",
+        Action = ["iam:*", "sts:AssumeRole", "sts:AssumeRoleWithWebIdentity", "sts:AssumeRoleWithSAML"], Resource = "*"
+      },
     ]
   })
 }
 
 # ---------------------------------------------------------------------------
-# Secrets Manager — CAPE API token only
+# Secrets Manager — intentionally not granted (issue #5616)
 # ---------------------------------------------------------------------------
-
-resource "aws_iam_role_policy" "cyber_worker_secrets" {
-  name = "secrets-cape-token"
-  role = aws_iam_role.cyber_worker.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue"]
-      Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:adp/cape/api-token-*"
-    }]
-  })
-}
+# The worker role previously held secretsmanager:GetSecretValue on
+# adp/cape/api-token-*. Neither worker reads a secret: there is no
+# secretsmanager call and no boto3 Secrets Manager client anywhere in
+# workers/ (triage and static both only use SQS, S3 and DynamoDB). CAPE
+# submission is driven from the agent side, not from these pods.
+#
+# Removed rather than narrowed. These pods parse hostile binaries and, in
+# Mode B, execute a generated script, so an unused credential grant here is
+# exactly the privilege a successful sandbox escape would reach for — and
+# because nothing uses it, removal cannot break a working path.
+#
+# If a worker ever needs a secret, add a grant for that specific secret at
+# that time; do not restore this one on the assumption it was needed.
 
 # ---------------------------------------------------------------------------
 # Kubernetes Namespace + ServiceAccount

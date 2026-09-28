@@ -1,41 +1,25 @@
 # =============================================================================
-# URL Analysis — IAM permissions for AgentCore Browser
+# URL Analysis — deny direct AgentCore Browser access
 # =============================================================================
-# Issue #484: Grants the cyber worker role access to Bedrock AgentCore Browser
-# for isolated URL analysis sessions.
+# URL analysis must cross the guarded broker boundary. The cyber worker handles
+# untrusted tasks and must not create, enumerate, or control browser sessions.
 #
-# Permissions are scoped to session lifecycle operations only.
-# The worker creates ephemeral sessions, invokes browser actions, and stops
-# sessions. No persistent profiles or stored state.
+# Keep an explicit service-wide deny so another identity policy cannot restore
+# the obsolete direct-browser path.
 # =============================================================================
 
 resource "aws_iam_role_policy" "cyber_worker_agentcore_browser" {
-  name = "agentcore-browser-access"
+  name = "deny-direct-agentcore-browser"
   role = aws_iam_role.cyber_worker.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AgentCoreBrowserSessions"
-        Effect = "Allow"
-        Action = [
-          "bedrock-agentcore:StartBrowserSession",
-          "bedrock-agentcore:InvokeBrowser",
-          "bedrock-agentcore:StopBrowserSession",
-          "bedrock-agentcore:GetBrowserSession",
-          "bedrock-agentcore:ListBrowserSessions",
-          # Required for Playwright-over-CDP (DOM/network/form access).
-          # Without this the CDP WebSocket returns 403.
-          "bedrock-agentcore:ConnectBrowserAutomationStream",
-          "bedrock-agentcore:UpdateBrowserStream",
-        ]
+        Sid      = "DenyDirectAgentCoreBrowser"
+        Effect   = "Deny"
+        Action   = ["bedrock-agentcore:*"]
         Resource = "*"
-        Condition = {
-          StringEquals = {
-            "aws:RequestedRegion" = var.aws_region
-          }
-        }
       }
     ]
   })

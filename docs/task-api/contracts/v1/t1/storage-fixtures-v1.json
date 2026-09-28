@@ -1,0 +1,269 @@
+{
+  "fixture_version": "1.3.0",
+  "design_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
+  "issue": 5794,
+  "description": "Reusable T1 storage scenarios for V1 and V3. These identify deterministic source tests and the separate real-IAM lane; they are fixtures, not an evaluation report.",
+  "commands": {
+    "storage": "cd modules/gateway && uv run --frozen --extra dev pytest -q tests/tasks/test_records.py tests/tasks/test_store.py",
+    "infrastructure": "uv run --frozen --project modules/gateway --extra dev pytest -q modules/agent-factory/tests/terraform/test_task_storage_boundary.py",
+    "contract_regression": "python3 scripts/task-api/check-contracts.py",
+    "terraform_validate": "terraform -chdir=modules/agent-factory/webhook-ingress/infra validate"
+  },
+  "fixed_identities": {
+    "task_id": "tsk_2f1c9d7a-3b4e-4c5d-8e9f-0a1b2c3d4e5f",
+    "invocation_id": "9c8b7a6d-5e4f-4a3b-9c8d-7e6f5a4b3c2d",
+    "dispatch_id": "abcdef01-2345-4678-89ab-cdef01234567",
+    "locator_pk": "TASK_WORK_ID#abcdef01-2345-4678-89ab-cdef01234567",
+    "locator_sk": "BINDING",
+    "work_event_id": "TASK_WORK#tsk_2f1c9d7a-3b4e-4c5d-8e9f-0a1b2c3d4e5f",
+    "work_arrived_at": "DISPATCH#abcdef01-2345-4678-89ab-cdef01234567"
+  },
+  "scenarios": [
+    {
+      "id": "T1-CONCURRENCY-01",
+      "criteria": [
+        "T1-AC01",
+        "V1-05"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_concurrent_same_key_submissions_yield_one_task_and_one_dispatch_intent",
+        "tests/tasks/test_store.py::test_reusing_a_key_with_a_different_payload_is_a_defined_conflict"
+      ],
+      "assertions": [
+        "one stable task",
+        "one dispatch work record",
+        "one protected locator",
+        "complete immutable run grant",
+        "conflicting digest is refused"
+      ],
+      "lane": "moto DynamoDB transactional semantics"
+    },
+    {
+      "id": "T1-NUMERIC-01",
+      "criteria": [
+        "T1-AC01",
+        "T1-AC05"
+      ],
+      "tests": [
+        "tests/tasks/test_records.py::test_canonical_json_accepts_valid_fractional_and_exponential_numbers",
+        "tests/tasks/test_store.py::test_acceptance_persists_valid_fractional_json_and_replays_stably"
+      ],
+      "assertions": [
+        "finite fractional and exponential JSON numbers use RFC 8785 forms",
+        "DynamoDB persists valid fractional payloads",
+        "numeric request replay keeps one stable digest and task"
+      ],
+      "lane": "RFC 8785 vectors plus moto DynamoDB persistence"
+    },
+    {
+      "id": "T1-CRASH-01",
+      "criteria": [
+        "T1-AC02",
+        "V1-05",
+        "V3-01"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_a_failed_acceptance_transaction_leaves_no_task_and_no_dispatch_intent"
+      ],
+      "assertions": [
+        "no accepted task",
+        "no claimable work",
+        "no authority locator"
+      ],
+      "lane": "moto DynamoDB fault injection"
+    },
+    {
+      "id": "T1-BINDING-01",
+      "criteria": [
+        "T1-AC04",
+        "V1-07",
+        "V3-02"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_envelope_digest_disagreement_fails_closed",
+        "tests/tasks/test_store.py::test_revoked_current_policy_fails_work_resolution",
+        "tests/tasks/test_store.py::test_incomplete_or_stale_locator_and_generation_bindings_fail_closed",
+        "tests/tasks/test_store.py::test_protected_input_digest_disagreement_fails_work_resolution",
+        "tests/tasks/test_store.py::test_acceptance_rejects_an_input_digest_not_derived_from_the_public_request"
+      ],
+      "assertions": [
+        "exact primary-key locator",
+        "full envelope digest agreement",
+        "current task binding",
+        "incomplete/stale locator and task generation rejected",
+        "protected input digest disagreement rejected",
+        "immutable input digest must derive from the exact accepted public request"
+      ],
+      "lane": "moto DynamoDB integrity mutation"
+    },
+    {
+      "id": "T1-REPORT-AUTHORITY-01",
+      "criteria": [
+        "T1-AC04",
+        "V1-07",
+        "V3-02"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_report_is_deduplicated_with_event_under_current_attempt_authority",
+        "tests/tasks/test_store.py::test_report_id_reuse_with_different_content_conflicts",
+        "tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_append_a_report",
+        "tests/tasks/test_store.py::test_policy_revocation_racing_a_report_aborts_report_and_event",
+        "tests/tasks/test_store.py::test_result_evidence_requires_current_attempt_authority",
+        "tests/tasks/test_store.py::test_protected_grant_mutation_racing_a_report_aborts_report_and_event"
+      ],
+      "assertions": [
+        "report receipt and event commit in one transaction",
+        "stable report UUID deduplicates identical content and conflicts on mutation",
+        "stale runtime attempts and racing policy revocation commit neither report nor event",
+        "result and outcome mutation requires current attempt authority",
+        "protected input/model/limit mutation racing a report commits neither report nor event"
+      ],
+      "lane": "moto DynamoDB cross-table authority transactions"
+    },
+    {
+      "id": "T1-COMMAND-AUTHORITY-01",
+      "criteria": [
+        "T1-AC04",
+        "T1-AC05",
+        "V1-07"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_command_schema_and_byte_limits_are_enforced_before_persistence",
+        "tests/tasks/test_store.py::test_pending_and_lifetime_input_limits_preserve_a_reserved_cancel_slot",
+        "tests/tasks/test_store.py::test_input_lifetime_limit_is_conditionally_enforced",
+        "tests/tasks/test_store.py::test_revoked_or_foreign_command_authority_cannot_mutate_task",
+        "tests/tasks/test_store.py::test_policy_revocation_racing_input_aborts_command_and_event",
+        "tests/tasks/test_store.py::test_task_owner_change_racing_a_command_aborts_command_and_event",
+        "tests/tasks/test_store.py::test_command_capability_revocation_race_aborts_command_and_event"
+      ],
+      "assertions": [
+        "only closed input/cancel payloads within character and canonical-byte limits persist",
+        "ten pending and 100 lifetime input limits are conditional while cancellation retains capacity",
+        "the protected owner, current binding, policy, and operation capability are checked in the command transaction",
+        "racing revocation commits neither command nor event"
+      ],
+      "lane": "moto DynamoDB cross-table authority and limit transactions"
+    },
+    {
+      "id": "T1-TURN-FENCING-01",
+      "criteria": [
+        "T1-AC04",
+        "T1-AC05",
+        "V1-07",
+        "V3-02"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_replaced_runtime_attempt_cannot_commit_a_turn",
+        "tests/tasks/test_store.py::test_attempt_replacement_racing_turn_commit_aborts_consumption",
+        "tests/tasks/test_store.py::test_turn_numbers_must_be_sequential",
+        "tests/tasks/test_store.py::test_turn_commit_enforces_the_protected_maximum",
+        "tests/tasks/test_store.py::test_terminal_transition_refuses_acknowledged_pending_input",
+        "tests/tasks/test_store.py::test_input_winning_race_blocks_terminal_completion",
+        "tests/tasks/test_store.py::test_terminal_completion_winning_race_rejects_input_admission"
+      ],
+      "assertions": [
+        "only the current invocation, generation, and runtime attempt can consume a command into a turn",
+        "attempt replacement racing turn commitment leaves the command accepted and unconsumed",
+        "turn numbers are contiguous and cannot exceed the immutable accepted max_turns limit",
+        "terminal transition requires zero acknowledged pending input in the same transaction",
+        "input-versus-completion races leave either a live task with accepted input or a terminal task with no admitted input"
+      ],
+      "lane": "moto DynamoDB attempt, limit, and terminal race transactions"
+    },
+    {
+      "id": "T1-TWO-LEASE-01",
+      "criteria": [
+        "T1-AC02",
+        "T1-AC04",
+        "V3-01",
+        "V3-02"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_dispatch_recovery_uses_two_independent_leases",
+        "tests/tasks/test_store.py::test_recovery_boolean_cannot_fabricate_publication",
+        "tests/tasks/test_store.py::test_stale_publication_token_cannot_settle_a_reclaim",
+        "tests/tasks/test_store.py::test_stale_recovery_token_cannot_queue_or_settle_reclaimed_work",
+        "tests/tasks/test_store.py::test_recovery_claim_revalidates_due_time_against_the_sparse_index_key"
+      ],
+      "sequence": [
+        "recovery claim",
+        "dispatch claim",
+        "publication settle with actual SQS ID",
+        "recovery settle with original token"
+      ],
+      "assertions": [
+        "distinct lease tokens",
+        "competing publication claim refused",
+        "boolean cannot fabricate publication",
+        "settled work leaves sparse index",
+        "stale recovery token cannot mutate task state or event history",
+        "recovery claim revalidates due time and index-key agreement before leasing"
+      ],
+      "lane": "moto DynamoDB conditional leases"
+    },
+    {
+      "id": "T1-REPLACEMENT-01",
+      "criteria": [
+        "T1-AC04",
+        "V3-02"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_replacement_work_invalidates_old_locator_and_lease"
+      ],
+      "assertions": [
+        "new work UUID",
+        "old locator revoked not retargeted",
+        "old lease cannot settle replacement"
+      ],
+      "lane": "moto DynamoDB transaction"
+    },
+    {
+      "id": "T1-RETENTION-01",
+      "criteria": [
+        "T1-AC05",
+        "V1-09"
+      ],
+      "tests": [
+        "tests/tasks/test_store.py::test_an_active_task_carries_no_expiry_stamp",
+        "tests/tasks/test_store.py::test_terminal_content_cleanup_is_bounded_and_preserves_tombstone",
+        "tests/tasks/test_store.py::test_settled_work_and_locator_follow_bounded_retention",
+        "tests/tasks/test_store.py::test_marking_recovery_required_clears_any_expiry",
+        "tests/tasks/test_store.py::test_recovery_required_clears_ttl_from_artifacts_work_idempotency_and_child_evidence",
+        "tests/tasks/test_store.py::test_content_cleanup_racing_recovery_required_leaves_no_ttl",
+        "tests/tasks/test_store.py::test_work_compaction_racing_recovery_required_preserves_envelope",
+        "tests/tasks/test_store.py::test_artifact_binding_is_owner_checked_and_claimed_atomically",
+        "tests/tasks/test_store.py::test_foreign_owner_cannot_claim_artifact",
+        "tests/tasks/test_store.py::test_artifact_binding_replay_rejects_a_retargeted_object_key",
+        "tests/tasks/test_store.py::test_artifact_content_type_disagreement_aborts_acceptance",
+        "tests/tasks/test_store.py::test_acceptance_rejects_an_artifact_not_present_in_the_public_request"
+      ],
+      "assertions": [
+        "active task/work/idempotency/artifact bindings have no TTL",
+        "unclaimed uploads expire after 24 hours",
+        "recovery-required metadata, idempotency, artifact, work, and child evidence carry no TTL",
+        "content-page cleanup and work compaction lose a race to recovery retention without deleting evidence",
+        "artifact object keys remain gateway-derived and immutable",
+        "artifact content type is conditionally bound with owner, version, and digest",
+        "server-resolved artifacts cannot exceed or differ from caller-requested artifact IDs"
+      ],
+      "lane": "moto DynamoDB retention"
+    },
+    {
+      "id": "T1-IAM-01",
+      "criteria": [
+        "T1-AC04",
+        "V1-07"
+      ],
+      "tests": [
+        "modules/agent-factory/tests/terraform/test_task_storage_boundary.py"
+      ],
+      "assertions": [
+        "ForAnyValue LeadingKeys deny covers mixed task writes",
+        "legacy ingress cannot write TASK_WORK_ID locators",
+        "workers cannot access task artifact prefix"
+      ],
+      "lane": "static Terraform policy",
+      "required_followup_lane": "deployed AWS IAM simulation and attempted legacy/task writes"
+    }
+  ]
+}

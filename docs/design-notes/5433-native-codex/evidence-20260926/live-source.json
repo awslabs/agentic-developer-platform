@@ -1,0 +1,125 @@
+{
+  "model": "openai.gpt-6-sol",
+  "effort": "medium",
+  "status": "completed",
+  "model_calls": [
+    {
+      "provider_request_id": "36f441e4-8de3-40e9-9ec9-2fb3ebf370b8",
+      "duration_seconds": 1.888,
+      "usage": {
+        "input_tokens": 5612,
+        "input_tokens_details": {
+          "cache_write_tokens": 5610,
+          "cached_tokens": 0
+        },
+        "output_tokens": 103,
+        "output_tokens_details": {
+          "reasoning_tokens": 25
+        },
+        "total_tokens": 5715
+      }
+    },
+    {
+      "provider_request_id": "6a576d96-b1a1-49b9-96a1-f6817af8e9c4",
+      "duration_seconds": 1.832,
+      "usage": {
+        "input_tokens": 5916,
+        "input_tokens_details": {
+          "cache_write_tokens": 304,
+          "cached_tokens": 5610
+        },
+        "output_tokens": 159,
+        "output_tokens_details": {
+          "reasoning_tokens": 32
+        },
+        "total_tokens": 6075
+      }
+    },
+    {
+      "provider_request_id": "46507c03-a551-4f11-948f-30b00fad228c",
+      "duration_seconds": 1.76,
+      "usage": {
+        "input_tokens": 6269,
+        "input_tokens_details": {
+          "cache_write_tokens": 353,
+          "cached_tokens": 5914
+        },
+        "output_tokens": 109,
+        "output_tokens_details": {
+          "reasoning_tokens": 26
+        },
+        "total_tokens": 6378
+      }
+    },
+    {
+      "provider_request_id": "0bea6e2d-4e3b-46a6-8d90-28e4a0a4764e",
+      "duration_seconds": 2.004,
+      "usage": {
+        "input_tokens": 6609,
+        "input_tokens_details": {
+          "cache_write_tokens": 340,
+          "cached_tokens": 6267
+        },
+        "output_tokens": 103,
+        "output_tokens_details": {
+          "reasoning_tokens": 19
+        },
+        "total_tokens": 6712
+      }
+    },
+    {
+      "provider_request_id": "7b38fcb1-0957-4ae0-8f8a-bdb07b7d0427",
+      "duration_seconds": 1.89,
+      "usage": {
+        "input_tokens": 7066,
+        "input_tokens_details": {
+          "cache_write_tokens": 457,
+          "cached_tokens": 6607
+        },
+        "output_tokens": 168,
+        "output_tokens_details": {
+          "reasoning_tokens": 10
+        },
+        "total_tokens": 7234
+      }
+    },
+    {
+      "provider_request_id": "22447734-de37-4fea-a84e-d798539cc38f",
+      "duration_seconds": 3.536,
+      "usage": {
+        "input_tokens": 7592,
+        "input_tokens_details": {
+          "cache_write_tokens": 526,
+          "cached_tokens": 7064
+        },
+        "output_tokens": 442,
+        "output_tokens_details": {
+          "reasoning_tokens": 143
+        },
+        "total_tokens": 8034
+      }
+    }
+  ],
+  "tool_effects": 5,
+  "publication": {
+    "schema_version": "1.0",
+    "task_id": "tsk_f4f224fd-f675-4360-9ed1-8ca878ffa276",
+    "provider": "github",
+    "repository_id": "456",
+    "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "local_head": "75feeefaab184c81a40c3deef4b016b27fa0aecc",
+    "tree": "7305498e9cf5dc638c193665b89f7bfdb6427252",
+    "provider_head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "branch": "adp/task-f4f224fd-f675-4360-9ed1-8ca878ffa276",
+    "number": 7,
+    "url": "https://github.com/org/repo/pull/7",
+    "state": "open",
+    "draft": false
+  },
+  "limitations": [
+    "Task admission identity and ledger use Moto fixtures",
+    "provider source and PR publication use fixtures",
+    "gateway inference is live and charged to the authenticated user"
+  ],
+  "qualification_kind": "live inference with fixture task authority and source provider"
+}
