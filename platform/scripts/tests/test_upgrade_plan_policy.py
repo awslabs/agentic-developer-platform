@@ -88,6 +88,36 @@ class PlanPolicyTests(unittest.TestCase):
         r["address"] = "null_resource.unreviewed"
         self.assertTrue(self.evaluate(r, "webhook-ingress")["blocked"])
 
+    def test_nodepool_manifest_replacement_keeps_live_pool(self):
+        old = {"cluster_name": "adp-dev-eks-cluster", "cluster_region": "us-east-1",
+               "manifest_sha": "a" * 64}
+        resource = change("null_resource.aggressive_packer_nodepool", "null_resource",
+                          {"triggers": old}, {"triggers": dict(old, manifest_sha="b" * 64)},
+                          ("create", "delete"))
+        self.assertEqual(self.evaluate(resource, "platform")["routine"], [resource["address"]])
+        mutations = {
+            "delete first": lambda r: r["change"].update(actions=["delete", "create"]),
+            "different cluster": lambda r: r["change"]["after"]["triggers"].update(cluster_name="adp-prod-eks-cluster"),
+            "different region": lambda r: r["change"]["after"]["triggers"].update(cluster_region="us-west-2"),
+            "unknown trigger": lambda r: r["change"]["after"]["triggers"].update(extra="value"),
+            "invalid digest": lambda r: r["change"]["after"]["triggers"].update(manifest_sha="unknown"),
+            "wrong kind": lambda r: r.update(type="aws_eks_nodegroup"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                bad = copy.deepcopy(resource)
+                mutate(bad)
+                self.assertEqual(self.evaluate(bad, "platform")["blocked"], [bad["address"]])
+
+    def test_security_retirements_still_require_plan_review(self):
+        for address, kind in (
+            ("module.codebuild.aws_iam_role.codebuild", "aws_iam_role"),
+            ("module.eks.aws_eks_access_entry.admins[\"arn:aws:iam::123456789012:role/adp-dev-agent-runner-role\"]", "aws_eks_access_entry"),
+        ):
+            with self.subTest(address=address):
+                resource = change(address, kind, {"id": "existing"}, None, ("delete",))
+                self.assertEqual(self.evaluate(resource, "platform")["blocked"], [address])
+
     def test_scaledjob_delete_first_and_unknown_target_remain_blocked(self):
         old = {"namespace": "adp-agents", "cluster_name": "existing", "cluster_region": "us-east-1", "manifest_sha": "old"}
         r = change("null_resource.keda_scaledjob", "null_resource", {"triggers": old},

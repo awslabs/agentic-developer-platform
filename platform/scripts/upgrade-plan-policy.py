@@ -16,6 +16,22 @@ def routine(resource, module, account):
     before, after = change.get("before") or {}, change.get("after") or {}
     order = change["actions"]
     address = resource["address"]
+    if module == "platform" and address == "null_resource.aggressive_packer_nodepool":
+        # The marker now uses create_before_destroy. Terraform therefore skips
+        # its destroy provisioner on replacement and keeps the live NodePool
+        # while the new manifest is applied. Never allow the old delete-first
+        # plan, which removes the NodePool before recreating it.
+        old, new = before.get("triggers", {}), after.get("triggers", {})
+        keys = {"manifest_sha", "cluster_name", "cluster_region"}
+        return (resource.get("type") == "null_resource"
+                and order == ["create", "delete"]
+                and set(old) == set(new) == keys
+                and old["cluster_name"] == new["cluster_name"]
+                and old["cluster_region"] == new["cluster_region"]
+                and bool(re.fullmatch(r"adp-(?:dev|staging|prod)-eks-cluster", old["cluster_name"]))
+                and bool(re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", old["cluster_region"]))
+                and all(re.fullmatch(r"[0-9a-f]{64}", value)
+                        for value in (old["manifest_sha"], new["manifest_sha"])))
     if module in ("gateway", "gateway-alb-wire", "gateway-final"):
         if address in ("module.lambda_authorizer[0].aws_lambda_layer_version.pyjwt",
                        "module.budget_lambda[0].aws_lambda_layer_version.psycopg2"):
