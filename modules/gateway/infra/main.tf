@@ -214,6 +214,10 @@ resource "aws_iam_role_policy" "gateway_elasticache_iam_auth" {
 }
 
 # Cognito permissions (scoped to the gateway's Cognito pool).
+# Keep the existing read policy inline, but attach the lifecycle permissions as
+# a managed policy. The gateway role has many inline policies and IAM enforces
+# a 10,240-byte aggregate limit on them. Attach the managed policy before
+# shrinking the inline policy during an upgrade.
 # Read: onboarding identity lookup, admin group/user listing.
 # Write (AdminUpdateUserAttributes): onboarding approval syncs the approved
 # user's role/org onto their Cognito custom: attributes so the pre-token Lambda
@@ -238,7 +242,20 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
           "cognito-idp:AdminUpdateUserAttributes"
         ]
         Resource = "arn:aws:cognito-idp:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:userpool/${module.cognito.cognito_user_pool_id}"
-      },
+      }
+    ]
+  })
+
+  depends_on = [module.cognito, aws_iam_role_policy_attachment.gateway_cognito_lifecycle]
+}
+
+resource "aws_iam_policy" "gateway_cognito_lifecycle" {
+  name        = "${local.name_prefix}-policy-gateway-cognito-lifecycle"
+  description = "Gateway identity, machine client and CLI login lifecycle in its Cognito pool"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
       {
         # Native identity lifecycle (#5010). Keep every write scoped to the
         # gateway pool; GetGroup is needed for idempotent CreateGroup retries.
@@ -289,6 +306,11 @@ resource "aws_iam_role_policy" "gateway_cognito_read" {
   })
 
   depends_on = [module.cognito]
+}
+
+resource "aws_iam_role_policy_attachment" "gateway_cognito_lifecycle" {
+  role       = local.gateway_service_irsa_role_name
+  policy_arn = aws_iam_policy.gateway_cognito_lifecycle.arn
 }
 
 # CFN template read permissions (issue #562)
