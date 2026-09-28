@@ -1,3 +1,4 @@
+import { loadSharedInstructions } from "./shared-instructions.js";
 import { Codex, type CodexOptions } from "@openai/codex-sdk";
 import { readFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -47,9 +48,10 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
   }
   const issue = JSON.parse((await run("gh", ["issue", "view", String(task.issue), "--repo", task.repository,
     "--json", "number,title,body,comments,url,state"], { cwd: workspace })).stdout);
-  const persona = await readFile(new URL("../prompts/developer.md", import.meta.url), "utf8");
+  const persona = loadSharedInstructions("developer", await readFile(new URL("../prompts/developer.md", import.meta.url), "utf8"));
   const options: CodexOptions = {
     baseUrl: task.baseUrl, apiKey: task.apiKey,
+    config: { developer_instructions: persona.text },
     // Keep the worker's shell environment and credential wrappers, as Claude does.
     env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
   };
@@ -68,9 +70,9 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
   };
   let result;
   {
-    result = await runDeveloperStream(thread, developerPrompt(task, issue, branch, persona), {
+    result = await runDeveloperStream(thread, developerPrompt(task, issue, branch, ""), {
       signal: AbortSignal.any([AbortSignal.timeout(task.timeoutMs ?? 30 * 60 * 1000), ...(reporter?.control ? [reporter.control.signal] : [])]),
-    }, sink);
+    }, sink, persona.verify);
   }
   const localHead = (await run("git", ["rev-parse", "HEAD"], { cwd: workspace })).stdout.trim();
   const currentBranch = (await run("git", ["branch", "--show-current"], { cwd: workspace })).stdout.trim();

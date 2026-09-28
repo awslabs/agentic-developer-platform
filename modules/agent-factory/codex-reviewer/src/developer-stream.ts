@@ -27,9 +27,11 @@ export function publishDeveloperEvent(event: ThreadEvent, reporter: DeveloperRep
 
 export async function runDeveloperStream(
   thread: Pick<Thread, 'runStreamed' | 'id'>, prompt: string, options: TurnOptions, reporter: DeveloperReporter,
+  verifyInstructions: () => void = () => {},
 ): Promise<RunResult> {
   for (let attempt = 0; ; attempt++) {
     try {
+      verifyInstructions();
       const { events } = await thread.runStreamed(attempt === 0 ? prompt :
         'The transport interrupted. Continue the same assignment from the current working tree. Preserve completed work and prior instructions; inspect before repeating commands.', options);
       const items: RunResult['items'] = [];

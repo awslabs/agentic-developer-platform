@@ -15,10 +15,12 @@ export async function runResumableTurn(
   prompt: string,
   options: TurnOptions,
   wait: (ms: number) => Promise<unknown> = pause,
+  verifyInstructions: () => void = () => {},
 ): Promise<RunResult> {
   for (let attempt = 0; ; attempt++) {
     options.signal?.throwIfAborted();
     try {
+      verifyInstructions();
       const result = await thread.run(attempt === 0 ? prompt
         : "The transport interrupted the previous turn. Continue that same assignment from the retained conversation and current working tree. Preserve completed work and test evidence; inspect any partially completed command before repeating it. All prior restrictions still apply. Return the required final result.", options);
       // The SDK can return without a terminal event. An arbitrary last message

@@ -1,5 +1,7 @@
 /** One reviewer owns inspection, repairs, CI and deterministic merge delivery. */
+import { loadSharedInstructions } from "./shared-instructions.js";
 import { Codex } from "@openai/codex-sdk";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -87,8 +89,9 @@ export async function observePublishedRepair(
 }
 
 function services(runtime: ReviewRuntime & { repository: string }): EngineReviewServices {
+  const instructions = loadSharedInstructions("reviewer", readFileSync(new URL("../prompts/reviewer.md", import.meta.url), "utf8"));
   const codex = new Codex({ baseUrl: runtime.proxyBaseUrl,
-    apiKey: "sigv4-proxy-placeholder", env: childEnvironment() });
+    apiKey: "sigv4-proxy-placeholder", config: { developer_instructions: instructions.text }, env: childEnvironment() });
   // Retained turns share one execution allowance; CI polling does not consume it.
   const budget = new ModelExecutionBudget(Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000));
   const thread = () => codex.startThread({ workingDirectory: runtime.workspace,
@@ -109,8 +112,8 @@ function services(runtime: ReviewRuntime & { repository: string }): EngineReview
     checks: observeReviewerChecks,
     deliver: (result, envelope) => deliverEngineReview(github, result, envelope),
     review: async prompt => budget.run(async signal => parseEngineVerdict((await runResumableTurn(inspection, prompt,
-      { outputSchema: engineReviewSchema, signal })).finalResponse)),
-    fix: async prompt => { await budget.run(signal => runResumableTurn(repair, prompt, { signal })); },
+      { outputSchema: engineReviewSchema, signal }, undefined, instructions.verify)).finalResponse)),
+    fix: async prompt => { await budget.run(signal => runResumableTurn(repair, prompt, { signal }, undefined, instructions.verify)); },
   };
 }
 

@@ -91,6 +91,9 @@ WORKDIR /build
 COPY modules/agent-factory/codex-reviewer/package.json modules/agent-factory/codex-reviewer/package-lock.json ./
 RUN npm ci
 COPY modules/agent-factory/codex-reviewer/tsconfig.json ./
+COPY modules/agent-factory/codex-reviewer/build-shared.mjs ./
+COPY modules/agent-factory/codex-harness/package.json /codex-harness/package.json
+COPY modules/agent-factory/codex-harness/src/projection.ts /codex-harness/src/projection.ts
 COPY modules/agent-factory/codex-reviewer/src/ ./src/
 RUN npm run build && npm prune --omit=dev
 

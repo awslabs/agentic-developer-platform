@@ -1,3 +1,4 @@
+import { loadSharedInstructions } from "./shared-instructions.js";
 import { Codex } from "@openai/codex-sdk";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -127,6 +128,7 @@ async function codexVerdict(
   codex: Codex,
   workspace: string,
   prompt: string,
+  verifyInstructions: () => void,
 ): Promise<ReviewVerdict> {
   const thread = codex.startThread({
     workingDirectory: workspace,
@@ -143,7 +145,7 @@ async function codexVerdict(
     signal: AbortSignal.timeout(
       Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000),
     ),
-  });
+  }, undefined, verifyInstructions);
   return parseVerdict(turn.finalResponse);
 }
 
@@ -151,6 +153,7 @@ async function applyMechanicalFixes(
   codex: Codex,
   workspace: string,
   findings: ReviewFinding[],
+  verifyInstructions: () => void,
 ): Promise<void> {
   const thread = codex.startThread({
     workingDirectory: workspace,
@@ -166,7 +169,7 @@ async function applyMechanicalFixes(
     signal: AbortSignal.timeout(
       Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000),
     ),
-  });
+  }, undefined, verifyInstructions);
 }
 
 export async function validateAutofix(
@@ -248,17 +251,19 @@ async function runIssueReview(
   const github = new GitHubClient(envelope.repository, runtime.getGitHubToken ?? (async () => runtime.githubToken));
   const [issue, persona] = await Promise.all([
     github.getIssue(envelope.issue.number),
-    readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8"),
+    readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8").then(text => loadSharedInstructions("reviewer", text)),
   ]);
   const codex = new Codex({
     baseUrl: runtime.proxyBaseUrl,
     apiKey: "sigv4-proxy-placeholder",
+    config: { developer_instructions: persona.text },
     env: childEnvironment(),
   });
   const verdict = await codexVerdict(
     codex,
     runtime.workspace,
-    issueReviewPrompt(persona, issue, envelope.issue.triggering_comment),
+    issueReviewPrompt("", issue, envelope.issue.triggering_comment),
+    persona.verify,
   );
   await github.commentOnce(
     envelope.issue.number,
@@ -312,17 +317,19 @@ async function runPullRequestReview(
     const trustedGitConfig = await readFile(join(workspace, ".git", "config"), "utf8");
     const [issue, persona] = await Promise.all([
       github.getIssue(envelope.pull_request.issue_number),
-      readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8"),
+      readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8").then(text => loadSharedInstructions("reviewer", text)),
     ]);
     const codex = new Codex({
       baseUrl: runtime.proxyBaseUrl,
       apiKey: "sigv4-proxy-placeholder",
+      config: { developer_instructions: persona.text },
       env: childEnvironment(),
     });
     let verdict = await codexVerdict(
       codex,
       workspace,
-      reviewerPrompt(persona, issue, initialPr, expected),
+      reviewerPrompt("", issue, initialPr, expected),
+      persona.verify,
     );
 
     const current = await remoteHead(
@@ -336,7 +343,7 @@ async function runPullRequestReview(
     const mechanical = blockers.filter((finding) => finding.fixClass === "mechanical");
     const applyFixes = (process.env.CODEX_REVIEWER_APPLY_FIXES ?? "true") === "true";
     if (blockers.length > 0 && mechanical.length > 0 && applyFixes) {
-      await applyMechanicalFixes(codex, workspace, mechanical);
+      await applyMechanicalFixes(codex, workspace, mechanical, persona.verify);
       const files = await validateAutofix(
         workspace,
         expected,
@@ -346,7 +353,8 @@ async function runPullRequestReview(
       verdict = await codexVerdict(
         codex,
         workspace,
-        `${persona}\n\nRe-review the complete working-tree diff against origin/${envelope.pull_request.base_ref}. The controller applied attempted mechanical repairs for ${mechanical.map((finding) => finding.id).join(", ")}. Return a fresh structured verdict. Do not modify files.`,
+        `Re-review the complete working-tree diff against origin/${envelope.pull_request.base_ref}. The controller applied attempted mechanical repairs for ${mechanical.map((finding) => finding.id).join(", ")}. Return a fresh structured verdict. Do not modify files.`,
+        persona.verify,
       );
       if (requiresChanges(verdict)) {
         const body = `${verdict.summary}\n\nMechanical repairs were attempted locally but were not pushed because the fresh review still requested changes.`;

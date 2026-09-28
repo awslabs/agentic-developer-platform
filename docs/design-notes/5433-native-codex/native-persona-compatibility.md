@@ -1,0 +1,11 @@
+# Native Codex shared-instruction compatibility
+
+The native developer and reviewer retain their existing SDK execution, mentions, credential environment, deadlines, review controller and completion gates. A small compatibility adapter supplies the maintained shared projection as developer instructions. Task/issue/repository inputs remain in their existing user context. Claude implementation and canonical persona files are unchanged.
+
+The adapter composes platform workflow, selected-connection credential guidance, human communication, the exact developer or reviewer persona, and its mapped phase rules. The native adapter prompt follows those sources to retain its tool and completion contract. Shared code owns composition and provenance; the native package compiles that same SDK-independent source during its build.
+
+The image packages canonical rules under `/app/codex-harness/rules`. The adapter resolves that trusted installation path and refuses missing/invalid sources before model work. It never selects policy from the target repository. Each invocation retains composed rule bytes and digest evidence. Portable optional skills are copied to a private bounded run directory with digest-bound references and scripts. Continuations verify retained skill bytes; a changed bundle refuses instead of silently loading a new version. Skill discovery never grants credentials, permissions or new SDK tools.
+
+Developer delivery still requires its existing validated PR evidence. Reviewer issue/PR and engine-review paths retain their original review, repair, CI and merge controllers. The compatibility hooks run before existing SDK turns; they do not replace the controllers or change model precedence.
+
+Qualification includes the existing native test suite, real pinned-SDK request inspection separating repository text from platform instructions, retained-skill tampering/isolation, and relocated image-layout fixtures in which both native personas actually use the SDK file tool to read a frozen maintained Superplane skill. These are local fixture-model tests; they make no claim of live deployment, AWS access or full persona qualification. #6676 retains delivery/review evidence; #6196 and #6198 retain their broader operational acceptance criteria.
