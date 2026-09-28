@@ -300,6 +300,27 @@ def test_generic_tool_registry_is_exact_and_host_owned(monkeypatch):
         instance.tool('https://untrusted.example', body)
 
 
+def test_code_interpreter_host_uses_exact_signed_route(transport, monkeypatch):
+    calls, proof = transport
+    endpoint = 'https://gateway.execute-api.us-east-1.amazonaws.com/dev/tools/code-interpreter'
+    monkeypatch.setenv('ADP_TASK_TOOL_ROUTES', json.dumps({'code_interpreter.start': endpoint}))
+    run = client.TaskRunClient()
+    run._run_credential = 'host-only-credential'
+    run.tool('code_interpreter.start', {'operation': 'start', 'payload': {}})
+    url, request, trusted = calls[-1]
+    assert url == endpoint and trusted is False
+    assert request['headers']['Authorization'].startswith('AWS4-HMAC-SHA256 ')
+    assert request['headers']['X-Adp-Run-Credential'] == 'host-only-credential'
+    assert request['headers']['X-Adp-Workload-Token'] == proof
+    with pytest.raises(client.TaskRunClientError):
+        run.tool('code_interpreter.execute', {'operation': 'execute', 'payload': {}})
+    run._bootstrap_body = {}
+    run._stopping = True
+    run._renew_for('cyber', {'operation': 'close'})
+    with pytest.raises(client.TaskRunClientError):
+        run._renew_for('cyber', {'operation': 'execute'})
+
+
 @pytest.mark.parametrize("action", ["repository-publication", "repository-completion"])
 def test_repository_delivery_uses_real_allowlisted_signed_transport(transport, action):
     calls, proof = transport
@@ -349,3 +370,18 @@ def test_service_backend_does_not_add_dependencies_to_model_only_tasks(transport
     run.bootstrap({"schema_version": "1.0", "task_id": "task-test", "invocation_id": "invocation-test"})
     assert run._validation_applicable is False
     assert run._hosted_validation() is None
+
+
+def test_code_session_cleanup_is_automatically_routed_on_task_finalization(transport, monkeypatch):
+    endpoint = "https://gateway.execute-api.us-east-1.amazonaws.com/dev/tools/code-interpreter"
+    monkeypatch.setenv("ADP_TASK_TOOL_ROUTES", json.dumps({"code_interpreter.start": endpoint}))
+    monkeypatch.setenv("ADP_TASK_TOOL_CLEANUP", "[]")
+    run = client.TaskRunClient()
+    calls = []
+    def post(action, body, **kwargs):
+        calls.append((action, kwargs.get("tool_endpoint")))
+        return {"schema_version": "1.0", "task_id": "task", "operation_id": "op",
+                "operation_status": "confirmed", "result": {"status": "confirmed", "pending_jobs": []}}
+    monkeypatch.setattr(run, "_post", post)
+    assert run.cyber({"operation": "cancel_jobs", "payload": {}})["operation_status"] == "confirmed"
+    assert calls == [("cyber", endpoint), ("cyber", None)]

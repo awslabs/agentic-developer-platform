@@ -153,6 +153,29 @@ variable "capability_enabled" {
   type        = bool
   default     = false
 }
+variable "code_interpreter_enabled" {
+  description = "Admit Task Code Interpreter operations after a SANDBOX resource and grants are qualified. Disabled by default."
+  type        = bool
+  default     = false
+}
+variable "code_interpreter_identifier" {
+  description = "Identifier of an operator-owned, network-isolated AgentCore Code Interpreter."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.code_interpreter_identifier == "" || can(regex("^[a-zA-Z][a-zA-Z0-9_]{0,47}-[a-zA-Z0-9]{10}$", var.code_interpreter_identifier))
+    error_message = "Supply a single Code Interpreter identifier."
+  }
+}
+variable "code_interpreter_arn" {
+  description = "Exact ARN of the same AgentCore Code Interpreter; qualify its SANDBOX configuration before enabling."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.code_interpreter_arn == "" || can(regex("^arn:aws:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:code-interpreter-custom/[a-zA-Z][a-zA-Z0-9_]{0,47}-[a-zA-Z0-9]{10}$", var.code_interpreter_arn))
+    error_message = "Supply an exact Code Interpreter ARN, not a wildcard."
+  }
+}
 variable "vpc_id" {
   description = "Optional VPC for a service-owned security group with no ingress and HTTPS egress."
   type        = string

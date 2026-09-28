@@ -59,7 +59,7 @@ def authorize_tool(repo, policies, identity, tool, *, cleanup=False, env=None):
         # there is no outstanding domain work before terminal settlement.
         # The service must bind every cancelled resource to this verified Task.
         _, operation = tool.split(".")
-        if operation != "cancel_jobs":
+        if operation != "cancel_jobs" and tool != "code_interpreter.close":
             raise HTTPException(403, "Only Task cleanup is permitted")
     else:
         if (

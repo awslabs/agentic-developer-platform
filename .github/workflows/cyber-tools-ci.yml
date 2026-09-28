@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install standalone runtime and test dependencies
-        run: python -m pip install boto3==1.36.0 requests==2.34.2 fastapi==0.136.3 pydantic==2.12.5 rfc8785==0.1.4 'moto[dynamodb,s3,sqs]==5.0.27' pytest==9.0.3 ruff==0.9.6 httpx==0.28.1 Pillow
+        run: python -m pip install boto3==1.43.103 requests==2.34.2 fastapi==0.136.3 pydantic==2.12.5 rfc8785==0.1.4 'moto[dynamodb,s3,sqs]==5.0.27' pytest==9.0.3 ruff==0.9.6 httpx==0.28.1 Pillow
       - name: Check shared library and domain service
         env:
           PYTHONPATH: modules/tools:modules/domain-apps/cyber/tools:modules/domain-apps/cyber/agent/skills/url-analysis

@@ -16,7 +16,7 @@ variables { aws_account_id = "123456789012" }
 run "disabled_creates_nothing" {
   command = plan
   assert {
-    condition     = length(aws_lambda_function.service) == 0 && length(aws_dynamodb_table.operations) == 0 && length(aws_api_gateway_resource.cyber) == 0 && length(aws_iam_role_policy.worker) == 0
+    condition     = length(aws_lambda_function.service) == 0 && length(aws_dynamodb_table.operations) == 0 && length(aws_api_gateway_resource.cyber) == 0 && length(aws_iam_role_policy.worker) == 0 && length(aws_api_gateway_resource.code_interpreter) == 0
     error_message = "The tools service must be opt-in."
   }
 }
@@ -55,6 +55,10 @@ run "enabled_route_is_scoped_and_image_is_immutable" {
   assert {
     condition     = aws_api_gateway_method.cyber[0].authorization == "AWS_IAM" && aws_api_gateway_integration.cyber[0].type == "AWS_PROXY"
     error_message = "Cyber route requires IAM and the isolated Lambda proxy."
+  }
+  assert {
+    condition     = aws_api_gateway_method.code_interpreter[0].authorization == "AWS_IAM" && aws_lambda_permission.code_interpreter[0].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/tools/code-interpreter" && aws_lambda_function.service[0].environment[0].variables["ADP_CODE_INTERPRETER_ENABLED"] == "false"
+    error_message = "The new exact-route IAM integration must be disabled by default."
   }
   assert {
     condition     = aws_lambda_permission.api[0].source_arn == "arn:aws:execute-api:us-east-1:123456789012:abc123/dev/POST/tools/cyber" && aws_lambda_permission.api[0].source_account == "123456789012"

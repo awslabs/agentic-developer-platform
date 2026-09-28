@@ -168,9 +168,12 @@ def test_model_only_task_can_cleanup_without_domain_grants(authority):
     authority.policy["status"] = "disabled"
     authority.env["ADP_TASK_PERSONA_TOOLS"] = "{}"
     assert check(authority, "cyber.cancel_jobs", cleanup=True)["task"]["tool_grants"] == []
+    assert check(authority, "code_interpreter.close", cleanup=True)["task"]["tool_grants"] == []
     authority.policies.get.assert_not_called()
     with pytest.raises(HTTPException):
         check(authority, "cyber.triage", cleanup=True)
+    with pytest.raises(HTTPException):
+        check(authority, "code_interpreter.execute", cleanup=True)
 
 
 def test_cleanup_exception_cannot_borrow_another_task_identity(authority):

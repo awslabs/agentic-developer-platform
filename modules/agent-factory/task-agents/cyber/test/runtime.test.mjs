@@ -92,6 +92,20 @@ test('tool citations let an aliased report correct exact references before accep
  assert.deepEqual(bridge.report,value);
 });
 
+test('Code Interpreter grants use the generic Task tool host and cite only confirmed artifacts',async()=>{
+ const writes=[];const initial={...start(),tool_grants:['code_interpreter.start','code_interpreter.execute','code_interpreter.result']};
+ const bridge=new HostBridge(initial,value=>writes.push(value));const tools=cyberTools(bridge);
+ assert.deepEqual(tools.filter(value=>value.name.startsWith('code_')).map(value=>value.name),['code_start','code_execute','code_result']);
+ const pending=tools.find(value=>value.name==='code_start').handler({});
+ await tick();const request=writes.find(value=>value.type==='tool.request');
+ assert.equal(request.tool,'code_interpreter.start');assert.deepEqual(request.payload,{});
+ bridge.receive({...request,type:'tool.result',operation_status:'confirmed',result:{session_id:'a'.repeat(64)},artifact:{artifact_id:'art_session'}});
+ const receipt=JSON.parse((await pending).content[0].text);
+ assert.deepEqual(receipt.evidence_refs,[{ref:'art_session',source:'artifact',artifact_id:'art_session'}]);
+ await tools.find(value=>value.name==='code_start').handler({});assert.equal(writes.filter(value=>value.type==='tool.request').length,1);
+ assert.throws(()=>tools.find(value=>value.name==='code_execute').inputSchema.language.parse('javascript'));
+});
+
 test('Archive submission polls accepted work without replaying the query',async()=>{
  const bridge=new HostBridge(start(),()=>{});const calls=[];const waits=[];
  bridge.cyber=async(operation,payload)=>{calls.push(operation);return {operation_status:'confirmed',result:{scan_id:'a'.repeat(64),status:calls.length<3?'pending':'completed',view_id:'view1'}};};
@@ -182,4 +196,23 @@ test('SDK system-role reminders use the Anthropic system field without changing 
  assert.equal(value.tools[0].name,'browser_start');assert.equal(messages[1].role,'system');
  assert.throws(()=>normalizeRequest({messages:[{role:'system',content:'Reminder only'}]},8001));
  assert.throws(()=>normalizeRequest({messages:[messages[0],{role:'system',content:[{type:'tool_use',id:'bad'}]}]},8001));
+});
+
+
+test('Code execution blocks a final report until terminal result or confirmed close', async () => {
+  const bridge = new HostBridge({...start(), tool_grants: ['execute','result','close'].map(n=>'code_interpreter.'+n)},()=>{});
+  const tools = cyberTools(bridge); const call=(name,payload)=>tools.find(t=>t.name===name).handler(payload);
+  const session='a'.repeat(64); const execution=randomUUID();
+  bridge.tool=async()=>({operation_status:'pending',result:{status:'pending',execution_id:execution}});
+  await call('code_execute',{session_id:session,code:'print(5)',language:'python'});
+  assert.equal((await call('submit_report',report())).isError,true);
+  bridge.tool=async()=>({operation_status:'confirmed',result:{status:'completed',output:'5'}});
+  await call('code_result',{session_id:session,execution_id:execution});
+  assert.equal(JSON.parse((await call('submit_report',report())).content[0].text).accepted,true);
+  bridge.tool=async()=>{throw new Error('response lost')};
+  await assert.rejects(call('code_execute',{session_id:session,code:'print(6)',language:'python'}));
+  assert.equal((await call('submit_report',report())).isError,true);
+  bridge.tool=async()=>({operation_status:'confirmed',result:{status:'closed'}});
+  await call('code_close',{session_id:session});
+  assert.equal(JSON.parse((await call('submit_report',report())).content[0].text).accepted,true);
 });

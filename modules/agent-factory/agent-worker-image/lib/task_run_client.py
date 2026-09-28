@@ -121,6 +121,13 @@ class TaskRunClient:
         self._traceparent = None
         self._tool_cleanup = json.loads(os.environ.get("ADP_TASK_TOOL_CLEANUP", "[]"))
         self._tool_routes = json.loads(os.environ.get("ADP_TASK_TOOL_ROUTES", "{}"))
+        # Code sessions must participate in host finalization, even if the model
+        # never calls close. Reuse the configured endpoint and Task cleanup wire.
+        code_endpoint = self._tool_routes.get("code_interpreter.start")
+        if code_endpoint:
+            self._tool_routes["code_interpreter.cancel_jobs"] = code_endpoint
+            if "code_interpreter.cancel_jobs" not in self._tool_cleanup:
+                self._tool_cleanup.append("code_interpreter.cancel_jobs")
         self._base = base
         self._timeout = timeout
         self._run_credential: str | None = None
@@ -296,7 +303,7 @@ class TaskRunClient:
             return response
 
     def _renew_for(self, action, body):
-        stop_only = (action == "tool-authorize" and body.get("cleanup") is True) or action == "control" or (action == "cyber" and body.get("operation") == "cancel_jobs") or (
+        stop_only = (action == "tool-authorize" and body.get("cleanup") is True) or action == "control" or (action == "cyber" and body.get("operation") in {"cancel_jobs", "close"}) or (
             action == "finalize" and body.get("outcome") != "completed")
         if stop_only:
             return

@@ -78,11 +78,13 @@ resource "aws_lambda_function" "service" {
   reserved_concurrent_executions = 10
   environment {
     variables = merge(var.backend_environment, {
-      ADP_TASK_CYBER_ENABLED      = tostring(var.capability_enabled)
-      CYBER_TOOLS_TABLE           = aws_dynamodb_table.operations[0].name
-      CYBER_TOOLS_WORKER_ROLES    = join(",", sort(tolist(var.worker_role_arns)))
-      ADP_TASK_AUTHORITY_ENDPOINT = var.authority_endpoint
-      CYBER_SAMPLE_BUCKET         = trimprefix(var.sample_bucket_arn, "arn:aws:s3:::")
+      ADP_TASK_CYBER_ENABLED       = tostring(var.capability_enabled)
+      ADP_CODE_INTERPRETER_ENABLED = tostring(var.code_interpreter_enabled)
+      ADP_CODE_INTERPRETER_ID      = var.code_interpreter_identifier
+      CYBER_TOOLS_TABLE            = aws_dynamodb_table.operations[0].name
+      CYBER_TOOLS_WORKER_ROLES     = join(",", sort(tolist(var.worker_role_arns)))
+      ADP_TASK_AUTHORITY_ENDPOINT  = var.authority_endpoint
+      CYBER_SAMPLE_BUCKET          = trimprefix(var.sample_bucket_arn, "arn:aws:s3:::")
     })
   }
   dynamic "vpc_config" {
@@ -111,6 +113,10 @@ resource "aws_lambda_function" "service" {
     precondition {
       condition     = var.image_uri != "" && var.rest_api_id != "" && var.tools_parent_resource_id != "" && var.stage_name != "" && var.api_execution_arn != "" && var.authority_endpoint != "" && length(var.authority_invoke_arns) == 2 && length(var.worker_role_arns) > 0 && var.sample_bucket_arn != ""
       error_message = "Activation requires immutable image, existing API/stage/tools parent, both authority routes, worker roles and sample bucket."
+    }
+    precondition {
+      condition     = !var.code_interpreter_enabled || (var.enabled && var.code_interpreter_identifier != "" && var.code_interpreter_arn == "arn:aws:bedrock-agentcore:${var.aws_region}:${var.aws_account_id}:code-interpreter-custom/${var.code_interpreter_identifier}")
+      error_message = "Code Interpreter requires this stack and an exact resource in the confirmed account and region."
     }
     precondition {
       condition     = (length(var.subnet_ids) == 0) == (length(var.security_group_ids) == 0 && var.vpc_id == "")

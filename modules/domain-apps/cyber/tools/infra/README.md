@@ -5,6 +5,15 @@ existing REST API. It does not deploy the gateway, create a Function URL, create
 an API stage, or replace a shared API deployment. Both infrastructure activation
 (`enabled`) and operation admission (`capability_enabled`) default to false.
 
+The same Lambda image optionally serves IAM `POST /tools/code-interpreter`,
+separately gated by `code_interpreter_enabled=false`. See the shared
+[AgentCore Task contract](../../../../../docs/tools/agentcore-integration.md)
+for its grants, schemas, SANDBOX prerequisites, host route mapping, session
+reconciliation and rollback. Provisioning this module does **not** publish
+the existing REST API stage; coordinate deployment with its owner. Set the
+exact operator-owned resource ID and ARN through `code_interpreter_identifier`
+and `code_interpreter_arn`; verify isolation before enabling the separate flag.
+
 Follow the repository's [agent deployment guide](../../../../../docs/adp-platform-deployment/deploy-with-agent.md)
 and [quickstart](../../../../../docs/adp-platform-deployment/deploy-quickstart.md).
 Confirm the active AWS account before any apply. These are separate module
