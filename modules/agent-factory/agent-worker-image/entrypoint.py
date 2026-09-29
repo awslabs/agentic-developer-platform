@@ -2334,6 +2334,15 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
 
     bootstrap_log.step_success(4, "set_env")
 
+    # PR conversation mentions arrive as issue_comment with only a PR marker.
+    if is_codex_review and not is_codex_pr_review:
+        from lib.codex_pr_context import hydrate_pr_comment
+
+        if hydrate_pr_comment(envelope, run_cmd):
+            is_codex_pr_review = True
+            raw_message = json.dumps(envelope)
+
+
     # Step 4b: Compose OTEL_RESOURCE_ATTRIBUTES with per-run dimensions (#1630).
     # The ScaledJob template sets static attributes (service.namespace,
     # deployment.environment) and ENABLE_AGENT_OTEL=1 when the flag is on.

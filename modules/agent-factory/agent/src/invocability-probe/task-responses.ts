@@ -5,11 +5,11 @@ import { ProbeStart } from './gateway-client';
 
 export async function invokeTaskResponses(start: ProbeStart, body: string, timeout: number,
   request: typeof fetch = fetch) {
-  // Match the platform's qualified Mantle route; no arbitrary URLs or redirects.
+  // Match the platform's standard Bedrock Responses route; no preview host or redirects.
   if (!/^(us|eu|ap|ca|sa|me|af|il|mx)-[a-z]+-\d$/.test(start.region)) throw new Error('Unsupported Responses region');
-  const hostname = `bedrock-mantle.${start.region}.api.aws`;
+  const hostname = `bedrock-runtime.${start.region}.amazonaws.com`;
   const path = '/openai/v1/responses';
-  const payload = JSON.stringify({ ...JSON.parse(body), model: start.model_id, stream: false,
+  const payload = JSON.stringify({ ...JSON.parse(body), model: start.model_id.startsWith('openai.gpt-6-') ? `${start.region.split('-')[0]}.${start.model_id}` : start.model_id, stream: false,
     store: false, include: ['reasoning.encrypted_content'] });
   const signer = new SignatureV4({ credentials: { accessKeyId: start.access_key_id,
     secretAccessKey: start.secret_access_key, sessionToken: start.session_token },

@@ -112,3 +112,13 @@ def test_durable_operation_limit_survives_successful_settlements(admitted):
         operation(store, record, request.model_copy(update={"action": "settle", "result": "done"}))
     with pytest.raises(ClientError):
         operation(store, record, claim())
+
+
+def test_live_runtime_uses_process_environment_when_no_override(admitted, monkeypatch):
+    store, record, grant, env, _ = admitted
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert frozen_context(store, record, grant, None, now=NOW)["persona"] == "agent-codex-architect"
+    # An explicit empty override must not inherit ambient grants.
+    with pytest.raises(ValueError, match="disabled"):
+        frozen_context(store, record, grant, {}, now=NOW)

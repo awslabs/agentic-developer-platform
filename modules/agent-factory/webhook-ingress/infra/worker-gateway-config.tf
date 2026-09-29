@@ -8,6 +8,7 @@ locals {
     ADP_SHARED_WORKER_CONTINUATION_ENABLED = tostring(var.shared_worker_continuation_enabled)
     AGENT_WORKER_ROLE_ARN                  = aws_iam_role.agent_scaledjob.arn
     PERSONA_MODEL_MAPPING_ENABLED          = tostring(var.persona_model_mapping_enabled)
+    ADP_CODEX_GITHUB_PERSONAS              = join(",", sort(tolist(var.codex_github_personas)))
     PERSONA_MODEL_PRODUCER_ROLES           = join(",", distinct(concat([aws_iam_role.lambda_execution.arn, "arn:aws:iam::${local.account_id}:role/adp-${var.environment}-agent-gateway-ingest"], var.persona_model_additional_producer_roles)))
     ADP_RUN_TASKS_ENABLED                  = tostring(var.agent_authority_enabled)
     ADP_DOOR_SERVICE_URL                   = var.agent_door_service_url
@@ -113,4 +114,16 @@ variable "shared_worker_continuation_enabled" {
   description = "Allow explicitly accepted shared-role continuation after reporting and model admission are verified."
   type        = bool
   default     = false
+}
+
+variable "codex_github_personas" {
+  description = "Opt in to qualified GitHub Codex report personas after matching worker, gateway and model evidence are deployed. Native developer/reviewer selection is independent."
+  type        = set(string)
+  default     = []
+  validation {
+    condition = alltrue([for persona in var.codex_github_personas : contains([
+      "agent-codex-architect", "agent-codex-product", "agent-codex-pm", "agent-codex-intent-refinement"
+    ], persona)])
+    error_message = "Only implemented GitHub report personas may be enabled."
+  }
 }

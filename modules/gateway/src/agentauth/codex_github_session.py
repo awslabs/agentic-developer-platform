@@ -7,6 +7,7 @@ resolver and persona snapshot format; callers cannot supply identity or grants.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -67,6 +68,7 @@ def _snapshot(env, key):
 
 def frozen_context(store, record, grant, env, *, now=None):
     """Freeze once in the protected authority table, including on pod replacement."""
+    env = os.environ if env is None else env
     now = now or datetime.now(UTC)
     pk = f"TENANT#{record.tenant_id}"
     execution = store._read(pk, f"EXEC#{record.invocation_id}") or {}

@@ -9,7 +9,7 @@ it('signs the exact bounded body for one admitted Bedrock destination', async ()
   const receipt = await invokeTaskResponses(start, '{"input":"Reply OK.","max_output_tokens":64}', 10, request);
   expect(request).toHaveBeenCalledTimes(1);
   const [url, options] = request.mock.calls[0];
-  expect(url).toBe('https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses');
+  expect(url).toBe('https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses');
   expect(options.redirect).toBe('error');
   expect(options.headers.authorization).toContain('/us-east-1/bedrock/aws4_request');
   expect(options.headers['x-amz-security-token']).toBe('fixture-session');
@@ -45,4 +45,10 @@ it.each([
   { ...document, output: [null] },
 ])('refuses nonconforming Responses evidence %#', value => {
   expect(validResponsesProbe(value, true)).toBe(false);
+});
+
+it('uses the native Bedrock GPT inference profile before signing', async () => {
+  const request = jest.fn().mockResolvedValue(new Response('{}'));
+  await invokeTaskResponses({ ...start, model_id: 'openai.gpt-6-astra' }, '{}', 10, request);
+  expect(JSON.parse(request.mock.calls[0][1].body).model).toBe('us.openai.gpt-6-astra');
 });

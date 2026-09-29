@@ -30,7 +30,21 @@ resource "aws_iam_role_policy" "persona_model_probe_destination" {
       Effect = "Allow"
       Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
       Resource = [
+        # Native Responses authorizes InvokeModel against the account project.
+        "arn:${data.aws_partition.current.partition}:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:project/default",
         "arn:${data.aws_partition.current.partition}:bedrock:*::foundation-model/anthropic.claude-*",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-east-1::foundation-model/openai.gpt-6-astra",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-east-2::foundation-model/openai.gpt-6-astra",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-west-2::foundation-model/openai.gpt-6-astra",
+        "arn:${data.aws_partition.current.partition}:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.openai.gpt-6-astra",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-east-1::foundation-model/openai.gpt-6-sol",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-east-2::foundation-model/openai.gpt-6-sol",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-west-2::foundation-model/openai.gpt-6-sol",
+        "arn:${data.aws_partition.current.partition}:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.openai.gpt-6-sol",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-east-1::foundation-model/openai.gpt-6-luna",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-east-2::foundation-model/openai.gpt-6-luna",
+        "arn:${data.aws_partition.current.partition}:bedrock:us-west-2::foundation-model/openai.gpt-6-luna",
+        "arn:${data.aws_partition.current.partition}:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.openai.gpt-6-luna",
         "arn:${data.aws_partition.current.partition}:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-*",
         "arn:${data.aws_partition.current.partition}:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/global.anthropic.claude-*",
       ]
