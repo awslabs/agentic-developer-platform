@@ -76,6 +76,27 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(state.release_settings(fixture, 'gateway'), {'orchestration_engine_enabled': True,
             'orchestration_dispatch_repo': 'customer/project', 'rds_instance_class': 'db.r6g.large', 'rds_allocated_storage': 100})
 
+    @patch.dict(os.environ, ADP_PORTABLE_RELEASE_CONFIG='true')
+    def test_legacy_ingestion_permission_retains_exact_customer_queue(self):
+        queue = 'arn:aws:sqs:us-east-1:925091290508:customer-knowledge.fifo'
+        policy = {'Statement': [{'Sid': 'IngestionSQSPublish', 'Effect': 'Allow',
+                                  'Action': ['sqs:SendMessage', 'sqs:GetQueueUrl'], 'Resource': queue}]}
+        fixture = {'resources': [{'mode': 'managed', 'type': 'aws_iam_role_policy',
+            'name': 'gateway_ingestion_sqs_publish',
+            'instances': [{'attributes': {'policy': json.dumps(policy)}}]}]}
+        self.assertEqual(state.release_settings(fixture, 'gateway'), {
+            'enable_agent_context_sqs': True, 'agent_context_ingestion_queue_arn': queue})
+        # Explicit retained settings take precedence over legacy inference.
+        fixture['outputs'] = {'release_configuration': {'value': {'enable_agent_context_sqs': False}}}
+        self.assertEqual(state.release_settings(fixture, 'gateway'), {'enable_agent_context_sqs': False})
+        del fixture['outputs']
+        for resource in ('*', [queue], 'not-an-arn'):
+            policy['Statement'][0]['Resource'] = resource
+            fixture['resources'][0]['instances'][0]['attributes']['policy'] = json.dumps(policy)
+            with self.subTest(resource=resource), self.assertRaisesRegex(ValueError, 'original target-specific'):
+                state.release_settings(fixture, 'gateway')
+        self.assertNotIn('enable_agent_context_sqs', state.release_settings({}, 'gateway'))
+
     def test_output_contract_matches_declared_inputs(self):
         contract = json.loads((ROOT / 'config/release-defaults/preserved-inputs.json').read_text())
         import re

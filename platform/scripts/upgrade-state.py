@@ -81,6 +81,15 @@ def release_settings(state, module):
             result.update(rds_instance_class=attrs["instance_class"], rds_allocated_storage=attrs["allocated_storage"])
         if module == "gateway" and kind == "aws_elasticache_replication_group":
             result["redis_node_type"] = attrs["node_type"]
+        if (module == "gateway" and kind == "aws_iam_role_policy"
+                and resource["name"] == "gateway_ingestion_sqs_publish"):
+            policy = json.loads(attrs["policy"])
+            queues = [s["Resource"] for s in policy.get("Statement", [])
+                      if s.get("Sid") == "IngestionSQSPublish" and s.get("Effect") == "Allow"]
+            if len(queues) != 1 or not isinstance(queues[0], str) or not re.fullmatch(
+                    r"arn:[a-z0-9-]+:sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+(?:\.fifo)?", queues[0]):
+                raise ValueError("Existing ingestion permission requires its original target-specific configuration")
+            result.update(enable_agent_context_sqs=True, agent_context_ingestion_queue_arn=queues[0])
         if module == "gateway" and kind == "aws_lambda_function" and resource["name"] == "tick":
             env = (attrs.get("environment") or [{}])[0].get("variables", {})
             for key, name in (("BG_ORCH_DISPATCH_REPO", "orchestration_dispatch_repo"),):
