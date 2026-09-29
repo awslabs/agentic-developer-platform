@@ -43,6 +43,7 @@ def bridge(monkeypatch, regular_user):
     caller = AsyncMock(return_value=authz.Caller(PRINCIPAL, regular_user.org_id, frozenset({authz.SCOPE_READ})))
     monkeypatch.setattr(authz, "resolve_caller", caller)
     monkeypatch.setattr(task_readthrough, "get_store", lambda: store)
+    monkeypatch.setattr(task_readthrough, "get_optional_store", lambda: store)
     monkeypatch.setattr(routes, "resolve_canonical_user_id", AsyncMock(return_value=PRINCIPAL[6:]))
     monkeypatch.setattr(routes, "get_cost_by_run_ids", AsyncMock(return_value={}))
     service = MagicMock()
@@ -148,7 +149,7 @@ def test_store_initialization_failure_returns_503(bridge, monkeypatch):
     from botocore.exceptions import NoCredentialsError
 
     client, *_ = bridge
-    monkeypatch.setattr(task_readthrough, "get_store", MagicMock(side_effect=NoCredentialsError()))
+    monkeypatch.setattr(task_readthrough, "get_optional_store", MagicMock(side_effect=NoCredentialsError()))
     assert client.get(URL).status_code == 503
 
 
@@ -227,3 +228,30 @@ def test_owner_list_keeps_next_cursor_when_page_policy_denied(bridge, monkeypatc
     monkeypatch.setattr(store, "require_policy", MagicMock(side_effect=errors.disallowed_scope("revoked")))
     response = client.get("/me/agent-invocations/tasks").json()
     assert response["items"] == [] and response["last_key"] == cursor
+
+
+def test_uninstalled_task_store_preserves_native_missing_run_404(bridge, monkeypatch):
+    from src.tasks import routes as task_routes
+
+    client, _, _, authenticate, _ = bridge
+    monkeypatch.delenv("TASK_ARTIFACT_BUCKET_NAME", raising=False)
+    monkeypatch.setattr(task_routes, "_STORE", None)
+    monkeypatch.setattr(task_readthrough, "get_optional_store", task_routes.get_optional_store)
+    assert client.get(URL).status_code == 404
+    assert client.get(URL + "/transcript").status_code == 404
+    authenticate.assert_not_called()
+    # Direct Task reads still require their storage prerequisite.
+    with pytest.raises(errors.TaskApiError) as error:
+        task_routes.get_store()
+    assert error.value.status == 503
+
+
+def test_configured_task_store_failure_is_not_hidden_as_missing(bridge, monkeypatch):
+    from src.tasks import routes as task_routes
+
+    client, *_ = bridge
+    monkeypatch.setenv("TASK_ARTIFACT_BUCKET_NAME", "configured-task-artifacts")
+    monkeypatch.setattr(task_routes, "_STORE", None)
+    monkeypatch.setattr(task_routes, "get_store", MagicMock(side_effect=errors.prerequisite_unavailable("unavailable")))
+    monkeypatch.setattr(task_readthrough, "get_optional_store", task_routes.get_optional_store)
+    assert client.get(URL).status_code == 503

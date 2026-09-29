@@ -262,7 +262,7 @@ async def test_task_run_usage_uses_real_activity_adapter_and_policy(db_session, 
     if fault == "stale_generation":
         monkeypatch.setattr(store, "resolve_invocation", lambda **kw: (task_id, 2))
     monkeypatch.setenv("ADP_TASK_API_READ_ENABLED", "true")
-    monkeypatch.setattr(task_readthrough, "get_store", lambda: store)
+    monkeypatch.setattr(task_readthrough, "get_optional_store", lambda: store)
     monkeypatch.setattr(authz, "authenticate", Mock(return_value=(org_user_context, frozenset({authz.SCOPE_READ}))))
     caller = AsyncMock(
         return_value=authz.Caller("human:other" if fault == "caller_mismatch" else "human:user-001", "org-001", frozenset({authz.SCOPE_READ}))

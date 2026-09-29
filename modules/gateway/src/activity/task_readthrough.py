@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from src.activity.schemas import InvocationItem
 from src.tasks import authz, errors, http, snapshot
 from src.tasks.read_store import TaskRecord, TaskStoreError
-from src.tasks.routes import caller_for, get_store
+from src.tasks.routes import caller_for, get_optional_store, get_store
 
 INVOCATION = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 STATUS = {
@@ -39,7 +39,9 @@ async def resolve(request: Request, db: AsyncSession, invocation_id: str, *, can
         # its own binding before requiring Task enrollment: a missing native run
         # must remain an Activity 404 for unenrolled callers too.
         principal = "human:" + canonical_user_id
-        store = get_store()
+        store = get_optional_store()
+        if store is None:
+            return None
         binding = await run_in_threadpool(store.resolve_invocation, tenant=tenant_id, principal=principal, invocation_id=invocation_id)
         if binding is None:
             return None

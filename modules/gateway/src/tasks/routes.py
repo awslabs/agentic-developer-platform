@@ -57,6 +57,15 @@ def set_store(store: TaskStore | None) -> None:
     _STORE = store
 
 
+def get_optional_store() -> TaskStore | None:
+    """Return no bridge when Task storage is not installed; preserve real failures."""
+    import os
+
+    if _STORE is None and not os.environ.get("TASK_ARTIFACT_BUCKET_NAME", ""):
+        return None
+    return get_store()
+
+
 def get_store() -> TaskStore:
     global _STORE
     if _STORE is None:
