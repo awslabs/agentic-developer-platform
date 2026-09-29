@@ -41,7 +41,7 @@ def test_snapshot_is_frozen_across_configuration_changes(admitted):
     assert original["persona"] == "agent-codex-architect"
     assert original["repository"] == "owner/repo"
     assert original["issue"] == 12
-    assert original["capabilities"] == ["artifacts.publish", "repository.read"]
+    assert original["capabilities"] == ["artifacts.publish", "repository.read", "story.create"]
     file.write_text("changed invalid configuration")
     assert frozen_context(store, record, grant, env, now=NOW) == original
 
@@ -122,3 +122,28 @@ def test_live_runtime_uses_process_environment_when_no_override(admitted, monkey
     # An explicit empty override must not inherit ambient grants.
     with pytest.raises(ValueError, match="disabled"):
         frozen_context(store, record, grant, {}, now=NOW)
+
+
+def test_planning_effect_receipts_survive_new_invocation(admitted):
+    store, record, grant, env, _ = admitted
+    frozen = frozen_context(store, record, grant, env, now=NOW)
+    request = claim("planning", effect_key="story-create:audit")
+    operation(store, record, request)
+    receipt = operation(store, record, request.model_copy(update={"action": "settle", "result": '{"number":42}'}))
+    other = SimpleNamespace(**{**vars(record), "invocation_id": "second-run"})
+    store.client.put_item(
+        TableName=store.table, Item={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "CODEX_GITHUB#second-run"}, "context": {"S": json.dumps(frozen)}}
+    )
+    assert operation(store, other, claim("planning", effect_key="story-create:audit")) == receipt
+    with pytest.raises(ValueError, match="conflict"):
+        operation(store, other, claim("planning", effect_key="story-create:audit").model_copy(update={"request_digest": "b" * 64}))
+
+
+def test_planning_effects_are_persona_scoped_and_pending_is_not_replayed(admitted):
+    store, record, grant, env, _ = admitted
+    frozen_context(store, record, grant, env, now=NOW)
+    with pytest.raises(ValueError, match="unavailable"):
+        operation(store, record, claim("planning", effect_key="dispatch:42"))
+    operation(store, record, claim("planning", effect_key="story-create:audit"))
+    with pytest.raises(ValueError, match="reconciliation"):
+        operation(store, record, claim("planning", effect_key="story-create:audit"))

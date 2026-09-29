@@ -4,6 +4,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
+import { planningPersona, planningContract, parsePlanning, planningSchemas } from './planning.js';
+import { PlanningProvider } from './planning-provider.js';
 import { runAdmittedSession } from './session.js';
 import { githubTools, hostCommand } from './github-tools.js';
 import { verifySnapshot, personaSchema } from './persona.js';
@@ -19,7 +21,7 @@ const contextSchema = z.strictObject({
   version: z.literal(1), persona: z.string(), repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
   repositoryId: z.string().regex(/^[1-9][0-9]*$/),
   issue: z.number().int().positive(), snapshot: z.object({ definition: z.string(), digest: z.string(), instructions: z.string(), skillSources: z.string() }).strict(),
-  capabilities: z.array(z.enum(['artifacts.publish', 'repository.read'])).min(1).max(2),
+  capabilities: z.array(z.enum(['artifacts.publish', 'repository.read', 'story.create', 'agents.delegate'])).min(1).max(4),
   deadlineMs: z.number().int().positive(), maxTurns: z.number().int().min(1).max(20),
   maxTools: z.number().int().min(0).max(32),
   maxOutputTokens: z.number().int().min(1).max(4096), harnessRevision: z.literal(HARNESS_CONTRACT_REVISION),
@@ -58,9 +60,10 @@ async function main() {
       if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error('Repository revision unavailable');
       const layers = Object.fromEntries(['tenant', 'principal', 'run', 'surface', 'runtime'].map(key => [key, context.capabilities]));
       let operations = 0;
-      const journal = async (kind, request, execute, active) => {
-        const binding = { operation_id: randomUUID(), request_digest: createHash('sha256').update(JSON.stringify(request)).digest('hex'), kind };
+      const journal = async (kind, request, execute, active, effectKey) => {
+        const binding = { operation_id: randomUUID(), request_digest: createHash('sha256').update(JSON.stringify(request)).digest('hex'), kind, ...(effectKey ? { effect_key: effectKey } : {}) };
         const admission = await codexPersonaOperation({ ...binding, action: 'claim' }, active);
+        if (admission.status === 'confirmed') return JSON.parse(admission.result);
         if (admission.status !== 'admitted') throw new Error('Operation requires reconciliation');
         const result = await execute();
         const serialized = JSON.stringify(result);
@@ -85,19 +88,49 @@ async function main() {
           await current(active, false);
           return journal('tool', { name, args, revision }, work, active);
         }));
-      const result = await runAdmittedSession({ runId: initial.runId, snapshot,
+      const planner = planningPersona(persona);
+      if (!planner) throw new Error('Unsupported planning persona');
+      const refs = new Set(['issue', ...input.comments.map(comment => `follow_up_input.${comment.id}`)]);
+      let previousArtifact;
+      for (const comment of input.comments) {
+        const match = comment.body.match(/```json\n([\s\S]*?)\n```/);
+        if (!match) continue;
+        try {
+          const document = JSON.parse(match[1]);
+          if (document.planning_persona === planner) previousArtifact = planningSchemas[planner].parse(document.artifact);
+        } catch { /* Other issue comments are not planning documents. */ }
+      }
+      const provider = new PlanningProvider('github', context.repository, context.issue, {
+        read: async path => { signal.throwIfAborted(); await controls.checkpoint(); return JSON.parse(await hostCommand('gh', ['api', path], signal)); },
+        write: async (path, body) => JSON.parse(await hostCommand('gh', ['api', '--method', 'POST', path, '--input', '-'], signal, body)),
+        effect: (key, request, work) => controls.operation(async () => { await current(signal, false); if (controls.pendingSteering()) throw new Error('Amendment pending before planning effect'); return journal('planning', request, work, signal, key); }),
+        dispatch: async (issue, persona, reason) => JSON.parse(await hostCommand('adp-trigger', ['--persona', `agent-${persona}`, '--issue', String(issue), '--repo', context.repository, '--reason', reason], signal)),
+      });
+      const backlog = planner === 'pm' ? await provider.backlog() : undefined;
+      const invoke = async correction => runAdmittedSession({ runId: initial.runId, snapshot,
         policy: { personaKey: definition.key, personaDigest: snapshot.digest, compatibilityClass: 'codex-sdk',
           harnessRevision: context.harnessRevision, canonicalModel: initial.model, allowedEfforts: [definition.effort],
           capabilityLayers: layers, limits: { ...definition.limits, maxTurns: context.maxTurns }, deadlineMs: context.deadlineMs },
         repository: { provider: 'github', repositoryId: context.repositoryId, sourceRevision: revision },
         source: { kind: 'github', eventId: initial.runId }, prompt: JSON.stringify({ task: input,
-          output: 'Produce a useful Markdown report for the issue. Cite supplied evidence and distinguish proposals from verified results. Read repository evidence with the admitted tools when available. Mutations are unavailable in this report invocation.' }),
+          source_refs: [...refs], previous_artifact: previousArtifact, backlog, correction, output_contract: planningContract(planner) }),
         maxOutputTokens: context.maxOutputTokens, maxResponseBytes: 48000, signal,
       }, {
         assertCurrent: current,
         ...(tools.definitions.length ? { toolBroker: { definitions: tools.definitions,
-          repositoryCapabilities: ['repository.read'], maxCalls: context.maxTools, execute: tools.execute } } : {}),
-        takeSteering: () => controls.takeSteering(),
+          repositoryCapabilities: ['repository.read'], maxCalls: context.maxTools, execute: async (name, args, active) => {
+            const result = await tools.execute(name, args, active);
+            if (!result.isError) {
+              const ref = `repository.${createHash('sha256').update(JSON.stringify({revision, name, args})).digest('hex')}`;
+              refs.add(ref);
+              return { ...result, content: `Source ref: ${ref}\n${result.content}` };
+            }
+            return result;
+          } } } : {}),
+        takeSteering: () => controls.takeSteering().map(text => {
+          const ref = `follow_up_input.control.${createHash('sha256').update(text).digest('hex')}`;
+          refs.add(ref); return `Source ref: ${ref}\n${text}`;
+        }),
         async progress() {
           const text = 'Working through the admitted task and its evidence.';
           reporter.progress(text);
@@ -131,6 +164,21 @@ async function main() {
           });
         },
       });
+      let result, planned;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        result = await invoke(attempt ? 'Previous output failed validation. Return exact JSON with host-known source refs and valid dependencies.' : undefined);
+        try { planned = parsePlanning(result.response, planner, refs, previousArtifact); break; }
+        catch (error) { if (attempt === 1) throw error; reporter.progress('Correcting planning structure and citations.'); }
+      }
+      await current(signal);
+      if (controls.pendingSteering()) throw new Error('A new amendment arrived before planning effects; rerun with the updated scope');
+      let effects;
+      if (!planned.clarification && 'stories' in planned.artifact && planned.artifact.publish_stories) {
+        reporter.progress('Creating linked stories and recording dependency relationships.');
+        effects = await provider.publishStories(planned.artifact);
+      }
+      if (!planned.clarification && 'schedule' in planned.artifact && planned.artifact.schedule.length) effects = await provider.schedule(planned.artifact.schedule);
+      result.response = `${planned.artifact.summary}\n\n\`\`\`json\n${JSON.stringify({ planning_persona: planner, artifact: planned.artifact }, null, 2)}\n\`\`\`${planned.clarification ? `\n\nClarification needed: ${planned.clarification}` : ''}${effects ? `\n\nConfirmed effects: ${JSON.stringify(effects)}` : ''}`;
       await current(signal);
       if (controls.pendingSteering()) throw new Error('A final amendment arrived before publication; report is incomplete');
       await controls.operation(async () => {

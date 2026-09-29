@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -96,12 +97,25 @@ class Evidence(Closed):
     artifact_id: ARTIFACT | None = None
 
 
+class ReportDocument(Closed):
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,63}\.json$")
+    media_type: Literal["application/json"]
+    content: str = Field(max_length=32768)
+
+    @model_validator(mode="after")
+    def valid_document(self):
+        if len(self.content.encode()) > 32768 or not isinstance(json.loads(self.content), dict):
+            raise ValueError("document must contain a bounded JSON object")
+        return self
+
+
 class Report(Closed):
     summary: str = Field(min_length=1, max_length=4000)
     findings: list[Finding]
     uncertainties: list[Text]
     recommendations: list[Text]
     evidence_refs: list[Evidence]
+    documents: list[ReportDocument] = Field(default_factory=list, max_length=4)
 
 
 class Result(Closed):

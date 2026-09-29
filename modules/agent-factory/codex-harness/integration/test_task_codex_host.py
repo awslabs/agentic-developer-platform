@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from planning_fixture import planning_output
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "modules/agent-factory/agent-worker-image"))
@@ -69,7 +70,8 @@ class CodexClient(FakeClient):
     def model(self, body):
         self.events.append("model")
         self.requests.append(body)
-        text = json.dumps(report())
+        persona = self.bootstrap_response["persona"].removeprefix("agent-task-gpt-")
+        text = json.dumps(planning_output(persona) if persona in {"architect", "product", "pm", "intent-refinement"} else report())
         if self.mode == "repair" and len(self.requests) == 1:
             text = "invalid report"
         if self.mode in {"invalid", "budget"}:
@@ -165,6 +167,9 @@ def test_packaged_report_persona_with_shared_rules(tmp_path, monkeypatch, assign
     result = host.run(assignment, envelope, heartbeat=FakeHeartbeat(events), acknowledge=lambda: events.append("ack"))
     assert result == 0, (events, client.finalize_body)
     assert client.finalize_body["outcome"] == "completed"
+    document = client.finalize_body["result"]["report"]["documents"][0]
+    assert document["name"] == f"{name}.json"
+    assert json.loads(document["content"])["requirements"][0]["source_refs"] == ["instructions"]
     assert len(client.requests) == 1
     request = json.dumps(client.requests[0])
     assert f"personas/{name}.md" in request

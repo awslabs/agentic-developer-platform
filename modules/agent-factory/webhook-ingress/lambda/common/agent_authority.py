@@ -312,6 +312,7 @@ def provision_human_dispatch(
             # The immutable ID is included below in the protected execution,
             # alongside the HMAC-verified event's repository and tenant.
             "developer": ["reviewer"],
+            "agent-codex-pm": ["agent-codex-developer"],
             "operations": ["developer", "reviewer", "operations"],
             "aidlc": ["developer", "reviewer", "operations"],
         }.get(persona, [])
@@ -331,7 +332,7 @@ def provision_human_dispatch(
             "allowed_actions": {"SS": actions},
             "delegable_actions": {
                 "SS": ["monitor", "dispatch"]
-                if persona in {"operations", "aidlc"}
+                if persona in {"operations", "aidlc", "agent-codex-pm"}
                 else ["monitor"]
             },
             "target_relationships": {"SS": ["self", "descendant"]},
@@ -342,19 +343,23 @@ def provision_human_dispatch(
             "revoked": {"BOOL": False},
             "max_dispatch_concurrency": {"N": "2"},
             "max_total_dispatches": {
-                "N": "4" if persona in {"operations", "aidlc"} else "2"
+                "N": "4"
+                if persona in {"operations", "aidlc", "agent-codex-pm"}
+                else "2"
             },
             # Explicit at human launch: a six-story wave can dispatch each
             # developer/reviewer, evaluation and its approved successor.
             "max_child_dispatches": {
-                "N": "16" if persona in {"operations", "aidlc"} else "1"
+                "N": "16"
+                if persona in {"operations", "aidlc", "agent-codex-pm"}
+                else "1"
             },
             "max_chain_depth": {"N": "8"},
             "work_item_issue": execution["issue_number"],
         }
         if dispatch_personas:
             grant["dispatch_personas"] = {"SS": dispatch_personas}
-        if persona in {"operations", "aidlc"}:
+        if persona in {"operations", "aidlc", "agent-codex-pm"}:
             # Issue #5365: a coordinator summoned by a real human on a tracking
             # issue exists to hand work to *other* stories. Pinning it to
             # work_item_issue refuses exactly the dispatches it was summoned to

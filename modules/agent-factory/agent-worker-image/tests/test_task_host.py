@@ -1484,3 +1484,14 @@ def test_bootstrap_refuses_malformed_tool_grants(assignment_and_bootstrap, grant
     bootstrap['tool_grants'] = grants
     with pytest.raises(TaskProtocolError, match='tool grants'):
         validate_bootstrap(bootstrap, assignment)
+
+
+def test_planning_documents_survive_worker_validation():
+    from lib.task_protocol import TaskProtocolError, validate_investigator_report
+
+    report = {"summary": "Draft", "findings": [], "uncertainties": [], "recommendations": [], "evidence_refs": [],
+              "documents": [{"name": "intent-refinement.json", "media_type": "application/json", "content": '{"draft":{"intent":"Keep audit history"}}'}]}
+    assert validate_investigator_report(report) == report
+    report["documents"][0]["content"] = '[]'
+    with pytest.raises(TaskProtocolError):
+        validate_investigator_report(report)

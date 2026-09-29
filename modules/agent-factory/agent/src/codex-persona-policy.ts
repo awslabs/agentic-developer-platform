@@ -110,7 +110,7 @@ export async function admitCodexPersonaModel(persona: string, callerSignal: Abor
 
 /** Protected operation receipt; an ambiguous transport is never retried here. */
 export async function codexPersonaOperation(body: { operation_id: string; request_digest: string;
-  action: 'claim' | 'settle'; kind: 'model' | 'report' | 'tool'; result?: string }, callerSignal: AbortSignal) {
+  action: 'claim' | 'settle'; kind: 'model' | 'report' | 'tool' | 'planning'; effect_key?: string; result?: string }, callerSignal: AbortSignal) {
   const signal = AbortSignal.any([callerSignal, AbortSignal.timeout(10000)]);
   const base = process.env.ADP_AGENT_CONTROL_ENDPOINT;
   if (!base || !/^https:\/\/[a-z0-9]+\.execute-api\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?\/[A-Za-z0-9_-]+(?:\/agent)?\/internal\/v1\/agent\/?$/.test(base)) {

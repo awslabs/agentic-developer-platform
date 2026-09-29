@@ -51,6 +51,19 @@
         "evidence_refs": {
           "type": "array",
           "items": { "$ref": "results.schema.json#/$defs/evidence_ref" }
+        },
+        "documents": {
+          "type": "array", "maxItems": 4,
+          "description": "Optional structured planning documents; each content is a JSON object bounded to 32768 UTF-8 bytes by the runtime.",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["name", "media_type", "content"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}\\.json$" },
+              "media_type": { "const": "application/json" },
+              "content": { "type": "string", "maxLength": 32768 }
+            }
+          }
         }
       }
     },

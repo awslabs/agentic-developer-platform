@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import re
 import uuid
 
@@ -372,7 +374,26 @@ def validate_investigator_report(value: object) -> dict:
     report = _exact(
         value,
         {"summary", "findings", "uncertainties", "recommendations", "evidence_refs"},
+        {"documents"},
     )
+    if "documents" in report:
+        if not isinstance(report["documents"], list) or len(report["documents"]) > 4:
+            raise TaskProtocolError("invalid report documents")
+        for document in report["documents"]:
+            doc = _exact(document, {"name", "media_type", "content"})
+            if (
+                not isinstance(doc["name"], str)
+                or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}\.json", doc["name"])
+                or doc["media_type"] != "application/json"
+                or not isinstance(doc["content"], str)
+                or len(doc["content"].encode()) > 32768
+            ):
+                raise TaskProtocolError("invalid report document")
+            try:
+                if not isinstance(json.loads(doc["content"]), dict):
+                    raise ValueError()
+            except ValueError:
+                raise TaskProtocolError("report document must contain a JSON object") from None
     if not isinstance(report["summary"], str) or not 1 <= len(report["summary"]) <= 4000:
         raise TaskProtocolError("task result summary is invalid")
     for name in ("findings", "uncertainties", "recommendations", "evidence_refs"):

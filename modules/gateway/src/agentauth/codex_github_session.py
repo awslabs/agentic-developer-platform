@@ -31,7 +31,8 @@ class OperationRequest(BaseModel):
     operation_id: UUID
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     action: Literal["claim", "settle"]
-    kind: Literal["model", "report", "tool"]
+    kind: Literal["model", "report", "tool", "planning"]
+    effect_key: str | None = Field(default=None, pattern=r"^(story-create|story-link|story-blocker|dispatch):[a-z0-9:-]{1,140}$")
     result: str | None = Field(default=None, max_length=65536)
 
 
@@ -91,6 +92,10 @@ def frozen_context(store, record, grant, env, *, now=None):
         capabilities = ["artifacts.publish"]
         if "repository.read" in definition.requiredCapabilities + definition.optionalCapabilities:
             capabilities.append("repository.read")
+        if persona == "agent-codex-architect" and "story.create" in definition.optionalCapabilities:
+            capabilities.append("story.create")
+        if persona == "agent-codex-pm" and "agents.delegate" in definition.optionalCapabilities:
+            capabilities.append("agents.delegate")
         if not set(definition.requiredCapabilities).issubset(capabilities):
             raise ValueError("required capability unavailable")
         if any(skill.requiredTools or set(skill.requiredCapabilities or []) - set(capabilities) for skill in definition.skills):
@@ -146,6 +151,19 @@ def operation(store, record, body):
     pk = f"TENANT#{record.tenant_id}"
     session_key = {"pk": {"S": pk}, "sk": {"S": f"CODEX_GITHUB#{record.invocation_id}"}}
     key = {"pk": {"S": pk}, "sk": {"S": f"CODEX_OPERATION#{record.invocation_id}#{body.operation_id}"}}
+    session = store._read(pk, session_key["sk"]["S"])
+    frozen = json.loads(session["context"]["S"])
+    if body.kind == "planning":
+        if not body.effect_key:
+            raise ValueError("missing planning effect key")
+        allowed = (
+            frozen["persona"] == "agent-codex-architect" and "story.create" in frozen["capabilities"] and body.effect_key.startswith("story-")
+        ) or (frozen["persona"] == "agent-codex-pm" and "agents.delegate" in frozen["capabilities"] and body.effect_key.startswith("dispatch:"))
+        if not allowed:
+            raise ValueError("planning effect unavailable")
+        key["sk"] = {"S": f"CODEX_PLANNING#{frozen['repositoryId']}#{frozen['issue']}#{body.effect_key}"}
+    elif body.effect_key is not None:
+        raise ValueError("unexpected planning effect key")
     existing = store._read(pk, key["sk"]["S"])
     if existing:
         if existing["request_digest"]["S"] != body.request_digest or existing["kind"]["S"] != body.kind:
@@ -167,8 +185,8 @@ def operation(store, record, body):
         frozen = json.loads(session["context"]["S"])
         if body.kind == "tool" and frozen["maxTools"] == 0:
             raise ValueError("tool capability unavailable")
-        counter = {"model": "model_count", "tool": "tool_count", "report": "report_count"}[body.kind]
-        limit = {"model": frozen["maxTurns"], "tool": frozen["maxTools"], "report": 1}[body.kind]
+        counter = {"model": "model_count", "tool": "tool_count", "report": "report_count", "planning": "planning_count"}[body.kind]
+        limit = {"model": frozen["maxTurns"], "tool": frozen["maxTools"], "report": 1, "planning": 960}[body.kind]
         store.client.transact_write_items(
             TransactItems=[
                 {

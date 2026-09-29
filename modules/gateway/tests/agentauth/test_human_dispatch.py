@@ -754,3 +754,13 @@ def test_total_dispatch_budget_survives_reservation_release(store, child_dispatc
     with pytest.raises(PolicyError) as exc:
         send_child(child_dispatch, child_dispatch.body.model_copy(update={"request_id": "over-total-budget"}))
     assert exc.value.status_code == 409
+
+
+def test_codex_pm_grant_uses_existing_root_coordinator_dispatch(store):
+    final = webhook.provision_human_dispatch(envelope={**envelope(), "persona": "agent-codex-pm"}, event=event(), client=store.client)
+    grant = store._read("TENANT#tenant", f"GRANT#{final['message_id']}#1")
+    assert grant["dispatch_personas"] == {"SS": ["agent-codex-developer"]}
+    assert grant["dispatch_repository_scope"] == {"S": "org/repo"}
+    assert "dispatch" in grant["allowed_actions"]["SS"]
+    assert "dispatch" in grant["delegable_actions"]["SS"]
+    assert grant["work_item_issue"] == {"N": "42"}

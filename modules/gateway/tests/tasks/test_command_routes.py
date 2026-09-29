@@ -148,3 +148,23 @@ def test_control_remains_readable_without_live_execution_credential(api, monkeyp
     assert response.status_code == 200
     # Stop-only control visibility does not confer normal completion authority.
     assert web.post("/internal/v1/agent/task/finalize", json=final_body(identity)).status_code == 503
+
+
+def test_structured_planning_document_is_bounded_and_cannot_expand_report_shape():
+    from pydantic import ValidationError
+
+    from src.tasks.command_routes import Report
+
+    report = {
+        "summary": "Draft",
+        "findings": [],
+        "uncertainties": [],
+        "recommendations": [],
+        "evidence_refs": [],
+        "documents": [{"name": "product.json", "media_type": "application/json", "content": '{"requirements":[]}'}],
+    }
+    assert Report.model_validate(report).documents[0].name == "product.json"
+    for content in ("[]", "null", "invalid", '{"large":"' + "é" * 20000 + '"}'):
+        report["documents"][0]["content"] = content
+        with pytest.raises(ValidationError):
+            Report.model_validate(report)

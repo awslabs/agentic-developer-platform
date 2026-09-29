@@ -265,6 +265,7 @@ export interface Finding {
 }
 
 export interface InvestigatorReport {
+  documents?: Array<{ name: string; media_type: 'application/json'; content: string }>;
   summary: string;
   findings: Finding[];
   uncertainties: string[];
@@ -965,7 +966,17 @@ export function assertInvestigatorReport(report: unknown): asserts report is Inv
   if (!isPlainObject(report)) {
     throw new ProtocolViolation('report must be a JSON object');
   }
-  const allowed = new Set(['summary', 'findings', 'uncertainties', 'recommendations', 'evidence_refs']);
+  const allowed = new Set(['summary', 'findings', 'uncertainties', 'recommendations', 'evidence_refs', 'documents']);
+  if (report.documents !== undefined) {
+    if (!Array.isArray(report.documents) || report.documents.length > 4) throw new ProtocolViolation('invalid report documents');
+    for (const document of report.documents) {
+      if (!isPlainObject(document) || Object.keys(document).sort().join(',') !== 'content,media_type,name' ||
+          typeof document.name !== 'string' || !/^[a-z][a-z0-9-]{0,63}\.json$/.test(document.name) || document.media_type !== 'application/json' ||
+          typeof document.content !== 'string' || Buffer.byteLength(document.content) > 32768) throw new ProtocolViolation('invalid report document');
+      try { const value: unknown = JSON.parse(document.content); if (!isPlainObject(value)) throw new Error(); }
+      catch { throw new ProtocolViolation('report document must contain a JSON object'); }
+    }
+  }
   for (const key of Object.keys(report)) {
     if (!allowed.has(key)) {
       throw new ProtocolViolation(`report carries unknown field ${key}`);

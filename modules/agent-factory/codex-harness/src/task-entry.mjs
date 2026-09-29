@@ -3,6 +3,7 @@
 import { ArtifactTransfers } from './task-contracts/artifact-transfer.js';
 import { parseHostFrame, assertInvestigatorReport } from './task-contracts/protocol.js';
 import { HostBridge, decode, encode, MAX_FRAME_BYTES } from './task-sdk/protocol.mjs';
+import { planningPersona, planningContract, parsePlanning, planningReport } from './planning.js';
 import { taskHarness, parseTaskReport, TaskReportError } from './task-adapter.js';
 import { runAdmittedSession } from './session.js';
 import { TaskTools } from './task-tools.js';
@@ -32,6 +33,9 @@ async function run() {
   policy.deadlineMs = Math.min(policy.deadlineMs, Date.now() + Math.min(policy.limits.maxDurationMs, JSON.parse(snapshot.definition).limits.maxDurationMs));
   bridge.progress('Validated the task and persona bindings.', 'evidence_inventory');
   const amendments = [];
+  const planner = planningPersona(start.persona);
+  let previousArtifact;
+  let clarifications = 0;
   let operations = 0;
   const maxOperations = Math.min(start.limits.max_turns, policy.limits.maxTurns, JSON.parse(snapshot.definition).limits.maxTurns);
   const taskTools = tools.length ? new TaskTools(tools, bridge, maxOperations, repository?.capabilities ?? []) : undefined;
@@ -51,7 +55,7 @@ async function run() {
     const evidence = await runAdmittedSession({
       ...(repository ? { repository: repository.binding } : {}),
       runId: start.invocation_id, snapshot, policy, source: { kind: 'task-api', taskId: start.task_id, generation: start.generation },
-      prompt: JSON.stringify({ task: input, amendments, evidence_refs: [...bridge.evidence.values()], output_contract: outputContract,
+      prompt: JSON.stringify({ task: input, amendments, evidence_refs: [...bridge.evidence.values()], output_contract: planner ? planningContract(planner) : outputContract, previous_artifact: previousArtifact,
         ...(repair ? { correction: 'Previous output failed the report schema or cited unsupported evidence. Produce a corrected grounded report. Use the current evidence list and exact report shape.', failure_code: reportFailure, previous_output: previous } : {}) }),
       maxOutputTokens: start.limits.max_output_tokens_per_turn, maxResponseBytes: 48000, signal: bridge.controller.signal,
     }, {
@@ -73,7 +77,24 @@ async function run() {
       continue;
     }
     let report;
-    try { report = parseTaskReport(evidence.response, bridge.evidence, assertInvestigatorReport, JSON.parse(snapshot.definition).completionPolicy === "validated-change"); }
+    try {
+      if (planner) {
+        const planned = parsePlanning(evidence.response, planner, new Set(bridge.evidence.keys()), previousArtifact);
+        previousArtifact = planned.artifact;
+        if (planned.clarification && clarifications < 3 && operations < maxOperations) {
+          clarifications++;
+          bridge.progress('Prepared the structured draft; waiting for clarification.', 'synthesis');
+          const answer = await bridge.ask(planned.clarification);
+          amendments.push({ text: answer });
+          repair = false;
+          continue;
+        }
+        report = planningReport(planner, planned.artifact, bridge.evidence);
+        if (planned.clarification) report.uncertainties.push(planned.clarification.slice(0, 1000));
+        if (planner === 'architect' && planned.artifact.publish_stories) report.uncertainties.push('Native story publication is unavailable in this Task report invocation; stories are retained in the design document.');
+        if (planner === 'pm' && planned.artifact.schedule.length) report.uncertainties.push('Assignments are proposals; this Task report invocation has no dispatch transport.');
+        parseTaskReport(JSON.stringify(report), bridge.evidence, assertInvestigatorReport);
+      } else report = parseTaskReport(evidence.response, bridge.evidence, assertInvestigatorReport, JSON.parse(snapshot.definition).completionPolicy === "validated-change"); }
     catch (error) {
       if (repair || operations >= maxOperations) throw error;
       repair = true; previous = evidence.response;

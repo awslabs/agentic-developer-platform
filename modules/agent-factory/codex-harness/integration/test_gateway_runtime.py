@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 
 import boto3
 import pytest
+from planning_fixture import planning_output
 
 os.environ.setdefault("BG_TOKEN_SECRET_KEY", "codex-seam-fixture-only-not-a-live-secret")
 ROOT = Path(__file__).resolve().parents[4]
@@ -508,7 +509,7 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
             "invalid first report"
             if (scenario == "repair" and len(model_requests) == 1)
             or (scenario == "tools_repair" and len(model_requests) == 2)
-            else json.dumps(report)
+            else json.dumps(report if actual_developer else planning_output("intent-refinement"))
         )
         response = {
             "content": [],
@@ -1073,7 +1074,16 @@ def test_real_gateway_worker_sdk_completion(client, store, tmp_path, monkeypatch
         assert task["result"]["process_exit_validated"] is True
         for artifact_id in task["result"]["artifact_ids"]:
             record = reads.load_artifact(artifact_id=artifact_id)
-            assert actual_live or json.loads(reads.read_artifact(record=record)) == report
+            stored_report = json.loads(reads.read_artifact(record=record))
+            if not actual_live and actual_developer:
+                assert stored_report == report
+            elif not actual_live:
+                expected = planning_output("intent-refinement")["artifact"]
+                assert stored_report["summary"] == expected["summary"]
+                assert stored_report["findings"] == [{"statement": "Inspect supplied evidence", "evidence_refs": ["instructions"]}]
+                assert stored_report["evidence_refs"] == [{"ref": "instructions", "source": "instructions"}]
+                assert stored_report["documents"][0]["name"] == "intent-refinement.json"
+                assert json.loads(stored_report["documents"][0]["content"]) == expected
     else:
         assert result == 1 and task["result"] is None
     if scenario == "steer":

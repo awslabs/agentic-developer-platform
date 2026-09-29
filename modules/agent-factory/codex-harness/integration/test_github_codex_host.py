@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from planning_fixture import planning_output
 
 PACKAGE = Path(__file__).resolve().parents[1]
 
@@ -82,7 +83,7 @@ export async function createCodexPersonaReporter() {
     binaries.mkdir()
     gh = binaries / "gh"
     gh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps({"id": ' + ('999' if mode == 'repository-mismatch' else '123')
-                  + '} if sys.argv[1] == "api" else {"number":12,"title":"Fixture architecture request","body":"Inspect supplied evidence", "comments":[]}))\n')
+                  + '} if sys.argv[1] == "api" and "/issues/" not in sys.argv[2] else [] if sys.argv[1] == "api" else {"number":12,"title":"Fixture architecture request","body":"Inspect supplied evidence", "comments":[]}))\n')
     gh.chmod(0o700)
     workspace = tmp_path / "repo"
     workspace.mkdir()
@@ -105,7 +106,7 @@ export async function createCodexPersonaReporter() {
                 return
             response = {"id": "resp_fixture", "status": "completed", "output": [
                 {"id": "msg_fixture", "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
-                 "content": [{"type": "output_text", "text": "Fixture evidence report.", "annotations": []}]}],
+                 "content": [{"type": "output_text", "text": json.dumps(planning_output(persona, "issue")), "annotations": []}]}],
                         "usage": {"input_tokens": 100, "output_tokens": 10}}
             if mode == 'repository-read' and len(requests) == 1:
                 response["output"] = [{"id": "fc_fixture", "type": "function_call", "call_id": "call_fixture", "name": "repository_file",
@@ -136,6 +137,7 @@ export async function createCodexPersonaReporter() {
     assert len(requests) == (2 if mode in {'steer', 'repository-read'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
     if success:
         assert 'Working through' in (artifacts / 'progress.txt').read_text()
+        assert 'planning_persona' in json.loads((artifacts / 'report.json').read_text())['result']['response']
     if requests:
         assert f'personas/{persona}.md' in json.dumps(requests[0])
         assert requests[0]['model'] == 'gpt-5-codex'
