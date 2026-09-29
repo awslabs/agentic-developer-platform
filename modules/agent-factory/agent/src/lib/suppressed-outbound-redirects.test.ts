@@ -9,7 +9,15 @@ const gitlab = () => new GitLabClient({ baseUrl: 'https://gitlab.example.com', a
 const vault = () => new VaultGatewayClient({ baseUrl: 'https://gateway.example.com', apiKey: 'fixture-vault-key' });
 const identity = { user_id: 'fixture-user', agent_id: 'fixture-agent', task_id: 'fixture-task', service: 'aws' };
 
-beforeEach(() => { mockFetch.mockReset(); global.fetch = mockFetch as typeof fetch; });
+const originalGitLabUrl = process.env.GITLAB_URL;
+beforeEach(() => {
+  process.env.GITLAB_URL = 'https://gitlab.example.com';
+  mockFetch.mockReset(); global.fetch = mockFetch as typeof fetch;
+});
+afterEach(() => {
+  if (originalGitLabUrl === undefined) delete process.env.GITLAB_URL;
+  else process.env.GITLAB_URL = originalGitLabUrl;
+});
 
 const calls: Array<[string, () => Promise<unknown>]> = [
   ['GitLab issue note (2022)', () => gitlab().postIssueComment(1, 2, 'private note')],

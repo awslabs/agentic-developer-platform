@@ -41,3 +41,7 @@ Publication receipts record pre-deployment state; the separately named live acce
 Evidence is in this directory and the private `/workspaces/projects/security28-remediation-evidence` workspace. The original dirty `/home/ubuntu/adp` checkout is preserved.
 
 The [18:44 completion audit](completion-audit.json) explicitly leaves the full goal incomplete. [Live service checks](services-1844-status.json) still pass, the worker template retains the reviewed candidate, and Superplane API still runs its previous image. The audit does not equate completed repairs with elimination of all High findings.
+
+## Subsequent SSRF source review
+
+[The per-match review](ssrf-source-review.json) dispositions the 13 previously pending Critical SSRF matches: eight have constrained destinations under their production configuration, four GitLab requests now require an independent operator-configured `GITLAB_URL` origin, and the GitHub permission lookup now rejects redirects. The original raw scan and historical triage remain unchanged. This is source-level review and hardening, not evidence of deployed closure or a fresh complete scan. GitLab configuration and its DNS remain trusted; arbitrary caller-selected origins are no longer accepted. The constructor now fails if `GITLAB_URL` is absent. All 88 targeted tests and TypeScript compilation passed; dependencies were reused from the existing workspace.

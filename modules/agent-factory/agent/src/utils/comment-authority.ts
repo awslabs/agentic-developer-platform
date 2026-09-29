@@ -6,7 +6,7 @@ export async function hasRepositoryWritePermission(
   try {
     const response = await fetch(
       `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(login)}/permission`,
-      { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(10_000) },
+      { redirect: 'error', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(10_000) },
     );
     if (!response.ok) return false;
     const data = await response.json() as { permission?: string };

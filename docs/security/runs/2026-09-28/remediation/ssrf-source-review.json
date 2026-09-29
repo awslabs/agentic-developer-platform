@@ -1,0 +1,113 @@
+{
+  "scope": "Source-only disposition of the 13 pending Critical SSRF matches from source-triage-reviewed.json. Not live deployment closure or full scan clearance.",
+  "review_base": "34f5745916da346aed3ff60718ec3cc0af127b48",
+  "original_scan_sha": "8a2e7632b322e82e692587a1920042f2e2693976",
+  "method": "Manual caller-to-request and operator configuration review; current versus scanned source comparison; focused tests. No new rule suppressions. Raw scan unchanged.",
+  "configuration_contract": "GITLAB_URL is required; its operator-controlled DNS and internal HTTP remain trusted. This is not a generic DNS-rebinding-safe URL fetcher.",
+  "rows": [
+    {
+      "file": "modules/agent-factory/agent/src/clients/gitlab_client.ts",
+      "scanned_line": 113,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "fixed-source-configured-origin",
+      "reason": "Requires independent operator GITLAB_URL; caller baseUrl must match its normalized scheme/host/port. Rejects missing configuration, credentials, non-origin URLs and blocked literal hosts. All four requests reject redirects. No production caller found. This protects the configuration boundary, not against compromise of operator configuration or its DNS.",
+      "reviewed_sha256": "985d06287bcab360b39c7c0194501b0af32c739c6867ef687176bf02d55c6bbe"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/clients/gitlab_client.ts",
+      "scanned_line": 36,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "fixed-source-configured-origin",
+      "reason": "Requires independent operator GITLAB_URL; caller baseUrl must match its normalized scheme/host/port. Rejects missing configuration, credentials, non-origin URLs and blocked literal hosts. All four requests reject redirects. No production caller found. This protects the configuration boundary, not against compromise of operator configuration or its DNS.",
+      "reviewed_sha256": "985d06287bcab360b39c7c0194501b0af32c739c6867ef687176bf02d55c6bbe"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/clients/gitlab_client.ts",
+      "scanned_line": 58,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "fixed-source-configured-origin",
+      "reason": "Requires independent operator GITLAB_URL; caller baseUrl must match its normalized scheme/host/port. Rejects missing configuration, credentials, non-origin URLs and blocked literal hosts. All four requests reject redirects. No production caller found. This protects the configuration boundary, not against compromise of operator configuration or its DNS.",
+      "reviewed_sha256": "985d06287bcab360b39c7c0194501b0af32c739c6867ef687176bf02d55c6bbe"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/clients/gitlab_client.ts",
+      "scanned_line": 83,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "fixed-source-configured-origin",
+      "reason": "Requires independent operator GITLAB_URL; caller baseUrl must match its normalized scheme/host/port. Rejects missing configuration, credentials, non-origin URLs and blocked literal hosts. All four requests reject redirects. No production caller found. This protects the configuration boundary, not against compromise of operator configuration or its DNS.",
+      "reviewed_sha256": "985d06287bcab360b39c7c0194501b0af32c739c6867ef687176bf02d55c6bbe"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/complex-task-chat/recall-at-task-start.ts",
+      "scanned_line": 177,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "reviewed-destination-constrained",
+      "reason": "Module-level CONTEXT_MCP_SERVER_URL is deployment configuration with a fixed cluster-service default. Protected calls select literal loopback with a validated numeric port. Task content enters the body; route is fixed and redirects are rejected.",
+      "reviewed_sha256": "0f2d71927ab6d7883c3a093a7199f31df745bf365a3ac45697e6c993256a91c3"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts",
+      "scanned_line": 139,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "reviewed-destination-constrained",
+      "reason": "Production constructor in complex-task-chat-agent.ts receives module-level VAULT_GATEWAY_URL. GET identity values are encoded; POST paths are fixed methods. Both reject redirects. pinHost derives from input and is not independently protective; configuration trust is required. Downstream proxy-request body URL authorization is outside these fetch matches.",
+      "reviewed_sha256": "cb23a64d11b125ac7a3870885eb02b64e9e9d9e5550adc12c259c49c32a7598e"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/complex-task-chat/vault/gateway-client.ts",
+      "scanned_line": 158,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "reviewed-destination-constrained",
+      "reason": "Production constructor in complex-task-chat-agent.ts receives module-level VAULT_GATEWAY_URL. GET identity values are encoded; POST paths are fixed methods. Both reject redirects. pinHost derives from input and is not independently protective; configuration trust is required. Downstream proxy-request body URL authorization is outside these fetch matches.",
+      "reviewed_sha256": "cb23a64d11b125ac7a3870885eb02b64e9e9d9e5550adc12c259c49c32a7598e"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/github-comments.ts",
+      "scanned_line": 427,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "reviewed-destination-constrained",
+      "reason": "All production LiveStatusComment constructors use the default literal GitHub origin. Request paths cannot replace that origin and redirects are rejected.",
+      "reviewed_sha256": "6ee6e3fa0231533e7263f6730234ea2583e5ecde31ced9575b41433288a2d3e5"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/invocability-probe/capture-proxy.ts",
+      "scanned_line": 207,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "reviewed-destination-constrained",
+      "reason": "Production runner does not supply upstreamBaseUrl. Region is character-validated and embedded in a fixed AWS hostname suffix. Request route/model checks and exact-origin comparison constrain the destination. Redirects are rejected. Overrides occur in tests and manifest generation.",
+      "reviewed_sha256": "35b323c348b2edda0564d5e380f430b08bbbe1273b3a8b9fd59535375383ccc0"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/invocability-probe/gateway-client.ts",
+      "scanned_line": 105,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "reviewed-destination-constrained",
+      "reason": "Production uses operator ADP_GATEWAY_ENDPOINT. HTTPS required, credentials/query/fragment rejected, fixed paths and encoded slot IDs only, redirects rejected.",
+      "reviewed_sha256": "a29922781a6cd01703c668121b349b89179b5e00b188f27147a023053fce04d3"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/lib/artifactGateway.ts",
+      "scanned_line": 32,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "reviewed-destination-constrained",
+      "reason": "Worker template obtains ADP_GATEWAY_ENDPOINT from SSM. HTTPS and credential/query/fragment checks; runtime allowlisted artifact kind and fixed path; redirects rejected. Content does not select a destination.",
+      "reviewed_sha256": "7bcb415f3273bbba583244c2001c6d97a451867674aa995ba76d6d664240b0ba"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/lib/knowledgeBridge.ts",
+      "scanned_line": 66,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "reviewed-destination-constrained",
+      "reason": "Operator gateway origin with HTTPS/credential/query/fragment checks; exact method/path lookup selects one of three fixed routes. Client headers cannot set destination; redirects rejected.",
+      "reviewed_sha256": "c60431d2824169daf1d539154e376f9f01e0781de693db71ff0790a478cf520a"
+    },
+    {
+      "file": "modules/agent-factory/agent/src/utils/comment-authority.ts",
+      "scanned_line": 7,
+      "rule": "tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf",
+      "status": "fixed-source-reject-redirects",
+      "reason": "Literal GitHub origin plus encoded path inputs; now uses redirect:error so relocated permission responses cannot authorize work. Exceptions fail closed. No exploitable attacker-controlled GitHub redirect was established in the original review.",
+      "reviewed_sha256": "062e572d82fa2a9b64d5a6e3108ca4f8e1522e12a00b08f61029832d329982a1"
+    }
+  ]
+}

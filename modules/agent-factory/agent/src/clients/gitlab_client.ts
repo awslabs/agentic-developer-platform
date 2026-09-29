@@ -19,10 +19,24 @@ export class GitLabClient {
   private readonly accessToken: string;
 
   constructor(config: GitLabClientConfig) {
-    // SSRF guard: validateBaseUrl returns the normalized origin, breaking
-    // semgrep's taint path from config.baseUrl → fetch() (#3582, #3713).
-    // allowHttp: GitLab base URL is a configured internal host (e.g. http://gitlab.dev.adp.internal).
-    this.baseUrl = validateBaseUrl(config.baseUrl, { allowHttp: true }).replace(/\/$/, '');
+    // Only deployment configuration may choose the GitLab destination. A caller's
+    // baseUrl is a compatibility assertion, never an independent trust source.
+    // GITLAB_URL is populated from SSM by the worker template; internal HTTP is
+    // intentional. DNS for this configured service remains operator-controlled.
+    const configured = process.env.GITLAB_URL;
+    if (!configured) throw new Error('GITLAB_URL must configure the trusted GitLab origin');
+    const origin = (value: string): string => {
+      const parsed = new URL(value);
+      if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+        throw new Error('GitLab URL must be an origin without path, query or fragment');
+      }
+      return validateBaseUrl(value, { allowHttp: true });
+    };
+    const trustedOrigin = origin(configured);
+    if (origin(config.baseUrl) !== trustedOrigin) {
+      throw new Error('GitLab baseUrl does not match the configured GitLab origin');
+    }
+    this.baseUrl = trustedOrigin;
     this.accessToken = config.accessToken;
   }
 
@@ -32,7 +46,7 @@ export class GitLabClient {
    */
   async postIssueComment(projectId: number, issueIid: number, body: string): Promise<void> {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/issues/${issueIid}/notes`;
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is the independently configured GITLAB_URL origin; caller baseUrl must match and redirects are rejected
     const resp = await fetch(url, {
       // Keep credentials and request bodies on the configured destination (S21).
       redirect: 'error',
@@ -54,7 +68,7 @@ export class GitLabClient {
    */
   async createBranch(projectId: number, branchName: string, ref: string): Promise<void> {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/repository/branches`;
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is the independently configured GITLAB_URL origin; caller baseUrl must match and redirects are rejected
     const resp = await fetch(url, {
       // Keep credentials and request bodies on the configured destination (S21).
       redirect: 'error',
@@ -79,7 +93,7 @@ export class GitLabClient {
     options: CreateMergeRequestOptions,
   ): Promise<MergeRequestResult> {
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/merge_requests`;
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is the independently configured GITLAB_URL origin; caller baseUrl must match and redirects are rejected
     const resp = await fetch(url, {
       // Keep credentials and request bodies on the configured destination (S21).
       redirect: 'error',
@@ -109,7 +123,7 @@ export class GitLabClient {
   async getFile(projectId: number, filePath: string, ref: string): Promise<string> {
     const encodedPath = encodeURIComponent(filePath);
     const url = `${this.baseUrl}/api/v4/projects/${projectId}/repository/files/${encodedPath}?ref=${encodeURIComponent(ref)}`;
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is validated at construction via validateBaseUrl() (blocks loopback/metadata/link-local); only static API paths are interpolated
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — this.baseUrl is the independently configured GITLAB_URL origin; caller baseUrl must match and redirects are rejected
     const resp = await fetch(url, {
       // Keep credentials and request bodies on the configured destination (S21).
       redirect: 'error',
