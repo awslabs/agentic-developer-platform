@@ -793,7 +793,9 @@ resource "aws_cognito_user" "test_admin" {
   message_action     = "SUPPRESS"
 
   lifecycle {
-    ignore_changes = [temporary_password]
+    # bootstrap-admin.sh owns the organization assignment. Preserve its claim
+    # on upgrades; the provider stores custom attribute keys without custom:.
+    ignore_changes = [temporary_password, attributes["org_id"]]
   }
 
   depends_on = [aws_lambda_permission.cognito_pre_signup]
