@@ -1632,6 +1632,15 @@ def _resolve_expected_webhook_url() -> str:
     return _read_ssm_string(f"/adp/{_get_environment()}/webhook-ingress/endpoint")
 
 
+def _resolve_dashboard_base_url() -> str:
+    """Resolve the public dashboard URL from config or the deployed distribution."""
+    configured = (get_settings().gateway_base_url or "").strip().rstrip("/")
+    if configured:
+        return configured
+    domain = _read_ssm_string(f"/adp/{_get_environment()}/gateway/cloudfront-domain").strip().rstrip("/")
+    return f"https://{domain}" if domain and "://" not in domain and "/" not in domain else ""
+
+
 def _resolve_expected_oauth_callback_url() -> str:
     """Resolve the OAuth callback URL the broker will send as ``redirect_uri``.
 
@@ -2728,8 +2737,9 @@ async def register_app_start(
         )
 
     # Build callback URL — the gateway endpoint that handles the code exchange
-    settings = get_settings()
-    base_url = settings.gateway_base_url or ""
+    base_url = _resolve_dashboard_base_url()
+    if not base_url:
+        raise HTTPException(status_code=422, detail="Dashboard URL is not configured")
     callback_url = f"{base_url}/api/admin/connections/github/app/register-callback"
 
     # Issue #2823: Post-install redirect. GitHub sends the browser here after an
@@ -3617,6 +3627,24 @@ async def is_github_login_enabled() -> bool:
 
     _LOGIN_ENABLED_CACHE = (now + _LOGIN_ENABLED_TTL_SECONDS, value)
     return value
+
+
+async def get_app_setup_guide() -> dict[str, Any]:
+    """Use the same URLs and permission contract as manifest creation."""
+    import asyncio
+
+    def resolve() -> dict[str, Any]:
+        base_url = _resolve_dashboard_base_url()
+        return {
+            "homepage_url": base_url,
+            "callback_url": _resolve_expected_oauth_callback_url(),
+            "setup_url": f"{base_url}/api/admin/connections/github/install-callback" if base_url else "",
+            "webhook_url": _resolve_expected_webhook_url(),
+            "permissions": dict(_EXPECTED_APP_PERMISSIONS),
+            "events": list(_EXPECTED_APP_EVENTS),
+        }
+
+    return await asyncio.to_thread(resolve)
 
 
 async def get_app_status() -> AppStatusResponse:

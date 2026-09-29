@@ -49,6 +49,7 @@ from src.shared.schemas.auth import TokenContext
 from . import service as connection_service
 from .maintenance import AppKeyRequest, AppMaintenanceRequest, maintenance_status, require_revision, rotate_supplied_key
 from .schemas import (
+    AppSetupGuideResponse,
     AppStatusResponse,
     ConnectionsListResponse,
     DeleteConnectionResponse,
@@ -609,6 +610,19 @@ async def github_app_register_manual(
 # ---------------------------------------------------------------------------
 # GitHub App lifecycle (Issue #2595: status, rotate-key, disconnect)
 # ---------------------------------------------------------------------------
+
+
+@router.get("/github/app/setup-guide", response_model=AppSetupGuideResponse)
+async def github_app_setup_guide(
+    current_user: TokenContext = Depends(get_current_user),
+    access: AccessControl = Depends(_get_access_control),
+) -> AppSetupGuideResponse:
+    """Read deployment-specific configuration before importing an existing App."""
+    try:
+        access.require_platform_admin(current_user)
+    except AccessDeniedError:
+        raise HTTPException(status_code=403, detail="Platform administrator privileges required")
+    return AppSetupGuideResponse(**await connection_service.get_app_setup_guide())
 
 
 @router.get("/github/app/status", response_model=AppStatusResponse)

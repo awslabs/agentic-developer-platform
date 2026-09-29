@@ -61,6 +61,7 @@ async def setup(db, monkeypatch):
     monkeypatch.setattr(svc, "GitHubAppClient", lambda **kwargs: github)
     monkeypatch.setattr(svc, "_get_github_app_credentials", lambda: ("inert", "inert"))
     monkeypatch.setattr(svc, "_get_github_app_slug", lambda: "inert-app")
+    monkeypatch.setattr(svc, "_resolve_dashboard_base_url", lambda: "https://gateway.test")
     monkeypatch.setattr(svc, "_check_existing_app_secret", lambda: None)
     monkeypatch.setattr(svc, "_invalidate_verification_cache", lambda: None)
     monkeypatch.setattr(svc, "_invalidate_login_enabled_cache", lambda: None)

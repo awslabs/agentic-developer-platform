@@ -343,6 +343,17 @@ class RegisterAppStartResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class AppSetupGuideResponse(BaseModel):
+    """Public configuration values for manually creating an App; never credentials."""
+
+    homepage_url: str
+    callback_url: str
+    setup_url: str
+    webhook_url: str
+    permissions: dict[str, str]
+    events: list[str]
+
+
 class AppStatusResponse(BaseModel):
     """Response from GET /api/admin/connections/github/app/status."""
 

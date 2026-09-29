@@ -320,3 +320,16 @@ export async function registerManualGitHubApp(
     request,
   );
 }
+
+export interface GitHubAppSetupGuide {
+  homepage_url: string;
+  callback_url: string;
+  setup_url: string;
+  webhook_url: string;
+  permissions: Record<string, string>;
+  events: string[];
+}
+
+export async function getGitHubAppSetupGuide(): Promise<GitHubAppSetupGuide> {
+  return apiClient.get<GitHubAppSetupGuide>('/admin/connections/github/app/setup-guide');
+}

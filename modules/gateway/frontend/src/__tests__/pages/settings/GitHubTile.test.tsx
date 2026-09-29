@@ -181,6 +181,13 @@ describe('GitHubTile', () => {
       expect(screen.getByRole('button', { name: /Disconnect app/i })).toBeInTheDocument();
     });
 
+    it('shows replacement App configuration before disconnecting', () => {
+      render(<GitHubTile {...props} />);
+
+      expect(screen.getByText(/Review its settings before disconnecting/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'How to configure your GitHub App' })).toBeInTheDocument();
+    });
+
     it('calls onRotateKey when Rotate key is clicked', async () => {
       const user = userEvent.setup();
       render(<GitHubTile {...props} />);

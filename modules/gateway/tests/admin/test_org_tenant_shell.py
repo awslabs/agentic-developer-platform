@@ -45,6 +45,7 @@ def _mock_env(monkeypatch, offline_setup_boundaries):
     monkeypatch.setenv("BG_GITHUB_APP_SLUG", "test-adp-agent")
     monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", "true")
     monkeypatch.setenv("ENVIRONMENT", "dev")
+    monkeypatch.setattr("src.admin.connections.service._resolve_dashboard_base_url", lambda: "https://gateway.test")
     # Block Secrets Manager and DDB access
     with patch(
         "src.admin.connections.github_app_provider.boto3.client",

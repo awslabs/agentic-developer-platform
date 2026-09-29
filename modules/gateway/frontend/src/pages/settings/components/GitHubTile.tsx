@@ -19,6 +19,7 @@ import type {
   PlatformVerification,
   RegisterManualResponse,
 } from '@/services/connections';
+import { GitHubAppImportGuide } from './GitHubAppImportGuide';
 import { InstallationCard } from './InstallationCard';
 import { VerificationRow, hasUnhealthyCheck } from './VerificationRow';
 
@@ -227,6 +228,13 @@ export function GitHubTile({
               onRevalidate={onRevalidateApp}
               platformVerification={platformVerification}
             />
+          )}
+
+          {isPlatformAdmin && (
+            <div className="mt-4 text-sm text-gray-600 dark:text-gray-400">
+              <p>Preparing a replacement App? Review its settings before disconnecting the current App.</p>
+              <GitHubAppImportGuide />
+            </div>
           )}
 
           {/* Installations list */}
@@ -771,12 +779,14 @@ function ManualRegistrationForm({
         >
           Connect an existing App &rarr;
         </button>
+        <GitHubAppImportGuide />
       </div>
     );
   }
 
   return (
     <div className="mt-4 space-y-4" data-testid="manual-register-form">
+      <GitHubAppImportGuide />
       <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
         <div className="mb-3 flex items-center justify-between">
           <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
