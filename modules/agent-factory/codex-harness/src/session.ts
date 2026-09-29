@@ -26,6 +26,8 @@ export interface SessionHost {
   verifyCompletion?(signal: AbortSignal): Promise<boolean>;
   /** Reviewed invocation adapter; execute must use gateway authorization,
    * durable mutation receipts and host-isolated workspaces. */
+  /** GitHub/GitLab planning effects executed and receipted by the host after validation. */
+  planningCapabilities?: readonly ("story.create" | "agents.delegate")[];
   toolBroker?: {
     definitions: readonly HostTool[];
     execute: ToolHost["execute"];
@@ -43,6 +45,8 @@ export interface AdmittedSession {
   /** Additional host-owned model limits from the admitted run grant. */
   maxOutputTokens: number;
   maxResponseBytes: number;
+  /** Host transport ceiling; Task IPC retains its 63 KiB payload default. */
+  maxRequestBytes?: number;
   signal: AbortSignal;
 }
 
@@ -58,6 +62,9 @@ export interface AdmittedSession {
  */
 export async function runAdmittedSession(input: AdmittedSession, host: SessionHost) {
   const { runId, prompt, maxOutputTokens, maxResponseBytes, signal: callerSignal } = input;
+  const maxRequestBytes = input.maxRequestBytes ?? 63 * 1024;
+  if (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1024 || maxRequestBytes > 256 * 1024
+    || (input.source.kind === "task-api" && maxRequestBytes > 63 * 1024)) throw new Error("Invalid host request bound");
   const snapshot = verifySnapshot(input.snapshot);
   const policy = structuredClone(input.policy);
   const source = structuredClone(input.source);
@@ -69,9 +76,15 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
     maxCalls: suppliedBroker.maxCalls, execute: suppliedBroker.execute.bind(suppliedBroker),
   } : undefined;
   const repository = input.repository ? structuredClone(input.repository) : undefined;
-  const plan = planVerifiedRun(snapshot, policy, source, repository, broker?.repositoryCapabilities ?? [], Date.now());
+  const planningCapabilities = [...(host.planningCapabilities ?? [])];
+  if (planningCapabilities.some(capability => !["story.create", "agents.delegate"].includes(capability))
+    || (planningCapabilities.length && (!["github", "gitlab"].includes(source.kind)
+      || JSON.parse(snapshot.definition).completionPolicy !== "report" || !repository)))
+    throw new Error("Invalid host planning capabilities");
+  const plan = planVerifiedRun(snapshot, policy, source, repository,
+    [...(broker?.repositoryCapabilities ?? []), ...planningCapabilities], Date.now());
   if ((plan.persona.completionPolicy !== "report" && (!broker || !verifyCompletion))
-    || plan.capabilities.some(value => value !== "artifacts.publish" && !broker?.definitions.some(tool => tool.capability === value))) {
+    || plan.capabilities.some(value => value !== "artifacts.publish" && !planningCapabilities.includes(value as "story.create" | "agents.delegate") && !broker?.definitions.some(tool => tool.capability === value))) {
     throw new Error("Session requires the executable capability broker");
   }
   if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 4096
@@ -90,6 +103,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
   const instructions = [
     ...(plan.persona.sharedRules ? [resolveRuleReferences(rulesRoot, plan.persona.sharedRules)] : []),
     snapshot.instructions,
+    ...(planningCapabilities.length ? [`Host planning capabilities: ${planningCapabilities.filter(capability => plan.capabilities.includes(capability)).join(', ')}. These operations are executed by the host after validating your structured artifact, not through model tools. For authorized story creation set publish_stories=true. For authorized dispatch return schedule entries. Do not claim completion before host receipts exist.`] : []),
     ...(plan.unavailableOptionalCapabilities.length ? [`Unavailable optional capabilities: ${plan.unavailableOptionalCapabilities.join(', ')}. Do not attempt these operations.`] : []),
   ].join('\n\n');
   const receipts = broker ? new ToolReceipts(broker.definitions, broker.maxCalls, Math.min(maxResponseBytes, 32768)) : undefined;
@@ -130,7 +144,7 @@ export async function runAdmittedSession(input: AdmittedSession, host: SessionHo
       model: policy.canonicalModel, effort: plan.persona.effort,
       maxOutputTokens: maxOutputTokens,
       // Reserve wrapper space within the existing 64 KiB Task IPC contract.
-      maxRequestBytes: 63 * 1024, maxResponseBytes: maxResponseBytes,
+      maxRequestBytes, maxResponseBytes: maxResponseBytes,
       maxOperations: plan.limits.maxTurns, timeoutMs: Math.min(plan.limits.maxDurationMs, 120000),
     });
     // Shared ADP personas already contain the maintained workflow and tool

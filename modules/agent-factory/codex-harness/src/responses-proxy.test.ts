@@ -242,3 +242,23 @@ test("large persona text is split losslessly within the existing host part bound
   assert.throws(() => normalizeTextRequest({ ...request(), input: [{ role: "developer", content: text }] },
     { ...policy, maxRequestBytes: 1024 }), /bound/);
 });
+
+
+test("native provider metadata and empty placeholders normalize without relaxing execution fields", () => {
+  const native = { ...result(), model: "fixture-model", created_at: 123, tools: [],
+    output: [{ id: "reasoning_fixture", type: "reasoning", summary: [], content: [], encrypted_content: "opaque-fixture" },
+      { ...result().output[0], content: [{ type: "output_text", text: "fixture", annotations: [], logprobs: [] }] }],
+    usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30,
+      input_tokens_details: { cached_tokens: 2, cache_write_tokens: 18 } } };
+  const before = structuredClone(native);
+  assert.match(textResponseEvents(native, policy), /response.completed/);
+  assert.deepEqual(native, before);
+  for (const total_tokens of [31, "30", null])
+    assert.throws(() => textResponseEvents({ ...native, usage: { ...native.usage, total_tokens } }, policy));
+  assert.throws(() => textResponseEvents({ ...native, usage: { ...native.usage,
+    input_tokens_details: { cached_tokens: 3, cache_write_tokens: 18 } } }, policy));
+  assert.throws(() => textResponseEvents({ ...native, output: [{ ...native.output[0], content: ["unsupported"] }] }, policy));
+  assert.throws(() => textResponseEvents({ ...native, output: [{ ...native.output[0], unknown_execution_field: true }] }, policy));
+  assert.throws(() => textResponseEvents({ ...native, output: [{ ...native.output[1],
+    content: [{ type: "output_text", text: "fixture", annotations: [], logprobs: [1] }] }] }, policy));
+});

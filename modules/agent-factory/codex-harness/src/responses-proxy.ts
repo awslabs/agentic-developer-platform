@@ -172,9 +172,34 @@ function validateToolCall(call: z.infer<typeof functionInput>, policy: TextRespo
   tool.input.strict().parse(JSON.parse(call.arguments));
 }
 
+/** Strip native provider envelope metadata and documented empty placeholders.
+ * Execution fields and usage retain the closed contract below.
+ */
+function normalizeProviderResult(value: unknown): unknown {
+  const envelope = z.object({ id: z.unknown(), status: z.unknown(), output: z.unknown(), usage: z.unknown() }).parse(value);
+  const result = structuredClone(envelope);
+  if (result.usage && typeof result.usage === "object" && !Array.isArray(result.usage)) {
+    const usage = result.usage as Record<string, unknown>;
+    if ("total_tokens" in usage) {
+      if (!Number.isSafeInteger(usage.total_tokens) || typeof usage.input_tokens !== "number"
+        || typeof usage.output_tokens !== "number" || usage.total_tokens !== usage.input_tokens + usage.output_tokens)
+        throw new Error("Provider total usage differs");
+      delete usage.total_tokens;
+    }
+  }
+  if (Array.isArray(result.output)) for (const item of result.output) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    if (item.type === "reasoning" && Array.isArray(item.content) && item.content.length === 0) delete item.content;
+    if (item.type === "message" && Array.isArray(item.content)) for (const part of item.content) {
+      if (part && typeof part === "object" && Array.isArray(part.logprobs) && part.logprobs.length === 0) delete part.logprobs;
+    }
+  }
+  return result;
+}
+
 export function textResponseEvents(value: unknown, policy: TextResponsesPolicy): string {
   if (Buffer.byteLength(JSON.stringify(value)) > policy.maxResponseBytes) throw new Error("Responses result exceeds bound");
-  const response = responseSchema.parse(value);
+  const response = responseSchema.parse(normalizeProviderResult(value));
   if (!Number.isSafeInteger(response.usage.input_tokens + response.usage.output_tokens)
     || response.usage.output_tokens > policy.maxOutputTokens
     || ((response.usage.input_tokens_details?.cached_tokens ?? 0) + (response.usage.input_tokens_details?.cache_write_tokens ?? 0)) > response.usage.input_tokens

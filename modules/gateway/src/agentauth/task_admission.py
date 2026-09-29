@@ -139,10 +139,12 @@ class TaskAdmission:
             immutable_input["artifacts"] = refs
         turn_limit = int(policy["limits"]["max_turns"])
         if binding["transport"] == "openai_responses":
-            turn_limit = int(policy["limits"].get("codex_max_turns", turn_limit))
+            turn_limit = min(int(policy["limits"].get("codex_max_turns", turn_limit)), 32)
         limits = {
             "max_turns": turn_limit,
-            "max_output_tokens_per_turn": int(policy["limits"]["max_output_tokens_per_turn"]),
+            "max_output_tokens_per_turn": min(int(policy["limits"]["max_output_tokens_per_turn"]), 4096)
+            if binding["transport"] == "openai_responses"
+            else int(policy["limits"]["max_output_tokens_per_turn"]),
             "max_usd": float(policy["limits"]["max_usd_per_task"]),
             "deadline_at": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }

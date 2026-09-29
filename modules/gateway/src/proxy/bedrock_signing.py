@@ -363,14 +363,16 @@ class BedrockDestinationSigner:
         confused-deputy protection, and duplicating it into a second table would double
         the number of places it can leak from.
 
-        ``credential_id IS NULL`` means an admin-registered destination with no linked
-        connection, so there is no ExternalId to send. That is returned as None and the
-        assume proceeds without one — which will be **rejected** by any role whose trust
-        policy requires an ExternalId, and that rejection is correct: it surfaces as
-        ``assume_role_failed`` naming the account rather than being silently papered
-        over. R4, which owns registration, is where such a row should be rejected at
-        save time (§6.7).
+        Platform registrations use their server-issued destination ID as the
+        trust binding (``adp-platform:<destination-id>``). Their IAM role must
+        require that exact ExternalId. Personal connections continue to use
+        the separately verified trust ID stored with the credential.
         """
+        # Platform registration issues the stable trust ID; personal connections
+        # continue to use their separately verified credential trust binding.
+        if destination.is_platform_registered and destination.owner_org_id is None and not destination.credential_id:
+            return f"adp-platform:{destination.id}"
+
         if not destination.credential_id:
             logger.warning(
                 "Bedrock routing destination has no linked connection; assuming without ExternalId",

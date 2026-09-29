@@ -88,7 +88,8 @@ export async function createCodexPersonaReporter() {
     workspace = tmp_path / "repo"
     workspace.mkdir()
     subprocess.run(['git', 'init', '-q', str(workspace)], check=True)
-    (workspace / 'README.md').write_text('Pinned repository evidence 471.\n')
+    repository_text = 'Pinned repository evidence 471.\n' + (' '.join(f'evidence{i:05d}' for i in range(1500)) if mode == 'repository-read' else '')
+    (workspace / 'README.md').write_text(repository_text)
     subprocess.run(['git', 'add', 'README.md'], cwd=workspace, check=True)
     subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                     'commit', '--allow-empty', '-qm', 'fixture'], cwd=workspace, check=True)
@@ -148,7 +149,8 @@ export async function createCodexPersonaReporter() {
         assert [(value['kind'], value['action']) for value in operations] == [('model', 'claim')]
 
     if mode == 'repository-read':
-        assert 'Pinned repository evidence 471.' in json.dumps(requests[1])
+        assert any(repository_text in part.get('text', '') for item in requests[1]['input']
+                   if item.get('type') == 'function_call_output' for part in item['output'])
         operations = [json.loads(line) for line in (artifacts / 'operations.jsonl').read_text().splitlines()]
         assert [(value['kind'], value['action']) for value in operations].count(('tool', 'claim')) == 1
         assert [(value['kind'], value['action']) for value in operations].count(('tool', 'settle')) == 1

@@ -29,7 +29,7 @@ export function planningPersona(name: string): PlanningPersona | undefined {
   return Object.hasOwn(planningSchemas, key) ? key as PlanningPersona : undefined;
 }
 export function planningContract(persona: PlanningPersona) {
-  return { instruction: 'Return only JSON matching this schema. Keep the artifact below 24000 UTF-8 bytes. Requirements must cite supplied source refs. Preserve previous story keys and requirement IDs; list an explicit supersession with its amendment reference when a requirement changes or is removed. Never treat an assumption as a user requirement. Ask at most one necessary question using clarification, otherwise set clarification to null. For Architect set publish_stories only when the task asks to create stories. PM schedule is only a proposal: the host rechecks eligibility and grants before dispatch.',
+  return { instruction: 'Return only JSON matching this schema. Keep the artifact below 24000 UTF-8 bytes. Requirements must cite supplied source refs. Omit unknown optional string fields instead of emitting empty strings. Preserve previous story keys and requirement IDs; list an explicit supersession with its amendment reference when a requirement changes or is removed. This includes adding detail after a clarification: either keep the previous requirement text verbatim and add a separate requirement, or add a superseded_requirements entry with the existing id, a reason, and the exact follow_up_input source_ref. Never treat an assumption as a user requirement. Ask at most one necessary question using clarification, otherwise set clarification to null. For Architect set publish_stories only when the task asks to create stories. PM schedule is only a proposal: the host rechecks eligibility and grants before dispatch.',
     schema: z.toJSONSchema(z.strictObject({ artifact: planningSchemas[persona], clarification: text.nullable() })) };
 }
 export function parsePlanning(raw: string, persona: PlanningPersona, refs: ReadonlySet<string>, previous?: PlanningArtifact) {
@@ -85,4 +85,23 @@ export function planningReport(persona: PlanningPersona, artifact: PlanningArtif
     uncertainties: [...artifact.assumptions, ...artifact.open_questions].map(s => s.slice(0, 1000)),
     recommendations: [], evidence_refs: [...refs].map(ref => evidence.get(ref)!),
     documents: [planningDocument(persona, artifact)] };
+}
+
+
+/** Keep issue text and source identities; omit transport/display metadata. */
+export function planningIssueContext(input: { number: number; title: string; body: string; url: string; state: string;
+  comments: { id: string; body: string; author: { login: string } | null }[] }, artifactComment?: string, artifactBlock?: string) {
+  return { number: input.number, title: input.title, body: input.body, url: input.url, state: input.state,
+    comments: input.comments.map(comment => ({ id: comment.id, author: comment.author?.login ?? null,
+      body: (comment.id === artifactComment && artifactBlock ? comment.body.replace(artifactBlock, '[Current planning artifact supplied in previous_artifact.]') : comment.body)
+        .replace(/<!-- adp-(?:correlation|run|failed):[\s\S]*?-->/g, '').trim() })) };
+}
+
+
+/** Trusted validation feedback; do not echo arbitrary model/provider errors. */
+export function planningCorrection(error: unknown): string {
+  if (error instanceof z.ZodError) return 'Correct these planning fields: ' + error.issues.slice(0, 8).map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ') + '. Omit unknown optional string fields instead of leaving them empty.';
+  if (error instanceof Error && error.message === 'Requirement silently removed or changed')
+    return 'A previous requirement was edited or removed without superseded_requirements. Preserve its text verbatim and add a separate requirement, or include its existing id, reason, and exact follow_up_input source_ref in superseded_requirements. Preserve all remaining requirements.';
+  return 'Return exact planning JSON with host-known source refs, valid dependencies, and explicit amendments for changed requirements.';
 }

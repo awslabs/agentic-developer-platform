@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePlanning, planningReport, readyAssignments, storyMarker } from './planning.js';
+import { parsePlanning, planningReport, readyAssignments, storyMarker, planningIssueContext, planningCorrection } from './planning.js';
 import { PlanningProvider, type PlanningTransport } from './planning-provider.js';
 const base = { summary: 'Plan', requirements: [{ id: 'one', text: 'Retain audit history', source_refs: ['instructions'] }], assumptions: [], open_questions: [], superseded_requirements: [] };
 const product = { ...base, acceptance_criteria: ['History remains after editing'] };
@@ -82,4 +82,28 @@ test('story publication retries reuse create and relationship receipts', async (
 
 test('existing open changes prevent a second implementation assignment', () => {
   assert.deepEqual(readyAssignments([{issue: 1, state: 'open', blockedBy: [], assigned: true}], [{issue: 1, persona: 'codex-developer'}]), []);
+});
+
+
+test('planning issue context preserves human text and source IDs without duplicate artifacts or transport metadata', () => {
+  const artifact = '```json\n{"artifact":{}}\n```';
+  const issue = {number: 1, title: 'Plan', body: 'Preserve all requirements.', url: 'https://example.test/1', state: 'OPEN',
+    comments: [{id: 'human', author: {login: 'human'}, body: 'Keep 90 days. <!-- unrelated requirement -->'},
+      {id: 'artifact', author: {login: 'bot'}, body: '<!-- adp-run:123 -->\nSummary\n'+artifact+'\nKeep this note.'}]};
+  const compact = planningIssueContext(issue, 'artifact', artifact);
+  assert.deepEqual(compact.comments[0], {id: 'human', author: 'human', body: issue.comments[0]!.body});
+  assert.match(compact.comments[1]!.body, /Summary/);
+  assert.match(compact.comments[1]!.body, /previous_artifact/);
+  assert.match(compact.comments[1]!.body, /Keep this note/);
+  assert.doesNotMatch(compact.comments[1]!.body, /adp-run|```json/);
+  assert.equal(issue.comments[1]!.body.includes(artifact), true);
+});
+
+
+test('planning schema repair names the invalid optional field without inventing its value', () => {
+  let failure: unknown;
+  try { parsePlanning(JSON.stringify({artifact: {...base, draft: {intent: 'Export own data', motivation: ''}}, clarification: 'Which format?'}), 'intent-refinement', refs); }
+  catch (error) { failure = error; }
+  assert.match(planningCorrection(failure), /artifact.draft.motivation/);
+  assert.match(planningCorrection(failure), /Omit unknown optional string fields/);
 });

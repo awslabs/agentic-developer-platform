@@ -38,6 +38,8 @@ locals {
     # the same protected pod when the ordinary worker changes identity.
     ADP_TASK_WORKER_SERVICE_ACCOUNT = local.agent_worker_sa_name
     ADP_TASK_WORKER_IMAGE_DIGESTS   = join(",", sort(tolist(var.agent_authority_worker_image_digests)))
+    } : {}, length(var.codex_task_personas) > 0 ? {
+    ADP_CODEX_PERSONA_CATALOG_FILE = "/app/src/agentauth/codex-github-catalogue.json"
   } : {})
 }
 

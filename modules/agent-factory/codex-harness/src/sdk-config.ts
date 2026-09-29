@@ -7,7 +7,9 @@ import type { CodexOptions } from "@openai/codex-sdk";
  * remains blocked until residual built-ins and broker permissions are qualified.
  */
 export function restrictedSdkConfig(): NonNullable<CodexOptions["config"]> {
-  return { features: {
+  // Preserve every host receipt (at most 32768 UTF-8 bytes) in SDK history.
+  // https://developers.openai.com/codex/config-reference/#tool_output_token_limit
+  return { tool_output_token_limit: 32768, features: {
     multi_agent: false, goals: false, shell_tool: false, unified_exec: false,
     shell_snapshot: false, apps: false, remote_plugin: false, hooks: false,
     skill_mcp_dependency_install: false,

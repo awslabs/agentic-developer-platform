@@ -47,7 +47,7 @@ class ModelInvocabilityEvidence(Base):
     compatibility_class: Mapped[str] = mapped_column(String(64), primary_key=True)
 
     # --- Key part 4: Harness/contract revision ---
-    harness_contract_revision: Mapped[str] = mapped_column(String(32), primary_key=True)
+    harness_contract_revision: Mapped[str] = mapped_column(String(64), primary_key=True)
 
     # --- Key part 5: Request-shape revision ---
     request_shape_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -168,7 +168,7 @@ class ModelProbeSlot(Base):
     region: Mapped[str] = mapped_column(String(32), nullable=False)
     canonical_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
     compatibility_class: Mapped[str] = mapped_column(String(64), nullable=False)
-    harness_contract_revision: Mapped[str] = mapped_column(String(32), nullable=False)
+    harness_contract_revision: Mapped[str] = mapped_column(String(64), nullable=False)
     expected_request_shape_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     reserved_budget_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="reserved")

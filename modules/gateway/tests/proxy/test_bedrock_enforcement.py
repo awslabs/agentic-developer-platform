@@ -721,13 +721,8 @@ class TestFailClosed:
         assert error.reason == REASON_ACCOUNT_UNLINKED
 
     @pytest.mark.asyncio
-    async def test_an_admin_registered_destination_assumes_without_an_external_id(self, session_factory):
-        """`credential_id IS NULL` proceeds without one, and fails loudly if refused.
-
-        Not silently degraded: a role whose trust policy requires an ExternalId rejects
-        this, which surfaces as `assume_role_failed` naming the account. R4 is where
-        such a row should be refused at save time (§6.7).
-        """
+    async def test_an_admin_registered_destination_uses_its_server_issued_trust_id(self, session_factory):
+        """Platform registration has its own stable ID without a personal credential."""
         destination = _destination(credential_id=None, owner_org_id=None)
         await _seed(session_factory, destination)
         target = BedrockTarget(account_id=MAPPED_ACCOUNT, rung="org", destination_id=destination.id)
@@ -737,7 +732,7 @@ class TestFailClosed:
             async with session_factory() as session:
                 await _signer().get_credentials(session, target, user_id=CANONICAL_USER_ID)
 
-        assert assume_mock.call_args.kwargs["external_id"] is None
+        assert assume_mock.call_args.kwargs["external_id"] == f"adp-platform:{destination.id}"
 
     @pytest.mark.asyncio
     async def test_no_failure_path_returns_platform_credentials(self, session_factory):
@@ -773,7 +768,8 @@ class TestFailClosed:
         from src.proxy import bedrock_signing
 
         source = _executable_source(bedrock_signing)
-        for forbidden in ("platform_bedrock_account_id", "_platform_target", "is_platform_registered"):
+        # Registration selects only the trust ID; it cannot select a fallback account.
+        for forbidden in ("platform_bedrock_account_id", "_platform_target"):
             assert forbidden not in source, f"the signer must not be able to reach {forbidden} — ruling 1 forbids a fallback"
 
     def test_every_reason_code_is_reachable_and_has_a_message(self):

@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
-import { planningPersona, planningContract, parsePlanning, planningSchemas } from './planning.js';
+import { planningPersona, planningContract, parsePlanning, planningSchemas, planningIssueContext, planningCorrection } from './planning.js';
 import { PlanningProvider } from './planning-provider.js';
 import { runAdmittedSession } from './session.js';
 import { githubTools, hostCommand } from './github-tools.js';
@@ -91,13 +91,16 @@ async function main() {
       const planner = planningPersona(persona);
       if (!planner) throw new Error('Unsupported planning persona');
       const refs = new Set(['issue', ...input.comments.map(comment => `follow_up_input.${comment.id}`)]);
-      let previousArtifact;
+      let previousArtifact, artifactComment, artifactBlock;
       for (const comment of input.comments) {
         const match = comment.body.match(/```json\n([\s\S]*?)\n```/);
         if (!match) continue;
         try {
           const document = JSON.parse(match[1]);
-          if (document.planning_persona === planner) previousArtifact = planningSchemas[planner].parse(document.artifact);
+          if (document.planning_persona === planner) {
+            previousArtifact = planningSchemas[planner].parse(document.artifact);
+            artifactComment = comment.id; artifactBlock = match[0];
+          }
         } catch { /* Other issue comments are not planning documents. */ }
       }
       const provider = new PlanningProvider('github', context.repository, context.issue, {
@@ -112,11 +115,12 @@ async function main() {
           harnessRevision: context.harnessRevision, canonicalModel: initial.model, allowedEfforts: [definition.effort],
           capabilityLayers: layers, limits: { ...definition.limits, maxTurns: context.maxTurns }, deadlineMs: context.deadlineMs },
         repository: { provider: 'github', repositoryId: context.repositoryId, sourceRevision: revision },
-        source: { kind: 'github', eventId: initial.runId }, prompt: JSON.stringify({ task: input,
+        source: { kind: 'github', eventId: initial.runId }, prompt: JSON.stringify({ task: planningIssueContext(input, artifactComment, artifactBlock),
           source_refs: [...refs], previous_artifact: previousArtifact, backlog, correction, output_contract: planningContract(planner) }),
-        maxOutputTokens: context.maxOutputTokens, maxResponseBytes: 48000, signal,
+        maxOutputTokens: context.maxOutputTokens, maxResponseBytes: 48000, maxRequestBytes: 192 * 1024, signal,
       }, {
         assertCurrent: current,
+        planningCapabilities: context.capabilities.filter(capability => capability === "story.create" || capability === "agents.delegate"),
         ...(tools.definitions.length ? { toolBroker: { definitions: tools.definitions,
           repositoryCapabilities: ['repository.read'], maxCalls: context.maxTools, execute: async (name, args, active) => {
             const result = await tools.execute(name, args, active);
@@ -164,11 +168,11 @@ async function main() {
           });
         },
       });
-      let result, planned;
+      let result, planned, correction;
       for (let attempt = 0; attempt < 2; attempt++) {
-        result = await invoke(attempt ? 'Previous output failed validation. Return exact JSON with host-known source refs and valid dependencies.' : undefined);
+        result = await invoke(correction);
         try { planned = parsePlanning(result.response, planner, refs, previousArtifact); break; }
-        catch (error) { if (attempt === 1) throw error; reporter.progress('Correcting planning structure and citations.'); }
+        catch (error) { if (attempt === 1) throw error; correction = planningCorrection(error); reporter.progress('Correcting planning structure and citations.'); }
       }
       await current(signal);
       if (controls.pendingSteering()) throw new Error('A new amendment arrived before planning effects; rerun with the updated scope');

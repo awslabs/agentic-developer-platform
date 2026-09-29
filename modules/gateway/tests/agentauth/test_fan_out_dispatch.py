@@ -320,7 +320,8 @@ async def test_gate_decision_root_cannot_bypass_the_graph_with_this_scope(
         assert envelope["orchestration"]["flow_id"] == flow.id
 
 
-async def test_fan_out_refuses_a_graph_owned_target(fan_out_context, session_factory):
+@pytest.mark.parametrize("configured_repo", ["org/repo", ""])
+async def test_fan_out_refuses_a_graph_owned_target(fan_out_context, session_factory, configured_repo):
     """Graph-sequenced work is dispatched by the graph, not out of band.
 
     Starting a second agent on a node's issue is the double dispatch the graph
@@ -328,6 +329,7 @@ async def test_fan_out_refuses_a_graph_owned_target(fan_out_context, session_fac
     though this coordinator is otherwise cleared for its repository.
     """
     ctx = fan_out_context
+    ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = configured_repo
     await enroll(ctx)
     async with session_factory() as db:
         flow = await _make_flow(db, org_id="tenant", slug="owns-5337")
@@ -369,7 +371,8 @@ async def test_graph_node_ownership_is_scoped_to_the_engines_repository(fan_out_
         assert await resolve_repository_fan_out(target_repo="another/repo", **common)
 
 
-async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_factory):
+@pytest.mark.parametrize("configured_repo", ["org/repo", ""])
+async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_factory, configured_repo):
     """A flow launch reaches repository work only through graph dispatch.
 
     ``resolve_coordinator_assignment`` refuses to widen a coordinator whose flow
@@ -380,6 +383,7 @@ async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_f
     dispatch through ``dispatch_graph``.
     """
     ctx = fan_out_context
+    ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = configured_repo
     async with session_factory() as db:
         flow = await _make_flow(db, org_id="tenant", slug="awaiting-approval")
         flow.intent_ref = "42"
@@ -403,6 +407,13 @@ async def test_flow_launch_never_uses_generic_fan_out(fan_out_context, session_f
     assert ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant").authority.kind == "github_event"
 
     await enroll(ctx)
+    if not configured_repo:
+        # Missing engine configuration cannot enrol a flow coordinator, even
+        # after approval. It must remain on the restricted launch authority.
+        assert ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant").authority.kind == "github_event"
+        assert (await send(ctx, story_body(5337))).status_code == 404
+        assert messages(ctx) == []
+        return
     assert ctx.store.authority.load_grant(principal=f"{ctx.child.invocation}#1", tenant_id="tenant").authority.kind == "gate_decision"
     approved_dispatch = await send(ctx, story_body(5337))
     assert approved_dispatch.status_code == 202, approved_dispatch.text
@@ -442,3 +453,12 @@ async def test_a_coordinator_without_the_marker_stays_pinned(fan_out_context):
     assert ctx.store._read("TENANT#tenant", f"EXEC#{ctx.child.invocation}")["persona"] == {"S": "operations"}
     assert (await send(ctx, story_body(5333))).status_code == 404
     assert messages(ctx) == []
+
+
+async def test_no_engine_repository_allows_only_sql_unowned_fan_out(fan_out_context):
+    ctx = fan_out_context
+    ctx.runtime.env["BG_ORCH_DISPATCH_REPO"] = ""
+    await enroll(ctx)
+    response = await send(ctx, story_body(5333))
+    assert response.status_code == 202, response.text
+    assert len(messages(ctx)) == 1

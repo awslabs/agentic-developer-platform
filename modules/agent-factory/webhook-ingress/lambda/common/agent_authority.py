@@ -251,13 +251,19 @@ def provision_human_dispatch(
             **envelope,
             "message_id": invocation,
             "arrived_at": authority["created_at"]["S"],
+            # Bind worker model verification to the newly authorized root flow,
+            # never an advisory correlation pointer inherited from an older run.
+            "correlation": {
+                **envelope.get("correlation", {}),
+                "correlation_id": event.reference_id,
+            },
         }
         if prior is not None:
             final["arrived_at"] = prior.get("arrived_at", {}).get(
                 "S", final["arrived_at"]
             )
         # Root lineage is newly authorized by this actual human event. Advisory
-        # correlation pointers are retained for display, not copied as authority.
+        # parent pointers remain advisory; the chain binds to this event.
         digest = _digest(final)
         execution = {
             **_key(pk, f"EXEC#{invocation}"),

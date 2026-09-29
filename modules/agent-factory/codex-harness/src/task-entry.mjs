@@ -3,7 +3,7 @@
 import { ArtifactTransfers } from './task-contracts/artifact-transfer.js';
 import { parseHostFrame, assertInvestigatorReport } from './task-contracts/protocol.js';
 import { HostBridge, decode, encode, MAX_FRAME_BYTES } from './task-sdk/protocol.mjs';
-import { planningPersona, planningContract, parsePlanning, planningReport } from './planning.js';
+import { planningPersona, planningContract, parsePlanning, planningReport, planningCorrection } from './planning.js';
 import { taskHarness, parseTaskReport, TaskReportError } from './task-adapter.js';
 import { runAdmittedSession } from './session.js';
 import { TaskTools } from './task-tools.js';
@@ -56,7 +56,7 @@ async function run() {
       ...(repository ? { repository: repository.binding } : {}),
       runId: start.invocation_id, snapshot, policy, source: { kind: 'task-api', taskId: start.task_id, generation: start.generation },
       prompt: JSON.stringify({ task: input, amendments, evidence_refs: [...bridge.evidence.values()], output_contract: planner ? planningContract(planner) : outputContract, previous_artifact: previousArtifact,
-        ...(repair ? { correction: 'Previous output failed the report schema or cited unsupported evidence. Produce a corrected grounded report. Use the current evidence list and exact report shape.', failure_code: reportFailure, previous_output: previous } : {}) }),
+        ...(repair ? { correction: planner ? reportFailure : 'Previous output failed the report schema or cited unsupported evidence. Produce a corrected grounded report. Use the current evidence list and exact report shape.', failure_code: reportFailure, previous_output: previous } : {}) }),
       maxOutputTokens: start.limits.max_output_tokens_per_turn, maxResponseBytes: 48000, signal: bridge.controller.signal,
     }, {
       ...(toolSession ? { toolBroker: toolSession.toolBroker } : {}),
@@ -98,7 +98,7 @@ async function run() {
     catch (error) {
       if (repair || operations >= maxOperations) throw error;
       repair = true; previous = evidence.response;
-      reportFailure = error instanceof TaskReportError ? error.code : "invalid_schema";
+      reportFailure = planner ? planningCorrection(error) : error instanceof TaskReportError ? error.code : "invalid_schema";
       bridge.progress('Checking and correcting the report structure and citations.', 'synthesis');
       continue;
     }

@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
-test('Task intent refinement applies a replayed clarification once through the SDK host', { timeout: 30000 }, async () => {
+for (const repair of [false, true]) test(`Task intent refinement applies replayed clarification with repair=${repair}`,  { timeout: 30000 }, async () => {
   const start = JSON.parse(await readFile(new URL('../../../../docs/task-api/contracts/v1/fixtures/valid/process-codex-start-frame.json', import.meta.url), 'utf8'));
   delete start.$fixture;
   start.deadline_at = new Date(Date.now() + 25000).toISOString();
@@ -29,9 +29,14 @@ test('Task intent refinement applies a replayed clarification once through the S
       if (frame.type === 'control.request') send('control.result', {request_id: frame.request_id, current: true});
       if (frame.type === 'model.request') {
         calls++;
+        if (repair && calls === 3) assert.match(JSON.stringify(frame.responses_request), /edited or removed without superseded_requirements/);
         const output = calls === 1 ? {artifact, clarification: 'How long should history be retained?'} : {
           artifact: {...artifact, requirements: [...artifact.requirements, {id: 'retention', text: 'Retain history for 90 days', source_refs: [`follow_up_input.${command}`]}], draft: {...artifact.draft, constraints: ['Retain for 90 days']}}, clarification: null,
         };
+        if (repair && calls > 1) {
+          output.artifact.requirements = [{id: 'history', text: 'Preserve audit history for 90 days', source_refs: ['instructions', `follow_up_input.${command}`]}];
+          (output.artifact as any).superseded_requirements = calls === 2 ? [] : [{id: 'history', reason: 'Retention clarified', source_ref: `follow_up_input.${command}`}];
+        }
         send('model.result', {turn_id: frame.turn_id, operation_status: 'confirmed', content: [], stop_reason: 'completed', responses_response: {
           id: `resp_${calls}`, status: 'completed', output: [{id: `msg_${calls}`, type: 'message', role: 'assistant', status: 'completed', content: [{type: 'output_text', text: JSON.stringify(output), annotations: []}]}], usage: {input_tokens: 10, output_tokens: 50},
         }});
@@ -42,11 +47,11 @@ test('Task intent refinement applies a replayed clarification once through the S
       }
     }
     assert.equal(await exited, 0, JSON.stringify(frames.at(-1)) + stderr);
-    assert.equal(calls, 2);
+    assert.equal(calls, repair ? 3 : 2);
     assert.equal(frames.filter(f => f.type === 'input.required').length, 1);
     const report = frames.find(f => f.type === 'result')?.report;
     assert.ok(report, JSON.stringify(frames));
-    assert.equal(JSON.parse(report.documents[0].content).requirements.length, 2);
+    assert.equal(JSON.parse(report.documents[0].content).requirements.length, repair ? 1 : 2);
     assert.equal(report.evidence_refs.filter((ref: any) => ref.ref === `follow_up_input.${command}`).length, 1);
   } finally { child.kill('SIGKILL'); }
 });

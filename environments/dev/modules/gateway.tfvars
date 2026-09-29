@@ -113,6 +113,8 @@ orchestration_engine_enabled = true
 # Prepare a Bedrock-only destination for bounded PMM qualification. Paid probe
 # admission and its recurring schedule remain disabled separately.
 persona_model_probe_destination_enabled = true
+# Server-issued registry identity; the AssumeRole trust requires this exact binding.
+persona_model_probe_external_id = "adp-platform:316dd12b-70c0-4f00-9efc-e55a7a91e5d4"
 
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true

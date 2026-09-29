@@ -89,3 +89,26 @@ test("executable persona cannot start inference without a host completion valida
   }), /executable capability broker/);
   assert.equal(calls, 0);
 });
+
+
+test("host planning effects are admitted without direct model tools and remain unavailable to Task", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { snapshotPersona } = await import("./persona.js");
+  const { runAdmittedSession } = await import("./session.js");
+  const { HARNESS_CONTRACT_REVISION } = await import("./admission.js");
+  for (const [persona, capability] of [["architect", "story.create"], ["pm", "agents.delegate"]] as const) {
+    const snapshot = snapshotPersona(await readFile(new URL(`../personas/${persona}.json`, import.meta.url), "utf8"), new Map());
+    const definition = JSON.parse(snapshot.definition);
+    const caps = ["artifacts.publish", capability] as const;
+    const input = {runId: "run", snapshot, policy: {personaKey: definition.key, personaDigest: snapshot.digest,
+      compatibilityClass: "codex-sdk" as const, harnessRevision: HARNESS_CONTRACT_REVISION, canonicalModel: "fixture", allowedEfforts: [definition.effort],
+      capabilityLayers: {tenant: caps, principal: caps, run: caps, surface: caps, runtime: caps},
+      limits: {maxTurns: 4, maxContextBytes: 65536, maxDurationMs: 1000}, deadlineMs: Date.now()+10000},
+      source: {kind: "github" as const, eventId: "event"}, repository: {provider: "github" as const, repositoryId: "1", sourceRevision: "a".repeat(40)},
+      prompt: "Plan", maxOutputTokens: 64, maxResponseBytes: 1024, signal};
+    const host = {planningCapabilities: [capability], assertCurrent: async () => {throw new Error("reached authority check");},
+      progress: async () => {}, model: async (): Promise<never> => {throw new Error("unexpected inference");}};
+    await assert.rejects(runAdmittedSession(input, host), /reached authority check/);
+    await assert.rejects(runAdmittedSession({...input, source: {kind: "task-api", taskId: "task", generation: 1}}, host), /Invalid host planning capabilities/);
+  }
+});

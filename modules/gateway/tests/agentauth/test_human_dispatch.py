@@ -72,7 +72,7 @@ def envelope():
         "persona": "developer",
         "arrived_at": "2026-09-13T00:00:00Z",
         "source_ref": {"repo": "org/repo", "issue": 42},
-        "correlation": {"parent_invocation_id": "worker-controlled"},
+        "correlation": {"parent_invocation_id": "worker-controlled", "correlation_id": "advisory-chain"},
         "payload": {"comment": {"id": 1}},
     }
 
@@ -129,6 +129,8 @@ def test_actual_human_writer_bootstraps_and_ignores_advisory_parent(store):
     assert record.workload_binding == "pod-uid"
     assert record.parent_principal is None
     assert record.flow_id == event().reference_id
+    assert final["correlation"]["correlation_id"] == record.flow_id
+    assert envelope()["correlation"]["correlation_id"] != record.flow_id
     grant = store.live_grant(invocation_id=record.invocation_id, tenant_id="tenant", attempt=1, now=now)
     assert grant.authority.human_id == "human"
     assert "credential" not in final

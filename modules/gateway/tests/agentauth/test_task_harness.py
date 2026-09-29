@@ -200,7 +200,7 @@ async def test_admission_freezes_before_reservation_and_replay_ignores_changed_c
         "task_scopes": ["submit"],
         "version": 1,
         "model_policy_version": "1",
-        "limits": {"max_duration_minutes": 30, "max_turns": 8, "max_output_tokens_per_turn": 4096, "max_usd_per_task": 1},
+        "limits": {"max_duration_minutes": 30, "max_turns": 400, "max_output_tokens_per_turn": 8001, "max_usd_per_task": 1},
     }
     reservations = []
 
@@ -229,6 +229,10 @@ async def test_admission_freezes_before_reservation_and_replay_ignores_changed_c
     task = store.read_task(receipt["task_id"])
     grant = store._get_authority("TENANT#tenant-a", task["grant_reference"])
     assert grant["harness"]["snapshot"] == snapshot()
+    assert grant["limits"]["max_turns"] == 32
+    assert policy["limits"]["max_turns"] == 400
+    assert grant["limits"]["max_output_tokens_per_turn"] == 4096
+    assert policy["limits"]["max_output_tokens_per_turn"] == 8001
     file.write_text("changed catalogue")
     replay = await service.admit(caller=caller, submit=submit, idempotency_key="new-task", db=None)
     assert replay["task_id"] == receipt["task_id"] and replay["idempotent_replay"]
