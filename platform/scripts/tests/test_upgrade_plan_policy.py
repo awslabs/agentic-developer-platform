@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -15,6 +16,79 @@ def change(address, kind, before, after, actions=("delete", "create")):
 class PlanPolicyTests(unittest.TestCase):
     def evaluate(self, resource, module="gateway"):
         return policy.evaluate({"resource_changes": [resource]}, module, "123456789012")
+
+    def factory_plan(self, retirement):
+        runner = "adp-dev-agent-factory-runner-role"
+        arn = "arn:aws:iam::123456789012:role/" + runner
+        role = {"name": runner, "arn": arn,
+                "permissions_boundary": "arn:aws:iam::123456789012:policy/adp-dev-agent-runner-boundary"}
+        return {"variables": {"environment": {"value": "dev"},
+                              "aws_region": {"value": "us-east-1"},
+                              "runner_role_name": {"value": runner}},
+                "resource_changes": [retirement,
+                    change("module.runner_iam.aws_iam_role.runner", "aws_iam_role", role, role, ("no-op",))]}
+
+    def test_factory_runner_eks_edit_retirement_is_exact(self):
+        runner = "adp-dev-agent-factory-runner-role"
+        before = {"cluster_name": "adp-dev-eks-cluster",
+                  "principal_arn": "arn:aws:iam::123456789012:role/" + runner,
+                  "policy_arn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy",
+                  "access_scope": [{"type": "namespace", "namespaces": ["adp-agents", "arc-runners"]}]}
+        retired = change("aws_eks_access_policy_association.runner_edit",
+                         "aws_eks_access_policy_association", before, None, ("delete",))
+        plan = self.factory_plan(retired)
+        self.assertEqual(policy.evaluate(plan, "agent-factory", "123456789012")["routine"], [retired["address"]])
+        for field, value in (("policy_arn", "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"),
+                             ("cluster_name", "other")):
+            bad = copy.deepcopy(plan)
+            bad["resource_changes"][0]["change"]["before"][field] = value
+            self.assertEqual(policy.evaluate(bad, "agent-factory", "123456789012")["blocked"], [retired["address"]])
+
+    def test_factory_intake_inline_retirement_requires_attached_superset(self):
+        gateway = "adp-dev-role-gateway-service"
+        name = "adp-dev-policy-gateway-intake"
+        sessions = "arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-agent-gateway-sessions"
+        old = [
+            {"Sid": "IntakeSessionsRead", "Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:Query"],
+             "Resource": [sessions, sessions + "/index/*"]},
+            {"Sid": "IntakeDraftRead", "Effect": "Allow", "Action": ["dynamodb:GetItem"],
+             "Resource": ["arn:aws:dynamodb:us-east-1:123456789012:table/adp-dev-chat-context"]},
+            {"Sid": "IntakeTablesKMSDecrypt", "Effect": "Allow", "Action": ["kms:Decrypt", "kms:DescribeKey"],
+             "Resource": ["arn:aws:kms:us-east-1:123456789012:key/271615d4-2e8f-4b9d-af44-33427bf8e38d"]},
+            {"Sid": "IntakeDispatchInvoke", "Effect": "Allow", "Action": ["lambda:InvokeFunction"],
+             "Resource": ["arn:aws:lambda:us-east-1:123456789012:function:adp-dev-agent-gateway-ingest"]},
+        ]
+        hosted = {"Sid": "HostedTaskChatSessionsWrite", "Effect": "Allow", "Action": ["dynamodb:PutItem"],
+                  "Resource": [sessions], "Condition": {"ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["chat-*"]}}}
+        replacement = copy.deepcopy(old)
+        replacement.insert(1, hosted)
+        replacement[3]["Action"].append("kms:GenerateDataKey")
+        doc = lambda statements: json.dumps({"Version": "2012-10-17", "Statement": statements})
+        retired = change("aws_iam_role_policy.gateway_intake_access[0]", "aws_iam_role_policy",
+                         {"role": gateway, "name": name, "id": gateway + ":" + name, "policy": doc(old)},
+                         None, ("delete",))
+        plan = self.factory_plan(retired)
+        arn = "arn:aws:iam::123456789012:policy/" + name
+        managed = {"name": name, "arn": arn, "policy": doc(replacement)}
+        attached = {"role": gateway, "policy_arn": arn}
+        plan["resource_changes"].extend([
+            change("aws_iam_policy.gateway_intake_access[0]", "aws_iam_policy", managed, managed, ("no-op",)),
+            change("aws_iam_role_policy_attachment.gateway_intake_access[0]", "aws_iam_role_policy_attachment",
+                   attached, attached, ("no-op",)),
+        ])
+        self.assertEqual(policy.evaluate(plan, "agent-factory", "123456789012")["routine"], [retired["address"]])
+        for key in ("attachment missing", "policy still creating", "permission removed"):
+            bad = copy.deepcopy(plan)
+            if key == "attachment missing":
+                bad["resource_changes"].pop()
+            elif key == "policy still creating":
+                bad["resource_changes"][2]["change"]["actions"] = ["create"]
+            else:
+                new_doc = json.loads(bad["resource_changes"][2]["change"]["before"]["policy"])
+                new_doc["Statement"][0]["Action"] = ["dynamodb:GetItem"]
+                bad["resource_changes"][2]["change"]["before"]["policy"] = json.dumps(new_doc)
+            with self.subTest(key=key):
+                self.assertEqual(policy.evaluate(bad, "agent-factory", "123456789012")["blocked"], [retired["address"]])
 
     def test_api_revision_is_routine_only_with_same_api_and_create_before_delete(self):
         r = change("module.api_gateway[0].aws_api_gateway_deployment.main", "aws_api_gateway_deployment",

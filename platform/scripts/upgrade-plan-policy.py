@@ -18,11 +18,191 @@ WORKER_ROLLOUT_TIMEOUT_MIGRATION = (
 )
 
 
+def agent_factory_retirement(resource, plan, account):
+    """Retire only the runner grants removed by the reviewed automation split.
+
+    The intake policy is a separate ordered cutover: the managed replacement
+    must already be attached and contain every permission in the old inline
+    policy. Any drift in a retired grant keeps the destroy gate closed.
+    """
+    change = resource["change"]
+    before = change.get("before") or {}
+    if change["actions"] != ["delete"] or change.get("after") is not None:
+        return False
+    variables = plan.get("variables", {})
+    environment = variables.get("environment", {}).get("value")
+    region = variables.get("aws_region", {}).get("value")
+    runner = variables.get("runner_role_name", {}).get("value")
+    if (environment not in ("dev", "staging", "prod")
+            or not re.fullmatch(r"[0-9]{12}", account or "")
+            or not re.fullmatch(r"[a-z]{2}-[a-z]+-[0-9]", region or "")
+            or not re.fullmatch(rf"adp-{environment}-agent-(?:factory-)?runner-role", runner or "")):
+        return False
+    address = resource["address"]
+    gateway_role = f"adp-{environment}-role-gateway-service"
+    runner_arn = f"arn:aws:iam::{account}:role/{runner}"
+    retained = next((item for item in plan["resource_changes"]
+                     if item["address"] == "module.runner_iam.aws_iam_role.runner"), None)
+    if retained is None or retained["change"]["actions"] not in (["no-op"], ["update"]):
+        return False
+    old_role = retained["change"].get("before") or {}
+    new_role = retained["change"].get("after") or {}
+    if any(old_role.get(key) != new_role.get(key) for key in ("name", "arn", "permissions_boundary")):
+        return False
+    if old_role.get("name") != runner or old_role.get("arn") != runner_arn:
+        return False
+
+    if address == "aws_eks_access_policy_association.runner_edit":
+        allowed_namespaces = {"adp-agents", "adp-gateway", "adp-gateway-agents",
+                              "agent-context", "arc-runners", "arc-systems", "keda"}
+        scopes = before.get("access_scope") or []
+        return (resource.get("type") == "aws_eks_access_policy_association"
+                and before.get("cluster_name") == f"adp-{environment}-eks-cluster"
+                and before.get("principal_arn") == runner_arn
+                and before.get("policy_arn") == "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+                and len(scopes) == 1 and scopes[0].get("type") == "namespace"
+                and bool(scopes[0].get("namespaces"))
+                and set(scopes[0]["namespaces"]) <= allowed_namespaces)
+
+    policy_names = {
+        "aws_iam_role_policy.gateway_intake_access[0]": (gateway_role, f"adp-{environment}-policy-gateway-intake"),
+        "aws_iam_role_policy.runner_gateway_dynamodb": (runner, "gateway-dynamodb"),
+        "aws_iam_role_policy.runner_gateway_sqs": (runner, "gateway-sqs"),
+        "module.runner_iam.aws_iam_role_policy.bedrock_invocation_logging": (runner, "bedrock-invocation-logging-deploy"),
+        "module.runner_iam.aws_iam_role_policy.runner_security_scan_upload[0]": (runner, "security-scan-s3-upload"),
+    }
+    if address not in policy_names or resource.get("type") != "aws_iam_role_policy":
+        return False
+    role, name = policy_names[address]
+    if before.get("role") != role or before.get("name") != name or before.get("id") != f"{role}:{name}":
+        return False
+    try:
+        document = json.loads(before["policy"])
+    except (ValueError, TypeError, KeyError):
+        return False
+    if document.get("Version") != "2012-10-17":
+        return False
+    statements = document.get("Statement")
+    if not isinstance(statements, list) or any(
+            not isinstance(item, dict) or item.get("Effect") != "Allow" for item in statements):
+        return False
+
+    sessions = f"arn:aws:dynamodb:{region}:{account}:table/adp-{environment}-agent-gateway-sessions"
+    scan_bucket = f"arn:aws:s3:::adp-{environment}-security-scans-{account}"
+    if address == "aws_iam_role_policy.gateway_intake_access[0]":
+        policy_address = "aws_iam_policy.gateway_intake_access[0]"
+        attachment_address = "aws_iam_role_policy_attachment.gateway_intake_access[0]"
+        managed = next((item for item in plan["resource_changes"] if item["address"] == policy_address), None)
+        attachment = next((item for item in plan["resource_changes"] if item["address"] == attachment_address), None)
+        if (not managed or not attachment or managed["change"]["actions"] != ["no-op"]
+                or attachment["change"]["actions"] != ["no-op"]):
+            return False
+        managed_before = managed["change"].get("before") or {}
+        attached_before = attachment["change"].get("before") or {}
+        if (managed_before.get("name") != name
+                or managed_before.get("arn") != f"arn:aws:iam::{account}:policy/{name}"
+                or attached_before.get("role") != gateway_role
+                or attached_before.get("policy_arn") != managed_before["arn"]):
+            return False
+        try:
+            replacement = json.loads(managed_before["policy"])
+        except (ValueError, TypeError, KeyError):
+            return False
+        old_by_sid = {item.get("Sid"): item for item in statements}
+        new_statements = replacement.get("Statement", [])
+        if not isinstance(new_statements, list) or any(not isinstance(item, dict) for item in new_statements):
+            return False
+        new_by_sid = {item.get("Sid"): item for item in new_statements}
+        if (set(old_by_sid) != {"IntakeSessionsRead", "IntakeDraftRead", "IntakeTablesKMSDecrypt", "IntakeDispatchInvoke"}
+                or set(new_by_sid) != set(old_by_sid) | {"HostedTaskChatSessionsWrite"}
+                or replacement.get("Version") != document["Version"]):
+            return False
+        for sid, old in old_by_sid.items():
+            new = new_by_sid[sid]
+            if (new.get("Effect") != "Allow" or new.get("Resource") != old.get("Resource")
+                    or new.get("Condition") != old.get("Condition")
+                    or not set(old.get("Action", [])) <= set(new.get("Action", []))):
+                return False
+        expected_actions = {
+            "IntakeSessionsRead": {"dynamodb:GetItem", "dynamodb:Query"},
+            "HostedTaskChatSessionsWrite": {"dynamodb:PutItem"},
+            "IntakeDraftRead": {"dynamodb:GetItem"},
+            "IntakeTablesKMSDecrypt": {"kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey"},
+            "IntakeDispatchInvoke": {"lambda:InvokeFunction"},
+        }
+        if any(set(new_by_sid[sid].get("Action", [])) != actions
+               for sid, actions in expected_actions.items()):
+            return False
+        kms_resource = new_by_sid["IntakeTablesKMSDecrypt"].get("Resource") or []
+        return (
+            new_by_sid["IntakeSessionsRead"].get("Resource") == [sessions, f"{sessions}/index/*"]
+            and new_by_sid["HostedTaskChatSessionsWrite"].get("Effect") == "Allow"
+            and new_by_sid["HostedTaskChatSessionsWrite"].get("Resource") == [sessions]
+            and new_by_sid["HostedTaskChatSessionsWrite"].get("Condition") == {
+                "ForAllValues:StringLike": {"dynamodb:LeadingKeys": ["chat-*"]}}
+            and new_by_sid["IntakeDraftRead"].get("Resource") == [
+                f"arn:aws:dynamodb:{region}:{account}:table/adp-{environment}-chat-context"]
+            and len(kms_resource) == 1
+            and bool(re.fullmatch(rf"arn:aws:kms:{region}:{account}:key/[0-9a-f-]{{36}}", kms_resource[0]))
+            and new_by_sid["IntakeDispatchInvoke"].get("Resource") == [
+                f"arn:aws:lambda:{region}:{account}:function:adp-{environment}-agent-gateway-ingest"]
+        )
+
+    if address == "aws_iam_role_policy.runner_gateway_sqs":
+        return statements == [
+            {"Effect": "Allow", "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl"],
+             "Resource": f"arn:aws:sqs:{region}:{account}:adp-{environment}-agent-gateway-tasks"},
+            {"Effect": "Allow", "Action": ["sqs:SendMessage", "sqs:GetQueueAttributes"],
+             "Resource": f"arn:aws:sqs:{region}:{account}:adp-{environment}-agent-gateway-responses.fifo"},
+        ]
+    if address == "module.runner_iam.aws_iam_role_policy.runner_security_scan_upload[0]":
+        return statements == [
+            {"Sid": "SecurityScanUpload", "Effect": "Allow", "Action": ["s3:PutObject"],
+             "Resource": [f"{scan_bucket}/sarif/*", f"{scan_bucket}/findings/*"]},
+            {"Sid": "SecurityScanReadFindings", "Effect": "Allow", "Action": ["s3:GetObject"],
+             "Resource": f"{scan_bucket}/findings/*"},
+            {"Sid": "SecurityScanListFindings", "Effect": "Allow", "Action": ["s3:ListBucket"],
+             "Condition": {"StringLike": {"s3:prefix": ["findings/*"]}}, "Resource": scan_bucket},
+        ]
+    if address == "aws_iam_role_policy.runner_gateway_dynamodb":
+        if len(statements) != 2:
+            return False
+        kms_arn = (statements[1].get("Resource") or [None])[0]
+        if not re.fullmatch(rf"arn:aws:kms:{region}:{account}:key/[0-9a-f-]{{36}}", kms_arn or ""):
+            return False
+        return statements == [
+            {"Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:Query"],
+             "Resource": [sessions, f"{sessions}/index/*"]},
+            {"Sid": "DynamoDBKMSAccess", "Effect": "Allow",
+             "Action": ["kms:Decrypt", "kms:GenerateDataKey*", "kms:DescribeKey"], "Resource": [kms_arn]},
+        ]
+    if address == "module.runner_iam.aws_iam_role_policy.bedrock_invocation_logging":
+        return statements == [
+            {"Sid": "BedrockInvocationLogging", "Effect": "Allow", "Resource": "*",
+             "Action": ["bedrock:GetModelInvocationLoggingConfiguration", "bedrock:PutModelInvocationLoggingConfiguration",
+                        "bedrock:DeleteModelInvocationLoggingConfiguration", "logs:DescribeLogGroups"],
+             "Condition": {"StringEquals": {"aws:RequestedRegion": region}}},
+            {"Sid": "BedrockInvocationLogGroups", "Effect": "Allow",
+             "Action": ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:ListTagsForResource",
+                        "logs:ListTagsLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy",
+                        "logs:AssociateKmsKey", "logs:DisassociateKmsKey", "logs:TagLogGroup",
+                        "logs:TagResource", "logs:UntagLogGroup", "logs:UntagResource"],
+             "Resource": [f"arn:aws:logs:{region}:{account}:log-group:/aws/bedrock/adp-{environment}-agent/model-invocations",
+                          f"arn:aws:logs:{region}:{account}:log-group:/aws/bedrock/adp-{environment}-agent/model-invocations:*"]},
+            {"Sid": "BedrockLogBucketOwnership", "Effect": "Allow",
+             "Action": ["s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls", "s3:DeleteBucketOwnershipControls"],
+             "Resource": f"arn:aws:s3:::adp-{environment}-agent-bedrock-logs-{account}-{region}"},
+        ]
+    return False
+
+
 def routine(resource, module, account, plan):
     change = resource["change"]
     before, after = change.get("before") or {}, change.get("after") or {}
     order = change["actions"]
     address = resource["address"]
+    if module == "agent-factory" and agent_factory_retirement(resource, plan, account):
+        return True
     if module == "platform" and address == "null_resource.aggressive_packer_nodepool":
         # This marker has no destroy provisioner. Its delete-first replacement
         # only retires Terraform state; the create step reapplies the manifest.

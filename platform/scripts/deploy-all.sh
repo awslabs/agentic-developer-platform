@@ -1480,6 +1480,18 @@ EOF
   fi
   terraform init -backend-config="$BACKEND_FILE" -input=false
   if [ "$UPDATE_MODE" = true ]; then
+    # Install the replacement intake grant before retiring its inline policy.
+    # A full plan can otherwise delete the old grant before IAM has attached
+    # the new one, interrupting live CLI intake during an upgrade.
+    if python3 - "$FACTORY_VAR_FILE" <<'PY'
+import json, sys
+raise SystemExit(0 if json.load(open(sys.argv[1])).get("gateway_intake_managed_policy") is True else 1)
+PY
+    then
+      terraform_update_apply "agent-factory-intake-managed" "$FACTORY_VAR_FILE" \
+        '-target=aws_iam_policy.gateway_intake_access[0]' \
+        '-target=aws_iam_role_policy_attachment.gateway_intake_access[0]'
+    fi
     terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE"
   else
     terraform apply -var-file=terraform.tfvars -auto-approve
