@@ -182,7 +182,17 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         require(isinstance(document, dict), "workflow_events")
         events = document.get("on", document.get(True))
         names = set(events) if isinstance(events, dict | list) else {events} if isinstance(events, str) else set()
-        require("workflow_dispatch" in names and (not workflow.dispatch_only or names == {"workflow_dispatch"}), "workflow_not_dispatch_only")
+        from .workflow_evaluation_contract import WorkflowProducer
+
+        if isinstance(producer, WorkflowProducer) and bound_run is not None:
+            # Admission permits this shared workflow's offline PR/call entrypoints.
+            # The authenticated run below must still be a workflow_dispatch.
+            require(
+                workflow.path == ".github/workflows/eval-cli-uplift.yml" and names == {"workflow_dispatch", "workflow_call", "pull_request"},
+                "qualification_workflow_events_changed",
+            )
+        else:
+            require("workflow_dispatch" in names and (not workflow.dispatch_only or names == {"workflow_dispatch"}), "workflow_not_dispatch_only")
         if qualification is not None:
             from .cli_live_contract import NIGHTLY_SCHEDULE
 

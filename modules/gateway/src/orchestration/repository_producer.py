@@ -29,6 +29,11 @@ CONTEXT_KIND = "repository_scan_context"
 PRODUCER_KIND = "repository_scan_dispatch"
 CLI_PRODUCER_KIND = "cli_qualification_dispatch"
 
+# Collection-only compatibility for the verifier that admitted bounded knowledge
+# runs but rejected their shared workflow triggers at settlement. It cannot admit
+# or dispatch new work. All run/context/source/artifact checks still apply.
+COLLECTION_COMPATIBLE_HARNESSES = frozenset({"1ac0df68d1dd5c762d704148f43b7026ea1515becd6f55c08485f0c20d6ff74d"})
+
 
 def producer_kind(spec):
     return CLI_PRODUCER_KIND if spec.evidence_schema == "cli-live-evaluation/v1" else PRODUCER_KIND
@@ -185,10 +190,24 @@ async def producer_state(session, context):
         and data["specification_hash"] == digest(spec.model_dump(mode="json")),
         "producer_acceptance_changed",
     )
-    require(
-        data["plan_id"] == plan.id and data["plan_hash"] == plan.plan_hash and spec.runner.harness_sha256 == harness_digest(),
-        "producer_plan_or_harness_changed",
-    )
+    require(data["plan_id"] == plan.id and data["plan_hash"] == plan.plan_hash, "producer_plan_or_harness_changed")
+    if spec.runner.harness_sha256 != harness_digest():
+        require(
+            spec.evidence_schema == "workflow-evaluation/v1" and spec.runner.harness_sha256 in COLLECTION_COMPATIBLE_HARNESSES,
+            "producer_plan_or_harness_changed",
+        )
+        dispatched = await session.scalar(
+            select(OrchestrationAction)
+            .where(
+                OrchestrationAction.org_id == node.org_id,
+                OrchestrationAction.execution_id == context.execution.id,
+                OrchestrationAction.kind == producer_kind(spec),
+                OrchestrationAction.detail["dispatch_started"].as_boolean().is_(True),
+                OrchestrationAction.detail["acceptance_decision_id"].as_string() == attached[0].id,
+            )
+            .limit(1)
+        )
+        require(dispatched is not None, "producer_legacy_collection_requires_dispatch")
     claim = await session.get(OrchestrationWorkClaim, context.identity.claim_id, populate_existing=True)
     require(
         claim is not None

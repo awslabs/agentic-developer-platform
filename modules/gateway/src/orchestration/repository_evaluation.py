@@ -55,6 +55,7 @@ class RepositoryEvaluationReceipt(Contract):
     evaluation_policy_hash: Digest
     specification_hash: Digest
     harness_sha256: Digest
+    collector_harness_sha256: Digest | None = None
     source_snapshot_hash: Digest
     observed_at: datetime
     # Provider-specific records retain exact PR/check/run/attempt/archive identities.

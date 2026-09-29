@@ -598,3 +598,51 @@ async def test_scan_recovery_filters_workflow_and_dispatch_head_before_validatin
             if observed:
                 assert observed.run_id == 10 and observed.context.source_revision == "b" * 40
         assert len(requested) == (10 if case == "overflow" else 2 if case in {"found", "missing_context"} else 1)
+
+
+@pytest.mark.parametrize("event", ["workflow_dispatch", "pull_request", "workflow_call", "schedule"])
+async def test_bound_knowledge_result_uses_dispatch_event_not_exclusive_workflow_triggers(evidence, event):
+    from src.orchestration.workflow_evaluation_contract import WorkflowProducer
+
+    path = ".github/workflows/eval-cli-uplift.yml"
+    workflow = evidence.spec.workflows[0].model_copy(update={"path": path})
+    content = b"on:\n  workflow_dispatch:\n  workflow_call:\n  pull_request:\njobs: {}\n"
+    blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content, usedforsecurity=False).hexdigest()
+    evidence.responses["/repos/o/r/contents/" + path] = dict(
+        type="file", path=path, size=len(content), encoding="base64", content=base64.b64encode(content).decode(), sha=blob
+    )
+    evidence.responses["/repos/o/r/actions/runs/10"].update(event=event, path=path)
+    producer = WorkflowProducer(
+        mode="dispatch_once",
+        workflow_criterion_id="one-off-scan",
+        target=dict(account_id="123456789012", region="us-east-1", resource_kind="cli-evaluation", resource_id="dev"),
+        inputs=dict(
+            environment="dev", expected_revision="b" * 40, suites="knowledge", mode="start", inject_fault="none", fixtures_json="{}", evaluation_id=""
+        ),
+        receipt_artifact="result",
+        receipt_path="report.json",
+    )
+    bound = SimpleNamespace(run_id=10, run_attempt=2, context=SimpleNamespace(workflow_revision="b" * 40, source_revision="b" * 40))
+
+    def transport(request):
+        if request.url.path == "/repos/o/r/actions/artifacts/13/zip":
+            return httpx.Response(200, content=evidence.binary)
+        return httpx.Response(200, json=evidence.responses[request.url.path])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        provider = RepositoryEvidenceProvider(client=client, clock=lambda: evidence.now)
+        provider.token = AsyncMock(return_value="test-read-token")
+        call = provider.workflow(
+            SimpleNamespace(repo="o/r", provider_repository_id=123),
+            workflow,
+            revisions={},
+            max_age_seconds=evidence.spec.max_age_seconds,
+            bound_run=bound,
+            producer=producer,
+        )
+        if event == "workflow_dispatch":
+            result = await call
+            assert result["run_id"] == 10 and result["event"] == "workflow_dispatch"
+        else:
+            with pytest.raises(CycleBlockedError, match="workflow_run_not_successful_or_changed"):
+                await call
