@@ -1176,7 +1176,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
 
   # Render deployment settings as well as the ConfigMap. Applying the raw
   # manifest leaves feature flags and the image as literal placeholders.
-  FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "false")
+  FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "true")
   FEATURE_AGENT_EXPLANATIONS_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-explanations" "false")
   FEATURE_AGENT_CONTROL_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
   FEATURE_NEW_UI_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
