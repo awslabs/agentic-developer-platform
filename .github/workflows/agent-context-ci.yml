@@ -14,6 +14,13 @@ on:
       - 'modules/agent-context/personal_context/**'
       - 'modules/agent-context/tests/**'
       - 'modules/agent-context/pyproject.toml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   push:
@@ -28,6 +35,13 @@ on:
       - 'modules/agent-context/pipeline/**'
       - 'modules/agent-context/personal_context/**'
       - 'modules/agent-context/pyproject.toml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

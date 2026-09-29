@@ -10,6 +10,13 @@ on:
       - 'modules/gateway/lambda/layers/psycopg2/**'
       - 'codebuild/bs-psycopg2-layer.yml'
       - '.github/workflows/psycopg2-layer-build.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:

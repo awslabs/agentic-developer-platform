@@ -29,6 +29,12 @@ Persona model mapping is enabled by default in full deployments. See
 [model mapping deployment and verification](./persona-model-mapping.md) for
 model availability, environment overrides and acceptance checks.
 
+Orchestration is enabled by default. To disable it for an environment, set
+`orchestration_engine_enabled = false` in its gateway Terraform inputs and set
+SSM `/adp/<env>/gateway/feature-orchestration-engine` to `false`, then run the
+upgrade deployment. Set both to `true` to re-enable it. The browser waits for
+confirmed server capabilities before displaying orchestration controls.
+
 ## The shape of a deploy
 
 A deploy is a sequence of **stage-by-stage scripts** (each idempotent, each one
@@ -1003,3 +1009,12 @@ use the same release digest. Manual or interrupted rollouts must also run the
 [shared alignment and verification helper](../runbooks/shared-worker-flow-continuation.md#gateway--scheduled-engine-release-parity)
 before reporting completion. Pushing an image to ECR or checking EKS readiness
 alone does not verify the Lambda release.
+
+### Optional menu entries
+
+The gateway deployment reads SSM `/adp/<env>/gateway/feature-knowledge`,
+`feature-indexing`, and `feature-tenant-org-links`. Set the corresponding value
+to `false` and run the upgrade to hide Knowledge, Indexing Status, or the legacy
+Tenant Org Links menu. Knowledge and indexing default to enabled; legacy links
+default to hidden. These display flags do not delete stored data, remove teams,
+or stop indexing workers.

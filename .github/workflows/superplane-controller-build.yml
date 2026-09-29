@@ -47,6 +47,13 @@ on:
       - 'modules/domain-apps/superplane/releases/build-image.sh'
       - 'modules/domain-apps/superplane/releases/buildspecs/controller.yml'
       - '.github/workflows/superplane-controller-build.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch: {}
 
 env:

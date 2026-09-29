@@ -31,6 +31,13 @@ on:
       - '.github/workflows/pricing-finalize.yml'
       - 'codebuild/bs-gateway-build.yml'
       - 'modules/gateway/pyproject.toml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:
@@ -672,15 +679,12 @@ jobs:
 
           get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
 
-          # Issue #4209 / D-R20: the orchestration graph UI is opt-in PER
-          # ENVIRONMENT. deployment.yaml is one file applied to whichever
-          # environment this workflow targets, so the value cannot live in it —
-          # a literal "true" would arm prod on the next deploy too.
-          #
-          # Absent parameter => "false". `_is_enabled_strict` only accepts the
-          # literal "true", so a missing or malformed value leaves the engine UI
-          # invisible rather than guessing.
-          FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "false")
+          # Deployment defaults enable orchestration. SSM provides explicit
+          # per-environment overrides for orchestration and optional menu entries.
+          FEATURE_KNOWLEDGE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-knowledge" "true")
+          FEATURE_INDEXING_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-indexing" "true")
+          FEATURE_TENANT_ORG_LINKS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-tenant-org-links" "false")
+          FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "true")
           if [ -z "$FEATURE_ORCHESTRATION_ENGINE_ENABLED" ] || [ "$FEATURE_ORCHESTRATION_ENGINE_ENABLED" = "None" ]; then
             FEATURE_ORCHESTRATION_ENGINE_ENABLED="false"
           fi
@@ -731,6 +735,9 @@ jobs:
           # Render then apply, so changes to probes, env, resource limits, volume
           # mounts, etc. actually propagate.
           sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+              -e "s|__FEATURE_KNOWLEDGE_ENABLED__|${FEATURE_KNOWLEDGE_ENABLED}|g" \
+              -e "s|__FEATURE_INDEXING_ENABLED__|${FEATURE_INDEXING_ENABLED}|g" \
+              -e "s|__FEATURE_TENANT_ORG_LINKS_ENABLED__|${FEATURE_TENANT_ORG_LINKS_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_EXPLANATIONS_ENABLED__|${FEATURE_AGENT_EXPLANATIONS_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
               -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \

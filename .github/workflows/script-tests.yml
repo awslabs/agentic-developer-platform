@@ -127,6 +127,13 @@ on:
       - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       # This workflow
       - '.github/workflows/script-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   pull_request:
     paths:
       # Test suites
@@ -243,6 +250,13 @@ on:
       - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       # This workflow
       - '.github/workflows/script-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

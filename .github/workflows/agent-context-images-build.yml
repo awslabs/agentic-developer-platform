@@ -19,6 +19,13 @@ on:
       - 'modules/agent-context/alembic/**'
       - 'codebuild/bs-agent-context-image.yml'
       - '.github/workflows/agent-context-images-build.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
     inputs:
       image:

@@ -10,6 +10,13 @@ on:
       - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'environments/dev/platform.tfvars'
       - 'environments/dev/backend.tfvars'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

@@ -12,6 +12,13 @@ on:
       - modules/domain-apps/cyber/image-builder/**
       - modules/domain-apps/cyber/ci/**
       - modules/domain-apps/cyber/codebuild/**
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
 concurrency:
   group: automation-trust-${{ github.ref }}

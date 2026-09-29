@@ -24,12 +24,26 @@ on:
     paths:
       - 'contracts/hitl-ticket/**'
       - '.github/workflows/hitl-ticket-contract-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   push:
     paths:
       - 'contracts/hitl-ticket/**'
       - '.github/workflows/hitl-ticket-contract-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

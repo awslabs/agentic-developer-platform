@@ -58,6 +58,13 @@ on:
       # runner-iam and command_attribution paths above.
       - 'modules/agent-factory/agent-worker-image/lib/correlation_store.py'
       - 'modules/agent-factory/agent/src/lib/correlationStore.ts'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

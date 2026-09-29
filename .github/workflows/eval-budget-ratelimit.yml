@@ -72,6 +72,13 @@ on:
       # directory. Lint-gate it here as well as in eval-cli-onboarding.yml.
       - 'platform/evals/lib/**'
       - '.github/workflows/eval-budget-ratelimit.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

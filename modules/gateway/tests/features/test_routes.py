@@ -44,6 +44,7 @@ class TestFeaturesDefaults:
             "FEATURE_CHAT_ENABLED",
             "FEATURE_KNOWLEDGE_ENABLED",
             "FEATURE_INDEXING_ENABLED",
+            "FEATURE_TENANT_ORG_LINKS_ENABLED",
             "FEATURE_CONNECTIONS_ENABLED",
             "FEATURE_CREDENTIALS_ENABLED",
             "FEATURE_SYSTEM_DASHBOARD_ENABLED",
@@ -68,6 +69,7 @@ class TestFeaturesDefaults:
                 "chat": True,
                 "knowledge": True,
                 "indexing": True,
+                "tenant_org_links": False,
                 "connections": True,
                 "credentials": True,
                 "system_dashboard": True,
@@ -367,3 +369,9 @@ class TestRouterPrefix:
         from src.features.routes import router
 
         assert router.prefix == "/features"
+
+
+@pytest.mark.parametrize("value, expected", [("false", False), ("true", True), ("invalid", False)])
+def test_legacy_links_flag(client, monkeypatch, value, expected):
+    monkeypatch.setenv("FEATURE_TENANT_ORG_LINKS_ENABLED", value)
+    assert client.get("/features").json()["features"]["tenant_org_links"] is expected

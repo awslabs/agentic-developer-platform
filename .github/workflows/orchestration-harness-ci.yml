@@ -21,6 +21,13 @@ on:
       - 'contracts/orchestration-evaluation/**'
       - '.github/workflows/orchestration-live-tests.yml'
       - '.github/workflows/orchestration-harness-ci.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   push:
     branches: [main]
     paths:
@@ -28,7 +35,13 @@ on:
       - 'contracts/orchestration-evaluation/**'
       - '.github/workflows/orchestration-live-tests.yml'
       - '.github/workflows/orchestration-harness-ci.yml'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 # No `permissions: id-token` and no AWS credential step anywhere in this file.
 # The self-hosted runner has ambient IRSA, so normal AWS credential discovery is
 # disabled for every test process below. If a test ever needs AWS, it belongs in

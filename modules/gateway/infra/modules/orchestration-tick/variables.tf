@@ -292,22 +292,13 @@ variable "dispatch_max_per_tick" {
 
 variable "engine_enabled" {
   description = <<-EOT
-    Whether the orchestration engine's feature flag is on for this environment
-    (FEATURE_ORCHESTRATION_ENGINE_ENABLED).
-
-    Gates the GitHub engine-command bridge, which is the first path that lets an
-    input from outside the platform change promotion state — so it must be
-    fail-closed, and it is: `EngineCommandConfig.from_env` treats anything other
-    than the literal "true" as off, and an off pass reads nothing, writes nothing
-    and posts nothing.
-
-    Default false. This is the same three-place flag the gateway deployment
-    manifest and the frontend catalogue carry, and the committed value must stay
-    false in every one of them (test_feature_flag_parity enforces it); turning the
-    bridge on in an environment is a deliberate per-environment override.
+    Enable the orchestration engine for this environment. Enabled by default
+    for new deployments; set false to retain GitHub-only operation. Keep the
+    gateway SSM feature-orchestration-engine override aligned with this value.
+    Runtime consumers require an explicit true value and reject malformed flags.
   EOT
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "webhook_events_table_name" {

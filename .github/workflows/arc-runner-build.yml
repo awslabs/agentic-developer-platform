@@ -13,6 +13,13 @@ on:
       - 'platform/arc-runner/**'
       - 'codebuild/bs-arc-runner.yml'
       - '.github/workflows/arc-runner-build.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:

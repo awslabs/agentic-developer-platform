@@ -7,6 +7,13 @@ on:
       - 'modules/gateway/infra/**'
       - 'environments/dev/modules/gateway.tfvars'
       - 'environments/dev/modules/gateway-backend.tfvars'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

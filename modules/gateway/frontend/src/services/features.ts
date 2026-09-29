@@ -10,6 +10,8 @@ export interface FeatureFlags {
   chat: boolean;
   knowledge: boolean;
   indexing: boolean;
+  /** Legacy GitHub-to-ADP organization links menu. */
+  tenant_org_links?: boolean;
   connections: boolean;
   credentials: boolean;
   system_dashboard: boolean;
@@ -43,6 +45,7 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   chat: true,
   knowledge: true,
   indexing: true,
+  tenant_org_links: false,
   connections: true,
   credentials: true,
   system_dashboard: true,

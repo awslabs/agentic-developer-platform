@@ -31,7 +31,13 @@ on:
       - 'platform/evals/cli-onboarding/**'
       - 'platform/evals/budget-ratelimit/**'
       - 'platform/evals/lib/**'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 

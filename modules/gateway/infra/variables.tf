@@ -630,16 +630,12 @@ variable "orchestration_dispatch_max_per_tick" {
 variable "orchestration_engine_enabled" {
   type        = bool
   description = <<-EOT
-    Whether the orchestration engine's feature flag is on for this environment
-    (FEATURE_ORCHESTRATION_ENGINE_ENABLED on the tick).
-
-    Default false, and the committed value must STAY false: this is the same
-    three-place flag the gateway's k8s manifest and frontend catalogue carry, and
-    `tests/orchestration/test_feature_flag_parity.py` enforces the parity. Enabling
-    the engine in an environment is a deliberate per-environment override, not a
-    committed change.
+    Enable the orchestration engine for this environment. Enabled by default
+    for new deployments; set false to retain GitHub-only operation. Keep the
+    gateway SSM feature-orchestration-engine override aligned with this value.
+    Runtime consumers require an explicit true value and reject malformed flags.
   EOT
-  default     = false
+  default     = true
 }
 
 variable "orchestration_webhook_events_table" {

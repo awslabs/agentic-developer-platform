@@ -5,6 +5,13 @@ on:
     paths:
       - 'modules/gateway/frontend/**'
       - '.github/workflows/agent-explanations-browser.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 concurrency:

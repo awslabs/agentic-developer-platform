@@ -217,28 +217,33 @@ class TestThreePlaceParity:
             f"on its own; got {active[index + 1]!r}. A literal value here arms every environment at once."
         )
 
-    def test_deploy_workflow_defaults_the_flag_off(self):
-        """The rendered default must be off when nothing opted in.
+    @pytest.mark.parametrize(
+        "renderer",
+        [
+            _DEPLOY_WORKFLOW,
+            _GATEWAY_ROOT.parents[1] / "platform" / "scripts" / "deploy-all.sh",
+        ],
+    )
+    def test_deployment_defaults_on_and_reads_environment_override(self, renderer):
+        source = renderer.read_text()
+        assert _FLAG_PLACEHOLDER in source
+        assert f'get_ssm "{_FLAG_SSM_PARAM}" "true"' in source
 
-        Moving the value out of the manifest only preserves fail-closed if the
-        renderer defaults to off. Without this, an environment with no SSM
-        parameter would render an empty value — and an operator reading the
-        manifest would see a placeholder with no way to tell which way it falls.
-        """
-        workflow = _DEPLOY_WORKFLOW.read_text()
-        assert _DEPLOY_WORKFLOW.exists(), f"{_DEPLOY_WORKFLOW} not found"
-        assert _FLAG_PLACEHOLDER in workflow, (
-            f"{_FLAG_PLACEHOLDER} is in the manifest but nothing in gateway-deploy.yml substitutes it — "
-            "the pods would receive the placeholder string verbatim, which is not 'true' and so reads as off, "
-            "but silently and for the wrong reason."
-        )
-        assert f'get_ssm "{_FLAG_SSM_PARAM}" "false"' in workflow, (
-            f'the {FLAG_ENV_VAR!r} render must read {_FLAG_SSM_PARAM} with an explicit "false" default'
-        )
+    @pytest.mark.parametrize(
+        "path, variable",
+        [
+            ("infra/variables.tf", "orchestration_engine_enabled"),
+            ("infra/modules/orchestration-tick/variables.tf", "engine_enabled"),
+        ],
+    )
+    def test_tick_deployment_defaults_on(self, path, variable):
+        source = (_GATEWAY_ROOT / path).read_text()
+        block = source.split(f'variable "{variable}" {{', 1)[1].split("\n}", 1)[0]
+        assert "default     = true" in block
 
 
-class TestLegacyModeRemainsTheDefault:
-    """Ruling D-R20: legacy is a supported product mode, not a migration state.
+class TestUnconfiguredRuntimeRemainsClosed:
+    """An unconfigured runtime stays off; deployment renderers supply true.
 
     AC-31 deviation, APPROVED BY THE ISSUE OWNER (#4209, 2026-08-29): the issue
     asked for a byte-for-byte baseline of the issue set an AIDLC flow emits. AIDLC
