@@ -218,8 +218,8 @@ if [ "$UPDATE_MODE" = false ] && ! aws secretsmanager describe-secret --secret-i
 fi
 
 # Resolve the internal-api-key ARN so the webhook Lambda can call the gateway's
-# /internal/v1/* endpoints. Empty string is safe (Lambda falls back to DDB-only
-# identity resolution, but gateway-canonical resolution is disabled).
+# /internal/v1/* endpoints. Both fresh installs and upgrades need this binding;
+# otherwise canonical identity and persona-model resolution fail at runtime.
 INTERNAL_API_KEY_OVERRIDE=""
 INTERNAL_API_KEY_ARN=$(aws secretsmanager describe-secret \
   --secret-id "adp/${ENVIRONMENT}/gateway/internal-api-key" \
@@ -303,6 +303,22 @@ else
     fi
     if [ "$UPDATE_MODE" = true ]; then
       OVERLAY_ARGS=()
+      # Supply discovered wiring as defaults, before operator configuration and
+      # recovered live settings. This repairs empty legacy bindings without
+      # replacing a configured key or gateway URL during an upgrade.
+      WIRING_DEFAULTS=$(mktemp "${UPGRADE_RUN_DIR:-${TMPDIR:-/tmp}}/webhook-wiring.XXXXXX.tfvars.json")
+      python3 - "$WIRING_DEFAULTS" "$GATEWAY_API_URL" "$INTERNAL_API_KEY_ARN" <<'PY'
+import json
+import sys
+
+values = {}
+for key, value in zip(("gateway_api_url", "internal_api_key_arn"), sys.argv[2:]):
+    if value and value != "None":
+        values[key] = value
+with open(sys.argv[1], "w") as output:
+    json.dump(values, output)
+PY
+      OVERLAY_ARGS+=("-var-file=$WIRING_DEFAULTS")
       [ -z "$WEBHOOK_UPDATE_VAR_FILE" ] || OVERLAY_ARGS+=("-var-file=$WEBHOOK_UPDATE_VAR_FILE")
       terraform_update_apply webhook-ingress terraform.tfvars ${OVERLAY_ARGS[@]+"${OVERLAY_ARGS[@]}"} "${TF_ARGS[@]}"
     else
