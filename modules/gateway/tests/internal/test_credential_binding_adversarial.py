@@ -633,6 +633,10 @@ class TestA7HappyPath:
         mock_sm = MagicMock()
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
+        from tests.internal.aws_ownership_fixture import verified_role_material
+
+        await verified_role_material(db, mock_sm, _ROLE_SECRET_JSON)
+
         settings = _settings_mock(enforce=True)
 
         with (
@@ -1073,3 +1077,8 @@ class TestImprovisedCredentialIsolation:
         # Attacker gets their own cred — this verifies the path works
         assert resp.status_code == 200
         assert resp.json()["value"] == "ghp_attacker_own_secret"
+
+
+@pytest.fixture(autouse=True)
+def platform_account(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "111111111111")

@@ -944,8 +944,8 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   if [ -z "$TRUST_APIGW_HEADERS" ] || [ "$TRUST_APIGW_HEADERS" = "None" ]; then TRUST_APIGW_HEADERS="false"; fi
 
   # Issue #1158: Vault proxy host allowlist (SSRF mitigation, FAIL-CLOSED when empty)
-  VAULT_PROXY_HOST_ALLOWLIST=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com")
-  if [ "$VAULT_PROXY_HOST_ALLOWLIST" = "None" ]; then VAULT_PROXY_HOST_ALLOWLIST="api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com"; fi
+  VAULT_PROXY_HOST_ALLOWLIST=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,api.stripe.com,slack.com")
+  if [ "$VAULT_PROXY_HOST_ALLOWLIST" = "None" ]; then VAULT_PROXY_HOST_ALLOWLIST="api.github.com,api.openai.com,api.anthropic.com,api.stripe.com,slack.com"; fi
 
   # #2082: Knowledge-registry ingestion queue (agent-context SQS). Empty is safe —
   # registry routes still mount; dispatch returns 503 until set.

@@ -224,3 +224,13 @@ variable "bedrock_invocation_log_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "gateway_customer_role_arns" {
+  description = "Exact customer IAM role ARNs approved for gateway connections and routing. Empty denies cross-account customer assumptions."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for arn in var.gateway_customer_role_arns : can(regex("^arn:aws(-[a-z]+)*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$", arn))])
+    error_message = "Customer role approvals must be exact IAM role ARNs without wildcards."
+  }
+}

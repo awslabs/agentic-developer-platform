@@ -6,7 +6,7 @@
  * using the PKCE verifier, and redirects to the dashboard.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { Spinner } from '@/components/ui/Spinner';
@@ -20,8 +20,12 @@ export default function AuthCallback() {
   const { setAuthState } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(true);
+  const processingStarted = useRef(false);
 
   useEffect(() => {
+    // React StrictMode and rerenders must not consume the nonce twice.
+    if (processingStarted.current) return;
+    processingStarted.current = true;
     async function processCallback() {
       try {
         const errorParam = searchParams.get('error');
@@ -52,23 +56,19 @@ export default function AuthCallback() {
           const returnedState = searchParams.get('state');
           const brokerCode = searchParams.get('code');
 
-          // Two transports are accepted during rollout: the #4133 exchange code,
-          // and the legacy tokens-in-query redirect from a broker Lambda that has
-          // not been republished yet. The SPA bundle and the Lambda deploy on
-          // separate workflows, so rejecting the old shape here would take out
-          // every login in the skew window (the #3999 lockout class).
+          // Scrub callback material on rejection as well as success.
+          window.history.replaceState({}, '', '/auth/callback');
+          // Every transport must belong to a login started in this browser.
+          // getBrokerState consumes the nonce before any token exchange/storage.
+          if (!storedState || !returnedState || storedState !== returnedState) {
+            setError('This sign-in link did not come from a login started in this browser. Please try again.');
+            setIsProcessing(false);
+            return;
+          }
+
           let tokens: Awaited<ReturnType<typeof exchangeBrokerCode>>;
 
           if (brokerCode) {
-            // State is MANDATORY on the code transport — a broker new enough to
-            // issue codes always echoes the nonce back.
-            if (!storedState || storedState !== returnedState) {
-              setError(
-                'This sign-in link did not come from a login started in this browser. Please try again.'
-              );
-              setIsProcessing(false);
-              return;
-            }
             tokens = await exchangeBrokerCode(brokerCode, storedState);
           } else {
             const idToken = searchParams.get('id_token');
@@ -76,18 +76,6 @@ export default function AuthCallback() {
 
             if (!idToken || !accessToken) {
               setError('Invalid broker response — missing tokens. Please try again.');
-              setIsProcessing(false);
-              return;
-            }
-
-            // Legacy transport only: an old broker cannot echo a nonce, so a
-            // missing returnedState is tolerated. When it IS present it must
-            // match. Tracked in #4197: drop this branch and make state
-            // unconditional once the broker Lambda is republished everywhere.
-            if (returnedState && storedState !== returnedState) {
-              setError(
-                'This sign-in link did not come from a login started in this browser. Please try again.'
-              );
               setIsProcessing(false);
               return;
             }
@@ -101,18 +89,14 @@ export default function AuthCallback() {
             };
           }
 
-          storeTokens(tokens);
-
-          // Issue #4133 defence-in-depth: drop the code/token material from the
-          // address bar so it does not persist in history or leak via Referer.
-          window.history.replaceState({}, '', '/auth/callback');
-
           const user = parseIdTokenForUser(tokens.id_token);
           if (!user) {
             setError('Failed to parse user from token. Please try again.');
             setIsProcessing(false);
             return;
           }
+
+          storeTokens(tokens);
 
           setAuthState({
             user,

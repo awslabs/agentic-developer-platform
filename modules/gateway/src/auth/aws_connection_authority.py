@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from src.shared.aws_role_trust import validate_customer_role
 from src.shared.models.vault import UserCredential
 from src.shared.services.routing_probe import ROUTING_REASON_PROBE_INCONCLUSIVE
 
@@ -37,6 +38,7 @@ def connection_binding(credential):
         name: getattr(credential, name)
         for name in ("id", "org_id", "user_id", "team_id", "domain_app_id", "service", "credential_type", "label", "secret_arn", "strict")
     }
+    fields["aws_external_id"] = credential.aws_external_id
     fields["expires_at"] = _utc(expiry).isoformat() if expiry is not None else None
     fields["scopes"] = {key: value for key, value in (credential.scopes or {}).items() if key not in _VERDICT_KEYS}
     return hashlib.sha256(json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -58,7 +60,8 @@ def invalidate_connection(credential):
 def verified_connection_evidence(credential):
     require_active_connection(credential)
     if (
-        (credential.scopes or {}).get("status") != "verified"
+        not credential.aws_external_id
+        or (credential.scopes or {}).get("status") != "verified"
         or credential.aws_verified_at is None
         or not credential.aws_verification_attempt
         or not credential.aws_verified_version_id
@@ -69,7 +72,7 @@ def verified_connection_evidence(credential):
         credential.aws_verification_attempt,
         credential.aws_verified_version_id,
         credential.aws_verified_binding,
-        credential.aws_verified_at,
+        _utc(credential.aws_verified_at),
     )
 
 
@@ -91,7 +94,7 @@ async def owned_aws_connection(db, credential_id, user_id, org_id, *, lock=False
     return credential
 
 
-def connection_material(secret, scopes):
+def connection_material(secret, scopes, credential):
     """Reject caller-authored account metadata inconsistent with the assumed role."""
     role = secret.get("role_arn") if isinstance(secret, dict) else None
     match = _ROLE.fullmatch(role) if isinstance(role, str) else None
@@ -99,8 +102,14 @@ def connection_material(secret, scopes):
     if match is None or match[2] != account or scopes.get("account_id") != account or scopes.get("role_arn") != role:
         raise connection_conflict("The AWS role does not match the connection's account metadata.")
     external_id = secret.get("external_id")
-    if external_id is not None and not isinstance(external_id, str):
+    if not credential.aws_external_id:
+        raise connection_conflict("Disconnect and register this legacy connection again to establish role ownership.")
+    if external_id != credential.aws_external_id:
         raise connection_conflict("The AWS connection contains invalid trust metadata.")
+    try:
+        validate_customer_role(role)
+    except ValueError:
+        raise connection_conflict("The AWS role cannot be used for this connection.") from None
     return role, external_id, account
 
 

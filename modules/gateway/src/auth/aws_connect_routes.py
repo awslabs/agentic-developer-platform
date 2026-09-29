@@ -26,8 +26,10 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.internal.sts_assume_service import STSAssumeError, assume_role
+from src.internal.sts_assume_service import STSAssumeError, assume_role, require_external_id_enforcement
+from src.shared.aws_role_trust import validate_customer_role
 from src.shared.database import get_db
+from src.shared.models.audit import AuditLog
 from src.shared.models.vault import UserCredential
 from src.shared.schemas.auth import TokenContext
 from src.shared.services.routing_probe import (
@@ -150,15 +152,16 @@ class ConnectImportRequest(BaseModel):
     """Body for POST /auth/credentials/aws/import (Issue #5182).
 
     Registers a role the user's account **already has**, instead of provisioning
-    one. ``external_id`` is optional because a role may trust ADP without the
-    confused-deputy guard; when supplied it is stored and used for every later
-    assume, exactly as a provisioned role's generated one is.
+    one. ADP generates the ExternalId; the owner must add it to the role trust
+    policy before verification. Caller-selected trust identifiers are refused.
     """
 
     nickname: str
     account_id: str
     role_arn: str
-    external_id: str | None = None
+    # Kept as a null-only field so old clients fail explicitly instead of silently
+    # believing their supplied trust value was accepted.
+    external_id: None = None
     default_region: str = "us-east-1"
 
     validate_account_id = field_validator("account_id")(_validate_account_id)
@@ -182,6 +185,8 @@ class ConnectImportRequest(BaseModel):
 
 
 class ConnectImportResponse(BaseModel):
+    external_id: str
+    trust_policy: dict
     credential_id: str
     account_id: str
     role_arn: str
@@ -256,6 +261,7 @@ async def connect_start(
 
     # Compute the expected role ARN
     role_arn = compute_role_arn(data.account_id, data.nickname)
+    await _require_customer_role(role_arn, db, effective_org_id, db_user_id)
 
     # Build the SM secret payload (same shape as #481 consumer expects)
     secret_payload = json.dumps(
@@ -278,6 +284,7 @@ async def connect_start(
 
     # Create the DB row with status=pending in scopes JSON
     cred = UserCredential(
+        aws_external_id=external_id,
         org_id=effective_org_id,
         user_id=db_user_id,
         service="aws",
@@ -389,7 +396,7 @@ async def connect_verify(
         raise
     except Exception:
         raise HTTPException(503, detail={"error": "connection_unavailable", "message": "The AWS connection could not be resolved."}) from None
-    role_arn, external_id, _account_id = connection_material(secret_data, scopes)
+    role_arn, external_id, _account_id = connection_material(secret_data, scopes, cred)
 
     # Attempt STS AssumeRole using the existing service. user_id here must
     # match what the trust policy's RequestTag condition expects — the
@@ -408,7 +415,7 @@ async def connect_verify(
         )
     except STSAssumeError as exc:
         # Map STS error codes to user-friendly reasons
-        reason = _sts_error_to_reason(exc.code)
+        reason = "trust_verification_failed"
         logger.warning(
             "AWS connect verify failed credential_id=%s code=%s",
             data.credential_id,
@@ -416,9 +423,26 @@ async def connect_verify(
         )
         # The failed generation was already persisted. Do not overwrite a newer
         # attempt that completed while this provider request was in flight.
+        await _audit_trust_rejection(db, effective_org_id, db_user_id, data.credential_id, "assume_denied")
         return ConnectVerifyResponse(status="failed", reason=reason)
 
     require_assumed_identity(assumed, role_arn)
+    try:
+        await asyncio.to_thread(
+            require_external_id_enforcement,
+            role_arn=role_arn,
+            external_id=external_id,
+            session_duration_seconds=900,
+            default_region=secret_data.get("default_region", "us-east-1"),
+            user_id=db_user_id,
+            agent_id="connect-verify",
+            task_id="verify",
+            label=label,
+        )
+    except STSAssumeError as exc:
+        logger.warning("AWS ownership proof failed credential_id=%s code=%s", data.credential_id, exc.code)
+        await _audit_trust_rejection(db, effective_org_id, db_user_id, data.credential_id, "ownership_unproven")
+        return ConnectVerifyResponse(status="failed", reason="trust_verification_failed")
 
     # The assume works. Now classify WHICH kind of role it is — read-only v1
     # (single-user) or routing-capable v2 — so the routing registry and the admin
@@ -520,6 +544,8 @@ async def connect_import(
             },
         )
 
+    await _require_customer_role(data.role_arn, db, effective_org_id, db_user_id)
+
     existing = (
         await db.scalars(
             select(UserCredential).where(
@@ -534,7 +560,9 @@ async def connect_import(
     for cred in existing:
         if (cred.scopes or {}).get("role_arn") == data.role_arn:
             logger.info("AWS connect import reused credential_id=%s user=%s", cred.id, token_context.user_id)
-            return ConnectImportResponse(credential_id=cred.id, account_id=data.account_id, role_arn=data.role_arn, reused=True)
+            if not cred.aws_external_id:
+                raise connection_conflict("Disconnect and register this legacy connection again to establish role ownership.")
+            return _import_response(cred, reused=True)
 
     if any(cred.label == data.nickname for cred in existing):
         raise HTTPException(
@@ -545,6 +573,7 @@ async def connect_import(
             },
         )
 
+    external_id = str(uuid.uuid4())
     secret_arn: str = await asyncio.to_thread(
         sm.create_secret,
         "aws",
@@ -552,7 +581,7 @@ async def connect_import(
         json.dumps(
             {
                 "role_arn": data.role_arn,
-                "external_id": data.external_id or "",
+                "external_id": external_id,
                 "account_id": data.account_id,
                 "default_region": data.default_region,
             }
@@ -561,6 +590,7 @@ async def connect_import(
     )
 
     cred = UserCredential(
+        aws_external_id=external_id,
         org_id=effective_org_id,
         user_id=db_user_id,
         service="aws",
@@ -587,7 +617,7 @@ async def connect_import(
         token_context.user_id,
         data.account_id,
     )
-    return ConnectImportResponse(credential_id=cred.id, account_id=data.account_id, role_arn=data.role_arn, reused=False)
+    return _import_response(cred, reused=False)
 
 
 @router.get(
@@ -668,6 +698,56 @@ async def connect_setup(
             region=region,
             template=template,
         ),
+    )
+
+
+async def _audit_trust_rejection(db, org_id, user_id, credential_id, reason):
+    db.add(
+        AuditLog(
+            org_id=org_id,
+            actor_id=user_id,
+            event_type="aws_connection_trust_rejected",
+            details={"credential_id": credential_id, "reason": reason},
+        )
+    )
+    await db.commit()
+
+
+async def _require_customer_role(role_arn, db, org_id, user_id):
+    try:
+        validate_customer_role(role_arn)
+    except ValueError:
+        await _audit_trust_rejection(db, org_id, user_id, None, "invalid_target")
+        raise HTTPException(
+            422, detail={"error": "invalid_role", "message": "This role cannot be registered as a personal AWS connection."}
+        ) from None
+
+
+def _import_response(cred, *, reused):
+    from .cfn_template import get_gateway_role_arn
+
+    return ConnectImportResponse(
+        credential_id=cred.id,
+        account_id=cred.scopes["account_id"],
+        role_arn=cred.scopes["role_arn"],
+        reused=reused,
+        external_id=cred.aws_external_id,
+        trust_policy={
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": get_gateway_role_arn()},
+                    "Action": ["sts:AssumeRole", "sts:TagSession"],
+                    "Condition": {
+                        "StringEquals": {
+                            "sts:ExternalId": cred.aws_external_id,
+                            "aws:RequestTag/adp:user_id": cred.user_id,
+                        }
+                    },
+                }
+            ],
+        },
     )
 
 

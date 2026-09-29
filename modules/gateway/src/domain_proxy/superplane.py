@@ -270,7 +270,7 @@ async def register_account(
     external_id = secret.get("external_id") if isinstance(secret, dict) else None
     stored_account_id = secret.get("account_id") if isinstance(secret, dict) else None
     try:
-        connection_material(secret, scopes)
+        connection_material(secret, scopes, credential)
     except HTTPException:
         raise HTTPException(
             409,

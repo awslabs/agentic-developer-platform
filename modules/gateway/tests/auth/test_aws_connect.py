@@ -392,7 +392,7 @@ class TestConnectVerify:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "failed"
-        assert "not been created yet" in body["reason"]
+        assert body["reason"] == "trust_verification_failed"
 
     @patch("src.auth.aws_connect_routes.assume_role")
     def test_verify_access_denied_reason(self, mock_assume, alice_client):
@@ -409,7 +409,7 @@ class TestConnectVerify:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "failed"
-        assert "trust policy" in body["reason"]
+        assert body["reason"] == "trust_verification_failed"
 
     @patch("src.auth.aws_connect_routes.assume_role")
     def test_verify_is_idempotent(self, mock_assume, alice_client):
@@ -830,7 +830,7 @@ class TestConnectImport:
         return client.post("/auth/credentials/aws/import", json=body)
 
     def test_creates_pending_canonical_credential(self, alice_client, mock_sm):
-        resp = self._import(alice_client, external_id="ext-abc")
+        resp = self._import(alice_client)
         assert resp.status_code == 201
         body = resp.json()
         assert body["reused"] is False
@@ -838,7 +838,9 @@ class TestConnectImport:
 
         stored = json.loads(list(mock_sm._secrets.values())[0])
         assert stored["role_arn"] == self.ARN
-        assert stored["external_id"] == "ext-abc"
+        assert stored["external_id"] == body["external_id"]
+        assert str(uuid.UUID(body["external_id"])) == body["external_id"]
+        assert body["trust_policy"]["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"] == body["external_id"]
         assert stored["account_id"] == "123456789012"
 
         # Owned by Alice and resolvable as a canonical connection: the setup read
@@ -1017,3 +1019,53 @@ class TestFreshVerification:
         app.dependency_overrides[get_current_user_context] = lambda: BOB
         resp = client.post("/auth/credentials/aws/verify", json={"credential_id": cred_id, "fresh": True})
         assert resp.status_code == 404
+
+
+@pytest.fixture(autouse=True)
+def ownership_probe(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "999999999999")
+    monkeypatch.setenv("ADP_GATEWAY_ROLE_ARN", "arn:aws:iam::999999999999:role/adp-gateway")
+    with patch("src.auth.aws_connect_routes.require_external_id_enforcement") as probe:
+        yield probe
+
+
+@pytest.mark.parametrize("external_id", ["attacker-chosen", ""])
+def test_import_refuses_caller_selected_trust_id(alice_client, mock_sm, external_id):
+    response = alice_client.post(
+        "/auth/credentials/aws/import",
+        json={
+            "nickname": "existing",
+            "account_id": "123456789012",
+            "role_arn": "arn:aws:iam::123456789012:role/Existing",
+            "external_id": external_id,
+        },
+    )
+    assert response.status_code == 422
+    assert not mock_sm._secrets
+
+
+def test_different_owners_of_same_arn_receive_different_ids(app_and_client):
+    app, client = app_and_client
+    body = {"nickname": "existing", "account_id": "123456789012", "role_arn": "arn:aws:iam::123456789012:role/Existing"}
+    app.dependency_overrides[get_current_user_context] = lambda: ALICE
+    alice = client.post("/auth/credentials/aws/import", json=body).json()
+    app.dependency_overrides[get_current_user_context] = lambda: BOB
+    bob = client.post("/auth/credentials/aws/import", json=body).json()
+    assert alice["credential_id"] != bob["credential_id"]
+    assert alice["external_id"] != bob["external_id"]
+    app.dependency_overrides[get_current_user_context] = lambda: ALICE
+    assert client.post("/auth/credentials/aws/import", json=body).json()["external_id"] == alice["external_id"]
+
+
+@pytest.mark.parametrize("account,role", [("999999999999", "ordinary"), ("123456789012", "path/adp-gateway")])
+def test_import_refuses_reserved_targets_before_secret_write(alice_client, mock_sm, account, role):
+    response = alice_client.post(
+        "/auth/credentials/aws/import",
+        json={
+            "nickname": "reserved",
+            "account_id": account,
+            "role_arn": f"arn:aws:iam::{account}:role/{role}",
+        },
+    )
+    assert response.status_code == 422
+    assert not mock_sm._secrets

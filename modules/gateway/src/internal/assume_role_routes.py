@@ -213,8 +213,16 @@ async def credential_assume_role(
             },
         )
 
-    # Fetch and parse the aws_role JSON from Secrets Manager.
-    secret_value = await asyncio.to_thread(sm.get_secret, cred.secret_arn)
+    from src.auth.aws_connection_authority import connection_conflict, connection_material, verified_connection_evidence
+
+    evidence = verified_connection_evidence(cred)
+    version = evidence[1]
+    if await asyncio.to_thread(sm.current_version_id, cred.secret_arn) != version:
+        raise connection_conflict()
+    # Fetch the exact version that passed ownership verification.
+    secret_value, served_version = await asyncio.to_thread(sm.get_secret_at_version, cred.secret_arn, version)
+    if served_version != version:
+        raise connection_conflict()
     try:
         role_config = json.loads(secret_value)
         if not isinstance(role_config, dict):
@@ -239,19 +247,21 @@ async def credential_assume_role(
             },
         )
 
-    external_id = role_config.get("external_id")
+    role_arn, external_id, _account = connection_material(role_config, cred.scopes or {}, cred)
     session_duration = role_config.get("session_duration_seconds", 3600)
     default_region = role_config.get("default_region", settings.aws_region)
     label_for_profile = body.label or cred.label or "default"
 
     await verify_selected_user_credential(request, cred, revalidate=True)
+    await db.refresh(cred)
+    if verified_connection_evidence(cred) != evidence or await asyncio.to_thread(sm.current_version_id, cred.secret_arn) != version:
+        raise connection_conflict()
 
     # Perform the STS AssumeRole call (blocking — run in thread).
     # Issue #3175 §Q6: session tags use authorized_user_id (from registry), not body.
     try:
         # Quick-Create workspace records have server-owned account metadata.
-        # Imported roles explicitly allow optional ExternalId (#4742); preserve
-        # that path, as well as generic aws_role records without account metadata.
+        # Both delivery paths require the same server-issued ownership evidence.
         scopes = cred.scopes or {}
         if "account_id" in scopes and scopes.get("source") != "imported_role":
             try:
@@ -321,12 +331,15 @@ async def credential_assume_role(
             status_code=502,
             detail={
                 "error": "sts_assume_failed",
-                "message": f"Failed to assume AWS role: {exc}",
+                "message": "AWS role trust verification failed.",
                 "provenance_id": provenance_id,
             },
         ) from exc
 
     await verify_selected_user_credential(request, cred, revalidate=True)
+    await db.refresh(cred)
+    if verified_connection_evidence(cred) != evidence or await asyncio.to_thread(sm.current_version_id, cred.secret_arn) != version:
+        raise connection_conflict()
 
     # Update last_used_at.
     stmt = update(UserCredential).where(UserCredential.id == cred.id).values(last_used_at=datetime.now(UTC))
@@ -367,6 +380,9 @@ async def credential_assume_role(
     )
 
     await verify_selected_user_credential(request, cred, revalidate=True)
+    await db.refresh(cred)
+    if verified_connection_evidence(cred) != evidence or await asyncio.to_thread(sm.current_version_id, cred.secret_arn) != version:
+        raise connection_conflict()
     return AssumeRoleResponse(
         profile_name=result.profile_name,
         access_key_id=result.access_key_id,

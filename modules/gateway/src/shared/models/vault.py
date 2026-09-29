@@ -173,6 +173,8 @@ class UserCredential(Base, TenantMixin):
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     secret_arn: Mapped[str] = mapped_column(String(512), nullable=False)
     operation_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Written only by the AWS connect endpoints, never by generic vault input.
+    aws_external_id: Mapped[str | None] = mapped_column(String(36))
     aws_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     aws_verification_attempt: Mapped[str | None] = mapped_column(String(36))
     aws_verified_version_id: Mapped[str | None] = mapped_column(String(64))

@@ -6,6 +6,17 @@ variable "persona_model_probe_destination_enabled" {
   default     = false
 }
 
+variable "persona_model_probe_external_id" {
+  description = "Dedicated platform-probe trust ID, also configured on the operator-owned probe destination. Never use a personal connection ID."
+  type        = string
+  sensitive   = true
+  default     = null
+  validation {
+    condition     = var.persona_model_probe_external_id == null ? true : can(regex("^platform-probe:[A-Za-z0-9_-]{32,128}$", var.persona_model_probe_external_id))
+    error_message = "Use platform-probe: followed by 32-128 random characters."
+  }
+}
+
 resource "aws_iam_role" "persona_model_probe_destination" {
   permissions_boundary = var.automation_permissions_boundary_arn
   count                = var.persona_model_probe_destination_enabled ? 1 : 0
@@ -16,8 +27,17 @@ resource "aws_iam_role" "persona_model_probe_destination" {
       Effect    = "Allow"
       Principal = { AWS = local.gateway_service_irsa_role_arn }
       Action    = ["sts:AssumeRole", "sts:TagSession"]
+      Condition = {
+        StringEquals = { "sts:ExternalId" = var.persona_model_probe_external_id }
+      }
     }]
   })
+  lifecycle {
+    precondition {
+      condition     = var.persona_model_probe_external_id != null
+      error_message = "An enabled platform probe destination requires its dedicated ExternalId."
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "persona_model_probe_destination" {

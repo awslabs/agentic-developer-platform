@@ -343,6 +343,10 @@ class TestLegitimateRunStillGetsItsOwnMaterial:
         runtime = _runtime(authorized_user_id=OWNER, db=db)
         mock_sm = MagicMock()
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
+        from tests.internal.aws_ownership_fixture import verified_role_material
+
+        await verified_role_material(db, mock_sm, _ROLE_SECRET_JSON)
+
         monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
         monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
         monkeypatch.setattr("src.shared.database.get_session_factory", lambda: lambda: _Session(db))
@@ -391,3 +395,8 @@ class TestLegitimateRunStillGetsItsOwnMaterial:
             resp = _client(db, mock_sm).post("/internal/v1/credential-assume-role", json=body)
         assert resp.status_code == 404, resp.text
         boto3.client.return_value.assume_role.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def platform_account(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "111111111111")

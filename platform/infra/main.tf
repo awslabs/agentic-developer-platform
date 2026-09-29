@@ -217,6 +217,7 @@ module "iam" {
 # EKS Cluster (Auto Mode)
 # -----------------------------------------------------------------------------
 module "eks" {
+  gateway_customer_role_arns          = var.gateway_customer_role_arns
   automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
   source                              = "./modules/eks"
 

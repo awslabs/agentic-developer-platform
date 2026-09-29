@@ -108,6 +108,8 @@ async def broker(session, assignment, monkeypatch):
             pass
 
     settings = SimpleNamespace(
+        platform_bedrock_account_id="",
+        reserved_role_name_prefixes="adp-,bedrockgw-",
         enforce_credential_binding=False,
         webhook_events_table="events",
         vault_raw_read_enabled=True,
@@ -301,6 +303,10 @@ async def test_saved_role_preserves_permissions_external_id_duration_tags_and_re
     broker.sm.get_secret.return_value = json.dumps(
         {"role_arn": ROLE, "external_id": "customer-external-id", "session_duration_seconds": 1800, "default_region": "eu-west-1"}
     )
+    from tests.internal.aws_ownership_fixture import verified_role_material
+
+    await verified_role_material(broker.db, broker.sm, broker.sm.get_secret.return_value)
+
     expiry = datetime.now(UTC) + timedelta(minutes=30)
     with patch("src.internal.sts_assume_service.boto3.client") as aws:
         aws.return_value.assume_role.return_value = {
@@ -412,6 +418,10 @@ async def test_saved_role_cancellation_during_sts_prevents_session_delivery(brok
     await broker.db.commit()
     broker.sm.get_secret.return_value = json.dumps({"role_arn": ROLE})
 
+    from tests.internal.aws_ownership_fixture import verified_role_material
+
+    await verified_role_material(broker.db, broker.sm, broker.sm.get_secret.return_value)
+
     def revoke(**_):
         broker.assignment.grant = replace(broker.assignment.grant, revoked=True)
         return {
@@ -512,3 +522,8 @@ def test_v1_cannot_use_user_granted_scope_even_with_a_selected_target():
         _context(credential_scope=CredentialScope.USER_GRANTED), Action.DEVELOP, replace(_develop(), user_credential_id="approved-key"), 1
     )
     assert result.reason is DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE
+
+
+@pytest.fixture(autouse=True)
+def platform_account(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "111111111111")

@@ -14,7 +14,6 @@ separate, separately authorized decision.
 from __future__ import annotations
 
 import base64
-import getpass
 import io
 import json
 import os
@@ -122,38 +121,6 @@ def resolve_connection(api, value):
     if len(matches) != 1:
         raise CliError(f"Connection is missing or ambiguous: {value}. Use its exact ADP ID from adp aws list.", "not_found")
     return matches[0]
-
-
-def external_id(args):
-    """Read the ExternalId for an existing role from a private file, stdin or a
-    hidden prompt — never from a command argument.
-
-    A role that trusts ADP without the confused-deputy guard is legitimate, but
-    saying so has to be deliberate: silently registering no ExternalId would
-    weaken the connection without the user noticing.
-    """
-    if args.no_external_id:
-        return None
-    if args.external_id_file:
-        value = common.read_private_json(args.external_id_file).get("external_id")
-    elif args.external_id_stdin:
-        try:
-            value = json.loads(sys.stdin.read()).get("external_id")
-        except (ValueError, AttributeError) as exc:
-            raise CliError('Provide {"external_id": "…"} as a JSON object on stdin.', "usage_error", 1) from exc
-    elif sys.stdin.isatty():
-        value = getpass.getpass("ExternalId the role requires (Enter if it requires none): ").strip() or None
-        if value is None:
-            raise CliError("Pass --no-external-id to register a role whose trust policy has no ExternalId condition.", "usage_error", 1)
-    else:
-        raise CliError(
-            "Supply the role's ExternalId with --external-id-file or --external-id-stdin, or pass --no-external-id if it requires none.",
-            "usage_error",
-            1,
-        )
-    if not isinstance(value, str) or not value.strip():
-        raise CliError('The ExternalId source must contain a non-empty "external_id" string.', "usage_error", 1)
-    return value.strip()
 
 
 def setup_package(api, connection, account_id):
@@ -273,7 +240,7 @@ def parser():
     secret = connect.add_mutually_exclusive_group()
     secret.add_argument("--external-id-file", metavar="PATH", help='Private 0600 file holding {"external_id": "…"} for an existing role')
     secret.add_argument("--external-id-stdin", action="store_true", help="Read that JSON object from stdin")
-    secret.add_argument("--no-external-id", action="store_true", help="The existing role's trust policy has no ExternalId condition")
+    secret.add_argument("--no-external-id", action="store_true", help="Deprecated; refused because ADP now generates the ExternalId")
     connect.add_argument("--download", dest="output_dir", metavar="DIRECTORY", help="Save the setup for an AWS administrator; create nothing")
     connect.add_argument("--resume", metavar="DIRECTORY", help="Verify a downloaded setup after the administrator applied it")
     connect.add_argument("--yes", action="store_true", help="Approve without a prompt, for scripts")
@@ -517,19 +484,22 @@ def register_existing(api, args, plan):
     way would mark a mistyped ARN as working.
     """
     body = {"nickname": args.name, "account_id": args.account_id, "role_arn": args.role_arn, "default_region": args.region}
-    secret = external_id(args)
-    if secret:
-        body["external_id"] = secret
+    if args.external_id_file or args.external_id_stdin or args.no_external_id:
+        raise CliError("ADP now generates the ExternalId. Remove the legacy external-ID flags and apply the returned trust policy.", "usage_error", 1)
     result = api.request("POST", CONNECT + "/import", body)
-    if result["reused"]:
-        print(f"Reusing existing connection {result['credential_id']} for that role.", file=sys.stderr)
-    verified = verify(api, result["credential_id"])
+    print(
+        "Apply the trust policy and have your platform administrator approve the role ARN, then run adp aws verify " + result["credential_id"],
+        file=sys.stderr,
+    )
+    print(json.dumps(result["trust_policy"], indent=2), file=sys.stderr)
     return {
         **plan,
         "connection_id": result["credential_id"],
         "reusing": result["reused"],
-        "verified": True,
-        "routing_capable": verified.get("routing_capable"),
+        "verified": False,
+        "external_id": result["external_id"],
+        "trust_policy": result["trust_policy"],
+        "next_step": "Apply this trust policy and obtain platform approval for the role ARN, then run adp aws verify " + result["credential_id"],
     }
 
 
@@ -565,8 +535,8 @@ def disconnect(api, args):
 
 
 def result_envelope(result, command):
-    status = "verified" if result.get("verified") else "pending" if result.get("output_dir") else "configured"
-    next_action = None
+    status = "verified" if result.get("verified") else "pending" if result.get("output_dir") or result.get("next_step") else "configured"
+    next_action = result.get("next_step")
     if result.get("output_dir"):
         next_action = (
             "Ask your AWS administrator to apply the downloaded template, then run "
@@ -588,9 +558,7 @@ def display(result, as_json, command):
             print(f"A downloaded setup is waiting in {result['pending_handoff']}. Finish it with adp aws connect --resume.")
     elif result.get("dry_run"):
         if result["action"] == "refresh_verification_evidence":
-            print(
-                f"Would probe {result['name']} (AWS account {result['account_id']}) and replace its stored verification evidence. No probe sent."
-            )
+            print(f"Would probe {result['name']} (AWS account {result['account_id']}) and replace its stored verification evidence. No probe sent.")
         elif result["action"] == "disconnect":
             print(f"Would disconnect {result['name']} (AWS account {result['account_id']}) from ADP. No changes made.")
             print(f"Would remove {result['removes']}. Would keep {result['keeps']}.")
@@ -607,6 +575,9 @@ def display(result, as_json, command):
         print("That directory contains this connection's ExternalId — share it only with them.")
         print("Once the role exists, run:")
         print(f"  adp aws connect --resume {shlex.quote(result['output_dir'])}")
+    elif result.get("next_step"):
+        print("AWS role registered; trust setup and verification are still required.")
+        print(result["next_step"])
     elif command == "verify":
         print(f"Connection {result['name']} works: ADP assumed the role in AWS account {result['account_id']} just now.")
     else:
@@ -621,7 +592,7 @@ def main(argv=None):
         args = parser().parse_args(argv)
         result = run(args, Api())
         display(result, args.json, args.command)
-        return 4 if result.get("output_dir") else 0
+        return 4 if result.get("output_dir") or result.get("next_step") else 0
     except (CliError, OSError, ValueError, KeyError, TypeError) as exc:
         return common.report_error(exc, "aws", as_json)
     except KeyboardInterrupt:

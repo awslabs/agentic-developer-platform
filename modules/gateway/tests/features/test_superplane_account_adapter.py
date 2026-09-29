@@ -55,6 +55,7 @@ def credential(**overrides):
         "label": "prod",
         "strict": False,
         "expires_at": None,
+        "aws_external_id": EXTERNAL_ID,
         "aws_verification_attempt": "verification-attempt",
         "aws_verified_version_id": "version-1",
         "secret_arn": "opaque-secret-address",
@@ -394,3 +395,8 @@ def test_adapter_request_rejects_unsupported_or_secret_shaped_inputs(payload):
 def test_static_account_adapter_precedes_the_generic_forwarder():
     post_paths = [route.path for route in proxy.router.routes if "POST" in getattr(route, "methods", set())]
     assert post_paths.index("/superplane/v1/accounts") < post_paths.index("/superplane/v1/{path:path}")
+
+
+@pytest.fixture(autouse=True)
+def platform_account(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "999999999999")

@@ -317,6 +317,9 @@ export function ConnectAwsForm({
             <p className="text-sm text-gray-700 mb-3">
               {onGetSetup ? `Once you or your AWS administrator has created the stack in account ${accountId}, verify it here. You do not need AWS permissions for this step.` : 'After the stack finishes creating in your AWS Console, click below to verify:'}
             </p>
+            <p className="text-sm text-gray-700 mb-3">
+              Ask your platform administrator to approve the role ARN for gateway access before verifying.
+            </p>
             <button
               onClick={handleVerify}
               disabled={isVerifying || isStarting}
@@ -347,7 +350,9 @@ export function ConnectAwsForm({
       {verifyResult && !verifyResult.verified && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4" data-testid={`${testIdPrefix}-verify-failed`}>
           <p className="text-sm text-yellow-800">
-            {verifyResult.reason || 'Verification failed. Please check the stack status and try again.'}
+            {verifyResult.reason === 'trust_verification_failed'
+              ? 'AWS connection verification failed. Check the role trust policy and platform approval, then try again.'
+              : verifyResult.reason || 'Verification failed. Please check the stack status and try again.'}
           </p>
           <button
             onClick={handleVerify}

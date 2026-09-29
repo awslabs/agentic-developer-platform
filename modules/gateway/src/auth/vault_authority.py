@@ -5,6 +5,7 @@ import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
 
+from fastapi import HTTPException
 from sqlalchemy import delete, select
 
 from src.shared.models.audit import AuditLog
@@ -113,6 +114,11 @@ async def validate_workspace_credential(session, sm, settings, caller, *, creden
     credential = await owned_current(session, caller, credential_id, lock=True)
     delegation = await _delegated(session, caller, credential_id, workspace_id)
     snapshot = _snapshot(credential)
+    aws_evidence = None
+    if credential.credential_type == "aws_role":
+        from .aws_connection_authority import verified_connection_evidence
+
+        aws_evidence = verified_connection_evidence(credential)
     generation = (delegation.id, delegation.delegated_at)
     # Publish a new failed-closed generation before I/O. Failed revalidation must
     # not leave an older positive reading usable, and a late concurrent result
@@ -147,6 +153,17 @@ async def validate_workspace_credential(session, sm, settings, caller, *, creden
         material, served_version = await asyncio.to_thread(sm.get_secret_at_version, snapshot[0], version)
         if served_version != version:
             raise ValidationConflictError("credential version changed")
+        if aws_evidence is not None:
+            import json
+
+            from .aws_connection_authority import connection_material
+
+            if version != aws_evidence[1]:
+                raise ValidationConflictError("AWS ownership evidence is stale")
+            try:
+                connection_material(json.loads(material), credential.scopes or {}, credential)
+            except HTTPException:
+                raise ValidationConflictError("AWS ownership metadata changed") from None
         reading = await asyncio.to_thread(validator.validate, material, credential_type=snapshot[3], user_id=caller.user_id, label=snapshot[2])
         del material
         if await asyncio.to_thread(sm.current_version_id, snapshot[0]) != version:
@@ -156,6 +173,8 @@ async def validate_workspace_credential(session, sm, settings, caller, *, creden
     except Exception:
         raise ValidationUnavailableError("provider validation unavailable") from None
     current = await owned_current(session, caller, credential_id, lock=True)
+    if aws_evidence is not None and verified_connection_evidence(current) != aws_evidence:
+        raise ValidationConflictError("AWS ownership changed during validation")
     current_delegation = await _delegated(session, caller, credential_id, workspace_id)
     row = await session.scalar(
         select(CredentialValidationEvidence)

@@ -440,20 +440,28 @@ resource "aws_iam_role_policy" "gateway_sts" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Effect   = "Allow"
         Action   = ["sts:GetCallerIdentity"]
         Resource = "*"
-      },
+      }
+      ], length(var.gateway_customer_role_arns) == 0 ? [] : [
       {
         Sid      = "AssumeUserConnectedAwsRoles"
         Effect   = "Allow"
         Action   = ["sts:AssumeRole", "sts:TagSession"]
-        Resource = "arn:aws:iam::*:role/ADP-Agent-*"
+        Resource = sort(tolist(var.gateway_customer_role_arns))
       }
-    ]
+    ])
   })
+
+  lifecycle {
+    precondition {
+      condition     = alltrue([for arn in var.gateway_customer_role_arns : split(":", arn)[4] != data.aws_caller_identity.current.account_id])
+      error_message = "Platform-account roles cannot be approved as personal customer connections."
+    }
+  }
 }
 
 # CloudWatch Logs permissions for the gateway service

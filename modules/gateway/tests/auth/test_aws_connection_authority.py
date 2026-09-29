@@ -60,6 +60,7 @@ async def connection(db, monkeypatch):
         label="verify",
         credential_type="aws_role",
         secret_arn="synthetic-connection",
+        aws_external_id="synthetic-trust",
         scopes={"account_id": "123456789012", "role_arn": ROLE, "status": "pending"},
     )
     db.add(credential)
@@ -223,3 +224,9 @@ async def test_retry_committing_after_rollback_absence_check_keeps_its_secret(db
     await db.rollback()
     async with async_sessionmaker(engine, expire_on_commit=False)() as other:
         assert (await other.get(UserCredential, operation)).secret_arn == "shared-operation-secret"
+
+
+@pytest.fixture(autouse=True)
+def ownership_probe(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "999999999999")
+    monkeypatch.setattr(routes, "require_external_id_enforcement", MagicMock())

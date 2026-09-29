@@ -101,7 +101,8 @@ data:
   # Issue #1158: Vault Proxy Request Host Allowlist (SSRF mitigation)
   # =============================================================================
   # Comma-separated list of allowed target hosts for /internal/v1/proxy-request.
-  # Supports exact-match ("api.github.com") and wildcard-prefix ("*.atlassian.net").
+  # Configure exact tenant-owned SaaS hosts (for example "acme.atlassian.net").
+  # Never allow a wildcard spanning independently controlled SaaS tenants.
   # FAIL-CLOSED: if empty, ALL proxy-requests are denied (403).
   # =============================================================================
   BG_VAULT_PROXY_HOST_ALLOWLIST: "__VAULT_PROXY_HOST_ALLOWLIST__"

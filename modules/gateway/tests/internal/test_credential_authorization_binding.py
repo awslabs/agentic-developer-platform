@@ -467,6 +467,10 @@ class TestAssumeRoleBinding:
         mock_sm = MagicMock()
         mock_sm.get_secret.return_value = _ROLE_SECRET_JSON
 
+        from tests.internal.aws_ownership_fixture import verified_role_material
+
+        await verified_role_material(db, mock_sm, _ROLE_SECRET_JSON)
+
         settings = _settings_mock(enforce=False)
 
         with (
@@ -996,3 +1000,8 @@ async def test_shared_key_fixture_without_registry_grant_still_denied(db):
     assert response.status_code == 403
     assert response.json()["detail"] == "run-bound operations require IAM transport"
     sm.get_secret.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def platform_account(monkeypatch):
+    monkeypatch.setenv("ADP_GATEWAY_ACCOUNT_ID", "111111111111")
