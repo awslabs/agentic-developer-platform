@@ -98,3 +98,23 @@ def test_later_main_keeps_the_accepted_source_and_actual_workflow_identity(monke
     result = workflow_context.build_context(env, inputs, "123456789012")
     assert result["source_revision"] == "a" * 40
     assert result["workflow_revision"] == "b" * 40
+
+
+def test_github_omitted_empty_evaluation_id_preserves_accepted_context(monkeypatch):
+    env, inputs = fixture(monkeypatch)
+    expected = workflow_context.build_context(env, inputs, "123456789012")
+    del inputs["evaluation_id"]
+    assert workflow_context.build_context(env, inputs, "123456789012") == expected
+
+
+@pytest.mark.parametrize("change", ["nonempty_id", "missing_suite", "unknown_input"])
+def test_empty_default_normalization_does_not_relax_scope(monkeypatch, change):
+    env, inputs = fixture(monkeypatch)
+    if change == "nonempty_id":
+        inputs["evaluation_id"] = "existing-evaluation"
+    elif change == "missing_suite":
+        del inputs["suites"]
+    else:
+        inputs["unexpected"] = ""
+    with pytest.raises(ValueError):
+        workflow_context.build_context(env, inputs, "123456789012")

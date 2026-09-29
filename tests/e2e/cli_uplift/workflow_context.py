@@ -11,6 +11,9 @@ from . import config
 
 def build_context(env, inputs, account):
     """Bind the real runner identity to the exact bounded, accepted inputs."""
+    # GitHub omits optional empty strings from the workflow inputs context.
+    # Restore only this declared empty default before validating the exact scope.
+    inputs = {"evaluation_id": "", **inputs}
     sha = env["ADP_CHECKOUT_SHA"]
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("Invalid source revision")
