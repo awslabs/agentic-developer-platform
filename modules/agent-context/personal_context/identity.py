@@ -38,12 +38,27 @@ _UUID_RE = re.compile(
 )
 
 
+# Tenant IDs: 1–128 ASCII alphanumerics, underscore or hyphen, starting with
+# an alphanumeric. Supports UUIDs, ULIDs and org slugs without query/path syntax.
+_TENANT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+
+
+def is_valid_tenant_id(value: str) -> bool:
+    return isinstance(value, str) and _TENANT_RE.fullmatch(value) is not None
+
+
 @dataclass(frozen=True)
 class CallerIdentity:
     """Validated caller identity extracted from request headers."""
 
     owner_sub: str  # Cognito sub (UUID, lowercased)
     tenant_id: str  # Organization/tenant ID
+
+    def __post_init__(self) -> None:
+        if not is_valid_tenant_id(self.tenant_id):
+            raise IdentityError(
+                "X-Tenant-Id must be 1–128 ASCII letters/digits, underscores or hyphens, starting with a letter/digit"
+            )
 
 
 class IdentityError(Exception):
@@ -56,7 +71,7 @@ class IdentityError(Exception):
 
 def is_valid_uuid(value: str) -> bool:
     """Check whether *value* is a well-formed UUID string."""
-    return bool(_UUID_RE.match(value.strip()))
+    return isinstance(value, str) and _UUID_RE.fullmatch(value) is not None
 
 
 def extract_identity(headers: dict[str, str]) -> CallerIdentity | None:
@@ -75,7 +90,7 @@ def extract_identity(headers: dict[str, str]) -> CallerIdentity | None:
     normalized: dict[str, str] = {k.lower(): v for k, v in headers.items()}
 
     owner_sub_raw = normalized.get(HEADER_OWNER_SUB, "").strip()
-    tenant_id_raw = normalized.get(HEADER_TENANT_ID, "").strip()
+    tenant_id_raw = normalized.get(HEADER_TENANT_ID, "")
 
     # Neither header present → not a personal-context request (pass-through)
     if not owner_sub_raw and not tenant_id_raw:
@@ -91,9 +106,8 @@ def extract_identity(headers: dict[str, str]) -> CallerIdentity | None:
     if not is_valid_uuid(owner_sub_raw):
         raise IdentityError(f"X-Owner-Sub must be a valid UUID, got: {owner_sub_raw!r}")
 
-    # Validate tenant_id is non-empty (format varies by org)
-    if not tenant_id_raw:
-        raise IdentityError("X-Tenant-Id must not be empty")
+    if not is_valid_tenant_id(tenant_id_raw):
+        raise IdentityError("X-Tenant-Id has an invalid format")
 
     return CallerIdentity(
         owner_sub=owner_sub_raw.lower(),

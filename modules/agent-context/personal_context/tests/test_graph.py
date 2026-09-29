@@ -26,7 +26,6 @@ from personal_context.models import EntryType, Persona, PersonalContextEntry, Vi
 from personal_context.storage import PersonalContextStore, build_entry_path
 from personal_context.synthesis import SynthesisPipeline, SynthesisResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers / Fakes
 # ---------------------------------------------------------------------------
@@ -74,126 +73,63 @@ class FakeNeptuneGraph:
         self.query_log: list[str] = []
         self.fail_next: bool = False
 
-    def execute(self, query: str) -> dict[str, Any] | None:
-        """Simulate Gremlin query execution."""
+    def execute(self, query: str, parameters: dict) -> dict[str, Any] | None:
+        """Model the parameterized operations; real query execution is tested separately."""
         self.query_log.append(query)
+        self.last_parameters = parameters
         if self.fail_next:
             return None
+        p = parameters
 
-        # Parse vertex upsert
-        if "addV('personal_context')" in query or "coalesce(unfold()" in query:
-            entry_id = self._extract_property(query, "entry_id")
-            if entry_id:
-                props = {
-                    "entry_id": entry_id,
-                    "owner_sub": self._extract_property(query, "owner_sub") or "",
-                    "tenant_id": self._extract_property(query, "tenant_id") or "",
-                    "type": self._extract_property(query, "type") or "",
-                    "persona": self._extract_property(query, "persona") or "",
-                    "visibility": self._extract_property(query, "visibility") or "",
-                }
-                self.vertices[entry_id] = props
-            return {"status": {"code": 200}}
+        def visible(vertex):
+            return (
+                vertex
+                and vertex["tenant_id"] == p["tenant_id"]
+                and (vertex["owner_sub"] == p["owner_sub"] or vertex["visibility"] == "shared")
+            )
 
-        # Parse edge add
-        if "addE(" in query:
-            from_id = self._extract_has_entry_id(query, 0)
-            to_id = self._extract_has_entry_id(query, 1)
-            edge_type = self._extract_edge_type(query)
-            if from_id and to_id and edge_type:
-                self.edges.append(
-                    {
-                        "from": from_id,
-                        "to": to_id,
-                        "type": edge_type,
-                    }
-                )
-            return {"status": {"code": 200}}
-
-        # Parse neighbor query (bothE)
-        if "bothE()" in query:
-            center_id = self._extract_has_entry_id(query, 0)
-            owner_filter = self._extract_property(query, "owner_sub")
-            tenant_filter = self._extract_property(query, "tenant_id")
-
+        if query == personal_graph._UPSERT:
+            props = dict(p)
+            props["type"] = props.pop("entry_type")
+            self.vertices[p["entry_id"]] = props
+            return {"results": [{"entry_id": p["entry_id"]}]}
+        if query in personal_graph._EDGE_QUERIES.values():
+            a, b = self.vertices.get(p["from_entry_id"]), self.vertices.get(p["to_entry_id"])
+            if not visible(a) or a["owner_sub"] != p["owner_sub"] or not visible(b):
+                return {"results": []}
+            kind = next(k for k, q in personal_graph._EDGE_QUERIES.items() if q == query)
+            self.edges.append({"from": p["from_entry_id"], "to": p["to_entry_id"], "type": kind})
+            return {"results": [{"edge_type": kind}]}
+        if query == personal_graph._NEIGHBORS:
+            if not visible(self.vertices.get(p["entry_id"])):
+                return {"results": []}
             neighbors = []
             for edge in self.edges:
-                neighbor_id = None
-                direction = None
-                if edge["from"] == center_id:
-                    neighbor_id = edge["to"]
-                    direction = "outgoing"
-                elif edge["to"] == center_id:
-                    neighbor_id = edge["from"]
-                    direction = "incoming"
-
-                if neighbor_id and neighbor_id in self.vertices:
-                    v = self.vertices[neighbor_id]
-                    # Apply isolation filter
-                    if v["owner_sub"] == owner_filter or (
-                        v["visibility"] == "shared" and v["tenant_id"] == tenant_filter
-                    ):
-                        neighbors.append(
-                            {
-                                "entry_id": neighbor_id,
-                                "type": v["type"],
-                                "persona": v["persona"],
-                                "edge_type": edge["type"],
-                                "direction": direction,
-                            }
-                        )
-
-            return {
-                "result": {
-                    "data": {
-                        "@value": neighbors,
-                    }
-                }
-            }
-
-        # Parse drop query
-        if ".drop()" in query:
-            entry_id = self._extract_has_entry_id(query, 0)
-            if entry_id:
-                self.vertices.pop(entry_id, None)
-                self.edges = [
-                    e for e in self.edges if e["from"] != entry_id and e["to"] != entry_id
-                ]
-            return {"status": {"code": 200}}
-
-        return {"status": {"code": 200}}
-
-    @staticmethod
-    def _extract_property(query: str, prop_name: str) -> str | None:
-        """Extract a property value from a Gremlin query string."""
-        import re
-
-        pattern = rf"\.property\('{prop_name}', '([^']*)'\)"
-        match = re.search(pattern, query)
-        if match:
-            return match.group(1)
-        # Also try has() form (with or without leading dot — inside or() has no dot)
-        pattern = rf"has\('{prop_name}', '([^']*)'\)"
-        match = re.search(pattern, query)
-        return match.group(1) if match else None
-
-    @staticmethod
-    def _extract_has_entry_id(query: str, index: int) -> str | None:
-        """Extract the nth entry_id from has() clauses in the query."""
-        import re
-
-        matches = re.findall(r"has\('entry_id', '([^']*)'\)", query)
-        if index < len(matches):
-            return matches[index]
-        return None
-
-    @staticmethod
-    def _extract_edge_type(query: str) -> str | None:
-        """Extract edge type from addE() or outE() in the query."""
-        import re
-
-        match = re.search(r"addE\('([^']*)'\)", query)
-        return match.group(1) if match else None
+                if edge["from"] == p["entry_id"]:
+                    neighbor_id, direction = edge["to"], "outgoing"
+                elif edge["to"] == p["entry_id"]:
+                    neighbor_id, direction = edge["from"], "incoming"
+                else:
+                    continue
+                v = self.vertices.get(neighbor_id)
+                if visible(v):
+                    neighbors.append(
+                        {
+                            "entry_id": neighbor_id,
+                            "type": v["type"],
+                            "persona": v["persona"],
+                            "edge_type": edge["type"],
+                            "direction": direction,
+                        }
+                    )
+            return {"results": neighbors}
+        if query == personal_graph._REMOVE:
+            v = self.vertices.get(p["entry_id"])
+            if visible(v) and v["owner_sub"] == p["owner_sub"]:
+                self.vertices.pop(p["entry_id"])
+                self.edges = [e for e in self.edges if p["entry_id"] not in (e["from"], e["to"])]
+            return {"results": []}
+        raise AssertionError("Unexpected query")
 
 
 class FakeLLMClient:
@@ -311,7 +247,7 @@ class TestVertexUpsert:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             result = personal_graph.upsert_vertex(
                 entry_id="01ABC123",
@@ -336,7 +272,7 @@ class TestVertexUpsert:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             result = personal_graph.upsert_vertex(
                 entry_id="01ABC456",
@@ -355,7 +291,7 @@ class TestVertexUpsert:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             result = personal_graph.upsert_vertex(
                 entry_id="01ABC789",
@@ -374,7 +310,7 @@ class TestVertexUpsert:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             # Create vertices for two owners
             personal_graph.upsert_vertex(
@@ -384,7 +320,9 @@ class TestVertexUpsert:
                 "entry-b1", OWNER_B, TENANT_1, "learning", "developer", "private"
             )
             # Connect them
-            personal_graph.add_edge("entry-a1", "entry-b1", "supports")
+            personal_graph.add_edge(
+                "entry-a1", "entry-b1", "supports", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
 
             # Owner A should NOT see Owner B's private vertex
             identity_a = CallerIdentity(owner_sub=OWNER_A, tenant_id=TENANT_1)
@@ -417,7 +355,7 @@ class TestEdgeTypes:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             # Create two vertices owned by the same user
             personal_graph.upsert_vertex(
@@ -428,7 +366,9 @@ class TestEdgeTypes:
             )
 
             # Add edge
-            result = personal_graph.add_edge("src-1", "dst-1", edge_type)
+            result = personal_graph.add_edge(
+                "src-1", "dst-1", edge_type, identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
             assert result is True
 
             # Verify edge exists in graph
@@ -451,9 +391,11 @@ class TestEdgeTypes:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
-            result = personal_graph.add_edge("src", "dst", "invalid_type")
+            result = personal_graph.add_edge(
+                "src", "dst", "invalid_type", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
 
         assert result is False
         assert len(fake_neptune.edges) == 0
@@ -463,7 +405,7 @@ class TestEdgeTypes:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             personal_graph.upsert_vertex(
                 "cp-1", OWNER_A, TENANT_1, "learning", "developer", "private"
@@ -476,13 +418,17 @@ class TestEdgeTypes:
                 "cp-2",
                 "cross_persona",
                 properties={"transfer_context": "applies to system design too"},
+                identity=CallerIdentity(OWNER_A, TENANT_1),
             )
 
         assert result is True
         # Verify the query included the property
-        edge_query = [q for q in fake_neptune.query_log if "addE" in q]
+        edge_query = [q for q in fake_neptune.query_log if "MERGE (a)-[e:" in q]
         assert len(edge_query) == 1
-        assert "transfer_context" in edge_query[0]
+        assert (
+            fake_neptune.last_parameters["properties"]["transfer_context"]
+            == "applies to system design too"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +450,9 @@ class TestFlagOff:
     def test_add_edge_noop_when_disabled(self) -> None:
         """add_edge returns False when flag is off."""
         with patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", False):
-            result = personal_graph.add_edge("src", "dst", "contradicts")
+            result = personal_graph.add_edge(
+                "src", "dst", "contradicts", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
         assert result is False
 
     def test_get_neighbors_empty_when_disabled(self) -> None:
@@ -530,7 +478,7 @@ class TestFlagOff:
 
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", False),
-            patch.object(personal_graph, "_execute_gremlin") as mock_exec,
+            patch.object(personal_graph, "_execute_cypher") as mock_exec,
         ):
             pipeline.run()
 
@@ -588,7 +536,7 @@ class TestNeptuneUnreachable:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             result = personal_graph.upsert_vertex(
                 "test-id", OWNER_A, TENANT_1, "learning", "developer", "private"
@@ -601,9 +549,11 @@ class TestNeptuneUnreachable:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
-            result = personal_graph.add_edge("src", "dst", "contradicts")
+            result = personal_graph.add_edge(
+                "src", "dst", "contradicts", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
         assert result is False
 
     def test_get_neighbors_empty_on_failure(self, fake_neptune: FakeNeptuneGraph) -> None:
@@ -612,7 +562,7 @@ class TestNeptuneUnreachable:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             identity = CallerIdentity(owner_sub=OWNER_A, tenant_id=TENANT_1)
             result = personal_graph.get_neighbors("test-id", identity)
@@ -631,13 +581,13 @@ class TestNeptuneUnreachable:
             headers,
         )
 
-        def failing_execute(query: str) -> None:
+        def failing_execute(query: str, parameters: dict) -> None:
             return None
 
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", failing_execute),
+            patch.object(personal_graph, "_execute_cypher", failing_execute),
         ):
             result = tool.handle(
                 {
@@ -671,13 +621,13 @@ class TestNeptuneUnreachable:
         pipeline = SynthesisPipeline(store=store, llm_client=llm_client, min_learnings=5)
         _seed_learnings(backend, OWNER_A, TENANT_1, count=5)
 
-        def failing_execute(query: str) -> None:
+        def failing_execute(query: str, parameters: dict) -> None:
             return None
 
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", failing_execute),
+            patch.object(personal_graph, "_execute_cypher", failing_execute),
         ):
             metrics = pipeline.run()
 
@@ -704,7 +654,7 @@ class TestCrossTenantIsolation:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             # Owner A in Tenant 1
             personal_graph.upsert_vertex(
@@ -715,7 +665,9 @@ class TestCrossTenantIsolation:
                 "t2-entry", OWNER_B, TENANT_2, "learning", "developer", "private"
             )
             # Connect them
-            personal_graph.add_edge("t1-entry", "t2-entry", "supports")
+            personal_graph.add_edge(
+                "t1-entry", "t2-entry", "supports", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
 
             # Owner A (Tenant 1) traverses — should NOT see Tenant 2's private vertex
             identity_a = CallerIdentity(owner_sub=OWNER_A, tenant_id=TENANT_1)
@@ -728,7 +680,7 @@ class TestCrossTenantIsolation:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             # Owner A in Tenant 1
             personal_graph.upsert_vertex(
@@ -739,7 +691,9 @@ class TestCrossTenantIsolation:
                 "shared-entry", OWNER_B, TENANT_1, "learning", "developer", "shared"
             )
             # Connect them
-            personal_graph.add_edge("own-entry", "shared-entry", "supports")
+            personal_graph.add_edge(
+                "own-entry", "shared-entry", "supports", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
 
             # Owner A (Tenant 1) traverses — should see the shared entry
             identity_a = CallerIdentity(owner_sub=OWNER_A, tenant_id=TENANT_1)
@@ -753,7 +707,7 @@ class TestCrossTenantIsolation:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             # Owner A in Tenant 1
             personal_graph.upsert_vertex(
@@ -764,7 +718,9 @@ class TestCrossTenantIsolation:
                 "other-shared", OWNER_B, TENANT_2, "learning", "developer", "shared"
             )
             # Connect them
-            personal_graph.add_edge("my-entry", "other-shared", "supports")
+            personal_graph.add_edge(
+                "my-entry", "other-shared", "supports", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
 
             # Owner A (Tenant 1) traverses — should NOT see Tenant 2's shared vertex
             identity_a = CallerIdentity(owner_sub=OWNER_A, tenant_id=TENANT_1)
@@ -798,7 +754,7 @@ class TestSynthesisGraphIntegration:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             metrics = pipeline.run()
 
@@ -833,7 +789,7 @@ class TestSynthesisGraphIntegration:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             metrics = pipeline.run()
 
@@ -903,7 +859,7 @@ class TestGraphExpandedRecall:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             result = tool.handle(
                 {
@@ -970,7 +926,7 @@ class TestRemoveVertex:
         with (
             patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", True),
             patch.object(personal_graph, "NEPTUNE_ENDPOINT", "test.neptune.amazonaws.com"),
-            patch.object(personal_graph, "_execute_gremlin", fake_neptune.execute),
+            patch.object(personal_graph, "_execute_cypher", fake_neptune.execute),
         ):
             personal_graph.upsert_vertex(
                 "rm-1", OWNER_A, TENANT_1, "learning", "developer", "private"
@@ -978,12 +934,16 @@ class TestRemoveVertex:
             personal_graph.upsert_vertex(
                 "rm-2", OWNER_A, TENANT_1, "learning", "developer", "private"
             )
-            personal_graph.add_edge("rm-1", "rm-2", "supports")
+            personal_graph.add_edge(
+                "rm-1", "rm-2", "supports", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
 
             assert "rm-1" in fake_neptune.vertices
             assert len(fake_neptune.edges) == 1
 
-            result = personal_graph.remove_vertex("rm-1")
+            result = personal_graph.remove_vertex(
+                "rm-1", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
 
         assert result is True
         assert "rm-1" not in fake_neptune.vertices
@@ -992,5 +952,22 @@ class TestRemoveVertex:
     def test_remove_vertex_noop_when_disabled(self) -> None:
         """remove_vertex is a no-op when graph is disabled."""
         with patch.object(personal_graph, "PERSONAL_CONTEXT_GRAPH_ENABLED", False):
-            result = personal_graph.remove_vertex("any-id")
+            result = personal_graph.remove_vertex(
+                "any-id", identity=CallerIdentity(OWNER_A, TENANT_1)
+            )
         assert result is False
+
+
+def test_synthesis_partitions_one_owner_across_tenants(backend, store):
+    pipeline = SynthesisPipeline(store=store, llm_client=FakeLLMClient(), min_learnings=2)
+    _seed_learnings(backend, OWNER_A, TENANT_1, count=2)
+    _seed_learnings(backend, OWNER_A, TENANT_2, count=2)
+    groups = pipeline._enumerate_users()
+    assert len(groups) == 2
+    assert all(
+        {entry.tenant_id for entry in entries} == {key[1]} for key, entries in groups.items()
+    )
+    metrics = pipeline.run()
+    assert metrics.syntheses_created == 2
+    syntheses = backend.list_prefix(f"/personal/{OWNER_A}/syntheses/")
+    assert {entry["tenant_id"] for entry in syntheses} == {TENANT_1, TENANT_2}

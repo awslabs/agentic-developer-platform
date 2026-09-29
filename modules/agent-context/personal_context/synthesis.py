@@ -30,10 +30,10 @@ from typing import Any
 import httpx
 from ulid import ULID
 
+from . import graph as personal_graph
 from .identity import CallerIdentity
 from .models import EntryType, PersonalContextEntry
 from .storage import PersonalContextStore, build_entry_path
-from . import graph as personal_graph
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ class SynthesisPipeline:
         logger.info("Synthesis: found %d user-persona groups to process", len(user_learnings))
 
         # Stage 2: Per user-persona synthesis
-        for (owner_sub, persona), learnings in user_learnings.items():
+        for (owner_sub, _tenant_id, persona), learnings in user_learnings.items():
             if not self._should_synthesize(learnings, now):
                 continue
             try:
@@ -282,14 +282,14 @@ class SynthesisPipeline:
         )
         return metrics
 
-    def _enumerate_users(self) -> dict[tuple[str, str], list[PersonalContextEntry]]:
+    def _enumerate_users(self) -> dict[tuple[str, str, str], list[PersonalContextEntry]]:
         """Enumerate all user-persona groups with unsynthesized learnings.
 
-        Scans private learning paths and groups by (owner_sub, persona).
+        Scans private learning paths and groups by (owner_sub, tenant_id, persona).
         Only returns groups meeting the minimum threshold.
         """
         all_learnings = self.store.backend.list_prefix("/personal/")
-        groups: dict[tuple[str, str], list[PersonalContextEntry]] = {}
+        groups: dict[tuple[str, str, str], list[PersonalContextEntry]] = {}
 
         for data in all_learnings:
             try:
@@ -303,7 +303,7 @@ class SynthesisPipeline:
             if entry.context.get("synthesized"):
                 continue
 
-            key = (entry.owner_sub, entry.persona.value)
+            key = (entry.owner_sub, entry.tenant_id, entry.persona.value)
             groups.setdefault(key, []).append(entry)
 
         return groups
@@ -352,7 +352,7 @@ class SynthesisPipeline:
         if not result.insights and not result.contradictions:
             return result
 
-        # Determine tenant_id from the learnings (all same owner = same tenant)
+        # Enumeration partitions by tenant as well as owner and persona.
         tenant_id = learnings[0].tenant_id
         identity = CallerIdentity(owner_sub=owner_sub, tenant_id=tenant_id)
 
@@ -400,6 +400,7 @@ class SynthesisPipeline:
                         from_entry_id=synthesis_id,
                         to_entry_id=learning.id,
                         edge_type="derived_from",
+                        identity=identity,
                     )
 
         # Mark contradictions via adjacency-list in context
@@ -471,11 +472,13 @@ class SynthesisPipeline:
                 from_entry_id=entry_a.id,
                 to_entry_id=entry_b.id,
                 edge_type="contradicts",
+                identity=CallerIdentity(owner_sub=entry_a.owner_sub, tenant_id=entry_a.tenant_id),
             )
             personal_graph.add_edge(
                 from_entry_id=entry_b.id,
                 to_entry_id=entry_a.id,
                 edge_type="contradicts",
+                identity=CallerIdentity(owner_sub=entry_a.owner_sub, tenant_id=entry_a.tenant_id),
             )
 
     def _check_supersession(

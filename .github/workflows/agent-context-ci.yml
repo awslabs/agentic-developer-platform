@@ -11,6 +11,7 @@ on:
       - 'modules/agent-context/door/**'
       - 'modules/agent-context/agent_context/**'
       - 'modules/agent-context/pipeline/**'
+      - 'modules/agent-context/personal_context/**'
       - 'modules/agent-context/tests/**'
       - 'modules/agent-context/pyproject.toml'
     branches:
@@ -25,6 +26,7 @@ on:
       - 'modules/agent-context/door/**'
       - 'modules/agent-context/agent_context/**'
       - 'modules/agent-context/pipeline/**'
+      - 'modules/agent-context/personal_context/**'
       - 'modules/agent-context/pyproject.toml'
     branches:
       - main
@@ -99,5 +101,5 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/modules/agent-context
         run: |
-          pytest tests/ -v --tb=short \
+          pytest tests/ personal_context/tests/ -v --tb=short \
             -m "not live_only and not graphrag and not workflow"
