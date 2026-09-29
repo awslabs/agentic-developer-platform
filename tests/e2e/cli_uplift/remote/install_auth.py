@@ -27,7 +27,12 @@ rerun after an interruption completes only what is missing.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import hmac
+import struct
+import time
 import json
 import os
 import shutil
@@ -139,6 +144,26 @@ def _install(config, evidence, home, env):
     return prefix
 
 
+def _login_input(config, env, credentials):
+    """Supply a fresh TOTP through protected CLI stdin, only for opted-in fixtures."""
+    seed = common.fixture_secret(config, env, "admin_totp_secret", default="")
+    supplied = dict(credentials)
+    if seed:
+        try:
+            key = base64.b32decode(seed.upper() + "=" * (-len(seed) % 8))
+            require(len(key) >= 10, "Invalid regression MFA fixture")
+            counter = struct.pack(">Q", int(time.time()) // 30)
+            digest = hmac.new(key, counter, hashlib.sha1).digest()
+            offset = digest[-1] & 15
+            code = (
+                struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+            ) % 1000000
+        except (AttributeError, TypeError, ValueError, binascii.Error):
+            raise common.RemoteError("Invalid regression MFA fixture") from None
+        supplied["software_token_mfa_code"] = f"{code:06d}"
+    return json.dumps(supplied)
+
+
 def _login(config, evidence, cli, env, home, *, challenges_required=True):
     """E02: the real challenge flow, plus the negatives that must fail."""
     evidence["stage"] = "login"
@@ -182,7 +207,8 @@ def _login(config, evidence, cli, env, home, *, challenges_required=True):
     if rotated:
         credentials["new_password"] = rotated
     payload = cli.json(
-        ["admin", "login", "--credentials-stdin"], stdin_text=json.dumps(credentials)
+        ["admin", "login", "--credentials-stdin"],
+        stdin_text=_login_input(config, env, credentials),
     )
     require(
         payload.get("status") == "verified",
@@ -195,12 +221,10 @@ def _login(config, evidence, cli, env, home, *, challenges_required=True):
     # The credential that works from here on. After a completed rotation the
     # fixture's original password is retired, so every later re-login in this
     # journey must use the new one or it authenticates as nobody.
-    effective = json.dumps(
-        {
-            "username": credentials["username"],
-            "password": rotated or original_password,
-        }
-    )
+    effective = {
+        "username": credentials["username"],
+        "password": rotated or original_password,
+    }
 
     # Challenge evidence. This has to come from the login exchange itself, not
     # from an after-the-fact query: `GET /auth/cli/admin-session` returns
@@ -230,7 +254,10 @@ def _login(config, evidence, cli, env, home, *, challenges_required=True):
         )
         # That attempt replaced the session on disk with nothing usable; the rest
         # of the run needs the post-challenge one back.
-        cli.json(["admin", "login", "--credentials-stdin"], stdin_text=effective)
+        cli.json(
+            ["admin", "login", "--credentials-stdin"],
+            stdin_text=_login_input(config, env, effective),
+        )
     login["challenge_completed"] = bool(login["challenges"]) and (
         not rotated or login.get("prior_password_retired", False)
     )
@@ -282,7 +309,10 @@ def _login(config, evidence, cli, env, home, *, challenges_required=True):
             "A non-admin identity was granted an admin session",
         )
         # Restore the admin session the rest of the run depends on.
-        cli.json(["admin", "login", "--credentials-stdin"], stdin_text=effective)
+        cli.json(
+            ["admin", "login", "--credentials-stdin"],
+            stdin_text=_login_input(config, env, effective),
+        )
     else:
         login["non_admin_denied"] = False
         login["non_admin_note"] = "no non-admin fixture identity was configured"

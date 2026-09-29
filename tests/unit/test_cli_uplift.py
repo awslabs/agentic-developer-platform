@@ -14091,3 +14091,37 @@ def test_preproduction_gateway_receipt_matches_target_and_rejects_dev():
     cfg["gateway_deployment"] = "dev"
     with pytest.raises(PortError, match="does not match evaluation target"):
         dp.binding(cfg)
+
+
+@pytest.mark.parametrize("timestamp,expected", [(59, "287082"), (1111111109, "081804")])
+def test_native_login_fixture_totp_uses_rfc6238_vectors(
+    tmp_path, monkeypatch, timestamp, expected
+):
+    module, common = shipped_script(tmp_path, "install_auth")
+    monkeypatch.setattr(
+        common, "fixture_secret", lambda *a, **k: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+    )
+    monkeypatch.setattr(module.time, "time", lambda: timestamp)
+    credentials = {"username": "fixture", "password": "protected"}
+    supplied = json.loads(module._login_input({}, {}, credentials))
+    assert supplied == {**credentials, "software_token_mfa_code": expected}
+    assert credentials == {"username": "fixture", "password": "protected"}
+    assert "admin_totp_secret" not in supplied
+
+
+def test_native_login_without_mfa_fixture_preserves_credentials(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "install_auth")
+    monkeypatch.setattr(common, "fixture_secret", lambda *a, **k: k["default"])
+    credentials = {"username": "fixture", "password": "protected"}
+    assert json.loads(module._login_input({}, {}, credentials)) == credentials
+
+
+def test_native_login_malformed_mfa_fixture_does_not_expose_seed(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "install_auth")
+    seed = "invalid-secret!"
+    monkeypatch.setattr(common, "fixture_secret", lambda *a, **k: seed)
+    with pytest.raises(
+        common.RemoteError, match="Invalid regression MFA fixture"
+    ) as error:
+        module._login_input({}, {}, {"username": "fixture", "password": "protected"})
+    assert seed not in str(error.value)

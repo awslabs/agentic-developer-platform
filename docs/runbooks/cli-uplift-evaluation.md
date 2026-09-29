@@ -511,3 +511,16 @@ After deployment and revision verification, use the existing workflow with
 `suites=nightly`. Missing optional fixtures remain visible as blocked cases;
 `login` is available as the existing narrower diagnostic. Infrastructure setup
 and offline guard success do not establish a live regression pass.
+
+### Native login fixtures with required MFA
+
+For an environment that requires software-token MFA, enroll the dedicated
+regression Cognito user and keep its Base32 TOTP seed in the existing Secrets
+Manager credential fixture as `admin_totp_secret`. The fixture must already have
+completed enrollment; the nightly run does not alter pool MFA policy or enroll
+users. The EC2 instance reads the optional seed through its existing fixture
+permission and supplies a fresh six-digit code to the served CLI through protected
+stdin. The seed and codes never belong in workflow inputs, bindings, or reports.
+Username/password-only fixtures remain supported when the target permits them.
+This qualifies native login and refresh under the configured MFA policy; it does
+not claim the separate E02 password-challenge/non-admin acceptance scenario.
