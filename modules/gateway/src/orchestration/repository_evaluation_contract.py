@@ -212,6 +212,7 @@ def harness_digest():
     for name in (
         "repository_evaluation_contract.py",
         "repository_evaluation_provider.py",
+        "deployment_workflow_provider.py",
         "repository_evaluation.py",
         "evaluation_acceptance.py",
         "evaluation_authority.py",

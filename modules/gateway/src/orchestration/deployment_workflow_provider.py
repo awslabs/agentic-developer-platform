@@ -106,7 +106,12 @@ class WorkflowProvider:
                     if len(body) + len(chunk) > max_bytes:
                         raise CycleBlockedError("deployment_provider_response_limit")
                     body.extend(chunk)
-                return httpx.Response(response.status_code, headers=response.headers, content=bytes(body), request=response.request)
+                # aiter_bytes has already decoded Content-Encoding. Reusing
+                # the wire headers would make Response decompress the body twice.
+                headers = httpx.Headers(response.headers)
+                headers.pop("content-encoding", None)
+                headers.pop("content-length", None)
+                return httpx.Response(response.status_code, headers=headers, content=bytes(body), request=response.request)
 
         finally:
             if owned:
