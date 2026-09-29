@@ -1480,18 +1480,50 @@ EOF
   fi
   terraform init -backend-config="$BACKEND_FILE" -input=false
   if [ "$UPDATE_MODE" = true ]; then
-    # Install the replacement intake grant before retiring its inline policy.
-    # A full plan can otherwise delete the old grant before IAM has attached
-    # the new one, interrupting live CLI intake during an upgrade.
-    if python3 - "$FACTORY_VAR_FILE" <<'PY'
+    # Terraform may load managed mode from terraform.tfvars as well as the
+    # recovered JSON. Ask Terraform for the effective value before the first
+    # pass. A targeted plan cannot exclude the old inline grant because its
+    # state address is moved to [0], so use two complete saved-plan gates:
+    # first attach the managed policy while retaining the inline grant, then
+    # retire the inline grant after the attachment is confirmed in state.
+    INTAKE_MANAGED=$(printf 'var.gateway_intake_managed_policy\n' |
+      terraform console -var-file="$FACTORY_VAR_FILE" -no-color | tail -n 1) \
+      || fail "Cannot resolve the effective agent-factory intake policy mode"
+    case "$INTAKE_MANAGED" in
+      true)
+        INTAKE_ROLE="adp-${ENVIRONMENT}-role-gateway-service"
+        INTAKE_POLICY="adp-${ENVIRONMENT}-policy-gateway-intake"
+        INTAKE_NAMES="$UPGRADE_RUN_DIR/gateway-intake-inline-names.json"
+        aws iam list-role-policies --role-name "$INTAKE_ROLE" --region "$AWS_REGION" \
+          --output json > "$INTAKE_NAMES" || fail "Cannot inspect gateway intake inline policy"
+        if python3 - "$INTAKE_NAMES" "$INTAKE_POLICY" <<'PY'
 import json, sys
-raise SystemExit(0 if json.load(open(sys.argv[1])).get("gateway_intake_managed_policy") is True else 1)
+raise SystemExit(0 if sys.argv[2] in json.load(open(sys.argv[1]))["PolicyNames"] else 1)
 PY
-    then
-      terraform_update_apply "agent-factory-intake-managed" "$FACTORY_VAR_FILE" \
-        '-target=aws_iam_policy.gateway_intake_access[0]' \
-        '-target=aws_iam_role_policy_attachment.gateway_intake_access[0]'
-    fi
+        then
+          INTAKE_LIVE="$UPGRADE_RUN_DIR/gateway-intake-inline-live.json"
+          INTAKE_CUTOVER="$UPGRADE_RUN_DIR/gateway-intake-cutover.tfvars.json"
+          aws iam get-role-policy --role-name "$INTAKE_ROLE" --policy-name "$INTAKE_POLICY" \
+            --region "$AWS_REGION" --output json > "$INTAKE_LIVE" \
+            || fail "Cannot preserve the live gateway intake inline policy"
+          python3 - "$INTAKE_LIVE" "$INTAKE_CUTOVER" <<'PY'
+import json, sys
+from pathlib import Path
+document = json.load(open(sys.argv[1]))["PolicyDocument"]
+if not isinstance(document, dict) or document.get("Version") != "2012-10-17":
+    raise SystemExit("Invalid live gateway intake inline policy")
+Path(sys.argv[2]).write_text(json.dumps({
+    "gateway_intake_cutover_keep_inline": True,
+    "gateway_intake_cutover_inline_policy_json": json.dumps(document),
+}))
+PY
+          terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE" \
+            -var-file="$INTAKE_CUTOVER"
+        fi
+        ;;
+      false) ;;
+      *) fail "Invalid effective agent-factory intake policy mode: $INTAKE_MANAGED" ;;
+    esac
     terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE"
   else
     terraform apply -var-file=terraform.tfvars -auto-approve

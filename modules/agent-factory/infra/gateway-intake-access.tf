@@ -126,10 +126,10 @@ moved {
 }
 
 resource "aws_iam_role_policy" "gateway_intake_access" {
-  count  = var.gateway_intake_managed_policy ? 0 : 1
+  count  = var.gateway_intake_managed_policy && !var.gateway_intake_cutover_keep_inline ? 0 : 1
   name   = "adp-${var.environment}-policy-gateway-intake"
   role   = "adp-${var.environment}-role-gateway-service"
-  policy = local.gateway_intake_policy
+  policy = var.gateway_intake_cutover_keep_inline ? var.gateway_intake_cutover_inline_policy_json : local.gateway_intake_policy
 }
 
 # Same permission document when the gateway has exhausted its inline quota.

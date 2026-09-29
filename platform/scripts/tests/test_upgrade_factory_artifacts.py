@@ -13,7 +13,7 @@ REGISTRY = "111122223333.dkr.ecr.us-east-1.amazonaws.com"
 
 
 class FactoryArtifactsTests(unittest.TestCase):
-    def run_stage(self, package_exit=0, chat_exit=0):
+    def run_stage(self, package_exit=0, chat_exit=0, intake_managed=True):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index(
             'if [ "$DEPLOY_FACTORY" = true ]; then\n  step "Step 10/11:'
@@ -27,7 +27,10 @@ bash() {
   if [[ "$1" == */build-agent-factory-lambdas.sh ]]; then return "$PACKAGE_EXIT"; fi
 }
 terraform_update_apply() { echo "plan $1" >> "$CALLS"; }
-terraform() { if [ "$1" = output ]; then echo value; fi; }
+terraform() {
+  if [ "$1" = console ]; then echo "$INTAKE_MANAGED_TEST"; fi
+  if [ "$1" = output ]; then echo value; fi
+}
 kubectl() {
   if [ "$1" = apply ]; then cat >/dev/null; fi
   if [ "$1" = get ]; then echo "$AGENT_IMAGE"; fi
@@ -40,7 +43,14 @@ run_codebuild() {
         with tempfile.TemporaryDirectory() as tmp:
             calls = Path(tmp) / "calls"
             binary = Path(tmp) / "aws"
-            binary.write_text('#!/bin/sh\nprintf "sha256:%s\\n" "' + "a" * 64 + '"\n')
+            binary.write_text(
+                '#!/bin/sh\n'
+                'if [ "$1 $2" = "iam list-role-policies" ]; then '
+                'echo \'{"PolicyNames":["adp-dev-policy-gateway-intake"]}\'; exit 0; fi\n'
+                'if [ "$1 $2" = "iam get-role-policy" ]; then '
+                'echo \'{"PolicyDocument":{"Version":"2012-10-17","Statement":[]}}\'; exit 0; fi\n'
+                'printf "sha256:%s\\n" "' + "a" * 64 + '"\n'
+            )
             binary.chmod(0o755)
             env = dict(
                 os.environ,
@@ -59,6 +69,7 @@ run_codebuild() {
                 CALLS=str(calls),
                 PACKAGE_EXIT=str(package_exit),
                 CHAT_EXIT=str(chat_exit),
+                INTAKE_MANAGED_TEST=str(intake_managed).lower(),
                 PATH=tmp + os.pathsep + os.environ["PATH"],
             )
             result = subprocess.run(
@@ -77,12 +88,18 @@ run_codebuild() {
             [
                 "script build-agent-factory-lambdas.sh image=",
                 "plan agent-factory",
+                "plan agent-factory",
                 f"build adp-dev-agent-gateway tag={SHA}",
                 f"build adp-dev-chat-agent tag={SHA}",
                 f"script deploy-chat-scaledjob.sh image={REGISTRY}/adp-chat-agent@{DIGEST}",
             ],
         )
         self.assertIn("tag=" + SHA, result.stdout)
+
+    def test_inline_mode_runs_one_factory_plan(self):
+        result, calls = self.run_stage(intake_managed=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls.count("plan agent-factory"), 1)
 
     def test_failed_lambda_package_stops_before_infrastructure(self):
         result, calls = self.run_stage(package_exit=43)

@@ -27,10 +27,7 @@ terraform_update_apply() {
   local VAR_FILE="$2"
   shift 2
   local CONTEXT_MODULE="$MODULE_NAME"
-  case "$MODULE_NAME" in
-    gateway-alb-wire|gateway-final|gateway-worker-authority) CONTEXT_MODULE=gateway ;;
-    agent-factory-intake-managed) CONTEXT_MODULE=agent-factory ;;
-  esac
+  case "$MODULE_NAME" in gateway-alb-wire|gateway-final|gateway-worker-authority) CONTEXT_MODULE=gateway ;; esac
   local CONTEXT_ARGS=()
   if [ -n "${UPGRADE_RUN_DIR:-}" ] && [ -f "$UPGRADE_RUN_DIR/$CONTEXT_MODULE.tfvars.json" ]; then
     python3 - "$UPGRADE_RUN_DIR/integration-before.json" "${ACCOUNT_ID:-}" <<'PY' || fail "Upgrade context belongs to a different account"

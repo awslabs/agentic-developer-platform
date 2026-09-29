@@ -350,7 +350,9 @@ before/after values:
   actual versions and values.
 - The agent-factory migration of gateway intake from an inline IAM grant to an
   already attached managed policy with the same or greater scoped permissions.
-  The update installs the managed policy first. The same gate accepts deletion
+  The update uses two complete saved-plan passes: the first retains the inline
+  grant while attaching the managed policy, and the second retires the inline
+  grant. The same gate accepts deletion
   of only the exact retired runner EKS edit association and inline gateway,
   Bedrock logging and security scan grants removed by the automation role
   split. Changed identities, policy documents or scopes still stop for review.

@@ -156,6 +156,18 @@ variable "gateway_intake_managed_policy" {
   default     = false
 }
 
+variable "gateway_intake_cutover_keep_inline" {
+  description = "Upgrade-only first pass: retain the existing inline grant until its managed replacement is attached."
+  type        = bool
+  default     = false
+}
+
+variable "gateway_intake_cutover_inline_policy_json" {
+  description = "Upgrade-only first pass: exact live inline policy document to preserve while attaching its replacement."
+  type        = string
+  default     = ""
+}
+
 variable "arc_controller_image" {
   description = "Digest-pinned maintained ARC controller image override. Empty selects the verified security candidate in this account's adp-arc-controller repository; publish it before applying Helm."
   type        = string
