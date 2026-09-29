@@ -7,6 +7,13 @@ on:
       - 'modules/agent-context/terraform/**'
       - 'environments/dev/modules/agent-context.tfvars'
       - 'environments/dev/modules/agent-context-backend.tfvars'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

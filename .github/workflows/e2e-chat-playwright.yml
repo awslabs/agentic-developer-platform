@@ -9,6 +9,13 @@ on:
       - 'modules/agent-factory/lambdas/**'
       - 'tests/e2e/chat/**'
       - '.github/workflows/e2e-chat-playwright.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   schedule:
     # Nightly at 03:00 UTC
     - cron: '0 3 * * *'

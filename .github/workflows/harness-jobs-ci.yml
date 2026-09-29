@@ -71,6 +71,13 @@ on:
       # a renamed permission lands with nothing noticing.
       - 'contracts/hitl-ticket/v1/models.py'
       - 'modules/domain-apps/superplane/auth/superplane_auth/policy.py'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   push:
     branches: [main]
     paths:
@@ -82,6 +89,13 @@ on:
       - 'modules/domain-apps/superplane/src/superplane-api/app/services/provisioning.py'
       - 'contracts/hitl-ticket/v1/models.py'
       - 'modules/domain-apps/superplane/auth/superplane_auth/policy.py'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
 
 # No `id-token` and no AWS credential step anywhere in this file: lint and offline

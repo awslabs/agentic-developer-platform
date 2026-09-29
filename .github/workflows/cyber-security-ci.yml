@@ -7,6 +7,13 @@ on:
       - modules/gateway/tests/agentauth/test_cyber_jobs.py
       - .github/workflows/cyber-security-ci.yml
       - .github/actions/codebuild-run/**
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
 concurrency:
   group: cyber-security-${{ github.ref }}

@@ -5,6 +5,13 @@ on:
     paths:
       - '.github/workflows/security-s14-continue-ecr.yml'
       - 'scripts/security/s14/**'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 concurrency:

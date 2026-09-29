@@ -16,6 +16,13 @@ on:
       # able to say so.
       - '.github/workflows/agent-factory-infra-plan.yml'
       - 'platform/scripts/build-agent-factory-lambdas.sh'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

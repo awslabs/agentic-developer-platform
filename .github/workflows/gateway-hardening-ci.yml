@@ -16,6 +16,13 @@ on:
       - 'modules/gateway/scripts/verify-restricted-admission.sh'
       - 'modules/gateway/tests/infra/test_checkov_suppression_scope.py'
       - 'modules/gateway/tests/infra/test_gateway_container_hardening.py'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

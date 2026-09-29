@@ -17,6 +17,13 @@ on:
       - 'modules/agent-factory/gateway/**'
       - 'modules/agent-factory/rules/personas/**'
       - '.github/workflows/agent-gateway-build-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   push:
     branches: [main]
     paths:
@@ -33,7 +40,13 @@ on:
       - 'modules/agent-factory/gateway/**'
       - 'modules/agent-factory/rules/personas/**'
       - '.github/workflows/agent-gateway-build-tests.yml'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 

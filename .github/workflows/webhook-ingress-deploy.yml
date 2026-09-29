@@ -10,6 +10,13 @@ on:
       - '.github/workflows/webhook-ingress-deploy.yml'
       - '.github/scripts/detect-webhook-deploy-changes.sh'
       - '.github/deployment-holds/webhook-infra.md'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:

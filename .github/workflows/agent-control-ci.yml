@@ -245,6 +245,13 @@ on:
       - 'docs/runbooks/agent-control-evaluation.md'
       # This workflow
       - '.github/workflows/agent-control-ci.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

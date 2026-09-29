@@ -52,6 +52,13 @@ on:
       - 'modules/agent-factory/rules/phases/construction/code-generation.md'
       # This workflow
       - '.github/workflows/provenance-contract-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

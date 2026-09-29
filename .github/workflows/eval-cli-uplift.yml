@@ -130,6 +130,13 @@ on:
       - 'docs/evaluations/cli-uplift/orchestrator-trust-policy.json'
       - 'docs/runbooks/cli-uplift-evaluation.md'
       - '.github/workflows/eval-cli-uplift.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

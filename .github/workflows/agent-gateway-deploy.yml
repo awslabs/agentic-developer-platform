@@ -14,6 +14,13 @@ on:
     paths:
       - 'modules/agent-factory/gateway/lambdas/**'
       - '.github/workflows/agent-gateway-deploy.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:

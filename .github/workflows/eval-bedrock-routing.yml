@@ -73,6 +73,13 @@ on:
       - 'platform/scripts/bedrock-routing-validate.sh'
       - 'platform/scripts/validate-bedrock-routing-shadow.sh'
       - '.github/workflows/eval-bedrock-routing.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

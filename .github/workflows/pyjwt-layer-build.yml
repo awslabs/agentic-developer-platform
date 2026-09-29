@@ -10,6 +10,13 @@ on:
       - 'modules/gateway/lambda/layers/pyjwt/**'
       - 'codebuild/bs-pyjwt-layer.yml'
       - '.github/workflows/pyjwt-layer-build.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:

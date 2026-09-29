@@ -46,6 +46,13 @@ on:
       - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'modules/agent-factory/infra/modules/lambda-gateway/**'
       - '.github/workflows/platform-upgrade-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   push:
     branches: [main]
     paths:
@@ -92,7 +99,13 @@ on:
       - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'modules/agent-factory/infra/modules/lambda-gateway/**'
       - '.github/workflows/platform-upgrade-tests.yml'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 

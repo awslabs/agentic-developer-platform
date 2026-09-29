@@ -28,6 +28,13 @@ on:
       - '.github/workflows/agent-worker-image.yml'
       - 'modules/gateway/src/agentauth/task_runtime_routes.py'
       - 'modules/gateway/src/agentauth/task_model.py'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   push:
     paths:
       - 'modules/agent-factory/agent/**'
@@ -42,6 +49,13 @@ on:
       - 'modules/domain-apps/*/agent/**'
       - 'codebuild/bs-agent-runtime.yml'
       - '.github/workflows/agent-worker-image.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:

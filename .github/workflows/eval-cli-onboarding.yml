@@ -67,6 +67,13 @@ on:
       # the regression guard for every change to the shared code.
       - 'platform/evals/lib/**'
       - '.github/workflows/eval-cli-onboarding.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

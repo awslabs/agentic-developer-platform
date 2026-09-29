@@ -52,6 +52,13 @@ on:
       # so it must be able to trigger the lane that shows the plan.
       - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       - '.github/workflows/superplane-infra-plan.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
 
 concurrency:

@@ -10,6 +10,13 @@ on:
       - 'modules/agent-factory/agent-worker-image/lib/task_run_client.py'
       - '.github/workflows/shared-agentcore-tools-ci.yml'
       - '.github/workflows/shared-agentcore-tools-deploy.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
 permissions:
   contents: read

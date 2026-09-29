@@ -79,6 +79,13 @@ on:
       - 'modules/agent-factory/webhook-ingress/lambda/common/tests/test_persona_catalogue_parity.py'
       - 'modules/agent-factory/agent-worker-image/stage-personas.sh'
       - 'docs/agent-catalogue.md'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   workflow_dispatch:
     inputs:
       controller_only:

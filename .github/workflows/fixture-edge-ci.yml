@@ -84,6 +84,13 @@ on:
       # makes a rename there run that pin in the same PR.
       - 'platform/scripts/agent-control-eval.py'
       - '.github/workflows/fixture-edge-ci.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 

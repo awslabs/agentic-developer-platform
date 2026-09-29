@@ -20,6 +20,13 @@ on:
       - 'codebuild/bs-chat-agent.yml'
       - 'platform/scripts/zip-source.sh'
       - '.github/workflows/chat-agent-deploy.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:

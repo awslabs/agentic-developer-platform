@@ -20,7 +20,13 @@ on:
       - 'modules/agent-factory/webhook-ingress/lambda/github/**'
       - 'modules/agent-factory/webhook-ingress/lambda/common/**'
       - '.github/workflows/agent-reporting-tests.yml'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 

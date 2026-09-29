@@ -15,6 +15,13 @@ on:
       - 'modules/agent-factory/agent-worker-image/Dockerfile'
       - 'modules/agent-factory/task-agents/investigator/**'
       - '.github/workflows/codex-harness-tests.yml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
   push:
     branches: [main]
     paths:
@@ -30,7 +37,13 @@ on:
       - 'modules/agent-factory/agent-worker-image/Dockerfile'
       - 'modules/agent-factory/task-agents/investigator/**'
       - '.github/workflows/codex-harness-tests.yml'
-
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
 permissions:
   contents: read
 

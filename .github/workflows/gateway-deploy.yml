@@ -31,6 +31,13 @@ on:
       - '.github/workflows/pricing-finalize.yml'
       - 'codebuild/bs-gateway-build.yml'
       - 'modules/gateway/pyproject.toml'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   workflow_dispatch:

@@ -105,6 +105,13 @@ on:
       - 'platform/scripts/zip-source.sh'
       - 'platform/scripts/publish-shared-image.sh'
       - 'platform/scripts/publish-local-image.sh'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
   push:
@@ -142,6 +149,13 @@ on:
       - 'platform/scripts/zip-source.sh'
       - 'platform/scripts/publish-shared-image.sh'
       - 'platform/scripts/publish-local-image.sh'
+      # Documentation-only changes do not start this workflow.
+      - '!docs/**'
+      - '!**/docs/**'
+      - '!**/README*'
+      - '!**/CHANGELOG*'
+      - '!**/CONTRIBUTING*'
+      - '!**/*.rst'
     branches:
       - main
 
