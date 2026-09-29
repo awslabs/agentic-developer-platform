@@ -289,6 +289,7 @@ export interface WaveMetadata {
 }
 
 export interface FlowGraph {
+  execution_window?: ExecutionWindow | null;
   wave_metadata?: WaveMetadata[];
   epic_metadata?: EpicMetadata[];
   execution_paused?: boolean;
@@ -792,4 +793,23 @@ export interface EvaluationSpecification {
   }>
   max_age_seconds: number
   max_duration_seconds: number
+}
+
+
+export interface WindowRenewalRequest {
+  expected_plan_version: number;
+  expected_plan_hash: string;
+  expires_at: string;
+  max_wall_clock_seconds: number | null;
+  resume_expired: boolean;
+  reason: string;
+}
+
+export interface ExecutionWindow {
+  status: 'active' | 'expired' | 'complete' | 'unavailable';
+  deadline_at?: string;
+  observed_at?: string;
+  reason?: string;
+  renewal_unavailable?: string;
+  renewal_request?: WindowRenewalRequest;
 }

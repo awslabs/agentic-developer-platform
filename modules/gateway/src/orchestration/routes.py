@@ -1429,6 +1429,7 @@ class FlowGraphResponse(BaseModel):
     # $0.00" describes a policy that authorizes nothing, which is the opposite of
     # what an unpolicied flow does.
     execution_policy: PolicySummary | None = None
+    execution_window: dict | None = None
 
 
 @router.get("/flows/{flow_id}", response_model=FlowGraphResponse)
@@ -1472,6 +1473,9 @@ async def get_flow_graph(
     # the version currently in force, which is what makes an amendment show up here
     # without a superseded version ever being shown as current.
     policy_inputs = await load_in_force_policy(db, org_id=current_user.org_id, flow_id=flow.id)
+    from .window_view import execution_window_view
+
+    window_view = await execution_window_view(db, flow=flow, nodes=nodes, inputs=policy_inputs)
     display_metadata = await repo.display_metadata_for_flows(org_id=current_user.org_id, flow_ids=[flow.id])
     aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
     display_states = await repo.node_display_states(org_id=current_user.org_id, flow_id=flow.id)
@@ -1683,6 +1687,7 @@ async def get_flow_graph(
         edges=[GraphEdgeResponse(from_node_id=edge.from_node_id, to_node_id=edge.to_node_id) for edge in edges],
         cost=_flow_cost_response(flow.id, aggregate),
         execution_policy=summarize_policy(policy_inputs.policy) if policy_inputs.policy is not None else None,
+        execution_window=window_view,
     )
 
 
