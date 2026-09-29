@@ -65,6 +65,7 @@ on:
       - 'modules/gateway/k8s/configmap.yaml'
       - '.github/workflows/gateway-deploy.yml'
       # In-pod control listener (TypeScript)
+      - 'modules/agent-factory/agent/src/claude-progress*'
       - 'modules/agent-factory/agent/src/explanation-events.ts'
       - 'modules/agent-factory/agent/src/explanation-events.test.ts'
       - 'modules/gateway/src/activity/explanation_stream.py'
@@ -817,7 +818,7 @@ jobs:
         # subprocess and spends nothing. The `.integration.ts` file itself still cannot
         # be collected by jest, which is what keeps the live experiments out of CI.
         run: |
-          npx jest src/explanation-events.test.ts src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
+          npx jest src/claude-progress.test.ts src/explanation-events.test.ts src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
             src/sigv4-proxy.identity.test.ts src/beads-s3-config.test.ts \
             src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \

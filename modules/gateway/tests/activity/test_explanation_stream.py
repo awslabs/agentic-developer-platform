@@ -208,3 +208,19 @@ async def test_stalled_browser_send_times_out_and_releases(monkeypatch):
         await asyncio.wait_for(response.stream_response(stalled), 6)
     assert not stream._connections
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_shared_progress_metadata_is_forwarded_without_extra_fields(monkeypatch):
+    progress = dict(id="tool-1", category="tool", state="running", started_at=datetime.now(UTC).isoformat(), raw_output="PRIVATE")
+
+    async def source():
+        yield event(1, payload={"text": "Running tests", "progress": progress})
+
+    control, session, client = setup(monkeypatch, source)
+    response = await stream.open_explanation_stream(control, "run", session=session, reauthorize=AsyncMock())
+    chunks = b"".join([chunk async for chunk in response.body_iterator])
+    assert b'"id": "tool-1"' in chunks
+    assert b'"started_at"' in chunks
+    assert b"PRIVATE" not in chunks
+    await client.aclose()

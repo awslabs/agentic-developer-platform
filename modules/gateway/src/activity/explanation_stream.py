@@ -200,6 +200,22 @@ async def open_explanation_stream(control, run_id: str, *, session, reauthorize,
                             safe = {k: value[k] for k in ("version", "invocation_id", "generation", "sequence", "timestamp")}
                             safe["timestamp"] = timestamp.isoformat()
                             safe.update(kind=kind, payload={"text": text.replace(target.token, "[redacted]")} if kind == "explanation" else {})
+                            progress = value.get("payload", {}).get("progress")
+                            if kind == "explanation" and progress is not None:
+                                if (
+                                    not isinstance(progress, dict)
+                                    or not isinstance(progress.get("id"), str)
+                                    or not 0 < len(progress["id"]) <= 256
+                                    or progress.get("category") not in {"message", "tool", "plan"}
+                                    or progress.get("state") not in {"running", "completed", "failed"}
+                                    or not isinstance(progress.get("started_at"), str)
+                                    or len(progress["started_at"]) > 64
+                                ):
+                                    raise ValueError("invalid progress")
+                                started = datetime.fromisoformat(progress["started_at"].replace("Z", "+00:00"))
+                                if started.tzinfo is None:
+                                    raise ValueError("invalid progress timestamp")
+                                safe["payload"]["progress"] = {k: progress[k] for k in ("id", "category", "state", "started_at")}
                             yield frame(kind, safe, f"{run_id}:{target.generation}:{value['sequence']}")
                             if kind == "terminal":
                                 return

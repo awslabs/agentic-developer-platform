@@ -2,6 +2,13 @@
 import { truncateUtf8 } from './reporting-text';
 import { containsSecret } from './experience-save-hook';
 
+/** Provider-neutral identity for replaceable public messages and tool lifecycle. */
+export interface ProgressDetail {
+  id: string;
+  category: 'message' | 'tool' | 'plan';
+  state: 'running' | 'completed' | 'failed';
+  started_at?: string;
+}
 export interface ExplanationEvent {
   version: 1;
   invocation_id: string;
@@ -9,7 +16,7 @@ export interface ExplanationEvent {
   sequence: number;
   timestamp: string;
   kind: 'explanation' | 'terminal';
-  payload: { text?: string };
+  payload: { text?: string; progress?: ProgressDetail };
 }
 export const EVENT_BYTES = 16 * 1024;
 export const HISTORY_BYTES = 256 * 1024;
@@ -23,16 +30,27 @@ export class ExplanationEvents {
   private bytes = 0;
   private sequence = 0;
   private ended = false;
+  private progressItems = new Map<string, { text: string; state: string; time: number; started: string }>();
   private subscribers = new Set<(event: ExplanationEvent) => void>();
   constructor(readonly invocationId: string, readonly generation: number) {}
   cursor(sequence: number): string { return `${this.invocationId}:${this.generation}:${sequence}`; }
-  publish(text: string): void {
+  publish(text: string, progress?: ProgressDetail): void {
     if (!text.trim() || this.ended) return;
     if (containsSecret(text) || Object.entries(process.env).some(([key, value]) =>
       /TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY/.test(key) && value && value.length >= 8 && text.includes(value))) {
       text = '[Explanation omitted because it contains credential-like content.]';
     }
-    this.append('explanation', { text: truncateUtf8(text, EVENT_BYTES / 2, '\n[Live preview truncated; see final transcript.]') });
+    if (progress) {
+      const previous = this.progressItems.get(progress.id);
+      const now = Date.now();
+      if (previous && previous.state === progress.state && (previous.text === text ||
+          (progress.category !== 'tool' && progress.state === 'running' && now - previous.time < 250))) return;
+      const started = previous?.started ?? new Date(now).toISOString();
+      this.progressItems.set(progress.id, { text, state: progress.state, time: now, started });
+      if (this.progressItems.size > HISTORY_EVENTS) this.progressItems.delete(this.progressItems.keys().next().value!);
+      progress = { ...progress, started_at: started };
+    }
+    this.append('explanation', { text: truncateUtf8(text, EVENT_BYTES / 2, '\n[Live preview truncated; see final transcript.]'), ...(progress ? { progress: { id: progress.id.slice(0, 256), category: progress.category, state: progress.state, started_at: progress.started_at } } : {}) });
   }
   finish(): void {
     if (this.ended) return;
@@ -43,7 +61,7 @@ export class ExplanationEvents {
     const event: ExplanationEvent = { version: 1, invocation_id: this.invocationId,
       generation: this.generation, sequence: ++this.sequence, timestamp: new Date().toISOString(), kind, payload };
     if (Buffer.byteLength(JSON.stringify(event)) > EVENT_BYTES && payload.text) {
-      event.payload = { text: truncateUtf8(payload.text, 2000, '\n[Live preview truncated; see final transcript.]') };
+      event.payload = { ...payload, text: truncateUtf8(payload.text, 2000, '\n[Live preview truncated; see final transcript.]') };
     }
     const bytes = Buffer.byteLength(JSON.stringify(event));
     this.history.push({ event, bytes }); this.bytes += bytes;

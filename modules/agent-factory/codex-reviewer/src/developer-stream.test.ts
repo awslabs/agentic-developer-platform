@@ -59,3 +59,32 @@ test('operator cancellation never retries the Codex assignment', async () => {
   } }, 'task', { signal: controller.signal }, reporter), /operator abort/);
   assert.equal(starts, 1);
 });
+
+test('shared progress receives partial messages, searches and plan updates with stable identities', () => {
+  const { reporter } = recorder();
+  const progress: unknown[] = [];
+  reporter.progress = (text, detail) => progress.push({ text, ...detail });
+  publishDeveloperEvent({ type: 'item.updated', item: { id: 'm', type: 'agent_message', text: 'Checking tests' } }, reporter);
+  publishDeveloperEvent({ type: 'item.completed', item: { id: 'm', type: 'agent_message', text: 'Checking tests now.' } }, reporter);
+  publishDeveloperEvent({ type: 'item.started', item: { id: 's', type: 'web_search', query: 'SDK docs' } }, reporter);
+  publishDeveloperEvent({ type: 'item.completed', item: { id: 's', type: 'web_search', query: 'SDK docs' } }, reporter);
+  publishDeveloperEvent({ type: 'item.updated', item: { id: 'p', type: 'todo_list', items: [{ text: 'Run tests', completed: true }] } }, reporter);
+  assert.deepEqual(progress, [
+    { text: 'Checking tests', id: 'm', category: 'message', state: 'running' },
+    { text: 'Checking tests now.', id: 'm', category: 'message', state: 'completed' },
+    { text: 'Searching the web: SDK docs', id: 's', category: 'tool', state: 'running' },
+    { text: 'Searched the web: SDK docs', id: 's', category: 'tool', state: 'completed' },
+    { text: '✓ Run tests', id: 'p', category: 'plan', state: 'running' },
+  ]);
+});
+
+test('reused SDK item IDs in later turns cannot overwrite an earlier turn in the UI', async () => {
+  const { scopedProgress } = await import('./developer-stream.js');
+  const { reporter } = recorder();
+  const ids: string[] = [];
+  reporter.progress = (_text, detail) => ids.push(detail.id);
+  const first = scopedProgress(reporter), second = scopedProgress(reporter);
+  const event: ThreadEvent = { type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'Done' } };
+  publishDeveloperEvent(event, first); publishDeveloperEvent(event, first); publishDeveloperEvent(event, second);
+  assert.equal(ids[0], ids[1]); assert.notEqual(ids[0], ids[2]);
+});

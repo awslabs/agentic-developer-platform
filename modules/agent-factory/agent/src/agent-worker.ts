@@ -23,6 +23,7 @@ import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './l
 import { loadHumanCommunication } from './human-communication';
 import { assistantText } from './reporting-text';
 import { captureRuntimeAppAuth, configureRuntimeGitHubAdapters, initializeRuntimeGitHubToken, spawnSdkWithoutAppKey } from './github-runtime-auth';
+import { ClaudeProgress } from './claude-progress';
 import { resilientQuery } from './utils/resilientQuery';
 import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
@@ -1621,12 +1622,14 @@ Now, complete the assigned task.`;
       const control = activeControlRuntime;
       // Labeled loop so we can break out of the `for await` from inside the
       // switch statement.  Without the label, `break` only exits the switch.
+      const liveProgress = activeExplanationEvents ? new ClaudeProgress(activeExplanationEvents) : undefined;
       queryLoop:                          // eslint-disable-line no-labels
       for await (const message of resilientQuery({
         queryParams: {
           prompt,
           options: {
             spawnClaudeCodeProcess: spawnSdkWithoutAppKey,
+            includePartialMessages: true,
             model: MODEL,
             cwd: CWD,
             allowedTools: [
@@ -1713,6 +1716,7 @@ Now, complete the assigned task.`;
       })) {
         lastActivityTime = Date.now();
 
+        liveProgress?.observe(message);
         switch (message.type) {
           case 'assistant': {
             turnCount++;
@@ -1729,7 +1733,6 @@ Now, complete the assigned task.`;
                 codexCostUsd: computeCodexCostUsd(codexUsage.inputTokens, codexUsage.outputTokens),
               });
             }
-            activeExplanationEvents?.publish(assistantText(assistantMsg.message.content));
             // Publish intentional explanations as well as technical activity.
             if (activeLiveComment) {
               activeLiveComment.setExplanation(assistantText(assistantMsg.message.content));

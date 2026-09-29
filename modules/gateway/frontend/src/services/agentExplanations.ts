@@ -3,7 +3,7 @@ import { getAccessToken } from './auth';
 
 export interface LiveExplanation {
   version: 1; invocation_id: string; generation: number; sequence: number;
-  timestamp: string; kind: 'explanation' | 'terminal'; payload: { text?: string };
+  timestamp: string; kind: 'explanation' | 'terminal'; payload: { text?: string; progress?: { id: string; category: 'message' | 'tool' | 'plan'; state: 'running' | 'completed' | 'failed'; started_at: string } };
 }
 export interface StreamUpdate { kind: string; cursor?: string; event?: LiveExplanation }
 export class FeedError extends Error {
@@ -48,6 +48,10 @@ export async function readExplanations(invocationId: string, cursor: string | un
               !Number.isSafeInteger(event.sequence) || event.sequence < 1 || typeof event.timestamp !== 'string' ||
               id !== `${invocationId}:${event.generation}:${event.sequence}` ||
               (kind === 'explanation' && typeof event.payload?.text !== 'string')) throw new FeedError(503);
+            const progress = event.payload?.progress;
+            if (progress !== undefined && (typeof progress?.id !== 'string' || !progress.id || progress.id.length > 256 ||
+              !['message', 'tool', 'plan'].includes(progress.category) || !['running', 'completed', 'failed'].includes(progress.state) ||
+              typeof progress.started_at !== 'string' || !Number.isFinite(Date.parse(progress.started_at)))) throw new FeedError(503);
             update({ kind, cursor: id, event });
             if (kind === 'terminal') return;
           } else if (['heartbeat', 'reset', 'unavailable', 'finished'].includes(kind)) update({ kind });

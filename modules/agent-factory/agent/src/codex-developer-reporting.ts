@@ -1,4 +1,5 @@
 /** Native Codex events feed the same user-facing sinks as agent-worker.ts. */
+import type { ProgressDetail } from './explanation-events';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { LiveStatusComment, createWorkerStages } from './github-comments';
 import { CheckRunStreamer } from './components/checkRunStreamer';
@@ -12,6 +13,7 @@ export interface DeveloperReportingContext { repository: string; issue: number; 
 export interface DeveloperReporter {
   control?: { signal: AbortSignal; socket: string; operation<T>(work: () => Promise<T>): Promise<T> };
   observeEvent?(event: { type: string; item?: { id: string; type: string } }): void;
+  progress?(text: string, detail: ProgressDetail): void;
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;
@@ -103,6 +105,15 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
       } } } : {}),
     observeEvent(event) { adapter?.observeSdkEvent(event); },
     explanation,
+    progress(text, detail) {
+      text = publicDeveloperText(text);
+      control.events?.publish(text, detail);
+      if (detail.state !== 'running' || detail.category === 'tool') {
+        live.appendActivity(text);
+        check.onTurn({ turn: ++sequence, content: [{ type: 'text', text }] });
+        log('INFO', text);
+      }
+    },
     activity(text) {
       text = publicDeveloperText(text);
       live.appendActivity(text);

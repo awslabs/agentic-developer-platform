@@ -1,5 +1,5 @@
 import { act, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LiveExplanations } from '@/components/LiveExplanations';
 import { readExplanations, type StreamUpdate } from '@/services/agentExplanations';
 const flags = vi.hoisted(() => ({ data: { agent_explanations: true, agent_control: false }, isPending: false, isError: false }));
@@ -12,6 +12,7 @@ function explanation(sequence: number, text: string): StreamUpdate {
   return { kind: 'explanation', cursor: `run:1:${sequence}`, event: { version: 1, invocation_id: 'run', generation: 1,
     sequence, timestamp: '2026-09-24T10:00:00Z', kind: 'explanation', payload: { text } } };
 }
+afterEach(() => vi.useRealTimers());
 beforeEach(() => {
   vi.clearAllMocks(); flags.data.agent_explanations = true; flags.isError = false; flags.isPending = false;
   vi.mocked(readExplanations).mockImplementation((_id, _cursor, abort, callback) => {
@@ -60,3 +61,24 @@ describe('live explanations', () => {
     expect(screen.getByText(/final transcript available/)).toBeInTheDocument();
   });
 });
+
+ it('replaces partial messages and tracks concurrent tools until each completes', () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-24T10:00:00Z'));
+    render(<LiveExplanations invocationId="run" isOpen terminal={false} />);
+    const progress = (seq: number, id: string, text: string, category: 'tool' | 'message', state: 'running' | 'completed') => {
+      const update = explanation(seq, text);
+      update.event!.payload.progress = { id, category, state, started_at: '2026-09-24T10:00:00Z' };
+      send(update);
+    };
+    act(() => { progress(1, 'm', 'Partial message', 'message', 'running'); progress(2, 'm', 'Complete message', 'message', 'completed');
+      progress(3, 'a', 'Running tests', 'tool', 'running'); progress(4, 'b', 'Reading files', 'tool', 'running'); });
+    expect(screen.queryByText('Partial message')).not.toBeInTheDocument();
+    expect(screen.getByText('Complete message')).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(3000));
+    expect(screen.getAllByText('Running · 3s elapsed')).toHaveLength(2);
+    act(() => progress(5, 'a', 'Tests passed', 'tool', 'completed'));
+    expect(screen.getAllByText('Running · 3s elapsed')).toHaveLength(1);
+    expect(screen.queryByText('Running tests')).not.toBeInTheDocument();
+    act(() => send({ kind: 'terminal', event: { ...explanation(6, '').event!, kind: 'terminal' } }));
+    expect(screen.queryByText(/elapsed/)).not.toBeInTheDocument();
+  });
