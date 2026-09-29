@@ -235,5 +235,33 @@
         "image_tag": "33ccdfea8d78e5eb79355fde1ae6c4c90ab6d703"
       }
     }
+  },
+  "pre-production": {
+    "gateway_url": "https://dw4gomrsecmzn.cloudfront.net/api",
+    "account": "615296308642",
+    "region": "us-east-1",
+    "cluster": "adp-dev-eks-cluster",
+    "cluster_arn": "arn:aws:eks:us-east-1:615296308642:cluster/adp-dev-eks-cluster",
+    "namespace": "adp-gateway",
+    "deployment": "bedrockgateway",
+    "service": "bedrockgateway",
+    "container": "bedrockgateway",
+    "selector": {
+      "app": "bedrockgateway"
+    },
+    "image_repository": "615296308642.dkr.ecr.us-east-1.amazonaws.com/adp-gateway",
+    "images": {
+      "sha256:8cb408937b33fba79e88236ef46a1dd034a6611acf804085c0fdaa10be7a1997": {
+        "source_sha": "34f5745916da346aed3ff60718ec3cc0af127b48",
+        "build_id": "adp-dev-gateway-build:27b35380-c40f-445b-a59f-b4cdfee39cd5",
+        "source_bucket": "adp-terraform-state-615296308642",
+        "source_key": "codebuild/src/adp-dev-gateway-build/34f5745916da346aed3ff60718ec3cc0af127b48-1790632482-1350956.zip",
+        "source_archive_sha256": "6b14605e830c216a2cf88096801d3589943a7b5d7ad49d25d44b374c7c9a60f2",
+        "build_status": "SUCCEEDED",
+        "build_log_group": "/aws/codebuild/adp-dev-gateway-build",
+        "build_log_stream": "27b35380-c40f-445b-a59f-b4cdfee39cd5",
+        "image_tag": "34f5745916da346aed3ff60718ec3cc0af127b48"
+      }
+    }
   }
 }

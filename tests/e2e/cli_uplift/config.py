@@ -195,7 +195,8 @@ def validate(config):
 
     if result.get("gateway_deployment") is not None:
         require(
-            result["gateway_deployment"] == "dev", "Unknown gateway_deployment binding"
+            result["gateway_deployment"] in ("dev", "pre-production"),
+            "Unknown gateway_deployment binding",
         )
     url = str(result["gateway_url"]).rstrip("/")
     require(url.startswith("https://"), "gateway_url must be HTTPS")

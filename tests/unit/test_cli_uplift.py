@@ -14069,3 +14069,25 @@ def test_preproduction_bindings_keep_evaluation_and_cleanup_in_target_account():
         )
         assert 'config.from_environment(os.environ)["platform_account"]' in guard["run"]
         assert "config.example.json" not in guard["run"]
+
+
+def test_preproduction_gateway_receipt_matches_target_and_rejects_dev():
+    cfg = config.from_environment(
+        {
+            "CLI_UPLIFT_EVAL_BINDINGS": "tests/e2e/cli_uplift/bindings.pre-production.json",
+            "CLI_UPLIFT_EVAL_EXPECTED_REVISION": "34f5745916da346aed3ff60718ec3cc0af127b48",
+        }
+    )
+    assert cfg["gateway_deployment"] == "pre-production"
+    selected = dp.binding(config.validate(cfg))
+    assert selected["account"] == "615296308642"
+    assert selected["cluster_arn"].split(":")[4] == cfg["platform_account"]
+    assert selected["image_repository"].startswith(cfg["platform_account"] + ".")
+    build = selected["images"][
+        "sha256:8cb408937b33fba79e88236ef46a1dd034a6611acf804085c0fdaa10be7a1997"
+    ]
+    assert build["source_sha"] == cfg["expected_revision"]
+    assert build["build_status"] == "SUCCEEDED"
+    cfg["gateway_deployment"] = "dev"
+    with pytest.raises(PortError, match="does not match evaluation target"):
+        dp.binding(cfg)
