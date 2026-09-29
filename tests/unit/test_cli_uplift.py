@@ -10603,7 +10603,10 @@ def test_github_maintenance_nightly_is_read_and_preview_only(tmp_path):
         {"status": "dry_run"},
         {"status": "dry_run"},
     ]
-    cli.run.return_value = (1, {"status": "failed"})
+    cli.run.side_effect = [
+        (0, {"status": "configured", "detail": {"registered": True}}),
+        (1, {"status": "failed"}),
+    ]
     evidence = {}
     module.github_maintenance(cli, evidence)
     for call in cli.method_calls:
@@ -11200,8 +11203,10 @@ def test_knowledge_nightly_does_not_hide_unexpected_errors(tmp_path, status):
 def test_recovery_nightly_reads_and_refuses_without_mutation(tmp_path):
     module, _ = shipped_script(tmp_path, "story_reads")
     cli = Mock()
-    cli.json.return_value = {"status": "ok", "detail": {"flows": []}}
-    cli.run.return_value = (1, {"status": "failed"})
+    cli.run.side_effect = [
+        (0, {"status": "ok", "detail": {"flows": []}}),
+        (1, {"status": "failed"}),
+    ]
     evidence = {}
     module.recovery(cli, evidence)
     assert evidence["malformed_target_refused"] is True
@@ -14125,3 +14130,89 @@ def test_native_login_malformed_mfa_fixture_does_not_expose_seed(tmp_path, monke
     ) as error:
         module._login_input({}, {}, {"username": "fixture", "password": "protected"})
     assert seed not in str(error.value)
+
+
+def test_github_maintenance_blocks_only_observed_absent_registration(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = (4, {"status": "pending", "detail": {"registered": False}})
+    evidence = {}
+    module.github_maintenance(cli, evidence)
+    assert evidence["unavailable_capability"] == "github_app_registration"
+    cli.json.assert_not_called()
+
+
+def test_explicitly_disabled_flow_is_blocked_not_passed(tmp_path):
+    module, _ = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = (
+        4,
+        {
+            "status": "unavailable",
+            "detail": {"capability": "orchestration_engine", "supported": False},
+        },
+    )
+    evidence = {}
+    module.recovery(cli, evidence)
+    cli.run.assert_called_once()
+    matrix = {"E37": {"status": cases.NOT_RUN}}
+    ctx = {
+        "document": {"instance_id": "i-fixture"},
+        "matrix": matrix,
+        "transcript": [],
+        "correlation": {},
+        "fault": "none",
+        "record": lambda case_id, status, detail: cases.record(
+            matrix, case_id, status, detail
+        ),
+    }
+    emitted = {"stage": "blocked", "success": False, "detail": evidence}
+    stages.journeys_stage(
+        {}, {"journey": lambda purpose: lambda instance, ctx: emitted}
+    )(ctx)
+    assert matrix["E37"]["status"] == cases.BLOCKED
+    assert cases.accept(matrix, ("story-reads",), cleanup_ok=True)[0] == cases.FAILED
+
+
+@pytest.mark.parametrize(
+    "rc,envelope",
+    [
+        (5, {"status": "failed", "error": {"http_status": 503}}),
+        (
+            4,
+            {
+                "status": "unavailable",
+                "detail": {"capability": "other", "supported": False},
+            },
+        ),
+        (
+            4,
+            {
+                "status": "unavailable",
+                "detail": {"capability": "orchestration_engine", "supported": True},
+            },
+        ),
+    ],
+)
+def test_flow_errors_cannot_be_reclassified_as_disabled(tmp_path, rc, envelope):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = (rc, envelope)
+    with pytest.raises(common.RemoteError):
+        module.recovery(cli, {})
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        (5, {"status": "failed", "error": {"http_status": 503}}),
+        (4, {"status": "pending", "detail": {}}),
+        (4, {"status": "pending", "detail": {"registered": "false"}}),
+    ],
+)
+def test_github_registration_errors_are_not_absent_fixtures(tmp_path, reply):
+    module, common = shipped_script(tmp_path, "story_reads")
+    cli = Mock()
+    cli.run.return_value = reply
+    with pytest.raises(common.RemoteError):
+        module.github_maintenance(cli, {})

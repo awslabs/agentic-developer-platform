@@ -284,6 +284,24 @@ def budget(cli, evidence):
 
 
 def github_maintenance(cli, evidence):
+    rc, status = cli.run(["admin", "github", "status"], expected=None)
+    if (
+        rc == 4
+        and isinstance(status, dict)
+        and status.get("status") == "pending"
+        and isinstance(status.get("detail"), dict)
+        and status["detail"].get("registered") is False
+    ):
+        evidence["unavailable_capability"] = "github_app_registration"
+        evidence["capability_supported"] = False
+        return
+    common.require(
+        rc in (0, 4)
+        and isinstance(status, dict)
+        and isinstance(status.get("detail"), dict)
+        and status["detail"].get("registered") is True,
+        "GitHub registration could not be established",
+    )
     current = detail(cli.json(["admin", "github", "status", "--maintenance"]))
     common.require(
         current.get("contract") == "app-maintenance-v1"
@@ -647,7 +665,21 @@ def knowledge(cli, evidence):
 
 
 def recovery(cli, evidence):
-    listing = detail(cli.json(["flow", "list", "--limit", "1"]))
+    rc, envelope = cli.run(["flow", "list", "--limit", "1"], expected=None)
+    if (
+        rc == 4
+        and isinstance(envelope, dict)
+        and envelope.get("status") == "unavailable"
+        and envelope.get("detail")
+        == {"capability": "orchestration_engine", "supported": False}
+    ):
+        evidence["unavailable_capability"] = "orchestration_engine"
+        evidence["capability_supported"] = False
+        return
+    common.require(
+        rc == 0, "Flow listing failed without a confirmed disabled capability"
+    )
+    listing = detail(envelope)
     common.require(isinstance(listing.get("flows"), list), "Flow listing is malformed")
     # A malformed identifier must fail before reaching any mutation endpoint.
     rc, refused = cli.run(
@@ -914,4 +946,10 @@ def execute(config, evidence):
         for key, value in evidence.items()
         if key not in {"success", "stage", "transcript", "detail"}
     }
-    evidence.update(stage="complete", success=True)
+    if evidence.get("unavailable_capability") in {
+        "orchestration_engine",
+        "github_app_registration",
+    }:
+        evidence.update(stage="blocked", success=False)
+    else:
+        evidence.update(stage="complete", success=True)

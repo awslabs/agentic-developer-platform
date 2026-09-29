@@ -908,12 +908,20 @@ def journeys_stage(cfg, ports):
             }
             if evidence.get("error"):
                 detail = {**detail, "error": evidence["error"]}
-            record_selected(
-                ctx,
-                case_id,
-                cases.PASSED if evidence.get("success") else cases.FAILED,
-                detail,
-            )
+            status = cases.PASSED if evidence.get("success") else cases.FAILED
+            if (
+                case_id in {"E28", "E37"}
+                and evidence.get("stage") == "blocked"
+                and evidence.get("success") is False
+                and not evidence.get("error")
+                and detail.get("unavailable_capability")
+                == {"E28": "github_app_registration", "E37": "orchestration_engine"}[
+                    case_id
+                ]
+                and detail.get("capability_supported") is False
+            ):
+                status = cases.BLOCKED
+            record_selected(ctx, case_id, status, detail)
 
     return run
 

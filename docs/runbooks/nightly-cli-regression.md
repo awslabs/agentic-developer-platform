@@ -231,3 +231,11 @@ person/default is changed. Paid acceptance must remain in the existing shared
 one-EC2/60-minute/$5-per-day qualification, with independent request/token/time
 bounds and an externally reserved cost ceiling. D06 introduces no paid requests
 and no recurring workflow.
+
+The nightly marks E28 blocked when the served administrator CLI explicitly
+reports that this deployment has no registered GitHub App. It marks E37 blocked
+when the served flow CLI explicitly reports `orchestration_engine` unsupported.
+These checks use live responses, not inferred module availability. Configured
+module failures, authorization errors, malformed responses, and unavailable
+backends still fail. Blocked cases retain a non-passing nightly verdict and never
+count as full acceptance.
