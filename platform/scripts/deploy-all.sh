@@ -361,6 +361,18 @@ run_codebuild() {
   fi
   local PROJECT_NAME="$1"
   local BUILDSPEC_FILE="$2"  # unused — buildspec is baked into the project
+  local IMAGE_REPOSITORY="${3:-}"
+
+  if [ "$UPDATE_MODE" = true ] && [ -n "$IMAGE_REPOSITORY" ]; then
+    local EXISTING_IMAGE
+    EXISTING_IMAGE=$(python3 "$SCRIPT_DIR/upgrade-image-cache.py" \
+      "${REGISTRY}/${IMAGE_REPOSITORY}:${IMAGE_TAG}") \
+      || fail "Could not verify the existing $IMAGE_REPOSITORY image"
+    if [ -n "$EXISTING_IMAGE" ]; then
+      ok "Reusing immutable upgrade image: $EXISTING_IMAGE"
+      return 0
+    fi
+  fi
 
   # Verify the project exists
   local PROJECT_EXISTS
@@ -838,7 +850,7 @@ else
       bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-gateway
   else
     # Docker build via CodeBuild (Terraform-managed project)
-    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml"
+    run_codebuild "adp-${ENVIRONMENT}-gateway-build" "codebuild/bs-gateway-build.yml" adp-gateway
   fi
   GATEWAY_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" "$GATEWAY_IMAGE") \
     || fail "Gateway release digest could not be verified"
@@ -1569,7 +1581,7 @@ PY
       bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-agent-gateway
   else
     # Docker build via CodeBuild (Terraform-managed project)
-    run_codebuild "adp-${ENVIRONMENT}-agent-gateway" "codebuild/bs-agent-gateway.yml"
+    run_codebuild "adp-${ENVIRONMENT}-agent-gateway" "codebuild/bs-agent-gateway.yml" adp-agent-gateway
   fi
   AGENT_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" \
     "${ADP_RELEASE_AGENT_GATEWAY_IMAGE:-$REGISTRY/adp-agent-gateway:$IMAGE_TAG}") \
@@ -1607,7 +1619,7 @@ PY
     SOURCE_SHA="$SOURCE_SHA" REGISTRY="$REGISTRY" AWS_REGION="$AWS_REGION" \
       bash "$ROOT_DIR/platform/scripts/publish-local-image.sh" adp-chat-agent
   else
-    run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml"
+    run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml" adp-chat-agent
   fi
   CHAT_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" \
     "${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-chat-agent:$IMAGE_TAG}") \

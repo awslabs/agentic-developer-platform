@@ -132,16 +132,26 @@ elif [ "$SKIP_IMAGE" = true ]; then
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] codebuild-run.sh adp-${ENVIRONMENT}-agent-runtime (with source-location-override)"
 else
-  # Use codebuild-run.sh which handles the source-SHA contract:
-  # zips source → uploads to unique S3 key → passes --source-location-override + ADP_SOURCE_SHA
-  ADP_RELEASE_BUILD=true SOURCE_SHA="$IMAGE_TAG" STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
-    bash "$CODEBUILD_RUN" "adp-${ENVIRONMENT}-agent-runtime" \
-      "name=AWS_REGION,value=${AWS_REGION},type=PLAINTEXT" \
-      "name=ACCOUNT_ID,value=${ACCOUNT_ID},type=PLAINTEXT" \
-      "name=REGISTRY,value=${REGISTRY},type=PLAINTEXT" \
-      "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
-      "name=STATE_BUCKET,value=${STATE_BUCKET},type=PLAINTEXT"
-  ok "adp-${ENVIRONMENT}-agent-runtime: SUCCEEDED"
+  EXISTING_IMAGE=""
+  if [ "$UPDATE_MODE" = true ]; then
+    EXISTING_IMAGE=$(python3 "$REPO_ROOT/platform/scripts/upgrade-image-cache.py" \
+      "${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}") \
+      || fail "Could not verify the existing agent-runtime image"
+  fi
+  if [ -n "$EXISTING_IMAGE" ]; then
+    ok "Reusing immutable upgrade image: $EXISTING_IMAGE"
+  else
+    # Use codebuild-run.sh which handles the source-SHA contract:
+    # zips source → uploads to unique S3 key → passes --source-location-override + ADP_SOURCE_SHA
+    ADP_RELEASE_BUILD=true SOURCE_SHA="$IMAGE_TAG" STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
+      bash "$CODEBUILD_RUN" "adp-${ENVIRONMENT}-agent-runtime" \
+        "name=AWS_REGION,value=${AWS_REGION},type=PLAINTEXT" \
+        "name=ACCOUNT_ID,value=${ACCOUNT_ID},type=PLAINTEXT" \
+        "name=REGISTRY,value=${REGISTRY},type=PLAINTEXT" \
+        "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
+        "name=STATE_BUCKET,value=${STATE_BUCKET},type=PLAINTEXT"
+    ok "adp-${ENVIRONMENT}-agent-runtime: SUCCEEDED"
+  fi
 fi
 
 # Resolve and validate the image before Lambda upload, Terraform import or apply.

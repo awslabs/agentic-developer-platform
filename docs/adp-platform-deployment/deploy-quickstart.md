@@ -145,6 +145,12 @@ If you just want to see the platform work with the least setup,
 > and the narrowly allowed deployment replacements, or `deploy-all.sh --help`
 > for usage.
 
+Repeated `--update` runs reuse an existing full-SHA image tag for the gateway,
+agent runtime, agent gateway, or chat agent only when its ECR repository has
+immutable tags. The script still resolves the tag to its digest and runs all
+remaining Terraform, migration, rollout, and verification gates. A missing
+tag or a new source commit triggers CodeBuild as usual.
+
 ---
 
 ## Phase 1 — Bootstrap ✅ verified
