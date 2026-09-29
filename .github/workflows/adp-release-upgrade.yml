@@ -48,6 +48,14 @@ jobs:
           aws-region: us-east-1
           role-duration-seconds: 14400
           allowed-account-ids: ${{ inputs.account }}
+      - name: Load private target configuration
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          python platform/scripts/release/target_config.py \
+            --environment "$TARGET_ENVIRONMENT" \
+            --directory "$RUNNER_TEMP/release-target-config" \
+            --github-env "$GITHUB_ENV"
       - name: Retrieve and verify every artifact
         env:
           RELEASE_ID: ${{ inputs.release_id }}

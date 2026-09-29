@@ -74,6 +74,29 @@ platform Terraform manages IAM, networking, EKS and credentials. The build role
 can start existing CodeBuild projects whose service role is also privileged.
 Review release workflow/buildspec changes as privileged platform code.
 
+Each target account also needs its own operator tfvars for the gateway and webhook
+ingress. Store these in that account's private Terraform state bucket, not in the
+repository or release artifacts. The release workflow reads them before checking
+out the selected source SHA and passes their paths to `deploy-all.sh --update`.
+For integration-test, after verifying the AWS profile resolves to `608380991969`:
+
+```bash
+AWS_PROFILE=adp-integration-test aws s3api put-object \
+  --bucket adp-terraform-state-608380991969 \
+  --key adp-release-config/integration-test/gateway.tfvars.json \
+  --body /path/to/integration/gateway.tfvars.json \
+  --server-side-encryption AES256 --expected-bucket-owner 608380991969
+AWS_PROFILE=adp-integration-test aws s3api put-object \
+  --bucket adp-terraform-state-608380991969 \
+  --key adp-release-config/integration-test/webhook-ingress.tfvars.json \
+  --body /path/to/integration/webhook-ingress.tfvars.json \
+  --server-side-encryption AES256 --expected-bucket-owner 608380991969
+```
+
+Use the corresponding account, profile and `pre-production` prefix before
+promoting there. The workflow checks JSON, environment, region and embedded
+account IDs, and records each config hash in its private logs.
+
 The current GitHub billing plan rejects required-reviewer protection for this
 private repository. Approval uses a separate **manual promotion workflow**.
 Only the designated approver in `platform/scripts/release/workflow.py` can run
@@ -106,6 +129,7 @@ Before dispatching:
    `python3 platform/scripts/release/bootstrap.py --verify-github`.
 5. Confirm the release contract covers every module in the core upgrade scope.
    The workflow refuses installed agent-context; Superplane is upgraded separately.
+6. Confirm the target account's operator tfvars are current in the private state bucket.
 
 ### 2. Build and validate integration
 
@@ -257,6 +281,10 @@ trees:
 ```bash
 AWS_PROFILE=adp-integration-test python3 platform/scripts/release/storage.py download \
   --directory /tmp/adp-selected-release --release-id RELEASE_ID --manifest-sha256 MANIFEST_SHA256
+AWS_PROFILE=adp-integration-test python3 platform/scripts/release/target_config.py \
+  --environment integration-test --directory /tmp/adp-release-target-config
+export ADP_GATEWAY_UPDATE_TFVARS=/tmp/adp-release-target-config/gateway.tfvars.json
+export ADP_WEBHOOK_UPDATE_TFVARS=/tmp/adp-release-target-config/webhook-ingress.tfvars.json
 AWS_PROFILE=adp-integration-test python3 platform/scripts/release/upgrade.py \
   --directory /tmp/adp-selected-release --environment integration-test \
   --evidence-directory /tmp/adp-release-evidence

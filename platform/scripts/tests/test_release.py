@@ -17,6 +17,7 @@ import common
 import build
 import artifacts
 import storage
+import target_config
 import upgrade
 import workflow
 import bootstrap
@@ -145,6 +146,26 @@ class ReleaseContracts(unittest.TestCase):
         s3.get_object.return_value = {'Body': Mock(read=Mock(return_value=b'{"resources":[{"type":"aws_s3_bucket"}]}'))}
         with self.assertRaisesRegex(ValueError, 'installed agent-context'):
             upgrade.check_module_scope(s3, 'state-bucket')
+
+    def test_release_downloads_account_bound_operator_tfvars(self):
+        s3 = Mock()
+        gateway = b'{"environment":"dev","aws_region":"us-east-1","queue":"arn:aws:sqs:us-east-1:608380991969:q"}'
+        webhook = b'{"enable_adversarial_e2e":false}'
+        s3.get_object.side_effect = [
+            {'Body': Mock(read=Mock(return_value=gateway))},
+            {'Body': Mock(read=Mock(return_value=webhook))},
+        ]
+        paths = target_config.download(s3, 'integration-test', self.directory / 'target-config')
+        self.assertEqual(paths['ADP_GATEWAY_UPDATE_TFVARS'].read_bytes(), gateway)
+        self.assertEqual(paths['ADP_WEBHOOK_UPDATE_TFVARS'].read_bytes(), webhook)
+        self.assertEqual(paths['ADP_GATEWAY_UPDATE_TFVARS'].stat().st_mode & 0o777, 0o600)
+        self.assertTrue(all(call.kwargs['ExpectedBucketOwner'] == '608380991969' for call in s3.get_object.call_args_list))
+
+    def test_release_refuses_foreign_account_operator_tfvars(self):
+        s3 = Mock()
+        s3.get_object.return_value = {'Body': Mock(read=Mock(return_value=b'{"queue":"arn:aws:sqs:us-east-1:879318057152:q"}'))}
+        with self.assertRaisesRegex(ValueError, 'invalid for integration-test'):
+            target_config.download(s3, 'integration-test', self.directory / 'target-config')
 
     def test_release_reuses_verified_source_image_without_codebuild(self):
         registry = '608380991969.dkr.ecr.us-east-1.amazonaws.com'
@@ -293,6 +314,10 @@ class ReleaseContracts(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main'", job['if'])
         role_index = next(i for i, step in enumerate(job['steps']) if step.get('uses', '').startswith('aws-actions/configure-aws-credentials'))
         self.assertTrue(any('--check-approver' in step.get('run', '') for step in job['steps'][:role_index]))
+        config_index = next(i for i, step in enumerate(job['steps']) if step.get('name') == 'Load private target configuration')
+        source_index = next(i for i, step in enumerate(job['steps']) if step.get('name') == "Use the release's exact reviewed source")
+        self.assertLess(role_index, config_index)
+        self.assertLess(config_index, source_index)
 
     def test_all_github_actions_jobs_use_self_hosted_runners(self):
         import yaml
