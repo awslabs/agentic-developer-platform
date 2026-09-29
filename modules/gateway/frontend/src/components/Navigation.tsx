@@ -208,8 +208,8 @@ export function Navigation() {
     navItems.push({ to: '/admin/indexing', label: 'Indexing Status', icon: '🔍' });
   }
 
-  // Tenant Org Links page for platform admins (Issue #2954)
-  if (isPlatformAdmin()) {
+  // Legacy Tenant Org Links menu, controlled per deployment.
+  if (features.tenant_org_links && isPlatformAdmin()) {
     navItems.push({ to: '/admin/tenant-links', label: 'Tenant Org Links', icon: '🏢' });
   }
 

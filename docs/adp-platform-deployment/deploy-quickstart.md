@@ -1009,3 +1009,12 @@ use the same release digest. Manual or interrupted rollouts must also run the
 [shared alignment and verification helper](../runbooks/shared-worker-flow-continuation.md#gateway--scheduled-engine-release-parity)
 before reporting completion. Pushing an image to ECR or checking EKS readiness
 alone does not verify the Lambda release.
+
+### Optional menu entries
+
+The gateway deployment reads SSM `/adp/<env>/gateway/feature-knowledge`,
+`feature-indexing`, and `feature-tenant-org-links`. Set the corresponding value
+to `false` and run the upgrade to hide Knowledge, Indexing Status, or the legacy
+Tenant Org Links menu. Knowledge and indexing default to enabled; legacy links
+default to hidden. These display flags do not delete stored data, remove teams,
+or stop indexing workers.

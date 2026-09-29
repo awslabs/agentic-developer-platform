@@ -367,10 +367,12 @@ spec:
             # The SSM-backed placeholder is rendered by both deployment paths.
             - name: FEATURE_AGENT_MODELS_ENABLED
               value: "__FEATURE_AGENT_MODELS_ENABLED__"
-            # - name: FEATURE_KNOWLEDGE_ENABLED
-            #   value: "false"
-            # - name: FEATURE_INDEXING_ENABLED
-            #   value: "false"
+            - name: FEATURE_KNOWLEDGE_ENABLED
+              value: "__FEATURE_KNOWLEDGE_ENABLED__"
+            - name: FEATURE_INDEXING_ENABLED
+              value: "__FEATURE_INDEXING_ENABLED__"
+            - name: FEATURE_TENANT_ORG_LINKS_ENABLED
+              value: "__FEATURE_TENANT_ORG_LINKS_ENABLED__"
             # - name: FEATURE_CONNECTIONS_ENABLED
             #   value: "false"
             # - name: FEATURE_CREDENTIALS_ENABLED
