@@ -13,7 +13,8 @@ REGISTRY = "111122223333.dkr.ecr.us-east-1.amazonaws.com"
 
 
 class FactoryArtifactsTests(unittest.TestCase):
-    def run_stage(self, package_exit=0, chat_exit=0, intake_managed=True):
+    def run_stage(self, package_exit=0, chat_exit=0, intake_managed=True,
+                  current_pentest_client="value"):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index(
             'if [ "$DEPLOY_FACTORY" = true ]; then\n  step "Step 10/11:'
@@ -33,7 +34,11 @@ terraform() {
 }
 kubectl() {
   if [ "$1" = apply ]; then cat >/dev/null; fi
-  if [ "$1" = get ]; then echo "$AGENT_IMAGE"; fi
+  if [ "$1" = get ]; then
+    if [ "$2" = configmap ]; then echo "$CURRENT_PENTEST_CLIENT_TEST";
+    else echo "${AGENT_IMAGE:-}"; fi
+  fi
+  if [ "$1 $2" = "rollout restart" ]; then echo "restart gateway" >> "$CALLS"; fi
 }
 run_codebuild() {
   echo "build $1 tag=$IMAGE_TAG" >> "$CALLS"
@@ -70,6 +75,7 @@ run_codebuild() {
                 PACKAGE_EXIT=str(package_exit),
                 CHAT_EXIT=str(chat_exit),
                 INTAKE_MANAGED_TEST=str(intake_managed).lower(),
+                CURRENT_PENTEST_CLIENT_TEST=current_pentest_client,
                 PATH=tmp + os.pathsep + os.environ["PATH"],
             )
             result = subprocess.run(
@@ -100,6 +106,11 @@ run_codebuild() {
         result, calls = self.run_stage(intake_managed=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls.count("plan agent-factory"), 1)
+
+    def test_changed_pentest_client_restarts_gateway(self):
+        result, calls = self.run_stage(current_pentest_client="old-value")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls.count("restart gateway"), 1)
 
     def test_failed_lambda_package_stops_before_infrastructure(self):
         result, calls = self.run_stage(package_exit=43)
