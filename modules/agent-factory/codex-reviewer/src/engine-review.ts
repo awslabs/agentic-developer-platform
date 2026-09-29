@@ -1,3 +1,4 @@
+import { reviewEvents, reviewSignal, reviewOperation } from "./review-observer.js";
 /** One reviewer owns inspection, repairs, CI and deterministic merge delivery. */
 import { loadSharedInstructions } from "./shared-instructions.js";
 import { Codex } from "@openai/codex-sdk";
@@ -91,7 +92,7 @@ export async function observePublishedRepair(
 export function createReviewServices(runtime: ReviewRuntime & { repository: string }): EngineReviewServices {
   const instructions = loadSharedInstructions("reviewer", readFileSync(new URL("../prompts/reviewer.md", import.meta.url), "utf8"));
   const codex = new Codex({ baseUrl: runtime.proxyBaseUrl,
-    apiKey: "sigv4-proxy-placeholder", config: { developer_instructions: instructions.text }, env: childEnvironment() });
+    apiKey: "sigv4-proxy-placeholder", config: { developer_instructions: instructions.text }, env: { ...childEnvironment(), ...(runtime.observer?.control ? { ADP_CODEX_CONTROL_SOCKET: runtime.observer.control.socket } : {}) } });
   // Retained turns share one execution allowance; CI polling does not consume it.
   const budget = new ModelExecutionBudget(Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000));
   const thread = () => codex.startThread({ workingDirectory: runtime.workspace,
@@ -111,9 +112,17 @@ export function createReviewServices(runtime: ReviewRuntime & { repository: stri
     github,
     checks: observeReviewerChecks,
     deliver: (result, envelope) => deliverEngineReview(github, result, envelope),
-    review: async prompt => budget.run(async signal => parseEngineVerdict((await runResumableTurn(inspection, prompt,
-      { outputSchema: engineReviewSchema, signal }, undefined, instructions.verify)).finalResponse)),
-    fix: async prompt => { await budget.run(signal => runResumableTurn(repair, prompt, { signal }, undefined, instructions.verify)); },
+    review: async prompt => {
+      runtime.observer?.explanation('Reviewing correctness and security, and running the relevant tests.');
+      return budget.run(async signal => parseEngineVerdict((await runResumableTurn(inspection, prompt,
+        { outputSchema: engineReviewSchema, signal: reviewSignal(signal, runtime.observer) }, undefined,
+        instructions.verify, reviewEvents(runtime.observer, true))).finalResponse));
+    },
+    fix: async prompt => {
+      runtime.observer?.explanation('Repairing the findings or merge conflicts, then checking the changes.');
+      await budget.run(signal => runResumableTurn(repair, prompt,
+        { signal: reviewSignal(signal, runtime.observer) }, undefined, instructions.verify, reviewEvents(runtime.observer)));
+    },
   };
 }
 
@@ -155,7 +164,9 @@ async function runEngineReviewPass(
   }
   const controller = supplied ?? createReviewServices({ ...runtime, repository: envelope.repository });
   const localEnv = childEnvironment();
-  const git = async (args: string[]) => (await run("git", args,
+  const localRun: typeof run = (command, args, options = {}) => reviewOperation(runtime.observer,
+    () => run(command, args, { ...options, signal: runtime.observer?.control?.signal }));
+  const git = async (args: string[]) => (await localRun("git", args,
     { cwd: runtime.workspace, env: localEnv })).stdout.trim();
   const expected = cycle.head_sha;
   const initialPr = await controller.github.getPullRequest(cycle.pr_number);
@@ -167,7 +178,7 @@ async function runEngineReviewPass(
   if (initialPr.head.sha !== expected || (initialPr.state !== "open" && !merged)
       || (merged && cycle.action === "repair")) throw new Error("Engine PR head or state changed before review");
   if (await git(["rev-parse", "HEAD"]) !== expected) throw new Error("Engine checkout does not match assigned head");
-  const availableBase = await run("git", ["cat-file", "-e", `${baseSha}^{commit}`],
+  const availableBase = await localRun("git", ["cat-file", "-e", `${baseSha}^{commit}`],
     { cwd: runtime.workspace, env: localEnv, allowFailure: true });
   if (availableBase.exitCode !== 0) {
     await authenticatedGit(runtime, ["fetch", "--no-tags", repositoryUrl(envelope.repository), baseSha]);
@@ -218,7 +229,7 @@ async function runEngineReviewPass(
     finding !== null && typeof finding === "object" && "source" in finding
     && finding.source === "merge-controller" && "summary" in finding
     && /merge conflict|out-of-date base/i.test(String(finding.summary)));
-  const behind = envelope.cycle.reviewer_owned_delivery && (await run("git", ["merge-base", "--is-ancestor", baseSha, expected],
+  const behind = envelope.cycle.reviewer_owned_delivery && (await localRun("git", ["merge-base", "--is-ancestor", baseSha, expected],
     { cwd: runtime.workspace, env: localEnv, allowFailure: true })).exitCode !== 0;
   const conflict = behind || initialPr.mergeable === false || initialPr.mergeable_state === "dirty"
     || assignedBaseRepair || (cycle.action === "repair" && initialPr.mergeable !== true);
@@ -237,10 +248,10 @@ async function runEngineReviewPass(
       // The controller prepares the exact base merge. The model only resolves
       // files; HEAD/branch/config and the publication lease remain fenced.
       await authenticatedGit(runtime, ["fetch", "--no-tags", repositoryUrl(envelope.repository), baseSha]);
-      const merge = await run("git", ["-c", "core.hooksPath=/dev/null", "merge", "--no-commit", "--no-ff", baseSha],
+      const merge = await localRun("git", ["-c", "core.hooksPath=/dev/null", "merge", "--no-commit", "--no-ff", baseSha],
         { cwd: runtime.workspace, env: localEnv, allowFailure: true });
       if (merge.exitCode && !await git(["ls-files", "--unmerged"])) throw new Error("Could not prepare the assigned base merge");
-      const pendingMerge = await run("git", ["rev-parse", "--verify", "MERGE_HEAD"],
+      const pendingMerge = await localRun("git", ["rev-parse", "--verify", "MERGE_HEAD"],
         { cwd: runtime.workspace, env: localEnv, allowFailure: true });
       if (pendingMerge.exitCode === 0) mergeBase = baseSha;
     }
@@ -266,7 +277,7 @@ async function runEngineReviewPass(
         const repairFiles = (await untracked()).filter(file => !baseline.has(file));
         if (repairFiles.length) await git(["add", "--", ...repairFiles]);
         const args = ["diff", "--cached", "--check", baseSha];
-        const check = await run("git", args, { cwd: runtime.workspace, env: localEnv, allowFailure: true });
+        const check = await localRun("git", args, { cwd: runtime.workspace, env: localEnv, allowFailure: true });
         if (check.exitCode === 0) break;
         if (attempt >= 1 || check.exitCode !== 2) throw new ProcessError("git", args, check, null);
         const diagnostics = JSON.stringify({ stdout: check.stdout.slice(0, 8192), stderr: check.stderr.slice(0, 8192) })
@@ -345,11 +356,21 @@ export async function runEngineReview(
   const timeout = controller.deliveryTimeoutMs ?? 60 * 60 * 1000;
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid delivery timeout");
   const deadline = now() + timeout;
-  const wait = (milliseconds: number) => (controller.wait ?? pause)(Math.max(0, Math.min(milliseconds, deadline - now())));
+  const wait = async (milliseconds: number) => {
+    runtime.observer?.explanation('Waiting for CI or merge status; the reviewer will continue automatically.');
+    const duration = Math.max(0, Math.min(milliseconds, deadline - now()));
+    if (controller.wait) await controller.wait(duration);
+    else await pause(duration, undefined, { signal: runtime.observer?.control?.signal });
+  };
+  const deliver = () => reviewOperation(runtime.observer, () => {
+    runtime.observer?.explanation('Publishing the review and checking merge delivery.');
+    return controller.deliver!(finish(), envelope);
+  });
   let observationFailures = 0;
   let deliveryFailures = 0;
   let queued = false;
   while (true) {
+    await reviewOperation(runtime.observer, async () => {});
     if (now() >= deadline) return { ...finish(), delivery_blocked: "Delivery deadline exceeded while waiting for CI or merge; inspected head retained for recovery" };
     if (Object.values(result.report.stages).some(stage => stage !== "completed")) return finish();
     let checks: ReviewerChecks;
@@ -357,6 +378,7 @@ export async function runEngineReview(
       checks = await controller.checks(result.sha);
       observationFailures = 0;
     } catch (error) {
+      runtime.observer?.control?.signal.throwIfAborted();
       if (!(error instanceof Error) || !("retryable" in error) || error.retryable !== true || ++observationFailures >= 3) {
         return { ...finish(), delivery_blocked: "CI observation unavailable or authorization withdrawn" };
       }
@@ -366,18 +388,19 @@ export async function runEngineReview(
     if (checks.head_sha !== result.sha) return { ...finish(), delivery_blocked: "PR head changed while waiting for checks" };
     if (!checks.open && !checks.merged) return { ...finish(), delivery_blocked: "PR closed while waiting for checks" };
     if (checks.merged) {
-      const delivery = await controller.deliver(finish(), envelope);
+      const delivery = await deliver();
       if (delivery.state === "merged") return { ...finish(), merged: true };
       throw new Error("Merged PR delivery could not be verified");
     }
     if (queued) {
       try {
-        const delivery = await controller.deliver(finish(), envelope);
+        const delivery = await deliver();
         if (delivery.state === "merged") return { ...finish(), merged: true };
         if (delivery.state === "blocked") return { ...finish(), delivery_blocked: delivery.reason ?? "Merge queue blocked" };
         if (delivery.queued) { await wait(60000); continue; }
         queued = false; // Queue removed the entry; current CI/base may need repair.
       } catch {
+        runtime.observer?.control?.signal.throwIfAborted();
         return { ...finish(), delivery_blocked: "Merge queue observation unavailable" };
       }
     }
@@ -389,8 +412,9 @@ export async function runEngineReview(
     }
     if (checks.state === "passed" && !checks.base_repair_required && result.report.verdict === "approve") {
       let delivery: ReviewerMerge;
-      try { delivery = await controller.deliver(finish(), envelope); }
+      try { delivery = await deliver(); }
       catch (error) {
+        runtime.observer?.control?.signal.throwIfAborted();
         if (!(error instanceof Error) || !("retryable" in error) || error.retryable !== true || ++deliveryFailures >= 3) {
           return { ...finish(), delivery_blocked: "Review publication or merge unavailable; inspect delivery evidence" };
         }

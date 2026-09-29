@@ -8,13 +8,13 @@ import { containsSecret } from './experience-save-hook';
 import { writeFailureReport } from './failure-report';
 import { createWorkerActivityLog } from './worker-activity-log';
 
-export interface DeveloperReportingContext { repository: string; issue: number; model: string }
+export interface DeveloperReportingContext { repository: string; issue: number; model: string; persona?: string }
 export interface DeveloperReporter {
-  control?: { signal: AbortSignal; socket: string };
+  control?: { signal: AbortSignal; socket: string; operation<T>(work: () => Promise<T>): Promise<T> };
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;
-  finish(result: { summary: string; prUrl: string; usage?: unknown }): Promise<void>;
+  finish(result: { summary: string; prUrl?: string; usage?: unknown }): Promise<void>;
   fail(error: unknown): Promise<void>;
 }
 
@@ -36,8 +36,10 @@ function metadata(fields: Record<string, unknown>): void {
 
 export async function createCodexDeveloperReporter(context: DeveloperReportingContext): Promise<DeveloperReporter> {
   if (!process.env.ADP_MESSAGE_ID) throw new Error('Codex developer reporting requires a dispatched ADP invocation');
+  const persona = context.persona ?? 'agent-codex-developer';
+  const reviewer = persona === 'agent-codex-reviewer';
   const token = () => process.env.GH_APP_TOKEN || process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
-  const activityLog = createWorkerActivityLog('agent-codex-developer', String(context.issue));
+  const activityLog = createWorkerActivityLog(persona, String(context.issue));
   await activityLog.start();
   const log = (level: string, message: string) => activityLog.log(level, publicDeveloperText(message), {
     invocation_id: process.env.ADP_MESSAGE_ID,
@@ -45,12 +47,12 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
   const logTimer = setInterval(() => { void activityLog.flush(); }, 5000);
   logTimer.unref?.();
   const [owner, repo] = context.repository.split('/');
-  const live = new LiveStatusComment(createWorkerStages('developer'), {
+  const live = new LiveStatusComment(createWorkerStages(reviewer ? 'reviewer' : 'developer'), {
     owner, repo, issueNumber: context.issue, token: token(), log,
   });
   const check = new CheckRunStreamer({
     checkRunId: Number(process.env.CHECK_RUN_ID || 0), repo: context.repository,
-    tokenProvider: token, persona: 'agent-codex-developer', issueNumber: context.issue,
+    tokenProvider: token, persona, issueNumber: context.issue,
     model: context.model, costLabel: 'See Agent Activity for metered usage', log: message => log('WARN', message),
   });
   const control = await startControlRuntime({ log, createAdapter: gate => new CodexControlAdapter(gate) });
@@ -81,7 +83,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     await live.post();
     metadata({ outcome_comment_url: live.getCommentUrl() });
     live.transition(0, 'complete', 'Repository and worker ready');
-    live.transition(1, 'in_progress', 'Reading the issue and developing the change');
+    live.transition(1, 'in_progress', reviewer ? 'Reviewing, fixing and testing the change' : 'Reading the issue and developing the change');
     explanation(`Working on ${context.repository}#${context.issue} with the Codex SDK. Progress and command activity will update here.`);
     await live.flush();
   } catch (error) {
@@ -90,11 +92,19 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     throw error;
   }
   return {
-    ...(adapter ? { control: { signal: adapter.signal, socket: adapter.socket } } : {}),
+    ...(adapter ? { control: { signal: adapter.signal, socket: adapter.socket,
+      async operation<T>(work: () => Promise<T>): Promise<T> {
+        adapter.signal.throwIfAborted();
+        const admission = await control.runtime!.gate.admit('Codex controller operation', adapter.signal);
+        if (admission.decision !== 'admit') throw new Error('Codex controller operation cancelled');
+        try { adapter.signal.throwIfAborted(); return await work(); }
+        finally { control.runtime!.gate.settle(admission.ticket); }
+      } } } : {}),
     explanation,
     activity(text) {
       text = publicDeveloperText(text);
       live.appendActivity(text);
+      control.events?.publish(text);
       check.onTurn({ turn: ++sequence, content: [{ type: 'tool_use', name: 'Codex', input: { command: text } }] });
       log('INFO', text);
     },
@@ -104,7 +114,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
       try {
         explanation(result.summary);
         metadata({ session_completed: true, usage: result.usage, num_turns: sequence, pr_url: result.prUrl });
-        live.transition(1, 'complete', 'Pull request published');
+        live.transition(1, 'complete', reviewer ? 'Review completed' : 'Pull request published');
         await live.finalizeSuccess({ details: publicDeveloperText(result.summary), prUrl: result.prUrl,
           artifacts: Number(process.env.CHECK_RUN_ID) > 0
             ? [`[Full activity stream](https://github.com/${context.repository}/runs/${process.env.CHECK_RUN_ID})`] : [],

@@ -1,3 +1,4 @@
+import { reviewOperation } from "./review-observer.js";
 /** PR mentions use the same review/fix/test loop as scheduled reviews. */
 import type { CodexPullRequestReviewEnvelope, CodexEngineReviewEnvelope } from './contracts.js';
 import { createReviewServices, runEngineReview, type EngineReviewServices } from './engine-review.js';
@@ -65,6 +66,6 @@ export async function runStandaloneReview(
   }
   if (approved) return { status: 'approved', sha: result.sha };
   const reason = 'delivery_blocked' in result ? `\n\n${result.delivery_blocked}` : '';
-  await github.commentOnce(number, `<!-- codex-review-blocked:${envelope.message_id}:${result.sha} -->`, result.body + reason);
+  await reviewOperation(runtime.observer, () => github.commentOnce(number, `<!-- codex-review-blocked:${envelope.message_id}:${result.sha} -->`, result.body + reason));
   return { status: 'changes_requested', blockers: result.report.findings.filter(f => f.severity === 'blocking').length };
 }

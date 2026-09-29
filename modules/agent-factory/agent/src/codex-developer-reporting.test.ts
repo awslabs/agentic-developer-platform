@@ -66,3 +66,38 @@ test('a failed final publication can still be reported as failure', async () => 
   await reporter.fail(new Error('Could not publish the final outcome'));
   expect(fetchMock.mock.calls.some(([, init]) => JSON.parse(init.body).body?.includes('Could not publish the final outcome'))).toBe(true);
 });
+
+test('reviewer uses its own persona and publishes tool activity to the live UI stream', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-reviewer' });
+  reporter.activity('Running: python3 -m unittest');
+  expect(events.publish).toHaveBeenCalledWith('Running: python3 -m unittest');
+  await reporter.finish({ summary: 'Reviewer finished: merged' });
+  const bodies = fetchMock.mock.calls.map(([, init]) => JSON.stringify(JSON.parse(init.body))).join('\n');
+  expect(bodies).toContain('agent-codex-reviewer');
+  expect(bodies).toContain('Reviewer finished: merged');
+  expect(bodies).not.toContain('Pull request published');
+});
+
+test('reviewer controller operations obey pause admission and release the gate on failure', async () => {
+  const { PauseGate } = jest.requireActual('./pause-gate');
+  const gate = new PauseGate({ defaultTimeoutMs: 10000, settleTimeoutMs: 100 });
+  const cancellation = new AbortController();
+  const adapter = { signal: cancellation.signal, socket: '/fixture', start: jest.fn(), dispose: jest.fn() };
+  (startControlRuntime as jest.Mock).mockResolvedValue({ events, listener: { stop }, outcome: { started: true },
+    runtime: { adapter, gate, steerQueue: { flush: async () => {}, dispose: jest.fn() } } });
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-reviewer' });
+  await gate.requestPause({ timeoutMs: 10000 });
+  const effect = jest.fn(async () => { throw new Error('Git failed'); });
+  const operation = reporter.control!.operation(effect);
+  const rejected = expect(operation).rejects.toThrow('Git failed');
+  await Promise.resolve();
+  expect(effect).not.toHaveBeenCalled();
+  await gate.resume();
+  await rejected;
+  expect(effect).toHaveBeenCalledTimes(1);
+  expect(gate.activeToolCount()).toBe(0);
+  cancellation.abort(new Error('Operator aborted'));
+  await expect(reporter.control!.operation(effect)).rejects.toThrow('Operator aborted');
+  expect(effect).toHaveBeenCalledTimes(1);
+  await reporter.fail(new Error('Operator aborted'));
+});

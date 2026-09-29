@@ -98,7 +98,11 @@ async function main() {
         ...(tools.definitions.length ? { toolBroker: { definitions: tools.definitions,
           repositoryCapabilities: ['repository.read'], maxCalls: context.maxTools, execute: tools.execute } } : {}),
         takeSteering: () => controls.takeSteering(),
-        async progress() { reporter.progress('Working through the admitted task and its evidence.'); },
+        async progress() {
+          const text = 'Working through the admitted task and its evidence.';
+          reporter.progress(text);
+          controls.explain(text);
+        },
         async model(request, active) {
           return controls.operation(async () => {
             if (++operations > context.maxTurns) throw new Error('GitHub model budget exhausted');

@@ -62,9 +62,10 @@ export async function codexPersonaOperation(body) {
 }
 ''')
     (shared / "codex-persona-controls.js").write_text('''
+import { appendFileSync } from 'node:fs';
 let steered = false;
 export async function startCodexPersonaControls(log, signal) {
- return { signal, async checkpoint() { signal.throwIfAborted(); },
+ return { signal, explain(text) { appendFileSync(process.env.FIXTURE_ARTIFACTS + '/progress.txt', text + '\\n'); }, async checkpoint() { signal.throwIfAborted(); },
   takeSteering() { if (process.env.FIXTURE_MODE === 'steer' && !steered) { steered = true; return ['Also inspect retry configuration.']; } return []; },
   pendingSteering() { return false; }, async operation(work) { signal.throwIfAborted(); return work(); }, async close() {} };
 }
@@ -133,6 +134,8 @@ export async function createCodexPersonaReporter() {
     assert (result.returncode == 0) == success, result.stderr
     assert (artifacts / 'report.json').exists() == success
     assert len(requests) == (2 if mode in {'steer', 'repository-read'} else 0 if mode in {'tampered', 'repository-mismatch'} else 1), result.stderr
+    if success:
+        assert 'Working through' in (artifacts / 'progress.txt').read_text()
     if requests:
         assert f'personas/{persona}.md' in json.dumps(requests[0])
         assert requests[0]['model'] == 'gpt-5-codex'

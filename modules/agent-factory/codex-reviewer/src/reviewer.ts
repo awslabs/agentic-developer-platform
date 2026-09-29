@@ -1,3 +1,4 @@
+import { reviewEvents, reviewSignal, reviewOperation, type ReviewObserver } from "./review-observer.js";
 import { loadSharedInstructions } from "./shared-instructions.js";
 import { Codex } from "@openai/codex-sdk";
 import { readFile } from "node:fs/promises";
@@ -33,6 +34,7 @@ export type ReviewRunResult =
 export interface ReviewRuntime {
   /** Existing checkout prepared by the shared worker entrypoint. */
   workspace: string;
+  observer?: ReviewObserver;
   /** Default/developer installation token prepared by the shared worker entrypoint. */
   githubToken: string;
   /** Renew through the shared worker before API calls and authenticated git. */
@@ -53,7 +55,7 @@ function issueReviewPrompt(
 export async function authenticatedGit(runtime: ReviewRuntime, args: string[]) {
   for (let attempt = 0; ; attempt++) {
     const token = runtime.getGitHubToken ? await runtime.getGitHubToken(attempt > 0) : runtime.githubToken;
-    try { return await run("git", args, { cwd: runtime.workspace, env: gitEnvironment(token) }); }
+    try { return await reviewOperation(runtime.observer, () => run("git", args, { cwd: runtime.workspace, env: gitEnvironment(token), signal: runtime.observer?.control?.signal })); }
     catch (error) {
       const rejected = error instanceof ProcessError && error.result.exitCode === 128
         && /Authentication failed|Invalid username or token|Bad credentials/i.test(error.result.stderr);
@@ -101,6 +103,7 @@ async function codexVerdict(
   workspace: string,
   prompt: string,
   verifyInstructions: () => void,
+  observer?: ReviewObserver,
 ): Promise<ReviewVerdict> {
   const thread = codex.startThread({
     workingDirectory: workspace,
@@ -114,10 +117,10 @@ async function codexVerdict(
   });
   const turn = await runResumableTurn(thread, prompt, {
     outputSchema: reviewOutputSchema,
-    signal: AbortSignal.timeout(
+    signal: reviewSignal(AbortSignal.timeout(
       Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000),
-    ),
-  }, undefined, verifyInstructions);
+    ), observer),
+  }, undefined, verifyInstructions, reviewEvents(observer, true));
   return parseVerdict(turn.finalResponse);
 }
 
@@ -143,19 +146,20 @@ async function runIssueReview(
     baseUrl: runtime.proxyBaseUrl,
     apiKey: "sigv4-proxy-placeholder",
     config: { developer_instructions: persona.text },
-    env: childEnvironment(),
+    env: { ...childEnvironment(), ...(runtime.observer?.control ? { ADP_CODEX_CONTROL_SOCKET: runtime.observer.control.socket } : {}) },
   });
   const verdict = await codexVerdict(
     codex,
     runtime.workspace,
     issueReviewPrompt("", issue, envelope.issue.triggering_comment),
     persona.verify,
+    runtime.observer,
   );
-  await github.commentOnce(
+  await reviewOperation(runtime.observer, () => github.commentOnce(
     envelope.issue.number,
     `<!-- agent-codex-reviewer:${envelope.message_id} -->`,
     formatIssueReviewComment(verdict, envelope.issue.number, `Codex SDK ${SDK_VERSION}`),
-  );
+  ));
   return {
     status: "issue_reviewed",
     issue: envelope.issue.number,

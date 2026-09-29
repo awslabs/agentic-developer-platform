@@ -60,3 +60,22 @@ test("no fresh thread is launched when identity is missing or the deadline expir
     abort.abort(); throw new Error("stream disconnected before completion");
   } }, "review", { signal: abort.signal }, async () => assert.fail("deadline expired")));
 });
+
+test('reviewer streams activity before completion while retaining its structured verdict', async () => {
+  const seen: string[] = [];
+  const result = await runResumableTurn({ id: 'review-session',
+    run: async () => assert.fail('must use streaming SDK'),
+    runStreamed: async () => ({ events: (async function* () {
+      yield { type: 'thread.started' as const, thread_id: 'review-session' };
+      assert.deepEqual(seen, ['thread.started']);
+      yield { type: 'item.started' as const, item: { type: 'command_execution' as const,
+        id: 'command', command: 'npm test', status: 'in_progress' as const, aggregated_output: '' } };
+      assert.equal(seen.at(-1), 'item.started');
+      yield { type: 'item.completed' as const, item: { type: 'agent_message' as const,
+        id: 'final', text: '{"verdict":"approve"}' } };
+      yield { type: 'turn.completed' as const, usage: completed.usage };
+    })() }),
+  }, 'review', { outputSchema: { type: 'object' } }, undefined, undefined, event => { seen.push(event.type); });
+  assert.equal(result.finalResponse, '{"verdict":"approve"}');
+  assert.equal(result.usage, completed.usage);
+});

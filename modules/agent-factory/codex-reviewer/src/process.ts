@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 export interface RunOptions {
   cwd?: string;
+  signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   allowFailure?: boolean;
   input?: string;
@@ -30,6 +31,7 @@ export async function run(
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
+      signal: options.signal,
       env: options.env ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
