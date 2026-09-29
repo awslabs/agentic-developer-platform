@@ -70,6 +70,25 @@ pipeline. Use protected tags and never move a published version to new code.
 Publish a new release for each fix. Selecting older code is not an automatic
 database rollback; check migration compatibility before attempting recovery.
 
+Published customer releases use `config/release-defaults/` for portable platform,
+gateway and webhook inputs. The launcher materializes those defaults only in
+its isolated release checkout; `environments/dev/` remains the internal
+platform-account configuration and is not copied into customer release inputs.
+The existing foreign-account checks and saved-plan gates remain enforced.
+
+Upgrades overlay the target's recovered state and retained `release_configuration`
+outputs on those defaults. These sensitive outputs record private deployment inputs for
+subsequent releases; worker images remain selected by the release. Legacy basic
+installations retain discovered integration, database, engine, cluster access
+and encryption settings. An older installation with activated Task API or
+protected worker settings but no retained input snapshot must first perform a
+reviewed direct update using its original target-specific configuration. The
+release path refuses to guess those activation settings or turn them off.
+
+RC1 predates this separation and fails its account-reference check on customer
+accounts. Use the corrected release candidate and an updated launcher. Its
+release tag is retained unchanged for traceability.
+
 The original working tree is untouched. A private temporary directory retains
 the selected checkout, deployment journal and `release-upgrade.json` (or
 `release-install.json`) receipt with the release tag, source SHA, account, mode,

@@ -88,6 +88,14 @@ def upgrade(args):
     try:
         child_env = dict(os.environ, AWS_REGION=args.region, ENVIRONMENT=args.env,
                          ADP_REGION=args.region, ADP_ENVIRONMENT=args.env)
+        configuration = source / 'platform/scripts/prepare-release-config.py'
+        if not configuration.is_file():
+            raise ValueError('This release lacks portable configuration; select rc.2 or a later corrected release')
+        subprocess.run(['python3', str(configuration), '--root', str(source),
+                        '--env', args.env, '--region', args.region], cwd=source, check=True)
+        child_env['ADP_PORTABLE_RELEASE_CONFIG'] = 'true'
+        receipt['configuration'] = 'portable-release-defaults'
+        save()
         if not args.update:
             result = subprocess.run(['bash', str(bootstrap)], cwd=source, env=child_env)
             if result.returncode:
@@ -99,8 +107,8 @@ def upgrade(args):
         receipt['status'] = 'complete' if result.returncode == 0 else 'failed'
         receipt['exit_code'] = result.returncode
         return result.returncode if result.returncode >= 0 else 128 - result.returncode
-    except BaseException:
-        receipt['status'] = 'interrupted'
+    except BaseException as error:
+        receipt['status'] = 'failed' if isinstance(error, Exception) else 'interrupted'
         raise
     finally:
         receipt['finished_at'] = datetime.now(timezone.utc).isoformat()
@@ -120,7 +128,7 @@ def main():
     args = parser.parse_args()
     try:
         return upgrade(args)
-    except (RuntimeError, ValueError, KeyError, OSError) as error:
+    except (RuntimeError, ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'Release deployment failed: {error}\n')
 
 

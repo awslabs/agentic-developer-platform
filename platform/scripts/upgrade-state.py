@@ -48,6 +48,49 @@ def write_json(path, data):
     path.chmod(0o600)
 
 
+def release_settings(state, module):
+    """Retain account-local inputs; never import platform dev activation flags."""
+    if os.environ.get("ADP_PORTABLE_RELEASE_CONFIG") != "true":
+        return {}
+    contract = Path(__file__).resolve().parents[2] / "config/release-defaults/preserved-inputs.json"
+    keys = set(json.loads(contract.read_text())[module])
+    saved = output(state, "release_configuration")
+    if saved is not None:
+        if not isinstance(saved, dict) or set(saved) - keys:
+            raise ValueError(f"Invalid retained {module} release configuration")
+        return saved
+    # Older states did not retain inputs. Basic settings can be recovered from
+    # their resources. Activated Task/authority configurations need exact original
+    # inputs; guessing could disable active work or copy another account's proof.
+    for resource, attrs in resources(state):
+        variables = (attrs.get("environment") or [{}])[0].get("variables", {}) if resource["type"] == "aws_lambda_function" else {}
+        if any(str(variables.get(k, "false")).lower() == "true" for k in (
+                "AGENT_AUTHORITY_ENABLED", "ADP_TASK_API_ADMISSION_ENABLED", "ADP_TASK_API_RECOVERY_ENABLED")):
+            raise ValueError(f"Existing {module} has activated runtime settings without a retained configuration; "
+                             "run one reviewed direct upgrade with its original target-specific tfvars to record them")
+        if resource["name"] == "gateway_task_api" and resource["type"] == "aws_iam_policy":
+            raise ValueError("Existing Task API requires its original target-specific configuration before portable upgrades")
+    result = {}
+    for resource, attrs in resources(state):
+        kind = resource["type"]
+        if module == "platform" and kind == "aws_vpc":
+            result["vpc_cidr"] = attrs["cidr_block"]
+        if module == "platform" and kind == "aws_eks_cluster":
+            result["eks_cluster_version"] = attrs["version"]
+        if module == "gateway" and kind == "aws_db_instance":
+            result.update(rds_instance_class=attrs["instance_class"], rds_allocated_storage=attrs["allocated_storage"])
+        if module == "gateway" and kind == "aws_elasticache_replication_group":
+            result["redis_node_type"] = attrs["node_type"]
+        if module == "gateway" and kind == "aws_lambda_function" and resource["name"] == "tick":
+            env = (attrs.get("environment") or [{}])[0].get("variables", {})
+            for key, name in (("BG_ORCH_DISPATCH_REPO", "orchestration_dispatch_repo"),):
+                if key in env:
+                    result[name] = env[key]
+            if "FEATURE_ORCHESTRATION_ENGINE_ENABLED" in env:
+                result["orchestration_engine_enabled"] = env["FEATURE_ORCHESTRATION_ENGINE_ENABLED"] == "true"
+    return result
+
+
 def preserve_access(state, cluster, extra=(), requested_cidrs=()):
     # Only retain entries already owned as cluster admins by platform Terraform.
     # Listing every EKS principal here would promote namespace-scoped users.
@@ -365,8 +408,9 @@ def prepare(args):
             with urllib.request.urlopen("https://checkip.amazonaws.com", timeout=10) as response:
                 address = ipaddress.ip_address(response.read().decode().strip())
             requested = [str(address) + ("/32" if address.version == 4 else "/128")]
-    platform = preserve_access(states["platform"], cluster,
-                               json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested)
+    platform = release_settings(states["platform"], "platform")
+    platform.update(preserve_access(states["platform"], cluster,
+                               json.loads(os.environ.get("TF_VAR_extra_cluster_admin_principal_arns", "[]")), requested))
     platform.update(environment=args.environment, aws_region=args.region)
     platform["additional_private_subnet_ids_by_az"] = retain_capacity_subnets(
         states["platform"], cluster,
@@ -376,8 +420,9 @@ def prepare(args):
                                                if not r.get("module") and r["name"] == "retained_upgrade"]
     write_json(directory / "platform.tfvars.json", platform)
     write_json(directory / "eks-access.json", {"publicAccessCidrs": platform["eks_public_access_cidrs"]})
-    gateway = {"environment": args.environment, "aws_region": args.region}
     gateway_state = states.get("gateway", {})
+    gateway = release_settings(gateway_state, "gateway")
+    gateway.update(environment=args.environment, aws_region=args.region)
     gateway.update(gateway_layer_settings(gateway_state, args.account, args.environment))
     gateway.update(gateway_engine_settings(gateway_state, states.get("webhook-ingress", {}),
                                            args.account, args.region, args.environment))
@@ -410,8 +455,9 @@ def prepare(args):
                    enable_agent_context_rbac="agent-context" in states)
     write_json(directory / "agent-factory.tfvars.json", factory)
     write_json(directory / "agent-context.tfvars.json", {"environment": args.environment, "aws_region": args.region})
-    webhook = {"environment": args.environment, "aws_region": args.region, "eks_cluster_name": cluster_name}
     ws = states.get("webhook-ingress", {})
+    webhook = release_settings(ws, "webhook-ingress")
+    webhook.update(environment=args.environment, aws_region=args.region, eks_cluster_name=cluster_name)
     webhook["gitlab_webhook_enabled"] = any("gitlab" in r["name"] for r, _ in resources(ws, "aws_lambda_function"))
     webhook["enable_adversarial_e2e"] = any(r["name"] == "adversarial_evidence" for r, _ in resources(ws, "aws_s3_bucket"))
     for r, attrs in resources(ws, "aws_lambda_function"):

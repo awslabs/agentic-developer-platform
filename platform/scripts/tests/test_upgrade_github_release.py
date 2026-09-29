@@ -57,6 +57,7 @@ class ReleaseTests(unittest.TestCase):
                 git('config', 'user.name', 'Test')
                 script = origin / 'platform/scripts/deploy-all.sh'
                 script.parent.mkdir(parents=True)
+                (script.parent / 'prepare-release-config.py').write_text('from pathlib import Path\nPath("portable-config-used").touch()\n')
                 (script.parent / 'bootstrap.sh').write_text('printf bootstrap > bootstrap.txt\nexit ' + str(bootstrap_exit) + '\n')
                 script.write_text('#!/bin/bash\n# --update)\nprintf "%s\\n" "$@" > forwarded.txt\nexit ' + str(exit_code) + '\n')
                 git('add', '.')
@@ -85,6 +86,8 @@ class ReleaseTests(unittest.TestCase):
                         mode = 'upgrade' if update else 'install'
                         receipt = json.loads((work / f'release-{mode}.json').read_text())
                         self.assertEqual(receipt['mode'], mode)
+                        self.assertEqual(receipt['configuration'], 'portable-release-defaults')
+                        self.assertTrue((work / 'source/portable-config-used').exists())
                         self.assertEqual((work / 'source/bootstrap.txt').exists(), not update)
                         if bootstrap_exit:
                             self.assertEqual(receipt['failed_stage'], 'bootstrap')
