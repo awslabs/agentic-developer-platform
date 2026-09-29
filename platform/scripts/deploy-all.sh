@@ -1300,6 +1300,7 @@ if [ "$DEPLOY_GATEWAY" = true ]; then
     cd "$ROOT_DIR/modules/gateway/infra"
     if [ "$UPDATE_MODE" = true ]; then
       terraform_update_apply "gateway-alb-wire" "$GATEWAY_UPDATE_VAR_FILE" \
+        -var "orchestration_tick_image_tag=$IMAGE_TAG" \
         -var "internal_alb_arn=$ALB_ARN" \
         -var "internal_alb_dns=$ALB_DNS" \
         -var "alb_security_group_ids=$ALB_SG_IDS" \
@@ -1308,6 +1309,7 @@ if [ "$DEPLOY_GATEWAY" = true ]; then
     else
       terraform apply \
         -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+        -var "orchestration_tick_image_tag=$IMAGE_TAG" \
         -var "internal_alb_arn=$ALB_ARN" \
         -var "internal_alb_dns=$ALB_DNS" \
         -var "alb_security_group_ids=$ALB_SG_IDS" \
@@ -1316,6 +1318,13 @@ if [ "$DEPLOY_GATEWAY" = true ]; then
         -auto-approve
       ok "API Gateway VPC Link and CloudFront VPC Origin wired to ALB"
     fi
+
+    # This second gateway Terraform pass must keep the tick on the image built
+    # above. Its default image tag can still resolve to an older release.
+    python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
+      --verify-only --image "$GATEWAY_IMAGE" --account "$ACCOUNT_ID" \
+      --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+      || fail "ALB wiring changed the orchestration engine release image"
 
     # Issue #4010: apply the edge `/internal` -> 403 deny LAST, and only if the
     # apply above actually repointed `/internal/{proxy+}` at the internal-plane
