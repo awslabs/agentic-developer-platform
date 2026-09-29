@@ -1686,8 +1686,16 @@ if [ "$UPDATE_MODE" = true ]; then
     step "Reconcile gateway after ALB/controller changes"
     cd "$ROOT_DIR/modules/gateway/infra"
     gateway_alb_vars
-    terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}"
-    UPGRADE_CHECK_ONLY=true terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}"
+    # Keep the engine on the selected release through the last Terraform pass.
+    # The environment default can otherwise resolve to an older gateway image.
+    terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_tag=$IMAGE_TAG"
+    UPGRADE_CHECK_ONLY=true terraform_update_apply gateway-final "$GATEWAY_UPDATE_VAR_FILE" "${GATEWAY_ALB_ARGS[@]}" \
+      -var "orchestration_tick_image_tag=$IMAGE_TAG"
+    python3 "$ROOT_DIR/modules/gateway/scripts/sync-gateway-engine.py" \
+      --verify-only --image "$GATEWAY_IMAGE" --account "$ACCOUNT_ID" \
+      --region "$AWS_REGION" --environment "$ENVIRONMENT" \
+      || fail "Final gateway reconciliation changed the orchestration engine release image"
   fi
 fi
 

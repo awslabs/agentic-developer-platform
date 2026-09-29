@@ -114,18 +114,25 @@ terraform_update_apply() { echo "terraform $1"; }
         policy["spec"]["egress"][0]["to"] = [{"podSelector": {}}]
         self.assertFalse(network.collector_allowed(policy))
 
-    def finalize(self, audit_fail=False, ci_mode=False, deferred=False):
+    def finalize(self, audit_fail=False, ci_mode=False, deferred=False, engine_fail=False):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index("# Finalize after all installed modules")
         block = source[start:source.index("# Summary\n", start)]
         prefix = r'''set -euo pipefail
 step() { :; }
+fail() { echo "$*" >&2; exit 1; }
 python3() {
   if [ "$1" = -c ]; then command python3 "$@"; return; fi
   echo "python $*" >> "$CALLS"
+  if [[ "$1" = */sync-gateway-engine.py ]] && [ "$ENGINE_FAIL" = true ]; then return 1; fi
   if [ "${2:-}" = audit ] && [ "$AUDIT_FAIL" = true ]; then return 1; fi
 }
-terraform_update_apply() { echo "terraform $1 check=${UPGRADE_CHECK_ONLY:-false}" >> "$CALLS"; }
+terraform_update_apply() {
+  echo "terraform $1 check=${UPGRADE_CHECK_ONLY:-false}" >> "$CALLS"
+  if [ "$1" = gateway-final ]; then
+    [[ " $* " = *" -var orchestration_tick_image_tag=$IMAGE_TAG "* ]] || return 9
+  fi
+}
 gateway_alb_vars() { GATEWAY_ALB_ARGS=(-var preserved-albs); }
 bash() { echo "frontend $*" >> "$CALLS"; }
 aws() { echo frontend.example.test; }
@@ -135,7 +142,9 @@ curl() { echo '{"status":"healthy"}'; }
             calls = Path(tmp) / "calls"
             env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / "platform/scripts"),
                        UPDATE_MODE="true", DEPLOY_GATEWAY="true", DEPLOY_FACTORY="true", SKIP_FRONTEND="false", UPGRADE_RUN_DIR=tmp,
-                       GATEWAY_UPDATE_VAR_FILE="/tmp/gateway.tfvars.json",
+                       GATEWAY_UPDATE_VAR_FILE="/tmp/gateway.tfvars.json", IMAGE_TAG="a" * 40,
+                       GATEWAY_IMAGE="customer-gateway@sha256:" + "b" * 64, ACCOUNT_ID="925091290508",
+                       ENGINE_FAIL=str(engine_fail).lower(),
                        ENVIRONMENT="test", AWS_REGION="us-east-1", CALLS=str(calls), AUDIT_FAIL=str(audit_fail).lower(),
                        CI_MODE=str(ci_mode).lower(), ADP_BEDROCK_VERIFY_DEFERRED=str(deferred).lower())
             result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
@@ -146,10 +155,16 @@ curl() { echo '{"status":"healthy"}'; }
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("upgrade-network.py audit", calls[0])
         self.assertEqual(calls[1:4], ["terraform platform check=false", "terraform gateway-final check=false", "terraform gateway-final check=true"])
-        self.assertIn("deploy-frontend.sh", calls[4])
-        self.assertIn("upgrade-state.py verify", calls[5])
-        self.assertIn("--require-module agent-factory", calls[5])
-        self.assertIn("enable-bedrock-models.sh --verify", calls[6])
+        self.assertIn("sync-gateway-engine.py --verify-only --image customer-gateway@sha256:", calls[4])
+        self.assertIn("deploy-frontend.sh", calls[5])
+        self.assertIn("upgrade-state.py verify", calls[6])
+        self.assertIn("--require-module agent-factory", calls[6])
+        self.assertIn("enable-bedrock-models.sh --verify", calls[7])
+
+    def test_final_engine_mismatch_prevents_frontend_and_success(self):
+        result, calls = self.finalize(engine_fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("deploy-frontend.sh" in line or "upgrade-state.py verify" in line for line in calls))
 
     def test_default_model_invocations_skip_ci_and_wrapper_deferred_checks(self):
         for ci_mode, deferred in ((True, False), (False, True)):
