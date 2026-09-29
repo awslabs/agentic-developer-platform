@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { parseEnvelope, type CodexEngineReviewEnvelope } from "./contracts.js";
 import { engineReport, engineReviewBody, parseEngineVerdict, runEngineReview, observePublishedRepair, type EngineVerdict } from "./engine-review.js";
+import { runStandaloneReview } from "./standalone-review.js";
 import { deliverEngineReview } from "./engine-delivery.js";
 
 const exec = promisify(execFile);
@@ -525,4 +526,89 @@ for (const queued of [false, true]) test(`delivery deadline retains inspection w
   assert.equal(result.merged, false);
   assert.equal(result.report.verdict, "approve");
   assert.match("delivery_blocked" in result ? result.delivery_blocked : "", /deadline exceeded/);
+});
+
+
+for (const failure of ["semantic", "ci", "validation"] as const) {
+  test(`PR mention owns ${failure} fixes, tests and merge without a handoff`, async t => {
+    const state = await fixture(t);
+    let repairs = 0, reviews = 0, merges = 0;
+    const comments: string[] = [];
+    const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
+      pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
+        expected_head_sha: state.sha, html_url: state.pr.html_url } }, state.runtime, {
+      github: { ...state.github,
+        checks: async () => ({ ready: repairs > 0, total: failure === "semantic" ? 0 : 1,
+          failing: failure === "ci" && repairs === 0 ? ["tests: valid input rejected"] : [], pending: [] }),
+        commentOnce: async (_number, _marker, body) => { comments.push(body); return true; },
+        merge: async (_number, head) => {
+          assert.equal(head, await state.git("--git-dir", state.remote, "rev-parse", "story"));
+          assert.equal(repairs, 1);
+          assert.equal(reviews, 2);
+          merges++;
+          return "b".repeat(40);
+        },
+      },
+      review: async () => {
+        reviews++;
+        if (repairs) return approved;
+        if (failure === "semantic") return blocked;
+        if (failure === "validation") return { ...approved, validationGaps: ["Run the focused input test"] };
+        return approved;
+      },
+      fix: async prompt => {
+        assert.match(prompt, /do not hand it to a developer or ask for another scope approval/);
+        repairs++;
+        if (failure !== "validation") await writeFile(join(state.workspace, "code.txt"), "valid input succeeds\n");
+      },
+    });
+    assert.equal(result.status, "merged");
+    assert.equal(merges, 1);
+    assert.equal(comments.length, 1);
+    assert.equal(await state.git("rev-parse", "HEAD") === state.sha, failure === "validation");
+  });
+}
+
+test("PR mention reports a genuine no-progress blocker without merging", async t => {
+  const state = await fixture(t);
+  let repairs = 0;
+  const comments: string[] = [];
+  const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
+    pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
+      expected_head_sha: state.sha, html_url: state.pr.html_url } }, state.runtime, {
+    github: { ...state.github,
+      checks: async () => ({ ready: true, total: 0, failing: [], pending: [] }),
+      commentOnce: async (_number, _marker, body) => { comments.push(body); return true; },
+      merge: async () => { assert.fail("Unresolved review must not merge"); },
+    },
+    review: async () => blocked,
+    fix: async () => { repairs++; },
+  });
+  assert.equal(result.status, "changes_requested");
+  assert.equal(comments.length, 1);
+  assert.ok(repairs <= 2);
+});
+
+
+test("PR mention preserves an explicit review-only setting", async t => {
+  const state = await fixture(t);
+  const previous = process.env.CODEX_REVIEWER_MERGE_ENABLED;
+  process.env.CODEX_REVIEWER_MERGE_ENABLED = "false";
+  try {
+    const result = await runStandaloneReview({ ...state.envelope, kind: "codex_pr_review",
+      pull_request: { number: 7, issue_number: 42, head_ref: "story", base_ref: "main",
+        expected_head_sha: state.sha, html_url: state.pr.html_url } }, state.runtime, {
+      github: { ...state.github,
+        checks: async () => ({ ready: false, total: 0, failing: [], pending: [] }),
+        commentOnce: async () => true,
+        merge: async () => { assert.fail("Merge was explicitly disabled"); },
+      },
+      review: async () => approved,
+      fix: async () => { assert.fail("No repair required"); },
+    });
+    assert.equal(result.status, "approved");
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_REVIEWER_MERGE_ENABLED;
+    else process.env.CODEX_REVIEWER_MERGE_ENABLED = previous;
+  }
 });

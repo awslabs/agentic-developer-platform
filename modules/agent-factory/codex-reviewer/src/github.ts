@@ -4,6 +4,7 @@ interface PullRequestResponse {
   number: number;
   state: string;
   merged?: boolean;
+  merge_commit_sha?: string | null;
   html_url: string;
   title: string;
   body: string | null;

@@ -88,7 +88,7 @@ export async function observePublishedRepair(
   throw new Error("Published repair is not yet visible in the PR projection");
 }
 
-function services(runtime: ReviewRuntime & { repository: string }): EngineReviewServices {
+export function createReviewServices(runtime: ReviewRuntime & { repository: string }): EngineReviewServices {
   const instructions = loadSharedInstructions("reviewer", readFileSync(new URL("../prompts/reviewer.md", import.meta.url), "utf8"));
   const codex = new Codex({ baseUrl: runtime.proxyBaseUrl,
     apiKey: "sigv4-proxy-placeholder", config: { developer_instructions: instructions.text }, env: childEnvironment() });
@@ -153,7 +153,7 @@ async function runEngineReviewPass(
   if (!runtime.workspace || !runtime.githubToken || !runtime.proxyBaseUrl) {
     throw new Error("Engine Codex review requires the shared worker runtime");
   }
-  const controller = supplied ?? services({ ...runtime, repository: envelope.repository });
+  const controller = supplied ?? createReviewServices({ ...runtime, repository: envelope.repository });
   const localEnv = childEnvironment();
   const git = async (args: string[]) => (await run("git", args,
     { cwd: runtime.workspace, env: localEnv })).stdout.trim();
@@ -187,7 +187,7 @@ async function runEngineReviewPass(
   const recoveryContext = cycle.recovery
     ? "This is stalled-story recovery. The prior worker has exited. Preserve its committed work; do not restart from main or treat a checkpoint/PR as completed implementation. Read the current issue including owner clarifications. Identify every unfinished acceptance criterion, repair within the assigned scope when authorized, and revalidate the final changes. An unresolved product/contract clarification or unavailable required evidence is a blocker, not permission to guess or report success."
     : "";
-  const context = `${recoveryContext}\n\n${persona}\n\nThis is an engine assignment. The story and acceptance criteria define the work; no additional scope approval is required. Your controller publishes and merges after verified review and CI; the engine completes the story. Do not publish, merge, dispatch another agent, or write review reports into the repository.\n\n<story-data>${story.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</story-data>`;
+  const context = `${recoveryContext}\n\n${persona}\n\nThis is a review, fix, test and merge assignment. The story and acceptance criteria define the work; no additional scope approval is required. Your controller publishes and merges after verified review and CI; the engine completes the story. Do not publish, merge, dispatch another agent, or write review reports into the repository.\n\n<story-data>${story.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</story-data>`;
   const verifyGit = async (head: string) => {
     if (await git(["rev-parse", "HEAD"]) !== head
         || await git(["symbolic-ref", "--short", "HEAD"]) !== branch
@@ -335,7 +335,7 @@ async function runEngineReviewPass(
 export async function runEngineReview(
   envelope: CodexEngineReviewEnvelope, runtime: ReviewRuntime, supplied?: EngineReviewServices,
 ) {
-  const controller = supplied ?? services({ ...runtime, repository: envelope.repository });
+  const controller = supplied ?? createReviewServices({ ...runtime, repository: envelope.repository });
   let result = await runEngineReviewPass(envelope, runtime, controller);
   if (!envelope.cycle.reviewer_owned_delivery || result.merged) return result;
   if (!controller.checks || !controller.deliver) throw new Error("Reviewer-owned delivery requires checks and deterministic merge delivery");

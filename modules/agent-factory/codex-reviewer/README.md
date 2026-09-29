@@ -17,12 +17,17 @@ authenticated GitHub webhook
   -> agent-codex-reviewer / Codex SDK
 ```
 
-The shared entrypoint owns SQS acknowledgement, visibility heartbeats, tenant
-GitHub authentication, checkout, status reporting, and the gateway proxy. The
-adapter receives the prepared checkout and tenant default/developer GitHub
-token. On an issue mention it publishes an issue-readiness review. On an
-eligible pull request it publishes a code verdict, can push bounded mechanical
-fixes, and can optionally merge. It does not attempt formal self-approval.
+The reviewer owns **review → fix → test → merge**. Invoke it on a PR and it
+repairs issues within the story, runs focused tests, pushes the fixes, waits for
+CI when present, and merges the reviewed PR. CI failures return to the same
+reviewer for repair. There is no developer handoff or extra approval stage.
+It stops for a genuine blocker, a changed PR, or an existing repository merge
+requirement. Source repairs are not restricted to “mechanical” findings.
+
+Issue-only mentions remain read-only issue-readiness reviews. The shared worker
+owns authentication, checkout and queue delivery. Both PR mentions and engine
+assignments reuse one review/repair loop; their existing publication transports
+remain internal implementation details.
 
 ## Gateway-only model access
 
@@ -82,7 +87,7 @@ Git and bounded-fix checks remain in force.
 - `@agent-codex-reviewer` issue mentions and eligible pull-request events both
   select `agent-codex-reviewer` through the existing persona intent mapping;
   there is no separate reviewer routing flag or message shape.
-- `CODEX_REVIEWER_APPLY_FIXES` enables bounded mechanical repairs.
+- `CODEX_REVIEWER_APPLY_FIXES` defaults to `true`; an explicit `false` requests review without repairs.
 - `CODEX_REVIEWER_MERGE_ENABLED` defaults to `true`; set it to `false` to stop
   after approval instead of squash-merging the current, successfully checked
   head.
