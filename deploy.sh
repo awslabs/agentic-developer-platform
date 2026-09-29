@@ -16,6 +16,9 @@ set -euo pipefail
 #   ./deploy.sh [options]
 #
 # Options:
+#   --aws-profile PROFILE  AWS named profile (overrides inherited credentials)
+#   --update               Upgrade an existing deployment (no fresh setup)
+#   --release VERSION      Install or upgrade a published aws-e/adp GitHub Release tag
 #   --env ENV              Environment (default: dev)
 #   --region REGION        Target AWS region (default: us-east-1, or AWS_REGION env)
 #   --local                Use local Docker builds instead of CodeBuild
@@ -42,9 +45,23 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 LOCAL_MODE=false
 SKIP_AGENTS=false
 DRY_RUN=false
+UPDATE_MODE=false
+RELEASE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --aws-profile)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] || { echo "--aws-profile requires a profile name" >&2; exit 2; }
+      export AWS_PROFILE="$2" AWS_DEFAULT_PROFILE="$2"
+      # Environment credentials otherwise take precedence in AWS CLI/SDKs.
+      # Only clear them when the operator explicitly selects a named profile.
+      unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+      unset AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_SESSION_NAME
+      shift 2 ;;
+    --update)        UPDATE_MODE=true; shift ;;
+    --release)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] || { echo "--release requires a release tag" >&2; exit 2; }
+      RELEASE="$2"; shift 2 ;;
     --env)           ENVIRONMENT="$2"; shift 2 ;;
     --region)        AWS_REGION="$2"; shift 2 ;;
     --local)         LOCAL_MODE=true; shift ;;
@@ -54,10 +71,34 @@ while [[ $# -gt 0 ]]; do
       [ "$#" -ge 2 ] || { echo "--anthropic-use-case requires a JSON file" >&2; exit 2; }
       export ADP_BEDROCK_USE_CASE_FILE="$2"
       shift 2 ;;
-    -h|--help)       sed -n '4,26p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '/# deploy.sh/,/# The script/p' "$0"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# Selected releases run entirely from their own checkout. Updates must bypass
+# all fresh-install mutations below (including tfvars and IAM).
+if [ "$UPDATE_MODE" = true ] || [ -n "$RELEASE" ]; then
+  UPDATE_ARGS=(--env "$ENVIRONMENT" --region "$AWS_REGION")
+  [ "$LOCAL_MODE" = false ] || UPDATE_ARGS+=(--local)
+  [ "$SKIP_AGENTS" = false ] || UPDATE_ARGS+=(--gateway-only)
+  export AWS_REGION ENVIRONMENT AWS_PAGER=""
+  if [ -n "$RELEASE" ]; then
+    [ "$UPDATE_MODE" = false ] || UPDATE_ARGS+=(--update)
+    [ "$DRY_RUN" = false ] || UPDATE_ARGS+=(--dry-run)
+    # The release runner changes working directory before invoking its scripts.
+    if [ -n "${ADP_BEDROCK_USE_CASE_FILE:-}" ]; then
+      ADP_BEDROCK_USE_CASE_FILE=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$ADP_BEDROCK_USE_CASE_FILE")
+      export ADP_BEDROCK_USE_CASE_FILE
+    fi
+    exec python3 "$PLATFORM_SCRIPTS/upgrade-github-release.py" --release "$RELEASE" "${UPDATE_ARGS[@]}"
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    printf 'Would run:'; printf ' %q' bash "$PLATFORM_SCRIPTS/deploy-all.sh" --update "${UPDATE_ARGS[@]}"; printf '\n'
+    exit 0
+  fi
+  exec bash "$PLATFORM_SCRIPTS/deploy-all.sh" --update "${UPDATE_ARGS[@]}"
+fi
 
 # =============================================================================
 # Interactive prompts for required arguments not provided

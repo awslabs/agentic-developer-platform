@@ -1,5 +1,9 @@
 # Undeploy Re-Orchestration — Design Document
 
+> **Design reference, not an operator runbook.** For current commands, start
+> with the [deployment quickstart](deploy-quickstart.md). Implementation details
+> and proposed behavior below may differ from the current scripts.
+
 > **Status**: Design-only. No code, no teardown executed.  
 > **Issue**: #2651  
 > **Parent EPIC**: #2571  

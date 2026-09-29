@@ -1,5 +1,9 @@
 # Design Note: deploy-all.sh Update (Issue #3408)
 
+> **Design reference, not an operator runbook.** For current commands, start
+> with the [deployment quickstart](deploy-quickstart.md). Implementation details
+> and proposed behavior below may differ from the current scripts.
+
 Gap analysis and target design for updating `platform/scripts/deploy-all.sh` to
 cover the full self-managed installation sequence.
 

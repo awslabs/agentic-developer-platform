@@ -1,5 +1,9 @@
 # One-Click Deploy — Resolved Design Questions (§9a)
 
+> **Design reference, not an operator runbook.** For current commands, start
+> with the [deployment quickstart](deploy-quickstart.md). Implementation details
+> and proposed behavior below may differ from the current scripts.
+
 Architect decisions for the open questions in
 [`one-click-deploy-design.md`](./one-click-deploy-design.md) §9, resolved in
 issue **#3033**. To be folded into the design doc when PR #3032 merges.

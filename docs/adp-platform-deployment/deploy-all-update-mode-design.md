@@ -1,5 +1,9 @@
 # Design Note: deploy-all.sh Update Mode (Issue #3414)
 
+> **Design reference, not an operator runbook.** For current commands, start
+> with the [deployment quickstart](deploy-quickstart.md). Implementation details
+> and proposed behavior below may differ from the current scripts.
+
 Extends `deploy-all-update-design.md` (#3408) with explicit **update semantics**
 so `deploy-all.sh` can safely converge an already-deployed platform — not just
 stand up a fresh account or re-run idempotently.

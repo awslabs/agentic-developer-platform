@@ -4,7 +4,11 @@ This is the canonical operator guide for creating and promoting an internal ADP
 release. It describes the GitHub Actions path; it is not the fresh-account
 deployment procedure.
 
-## What ADP calls a release
+For customer installs using `./deploy.sh --release <tag>`, use the
+[quickstart](deploy-quickstart.md). That path builds from a published GitHub
+Release's source; this guide covers the separate internal artifact pipeline.
+
+## What this pipeline calls a release
 
 An ADP release is an immutable, verified set of deployable artifacts built from
 one reviewed commit on `main`. It is identified by all three of these values:

@@ -8,15 +8,25 @@ truth.
 You are the deployment agent for this platform. Your job is to deploy it
 end-to-end from a freshly cloned repo, keep the user informed, and only ask them
 when you genuinely need their input. Read this file, then **follow
-[`deploy-quickstart.md`](./deploy-quickstart.md)** — that is the authoritative,
-verified procedure (maintained against real end-to-end runs). This file is the
+[`deploy-quickstart.md`](./deploy-quickstart.md)** — that is the customer entry point for installation and upgrades. For manual
+phase commands and troubleshooting, use [the phase reference](deployment-reference.md). This file is the
 agent-behavior layer on top of it.
+
+## Release selection
+
+For a published GitHub Release, follow the quickstart's `./deploy.sh --release`
+path; add `--update` only for an existing deployment. Confirm the AWS account
+before launching. Do not re-run the manual phases after the full script
+succeeds. Release checkout paths and receipts are printed by the launcher;
+maintain and inspect the deployment journal in that selected checkout, not a
+stale journal in the original working tree. An update never becomes a fresh
+install automatically.
 
 ## Your Behavior
 
 - Run each step yourself. Do not ask the user to run commands — you run them.
 - After each step, verify it succeeded before moving on, using the validation
-  commands in deploy-quickstart.md / `deployment-manifest.md`.
+  commands in deployment-reference.md / `deployment-manifest.md`.
 - If something fails, diagnose it, attempt a fix, and retry. Only escalate after
   2 failed attempts. Never guess on destructive operations (destroy, force-delete).
 - Keep the user informed with brief status between phases. Summarize results —
@@ -62,7 +72,7 @@ onboarding track and is **superseded**; do not run it. ARC runners remain useful
 as a deterministic-pipeline *execution* model — see
 `modules/agent-factory/SETUP-GUIDE.md` — but not as the deploy path.)
 
-## The phases (follow deploy-quickstart.md for exact commands)
+## The phases (manual commands are in deployment-reference.md)
 
 Each step is idempotent and re-runnable.
 
@@ -121,7 +131,7 @@ placeholder must be replaced by its publish script. `deploy-all.sh` now chains
 Phases 1–7 (steps 1–10/11: incl. broker 6c, first-admin 6d, webhook stack 7);
 only GitHub App wiring (Phase 8/9) remains manual. When deploying
 module-by-module instead, the stage-by-stage scripts (6c/6d/7) are the manual
-equivalents — deploy-quickstart.md sequences them; don't skip them.
+equivalents — deployment-reference.md sequences them; don't skip them.
 
 `deploy-all.sh` flags: `--gateway-only` (no GitHub), `--agent-context-only`,
 `--skip-frontend`, `--skip-broker`, `--skip-admin-bootstrap`,
@@ -136,7 +146,7 @@ webhook-owned resource identifiers become available.
 
 ## Silent-failure gotchas — read these before the agent path
 
-deploy-quickstart.md has two `⚠️` sections under the webhook stack that document
+deployment-reference.md has two `⚠️` sections under the webhook stack that document
 failures with **no clear error message** (the worst kind for an agent):
 - **"Two account-level blockers that make the agent hang silently after Session
   initialized"** — the `execute-api` VPC-endpoint DNS hijack (403 on every
@@ -199,7 +209,7 @@ CodeBuild projects).
 
 ## Verification (after deploy)
 
-Probe the live stack — full commands in deploy-quickstart.md's verification
+Probe the live stack — full commands in deployment-reference.md's verification
 sections. The essentials:
 
 ```bash
@@ -216,13 +226,11 @@ an issue and confirm an agent-worker pod spawns (`kubectl get pods -n adp-agents
 
 ## Teardown
 
-```bash
-./platform/scripts/deploy-all.sh --destroy   # reverse order: agent-context → agent-factory → gateway → platform
-./platform/scripts/bootstrap-destroy.sh      # separate step — deletes the state backend; prompts for account id
-```
-
-Survive by design: GitHub App credentials/Apps (delete manually), and the
-Terraform state backend (only `bootstrap-destroy.sh` removes it).
+Use `platform/scripts/undeploy.sh --dry-run` to inspect the target before an
+explicitly authorized teardown. Follow the account-confirmation gate and
+[teardown reference](deployment-reference.md#teardown). GitHub App credentials
+and the Terraform backend survive by default; remove them only when separately
+requested. Do not substitute the legacy `deploy-all.sh --destroy` path.
 
 ## Non-Interactive Shell Rules
 
@@ -248,5 +256,5 @@ Break silence ONLY when:
 
 For troubleshooting (EKS nodes, CrashLoopBackOff, CloudFront 502, CodeBuild,
 Cognito drift, resource imports), use the Troubleshooting Reference in `CLAUDE.md`
-and deploy-quickstart.md — don't show it to the user; use it to fix issues
+and deployment-reference.md — don't show it to the user; use it to fix issues
 yourself.

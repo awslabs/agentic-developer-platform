@@ -21,6 +21,74 @@ converged a 5-day-old deployment end-to-end.
 
 ## 1. TL;DR — the standard upgrade
 
+To upgrade from a published GitHub Release:
+
+```bash
+./deploy.sh --aws-profile customer-test --update --release v1.2.0
+
+# Resolve the release and display the AWS target without deploying:
+./deploy.sh --aws-profile customer-test --update --release v1.2.0 --dry-run
+
+# First installation into a new account (omit --update):
+./deploy.sh --aws-profile customer-test --release v1.2.0
+```
+
+Replace `v1.2.0` with an existing release's exact tag in `aws-e/adp`.
+The launcher requires Python 3, Git, the GitHub CLI (`gh`) and AWS CLI,
+in addition to the normal upgrade prerequisites. Authenticate `gh` with access
+to the repository (`gh auth login`, or `GH_TOKEN` for automation). Private
+repository users need read access to download the source. A bare Git tag or a
+draft release is not sufficient; explicitly named published prereleases are
+accepted. There is no implicit `latest` selection.
+
+The launcher resolves the release tag to its full commit SHA, fetches a clean
+checkout, verifies that the tag still points to that commit, and runs that
+version's `platform/scripts/deploy-all.sh --update`. `--aws-profile` selects a
+named AWS profile for every child process, overriding inherited profile and
+static/web-identity credential environment variables. Profiles that depend on
+`credential_source = Environment` need those credentials and should use the
+existing `AWS_PROFILE` environment interface instead. When `--aws-profile` is
+omitted, credentials/profile are inherited unchanged. The flag also works for
+fresh deployments and updates without a release.
+`--env`, `--region`, `--local` and `--skip-agents` are supported;
+`--skip-agents` selects a gateway-only deployment. Without `--update`, release
+selection performs a fresh installation: it runs the selected release's
+`bootstrap.sh` to prepare the Terraform backend, then `deploy-all.sh` in fresh
+mode. Bootstrap failure stops the installation. Full installs include the
+required agent factory and webhook stack; GitHub App setup follows deployment
+via Settings → Connections. `--anthropic-use-case FILE` supplies real organization
+registration details if Bedrock first-use registration is needed; relative file
+paths are resolved before entering the release checkout. Update mode never
+falls back to fresh installation when its prerequisites are missing.
+Without `--release`, `./deploy.sh --update` upgrades from the current
+checkout using the same underlying script.
+
+This path **builds from release source in the target account**. It does not
+consume GitHub release assets or the internal immutable artifact manifest.
+It supports customer accounts without setting up the internal promotion
+pipeline. Use protected tags and never move a published version to new code.
+Publish a new release for each fix. Selecting older code is not an automatic
+database rollback; check migration compatibility before attempting recovery.
+
+The original working tree is untouched. A private temporary directory retains
+the selected checkout, deployment journal and `release-upgrade.json` (or
+`release-install.json`) receipt with the release tag, source SHA, account, mode,
+scope and completion/failure status.
+Its path is printed; retain it for diagnosis and remove it manually when no
+longer needed. Treat it as sensitive deployment output. Local configuration is
+not copied into the checkout: installed agent-context still requires its
+original configuration, so use the direct upgrade path below when that applies.
+A dry run checks release metadata and AWS identity only; it is not a Terraform
+plan or a full readiness check.
+
+To publish a version, merge and validate the intended source, create its tag on
+that commit, then publish a GitHub Release for that tag. Users need a checkout
+containing this updated launcher; the selected release must contain an
+update-capable `deploy-all.sh`. Publishing a GitHub Release does not itself
+deploy any account.
+
+For direct upgrades or advanced scope/skip flags:
+
 ```bash
 # From a clean checkout of the code you want to deploy (main or a pinned tag):
 git pull origin main            # or: git checkout <tag>
@@ -231,7 +299,7 @@ message — nothing is touched.
 | Aspect | Fresh deploy | `--update` |
 |--------|--------------|------------|
 | Bootstrap (state bucket / lock table) | Creates if missing | **Skipped** — must already exist |
-| Bedrock model agreements | Runs | Skipped (slow, already done) |
+| Bedrock access | Prepare and verify | Prepare and verify required runtime models |
 | Terraform applies | `-auto-approve` | **Plan-first with destroy gate** (§5) |
 | Image tag | Source SHA | **Source SHA** (`git rev-parse HEAD`) |
 | Backend rollout | Mandatory | **Mandatory** — script fails if rollout fails |
@@ -562,20 +630,19 @@ not enable hosted execution or a full installation.
   against it.
 - **Fresh webhook deploys** — use standalone `--update` or the parent upgrade
   command to enable the saved-plan gate.
-- **A `--plan-only` preview** — there is no dry-run flag yet; the plan-gate
-  output during a run is the preview. Tracked with per-module
+- **A consolidated Terraform `--plan-only` preview** — the launcher
+  `--dry-run` checks release selection and identity, not Terraform changes. The
+  plan-gate output during an actual upgrade shows each module plan. Tracked with per-module
   `--confirm-destructive` scoping in issue #3733.
 - **Alembic downgrades** — rollback relies on additive migrations (§8).
 - **GitHub App changes** — App registration/installation is UI-driven and
   independent of code upgrades.
-- **Per-account Bedrock model agreements** — assumed already enabled; only
-  fresh deploys run the enablement script.
 
 ---
 
 ## Related docs
 
-- [`self-managed-deploy.md`](./self-managed-deploy.md) — fresh-deploy sequence (this doc's §1 command appears there as "Updating an existing deployment")
+- [Deployment quickstart](deploy-quickstart.md) — install, select a release and upgrade
 - [`deploy-all-update-mode-design.md`](./deploy-all-update-mode-design.md) — full design rationale (#3414)
 - [`deployment-manifest.md`](./deployment-manifest.md) — per-resource validation commands
 - [`adp-managed-deploy.md`](./adp-managed-deploy.md) — hosted-track status and security contract

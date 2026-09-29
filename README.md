@@ -159,61 +159,27 @@ Humans and services arrive through two front doors — the **admin/chat UI** (Cl
 
 Three core services run as peers on the cluster: **Gateway** (governed Bedrock access + admin API), **Agent Factory** (the agent runtime, fed by the webhook / conversational / ARC front doors), and **Agent Context** (code intelligence behind a single MCP endpoint, fronting OpenViking, Sourcebot, DeepWiki, and a LiteLLM proxy). **Domain apps** (e.g. cyber/malware) bring their own workers and reach the other services only through the harness.
 
-## Prerequisites
-
-- AWS CLI v2 with admin access
-- Terraform >= 1.14
-- Docker
-- kubectl + Helm v3
-- Node.js >= 22
-- Python >= 3.12
-- GitHub CLI (`gh`)
-
-> **Authoritative deploy guide:** [`docs/adp-platform-deployment/deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md) is the verified, phase-by-phase procedure maintained against real end-to-end runs. Start there; the sections below are the orientation.
-
 ## Deploying
 
-> **The authoritative, verified procedure is [`docs/adp-platform-deployment/deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md)** — maintained against real end-to-end runs. Follow it for the exact phase sequence, commands, verification, and gotchas. The summary below is orientation only; don't deploy from it.
+Follow the **[deployment quickstart](docs/adp-platform-deployment/deploy-quickstart.md)**
+for prerequisites, account verification, installation and upgrades.
 
-**There is no upfront GitHub setup.** Everything keys off the AWS account your active profile resolves to. For the agent path, GitHub is wired at the **end** (UI flow: Settings → Connections → "Set up GitHub App"; or CLI fallback `register-github-app.sh`); gateway-only needs no GitHub at all.
+```bash
+# Install a published release:
+./deploy.sh --aws-profile customer --release v1.2.0
 
-The phases at a glance (each step idempotent and re-runnable):
+# Upgrade an existing deployment:
+./deploy.sh --aws-profile customer --update --release v1.2.0
+```
 
-| Phase | What it does | Script | Needed for |
-|------:|--------------|--------|-----------|
-| 1 | Terraform state backend (S3 + DynamoDB) | `platform/scripts/bootstrap.sh` | All |
-| 2 | Environment / preflight validation | `platform/scripts/preflight-check.sh` | All |
-| 3 | Platform infra (VPC, EKS, ECR, IAM) | terraform / `deploy-all.sh` | All |
-| 4 | Gateway infra (RDS, Redis, Cognito, CloudFront, S3) | terraform / `deploy-all.sh` | Gateway |
-| 5 | Gateway backend on EKS (image → ECR → pods) | terraform / `deploy-all.sh` | Gateway |
-| 6 | Frontend (React → S3 → CloudFront) + CFN template upload | `modules/gateway/scripts/deploy-frontend.sh` | Gateway |
-| 6b | Gateway second pass — wire ALB (MOCK API GW → real routes) | `wire-gateway-alb.sh --apply` | Gateway |
-| 6c | Broker Lambda code (real GitHub-login handler) | `modules/gateway/scripts/deploy-broker.sh` | Login |
-| 6d | Seed the first admin (org/user/role) | `modules/gateway/scripts/bootstrap-admin.sh` | Login |
-| 7 | Webhook agent stack + agent-runtime image (warm pool + image-prepull) | `webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
-| 8 | Bedrock model access (⚠️ human — console *Subscribe*, no CLI) | *(AWS console)* | Agents |
-| 9 | Create + wire the GitHub App (⚠️ human browser step) | **UI:** Settings → Connections → "Set up GitHub App" (as `platform_admin`). **CLI fallback:** `register-github-app.sh <org>` | Agents |
-| 10 | End-to-end smoke test | *(curl + `@agent-developer` task)* | Verify |
+Replace the profile and release tag with your own values. Add `--dry-run` to
+preview the target and release. GitHub App setup happens after installation in
+Settings → Connections. Existing upgrades preserve that connection.
 
-Phase numbering matches the canonical sequence in [`deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md). The **ADP-managed** (pipeline) equivalent of these same phases — run as GitHub Actions workflows (`platform-infra-apply.yml`, `gateway-deploy.yml`, `webhook-ingress-deploy.yml`, …) instead of local scripts — is captured in the per-deploy-instance runbook (e.g. issue #1320). Same phases, two execution mechanisms; don't mix them in one run.
-
-**`deploy-all.sh` chains Phases 1–6 (incl. the 6b ALB pass) but NOT 6c, 6d, 7, 8, 9.** Why: Terraform ships *placeholders* for things a push-triggered CI workflow normally publishes (the MOCK API Gateway body, a 503 broker Lambda stub, `:latest` image refs, the webhook Lambda zip). A fresh manual deploy fires none of those, so `deploy-all.sh` alone leaves you without working login, a first admin, or the agent path — run the 6c/6d/7/9 scripts and enable Bedrock access (Phase 8) manually (deploy-quickstart.md sequences them; don't skip them).
-
-`deploy-all.sh` flags:
-
-| Flag | Effect |
-|------|--------|
-| `--gateway-only` | platform + gateway only (no GitHub needed) |
-| `--agent-context-only` | platform + Agent Context (code intelligence) |
-| `--skip-frontend` | skip the React frontend build |
-| `--local` | build images with local Docker instead of CodeBuild |
-| `--destroy` | tear down (reverse order: agent-context → agent-factory → gateway → platform) |
-
-### Deploy with your AI agent
-
-Open the repo in any AI editor (Claude Code, Kiro, Cursor) and say *"Read the deploy-with-agent guide and deploy this platform."* The agent confirms your target AWS account, then executes the phases, verifying each before moving on, and only stops for genuine input (AWS account choice, the GitHub App browser steps).
-
-→ **[`docs/adp-platform-deployment/deploy-with-agent.md`](docs/adp-platform-deployment/deploy-with-agent.md)** is the canonical agent-deploy guide. `AGENTS.md`, `CLAUDE.md`, and `.kiro/steering/deployment.md` all point to it, so there's one source of truth.
+For deployment by an AI agent, use the
+[agent instructions](docs/adp-platform-deployment/deploy-with-agent.md).
+For advanced operations and internal release promotion, see the
+[deployment documentation index](docs/adp-platform-deployment/README.md).
 
 ## Directory Structure
 
@@ -286,8 +252,8 @@ adp/
 |-----|----------|
 | **Architecture (mental model)** | [ARCHITECTURE.md](ARCHITECTURE.md) — the four categories, the two skins, where new work goes |
 | **Operator Onboarding Walkthrough (start here)** | [docs/onboarding-walkthrough.md](docs/onboarding-walkthrough.md) — day-1 → week-1 path: setup, first agent run, governance, troubleshooting, best practices |
-| **Deploy Quick Start (authoritative)** | [docs/adp-platform-deployment/deploy-quickstart.md](docs/adp-platform-deployment/deploy-quickstart.md) — verified phase-by-phase procedure |
-| Self-Managed Deploy (full reference) | [docs/adp-platform-deployment/self-managed-deploy.md](docs/adp-platform-deployment/self-managed-deploy.md) |
+| **Deploy Quick Start (authoritative)** | [docs/adp-platform-deployment/deploy-quickstart.md](docs/adp-platform-deployment/deploy-quickstart.md) — install, upgrade and verify |
+| Deployment phase reference | [docs/adp-platform-deployment/deployment-reference.md](docs/adp-platform-deployment/deployment-reference.md) |
 | Gateway README | [modules/gateway/README.md](modules/gateway/README.md) |
 | Gateway OpenAPI Spec | [modules/gateway/docs/openapi.yaml](modules/gateway/docs/openapi.yaml) |
 | Agent Factory README | [modules/agent-factory/README.md](modules/agent-factory/README.md) |

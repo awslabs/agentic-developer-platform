@@ -67,46 +67,13 @@ Shared infrastructure: `platform/infra/` (VPC, EKS, ECR, IAM).
 
 ## Deployment Playbook
 
-> **The canonical agent-deploy guide is
-> [`docs/adp-platform-deployment/deploy-with-agent.md`](docs/adp-platform-deployment/deploy-with-agent.md)**
-> (the agent-behavior layer — phase table, placeholder-artifact rule, state
-> file, when to call the user). It defers to **[`deploy-quickstart.md`](docs/adp-platform-deployment/deploy-quickstart.md)**,
-> the authoritative verified procedure (phase sequence, exact scripts, gotchas;
-> maintained against real end-to-end runs).
-> `docs/adp-platform-deployment/self-managed-deploy.md` is the longer canonical
-> reference; `deployment-manifest.md` is the resource→validation mapping. The
-> notes below are CLAUDE-specific behaviors on top of those docs.
-
-When driving a deployment, your job is to **execute the phases in
-deploy-quickstart.md in order**, verifying each before moving on. Key agent
-behaviors that still apply on top of that doc:
-
-1. **Confirm the target AWS account first.** Everything keys off the account
-   `aws sts get-caller-identity` resolves to (via the active `AWS_PROFILE`).
-   Show the account + ARN and get the user's confirmation before Phase 1. There
-   is **no upfront GitHub setup** — for the webhook agent path GitHub is wired at
-   the END (UI flow: Settings → Connections → "Set up GitHub App"; or CLI
-   fallback `register-github-app.sh`), and gateway-only needs no GitHub at all.
-2. **Maintain `.adp-deploy-state.json`** (see Deployment State above): update it
-   after each phase; on startup, resume from the first non-complete phase.
-   Note: a committed copy from a fresh clone is NOT a record of your deploy —
-   verify against real AWS state, don't trust its statuses.
-3. **Keep the user informed** between phases with brief status; only stop for
-   genuine input (AWS account choice and the GitHub App setup — UI flow
-   preferred, CLI fallback for headless; see the phase numbering in
-   deploy-quickstart.md). Bedrock model access is NOT a stop: it's automated
-   via `platform/scripts/enable-bedrock-models.sh` (CLI-only; runs inside
-   deploy-all.sh and platform-infra-apply.yml).
-4. **The "placeholder artifact" rule:** Terraform ships placeholders for things a
-   separate push-triggered CI workflow normally publishes (broker Lambda code,
-   agent-runtime image, webhook Lambda zip, the ALB-gated API GW body). A fresh
-   manual deploy fires none of those, so the stage-by-stage scripts
-   (`wire-gateway-alb.sh --apply`, `deploy-broker.sh`, `deploy-webhook-ingress.sh`,
-   `register-github-app.sh`) are the manual equivalents. deploy-quickstart.md
-   sequences them; don't skip them.
-
-The phase summary (timing/scope) and per-phase commands, verification, and
-troubleshooting are all in deploy-quickstart.md — do not duplicate them here.
+Follow [deploy-with-agent.md](docs/adp-platform-deployment/deploy-with-agent.md)
+for deployment behavior, account confirmation, journal handling, verification,
+and when to involve the user. Use the
+[quickstart](docs/adp-platform-deployment/deploy-quickstart.md) for the customer
+launcher and the [phase reference](docs/adp-platform-deployment/deployment-reference.md)
+for manual diagnosis. Keep deployment procedures in those documents rather
+than duplicating them here.
 
 > **Deploy-path note:** earlier versions of this file inlined a 10-phase playbook
 > with an upfront "Phase 0: GitHub setup" (`setup-org.sh` + 3 org-owned apps) that
