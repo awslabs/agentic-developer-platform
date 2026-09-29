@@ -253,7 +253,7 @@ class TestAutoRegisterGuard:
             "created_via": "",
         }
 
-        result = _auto_register_installation(555, "acme")
+        result = _auto_register_installation(555, "different-github-org")
 
         # Allowed, but via the non-authoritative fallback path.
         assert result.tenant_id == "acme"

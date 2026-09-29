@@ -1,49 +1,8 @@
-"""Issue #4072 (#5, CRITICAL): the install callback must not route an install into
-a tenant the caller has no standing in.
+"""GitHub account metadata must never redirect writes into another ADP organization.
 
-The vulnerability
------------------
-``install_callback`` is deliberately unauthenticated: GitHub redirects the user's
-browser to it after they complete an installation, so there is no bearer token to
-check. Its only authenticator is the one-time nonce minted at install-start, and
-the nonce binds the **caller**.
-
-The **target tenant**, however, was re-derived from data the caller supplies —
-``installation_id`` → GitHub account → ``github_org_id`` → matching
-``organizations`` row. Anyone who could make that chain land on a victim tenant
-had every downstream write performed against the victim:
-
-* a ``tenant_memberships`` row in the victim tenant, with ``role='org_admin'``
-  (#4006 makes the installer an org admin by contract),
-* their active tenant switched INTO the victim workspace,
-* the victim tenant's GitHub App secret seeded,
-* the victim's ``channel_tenant_map`` routing row rewritten,
-* the victim's DynamoDB identity-index row rewritten.
-
-The existing ``_attach_org_installation`` cross-tenant guard could not fire: it
-compared against the tenant id that had *already* been overwritten with the
-victim's.
-
-The fix (decision D1, option (b))
----------------------------------
-#2952's org-tenant routing is kept — a genuine GitHub org install SHOULD land in
-the org's shared workspace so co-workers share it — but is made conditional on the
-caller already having STANDING in that tenant: it is their own tenant, or they
-already hold a ``tenant_memberships`` row in it. Standing is checked BEFORE any
-write, so a refused install leaves the victim byte-identical.
-
-Gate discipline (sub-EPIC #4068)
---------------------------------
-Every test below asserts the OUTCOME in the victim's tenant — no membership row,
-no ``org_admin`` grant, no active-tenant switch, no secret seed, no identity-index
-row — not that a particular guard function ran. Deleting the guard makes these
-fail; stubbing it out to a no-op also makes them fail. A "was the guard called"
-assertion would pass in both cases, which is the #4046 failure mode this sub-EPIC
-exists to reject.
-
-The complementary "legitimate flows still work" cases live in
-``test_org_tenant_shell.py`` (org member routes to the org tenant; first installer
-of a brand-new org gets their membership), alongside the #2952 tests they amend.
+The selected organization stays authoritative even for matching provider IDs or
+colliding names. Existing installation ownership is tested separately in the
+real-route setup identity tests.
 """
 
 from __future__ import annotations
@@ -218,28 +177,26 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError, match="not a member of"):
-                await install_callback(
-                    installation_id=INSTALL_ID,
-                    setup_action="install",
-                    state="jti-4072",
-                    db=db_session,
-                    github_client=_github_client(),
-                )
+            await install_callback(
+                installation_id=INSTALL_ID,
+                setup_action="install",
+                state="jti-4072",
+                db=db_session,
+                github_client=_github_client(),
+            )
 
     async def test_no_membership_is_created_in_the_victim_tenant(self, db_session: AsyncSession, attacker, victim, _no_aws):
         """The privilege-escalation payload: an org_admin row in someone else's tenant."""
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError, match="not a member of"):
-                await install_callback(
-                    installation_id=INSTALL_ID,
-                    setup_action="install",
-                    state="jti-4072",
-                    db=db_session,
-                    github_client=_github_client(),
-                )
+            await install_callback(
+                installation_id=INSTALL_ID,
+                setup_action="install",
+                state="jti-4072",
+                db=db_session,
+                github_client=_github_client(),
+            )
 
         rows = list((await db_session.execute(select(TenantMembership).where(TenantMembership.tenant_id == VICTIM_TENANT))).scalars().all())
         assert rows == []
@@ -249,14 +206,13 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError, match="not a member of"):
-                await install_callback(
-                    installation_id=INSTALL_ID,
-                    setup_action="install",
-                    state="jti-4072",
-                    db=db_session,
-                    github_client=_github_client(),
-                )
+            await install_callback(
+                installation_id=INSTALL_ID,
+                setup_action="install",
+                state="jti-4072",
+                db=db_session,
+                github_client=_github_client(),
+            )
 
         active = list(
             (
@@ -283,16 +239,15 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError, match="not a member of"):
-                await install_callback(
-                    installation_id=INSTALL_ID,
-                    setup_action="install",
-                    state="jti-4072",
-                    db=db_session,
-                    github_client=_github_client(),
-                )
+            await install_callback(
+                installation_id=INSTALL_ID,
+                setup_action="install",
+                state="jti-4072",
+                db=db_session,
+                github_client=_github_client(),
+            )
 
-        _no_aws.assert_not_awaited()
+        _no_aws.assert_awaited_once_with(installation_id=INSTALL_ID, org_id=ATTACKER_TENANT)
 
     async def test_no_tenant_secret_is_seeded_for_the_victim(self, db_session: AsyncSession, attacker, victim, _no_aws):
         """Seeding copies App credentials into the victim tenant's secret path."""
@@ -302,32 +257,30 @@ class TestCrossTenantTakeoverRefused:
             "src.admin.connections.tenant_secret.seed_tenant_github_app_secret",
             new_callable=AsyncMock,
         ) as mock_seed:
-            with pytest.raises(PermissionError, match="not a member of"):
-                await install_callback(
-                    installation_id=INSTALL_ID,
-                    setup_action="install",
-                    state="jti-4072",
-                    db=db_session,
-                    github_client=_github_client(),
-                )
+            await install_callback(
+                installation_id=INSTALL_ID,
+                setup_action="install",
+                state="jti-4072",
+                db=db_session,
+                github_client=_github_client(),
+            )
 
-        mock_seed.assert_not_awaited()
+        mock_seed.assert_awaited_once_with(ATTACKER_TENANT, INSTALL_ID)
 
     async def test_victim_channel_routing_is_untouched(self, db_session: AsyncSession, attacker, victim, _no_aws):
         """No routing row may be created for, or re-pointed at, the victim."""
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError, match="not a member of"):
-                await install_callback(
-                    installation_id=INSTALL_ID,
-                    setup_action="install",
-                    state="jti-4072",
-                    db=db_session,
-                    github_client=_github_client(),
-                )
+            await install_callback(
+                installation_id=INSTALL_ID,
+                setup_action="install",
+                state="jti-4072",
+                db=db_session,
+                github_client=_github_client(),
+            )
 
-        rows = list((await db_session.execute(select(ChannelTenantMap))).scalars().all())
+        rows = list((await db_session.execute(select(ChannelTenantMap).where(ChannelTenantMap.org_id == VICTIM_TENANT))).scalars().all())
         assert rows == []
 
     async def test_victim_installation_id_list_is_untouched(self, db_session: AsyncSession, attacker, victim, _no_aws):
@@ -335,14 +288,13 @@ class TestCrossTenantTakeoverRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock):
-            with pytest.raises(PermissionError, match="not a member of"):
-                await install_callback(
-                    installation_id=INSTALL_ID,
-                    setup_action="install",
-                    state="jti-4072",
-                    db=db_session,
-                    github_client=_github_client(),
-                )
+            await install_callback(
+                installation_id=INSTALL_ID,
+                setup_action="install",
+                state="jti-4072",
+                db=db_session,
+                github_client=_github_client(),
+            )
 
         refreshed = (await db_session.execute(select(Organization).where(Organization.id == VICTIM_TENANT))).scalar_one()
         assert (refreshed.github_installation_ids or []) == []
@@ -378,20 +330,19 @@ class TestSlugCollisionBypassRefused:
         await _write_nonce(db_session)
 
         with patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new_callable=AsyncMock) as mock_seed:
-            with pytest.raises(PermissionError, match="not a member of"):
-                await install_callback(
-                    installation_id=INSTALL_ID,
-                    setup_action="install",
-                    state="jti-4072",
-                    db=db_session,
-                    # "Target-Workspace" slugifies to the existing "target-workspace".
-                    github_client=_github_client(account_login="Target-Workspace", account_github_id=55550001),
-                )
+            await install_callback(
+                installation_id=INSTALL_ID,
+                setup_action="install",
+                state="jti-4072",
+                db=db_session,
+                # "Target-Workspace" slugifies to the existing "target-workspace".
+                github_client=_github_client(account_login="Target-Workspace", account_github_id=55550001),
+            )
 
         rows = list((await db_session.execute(select(TenantMembership).where(TenantMembership.tenant_id == "target-workspace"))).scalars().all())
         assert rows == []
-        mock_seed.assert_not_awaited()
-        _no_aws.assert_not_awaited()
+        mock_seed.assert_awaited_once_with(ATTACKER_TENANT, INSTALL_ID)
+        _no_aws.assert_awaited_once_with(installation_id=INSTALL_ID, org_id=ATTACKER_TENANT)
 
     async def test_brand_new_org_shell_still_onboards_its_first_installer(self, db_session: AsyncSession, attacker, _no_aws):
         """#2952 preserved: a shell this install CREATES has no victim to protect.
@@ -413,15 +364,8 @@ class TestSlugCollisionBypassRefused:
 
         assert result["success"] is True
 
-        created = (await db_session.execute(select(Organization).where(Organization.id == "brand-new-org"))).scalar_one()
-        assert created.github_org_id == "66660001"
-
-        membership = (
-            await db_session.execute(
-                select(TenantMembership).where(
-                    TenantMembership.user_id == "attacker-user-001",
-                    TenantMembership.tenant_id == "brand-new-org",
-                )
-            )
-        ).scalar_one()
-        assert membership.role == "org_admin"
+        assert await db_session.get(Organization, "brand-new-org") is None
+        mapping = (await db_session.scalars(select(ChannelTenantMap))).one()
+        assert mapping.org_id == ATTACKER_TENANT
+        memberships = (await db_session.scalars(select(TenantMembership))).all()
+        assert all(m.tenant_id == ATTACKER_TENANT for m in memberships)

@@ -259,42 +259,13 @@ def _auto_register_installation(
                 tenant_id = pg["tenant_id"]
                 authoritative = True
             else:
-                # Allowed, but NOT authoritatively: the gate could not be
-                # evaluated (gateway unreachable/unconfigured, or provenance
-                # absent because the gateway predates the field). Fail OPEN so a
-                # gateway outage never becomes "reject every new installation",
-                # but LOUD — and mark the result non-authoritative so the caller
-                # skips credential provisioning.
-                #
-                # Fallback rationale (unchanged from before the gate): if the
-                # gateway is unreachable (SigV4 auth on API GW, fresh deploy) or
-                # the tenant isn't in Postgres yet (user-namespace installs, new
-                # orgs), register using the org_login directly. This covers a user
-                # installing the app on their personal account — no org-tenant
-                # shell exists in Postgres, but the install is legitimate. The
-                # user still needs approval before they can trigger agents.
-                logger.warning(
-                    "AutoRegisterGateUnavailable: installation_id=%d org_login=%s "
-                    "reason=%s (state=%s, gateway reason=%s) — failing OPEN, "
-                    "registering with org_login as tenant_id, NOT provisioning "
-                    "per-tenant credentials",
-                    installation_id,
-                    org_login,
-                    gate_reason,
-                    state or "unknown",
-                    (pg or {}).get("reason", ""),
-                )
+                # Admission already resolved this installation through ADP.
+                # Provider account names are metadata, never tenant identifiers.
                 _emit_metric("AutoRegisterGateUnavailable")
-                tenant_id = org_login
+                tenant_id = canonical["tenant_id"]
                 authoritative = False
         else:
-            # Step 4: idempotent refresh of an auto_registered row. Grandfathering
-            # (#2724 design item 5): the gate applies to NEW registrations only,
-            # so rows written before it existed keep working untouched — no
-            # gateway call, no provenance check. But the refresh is not
-            # authoritative on its own: an auto_registered row may itself be a
-            # pre-gate org_login fallback, so we do not re-seed credentials off it.
-            tenant_id = existing.get("org_id") or org_login
+            tenant_id = canonical["tenant_id"]
             authoritative = False
 
         now = datetime.now(UTC).isoformat()

@@ -368,7 +368,7 @@ async def test_platform_register_uses_global_canonical_authority_not_workspace_r
     state = result.json()["state"]
     assert (await db.get(MagicLinkNonce, state)).target_user_id == setup["user"].id
     response = await register_response(db, setup, state)
-    assert response.headers["location"] == "https://github.com/apps/inert-new-app/installations/new"
+    assert response.headers["location"] == "/settings/connections?github_app=registered"
     setup["secrets"].assert_awaited_once()
     assert (await db.get(MagicLinkNonce, state)).consumed_at is not None
 
@@ -414,12 +414,53 @@ async def test_foreign_installation_claim_denies_without_consuming_state(db, set
     assert mapping.org_id == "other-workspace"
 
 
-async def test_foreign_org_standing_denial_does_not_consume_state(db, setup):
+async def test_github_org_metadata_does_not_override_selected_organization(db, setup):
     setup["metadata"]["account"] = {"id": 4242, "login": "inert-org", "type": "Organization"}
     db.add(Organization(id="other-workspace", name="Other", github_org_id="4242"))
     await db.commit()
     await prove(db, setup)
     state = (await start(setup)).json()["state_token"]
     response = await callback(setup, state)
-    assert "tenant_conflict" in response.headers["location"]
-    await untouched(db, setup, state)
+    assert "success=1" in response.headers["location"]
+    assert (await db.scalars(select(ChannelTenantMap))).one().org_id == "org-acme"
+    assert (await db.get(Organization, "other-workspace")).github_installation_ids == []
+    setup["seed"].assert_awaited_once_with("org-acme", 123456)
+    setup["index"].assert_awaited_once_with(installation_id=123456, org_id="org-acme")
+
+
+@pytest.mark.parametrize("auto_create", ["true", "false"])
+@pytest.mark.parametrize("provenance", [None, "operator", "register_flow", "install_autocreate"])
+async def test_public_install_requires_explicit_adp_selection_without_writes(db, setup, monkeypatch, auto_create, provenance):
+    monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", auto_create)
+    setup["metadata"]["account"] = {"id": 4242, "login": "inert-org", "type": "Organization"}
+    if provenance:
+        db.add(Organization(id="inert-org", name="GitHub name collision", github_org_id="4242", created_via=provenance))
+        await db.commit()
+    orgs_before = [(o.id, o.github_installation_ids) for o in (await db.scalars(select(Organization))).all()]
+    response = await callback(setup, "")
+    assert "Sign in to ADP, select the organization" in response.text
+    assert (await db.scalars(select(ChannelTenantMap))).all() == []
+    assert [(o.id, o.github_installation_ids) for o in (await db.scalars(select(Organization))).all()] == orgs_before
+    setup["seed"].assert_not_awaited()
+    setup["index"].assert_not_awaited()
+    assert setup["calls"] == []
+
+
+@pytest.mark.parametrize("auto_create", ["true", "false"])
+@pytest.mark.parametrize("other_membership", [True, False])
+async def test_org_install_keeps_selection_even_with_legacy_matching_org(db, setup, monkeypatch, auto_create, other_membership):
+    monkeypatch.setenv("ORG_TENANT_AUTO_CREATE", auto_create)
+    setup["metadata"]["account"] = {"id": 4242, "login": "inert-org", "type": "Organization"}
+    db.add(Organization(id="inert-org", name="Other ADP organization", github_org_id="4242"))
+    if other_membership:
+        db.add(TenantMembership(user_id=setup["user"].id, tenant_id="inert-org", role="member", is_active=True))
+    await db.commit()
+    await prove(db, setup)
+    before = [(m.tenant_id, m.role, m.is_active) for m in (await db.scalars(select(TenantMembership))).all()]
+    state = (await start(setup)).json()["state_token"]
+    response = await callback(setup, state)
+    assert "success=1" in response.headers["location"]
+    assert "switched_from" not in response.headers["location"]
+    assert (await db.scalars(select(ChannelTenantMap))).one().org_id == "org-acme"
+    assert (await db.get(Organization, "inert-org")).github_installation_ids == []
+    assert [(m.tenant_id, m.role, m.is_active) for m in (await db.scalars(select(TenantMembership))).all()] == before

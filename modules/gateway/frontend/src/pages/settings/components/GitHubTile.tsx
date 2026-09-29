@@ -26,6 +26,7 @@ interface GitHubTileProps {
   connections: GitHubConnectionItem[];
   isLoading: boolean;
   onInstall: () => void;
+  onConnectExisting?: (installationId: number) => void;
   onDisconnect: (installationId: number) => Promise<void>;
   isInstalling: boolean;
   /** Whether the current user is a platform admin. */
@@ -67,6 +68,7 @@ export function GitHubTile({
   connections,
   isLoading,
   onInstall,
+  onConnectExisting,
   onDisconnect,
   isInstalling,
   isPlatformAdmin,
@@ -80,6 +82,10 @@ export function GitHubTile({
   platformVerification = null,
   onRevalidateApp,
 }: GitHubTileProps) {
+  const [existingInstallationId, setExistingInstallationId] = useState('');
+  const parsedInstallationId = Number(existingInstallationId);
+  const validInstallationId = /^\d+$/.test(existingInstallationId) && Number.isSafeInteger(parsedInstallationId) && parsedInstallationId > 0;
+
   // For non-platform-admins, appStatus is null (they can't call the status endpoint).
   // In that case, assume registered so the existing install UI is shown.
   // Only show "not registered" when we have an explicit false from the API.
@@ -113,7 +119,7 @@ export function GitHubTile({
               {isRegistered === undefined
                 ? 'GitHub App status could not be determined.'
                 : isRegistered
-                  ? 'Install the ADP Agent app on your GitHub org to trigger agents from labels and @-mentions.'
+                  ? 'Connect GitHub repositories to the selected ADP organization to trigger agents from labels and @-mentions.'
                   : 'Register a GitHub App to enable agent triggers and integrations.'}
             </p>
           </div>
@@ -136,6 +142,25 @@ export function GitHubTile({
           </Button>
         )}
       </div>
+
+      {isRegistered === true && onConnectExisting && (
+        <details className="mt-4 text-sm text-gray-700 dark:text-gray-300">
+          <summary className="cursor-pointer">Already installed on GitHub?</summary>
+          <p className="my-2">
+            Select the ADP organization that should use these repositories first.
+            Enter the installation ID from GitHub Settings → Applications → Configure
+            (the number at the end of the URL). Connecting does not grant ADP membership.
+          </p>
+          <label htmlFor="github-existing-installation">GitHub installation ID</label>
+          <input id="github-existing-installation" inputMode="numeric" value={existingInstallationId}
+            onChange={(event) => setExistingInstallationId(event.target.value.trim())}
+            className="mx-2 rounded border p-2 dark:bg-gray-800" />
+          <Button size="sm" disabled={!validInstallationId || isInstalling || isLoading}
+            onClick={() => onConnectExisting(parsedInstallationId)}>
+            Connect to selected ADP organization
+          </Button>
+        </details>
+      )}
 
       {/* Body — varies by registration state + role */}
       {isLoading && !appStatus ? (
@@ -317,18 +342,11 @@ function PlatformVerificationPanel({
 }
 
 // ---------------------------------------------------------------------------
-// deriveGroupDisplayName — use the GitHub org login (account_login) from the
-// first connection in the group rather than the internal tenant_name slug.
-// Falls back to tenant_name (internal slug) only if no connections have an
-// account_login (shouldn't happen in practice).
+// Group names describe ADP organizations; GitHub account names stay on cards.
 // ---------------------------------------------------------------------------
 
 function deriveGroupDisplayName(conns: GitHubConnectionItem[]): string {
-  // Prefer the GitHub org display name (account_login) from the first connection
-  const firstLogin = conns.find((c) => c.account_login)?.account_login;
-  if (firstLogin) return firstLogin;
-  // Fallback to the API-provided tenant_name (internal slug)
-  return conns[0]?.tenant_name ?? 'Unknown';
+  return conns[0]?.tenant_name ?? conns[0]?.tenant_id ?? 'Unknown';
 }
 
 // ---------------------------------------------------------------------------

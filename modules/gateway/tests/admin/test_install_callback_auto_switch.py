@@ -1,17 +1,6 @@
-"""Unit tests for install-callback auto-switch active tenant.
+"""GitHub installation must preserve ADP organization selection and active membership.
 
-Issue #3072: After installing the GitHub App on an org, the installer's
-active tenant is automatically switched to the installed org so they land
-IN the workspace. The redirect includes `installed` + `switched_from` query
-params so the frontend can show a confirmation banner.
-
-Tests:
-  - Org install → active membership flipped to the installed org.
-  - Reinstall while org already active → no-op, no error.
-  - Personal-account install → no switch.
-  - No-nonce (public) install → no switch, no crash.
-  - Redirect URL carries `installed` + `switched_from`.
-"""
+Legacy redirect parameters remain compatible, but connecting never switches organizations."""
 
 from __future__ import annotations
 
@@ -181,7 +170,7 @@ class TestInstallCallbackAutoSwitch:
     """Issue #3072: install_callback auto-switches the installer's active
     tenant to the newly-installed org."""
 
-    async def test_org_install_switches_active_tenant(self, db_session: AsyncSession, org_in_db, previous_org):
+    async def test_org_install_preserves_active_tenant(self, db_session: AsyncSession, org_in_db, previous_org):
         """Org install with a different previously-active workspace →
         active membership flipped to the installed org."""
         user, _ = await _seed_user_and_nonce(db_session)
@@ -208,15 +197,15 @@ class TestInstallCallbackAutoSwitch:
         )
 
         assert result["success"] is True
-        assert result["switched_from"] == "org-previous-001"
+        assert result["switched_from"] is None
 
         # Verify: target org is now active
         target_stmt = select(TenantMembership).where(
             TenantMembership.user_id == "user-installer-001",
             TenantMembership.tenant_id == "org-target-001",
         )
-        target_membership = (await db_session.execute(target_stmt)).scalar_one()
-        assert target_membership.is_active is True
+        target_membership = (await db_session.execute(target_stmt)).scalar_one_or_none()
+        assert target_membership is None
 
         # Verify: previous org is no longer active
         prev_stmt = select(TenantMembership).where(
@@ -224,7 +213,7 @@ class TestInstallCallbackAutoSwitch:
             TenantMembership.tenant_id == "org-previous-001",
         )
         prev_membership = (await db_session.execute(prev_stmt)).scalar_one()
-        assert prev_membership.is_active is False
+        assert prev_membership.is_active is True
 
         # Verify: exactly one active membership
         active_stmt = select(TenantMembership).where(
@@ -233,7 +222,7 @@ class TestInstallCallbackAutoSwitch:
         )
         active_memberships = (await db_session.execute(active_stmt)).scalars().all()
         assert len(active_memberships) == 1
-        assert active_memberships[0].tenant_id == "org-target-001"
+        assert active_memberships[0].tenant_id == "org-previous-001"
 
     async def test_reinstall_while_already_active_is_noop(self, db_session: AsyncSession, org_in_db):
         """Reinstall when the org is already active → no-op, switched_from is None."""
@@ -330,8 +319,8 @@ class TestInstallCallbackAutoSwitch:
             TenantMembership.user_id == "user-installer-001",
             TenantMembership.tenant_id == "org-target-001",
         )
-        membership = (await db_session.execute(stmt)).scalar_one()
-        assert membership.is_active is True
+        membership = (await db_session.execute(stmt)).scalar_one_or_none()
+        assert membership is None
 
 
 # ---------------------------------------------------------------------------

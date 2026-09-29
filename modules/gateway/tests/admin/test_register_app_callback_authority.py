@@ -331,7 +331,7 @@ class TestRegisterAppCallbackAllowsPlatformAdmin:
             redirect = await svc.register_app_callback(code="gh-code", state=state, db=db)
 
         store.assert_awaited_once()
-        assert "acme-adp-agent-platform" in redirect
+        assert redirect.startswith("/settings/connections?github_app=registered")
 
         nonce = await db.get(MagicLinkNonce, state)
         assert nonce is not None and nonce.consumed_at is not None, "successful setup must consume its single-use state token"

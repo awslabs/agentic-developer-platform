@@ -1035,6 +1035,7 @@ class TestMembershipFallbackRouteIntegration:
             FakeResult(rows=[]),  # resolver: no quarantined conflict
             FakeResult(rows=[("acme-corp",)]),  # resolver: channel_tenant_map claim → caller's tenant
             FakeResult(rows=[]),  # resolver: no additional organizations claim
+            FakeResult(rows=[]),  # resolver: no per-connection provider metadata on this legacy claim
         ]
 
         with patch(

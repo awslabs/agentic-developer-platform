@@ -269,7 +269,8 @@ async def github_install_callback(
                     "<html><body><h1>Installation needs attention</h1>"
                     f"<p>{escape(detail)}</p>"
                     "<p>The app is installed on GitHub, but this ADP deployment has not "
-                    "finished connecting it. Contact your platform operator and quote "
+                    "finished connecting it. Open Settings → Connections in the selected ADP organization "
+                    "and choose Already installed on GitHub? using "
                     f"installation ID <code>{installation_id}</code>.</p></body></html>"
                 ),
                 status_code=200,

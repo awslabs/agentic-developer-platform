@@ -443,15 +443,11 @@ describe('GitHubTile', () => {
       connections: multiTenantConnections,
     };
 
-    it('uses GitHub org display name (account_login) as group header, not internal slug', () => {
+    it('uses ADP organization names as group headers and keeps GitHub account names on cards', () => {
       render(<GitHubTile {...props} />);
-
-      // Should show account_login "aws-innovate" as a group header, NOT internal tenant_name "platform-admin"
-      // account_login appears both in group header AND InstallationCard, so use getAllByText
-      const awsInnovateElements = screen.getAllByText('aws-innovate');
-      expect(awsInnovateElements.length).toBeGreaterThanOrEqual(1);
-      // The internal slug "platform-admin" should never appear as user-visible text
-      expect(screen.queryByText('platform-admin')).not.toBeInTheDocument();
+      expect(screen.getByText('platform-admin')).toBeInTheDocument();
+      expect(screen.getByText('secondary-workspace')).toBeInTheDocument();
+      expect(screen.getAllByText('aws-innovate').length).toBeGreaterThanOrEqual(1);
     });
 
     it('shows "Viewing" badge for non-active workspace groups (not "Read-only")', () => {
@@ -474,5 +470,24 @@ describe('GitHubTile', () => {
       const textContent = container.textContent ?? '';
       expect(textContent.toLowerCase()).not.toContain('tenant');
     });
+  });
+});
+
+
+describe('Connect an existing GitHub installation', () => {
+  it('requires a positive installation ID and sends it to the authenticated connection flow', async () => {
+    const onConnectExisting = vi.fn();
+    const user = userEvent.setup();
+    render(<GitHubTile {...defaultProps} appStatus={registeredStatus} onConnectExisting={onConnectExisting} />);
+    await user.click(screen.getByText('Already installed on GitHub?'));
+    const input = screen.getByLabelText('GitHub installation ID');
+    const button = screen.getByRole('button', { name: 'Connect to selected ADP organization' });
+    expect(button).toBeDisabled();
+    await user.type(input, '-1');
+    expect(button).toBeDisabled();
+    await user.clear(input);
+    await user.type(input, '166095526');
+    await user.click(button);
+    expect(onConnectExisting).toHaveBeenCalledWith(166095526);
   });
 });

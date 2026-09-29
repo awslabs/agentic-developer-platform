@@ -417,9 +417,8 @@ class TestInstallCallbackDispatch:
         offline_side_effects.index.assert_awaited_once_with(installation_id=888, org_id="org-paid-002")
         offline_side_effects.provider.get_slug.assert_called_once()
         offline_side_effects.bot.assert_awaited_once()
-        offline_side_effects.writer.update_user_membership_orgs.assert_awaited_once_with(
-            provider_user_id="12345", member_org_ids=["org-paid-002"], provider="github"
-        )
+        # Connecting GitHub must not grant or project a new human membership.
+        offline_side_effects.writer.update_user_membership_orgs.assert_not_awaited()
 
         # Verify org mapping was created (not personal mapping)
         from sqlalchemy import select

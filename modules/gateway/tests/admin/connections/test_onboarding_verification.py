@@ -418,12 +418,10 @@ async def test_no_nonce_with_no_org_returns_non_success_and_logs(db_session: Asy
 
     assert result["success"] is False
     assert result["no_nonce"] is True
-    assert result["error_code"] == "org_not_resolved"
+    assert result["error_code"] == "organization_selection_required"
     assert result["error_message"]
 
-    failures = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert failures, "a silent partial must not be silent"
-    assert any("no_nonce_install_failed" in r.getMessage() for r in caplog.records)
+    assert any("no_nonce_install_selection_required" in r.getMessage() for r in caplog.records)
     assert any("outcome=nothing_persisted" in r.getMessage() for r in caplog.records)
 
 
@@ -447,8 +445,8 @@ async def test_no_nonce_non_org_install_returns_non_success(db_session: AsyncSes
         )
 
     assert result["success"] is False
-    assert result["error_code"] == "org_not_resolved"
-    assert any("not_an_org_install_or_no_github_org_id" in r.getMessage() for r in caplog.records)
+    assert result["error_code"] == "organization_selection_required"
+    assert any("no_nonce_install_selection_required" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -476,10 +474,10 @@ async def test_no_nonce_promotion_denied_is_flagged_partial(db_session: AsyncSes
             github_client=gh,
         )
 
-    assert result["success"] is True, "a deliberate promotion refusal is not an install failure"
-    assert result["partial"] is True
-    assert result["error_code"] == "promotion_denied"
-    assert any("no_nonce_install_partial" in r.getMessage() for r in caplog.records)
+    assert result["success"] is False
+    assert not result.get("partial")
+    assert result["error_code"] == "organization_selection_required"
+    assert any("no_nonce_install_selection_required" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio

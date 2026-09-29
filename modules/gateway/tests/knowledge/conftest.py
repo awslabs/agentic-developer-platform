@@ -125,6 +125,9 @@ class FakeAsyncSession:
             return result
         return FakeResult()
 
+    async def scalars(self, stmt: Any) -> FakeScalars:
+        return (await self.execute(stmt)).scalars()
+
     async def scalar(self, stmt: Any) -> Any:
         """Support for db.scalar() used by resolve_canonical_user_id."""
         return self.scalar_result

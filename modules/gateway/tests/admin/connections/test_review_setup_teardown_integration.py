@@ -102,7 +102,12 @@ async def test_callback_revoked_after_map_commit_cannot_seed_credentials(db, pro
     response = await fx.callback(setup, state)
     assert "success=1" not in response.headers.get("location", "")
     assert "Installation complete" not in response.text
-    assert (await db.get(InstallationRevocation, "123456")).restored_at is None
+    if with_nonce:
+        assert (await db.get(InstallationRevocation, "123456")).restored_at is None
+    else:
+        # The public callback no longer writes a map, so the injected race
+        # cannot run. No credentials, routing, or revocation records are created.
+        assert await db.get(InstallationRevocation, "123456") is None
     assert not list(await db.scalars(select(ChannelTenantMap)))
     setup["seed"].assert_not_awaited()
     setup["index"].assert_not_awaited()

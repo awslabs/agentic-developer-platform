@@ -756,8 +756,8 @@ class TestRegisterAppCallbackService:
         assert "SECRET" not in result
         assert "secret_value" not in result
         # Issue #2952 (D9): Chained onboarding redirect — goes to GitHub install page
-        assert "github.com/apps/" in result
-        assert "/installations/new" in result
+        assert result.startswith("/settings/connections?github_app=registered")
+        assert "/settings/connections?github_app=registered" in result
 
 
 class TestManifestStructure:
@@ -1318,8 +1318,8 @@ class TestLoginEnabledSignal:
 
         # Issue #2952 (D9): Chained redirect always goes to GitHub install page
         # when slug is present (login_enabled signal is no longer in the URL).
-        assert "github.com/apps/" in result
-        assert "/installations/new" in result
+        assert result.startswith("/settings/connections?github_app=registered")
+        assert "/settings/connections?github_app=registered" in result
 
     @pytest.mark.asyncio
     async def test_callback_redirect_clean_on_success(self):
@@ -1378,7 +1378,7 @@ class TestLoginEnabledSignal:
             result = await register_app_callback(code="c", state="s", db=mock_db)
 
         # Issue #2952 (D9): Chained redirect to GitHub install page
-        assert "github.com/apps/test-app/installations/new" in result
+        assert "/settings/connections?github_app=registered" in result
 
     @pytest.mark.asyncio
     async def test_callback_invalidates_login_enabled_cache(self):
@@ -1597,8 +1597,8 @@ class TestCallbackRedirectRelativePath:
 
         # Issue #2952 (D9): Chained onboarding redirect — now goes to
         # GitHub's install page (external URL) instead of the SPA.
-        assert "github.com/apps/" in result
-        assert "/installations/new" in result
+        assert result.startswith("/settings/connections?github_app=registered")
+        assert "/settings/connections?github_app=registered" in result
 
 
 class TestCallbackEntryLogging:
