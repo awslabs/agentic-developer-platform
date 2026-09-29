@@ -18,6 +18,7 @@ from src.orchestration.models import (
     OrchestrationAction,
     OrchestrationDecision,
     OrchestrationExecution,
+    OrchestrationFlow,
     OrchestrationNode,
     OrchestrationWorkClaim,
 )
@@ -165,10 +166,16 @@ async def test_uncertain_post_is_never_repeated_by_subsequent_runner_ticks(scan)
         assert node.state == "running" and node.attempts == 1
 
 
+@pytest.mark.parametrize("flow_state", ["pending", "running"])
 @pytest.mark.parametrize("human", [False, True])
 @pytest.mark.parametrize("success", [True, False])
 @pytest.mark.parametrize("after_dispatch", [None, "budget_exhausted", "deadline_expired"])
-async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_passes_node(scan, success, after_dispatch, human):
+async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_passes_node(scan, success, after_dispatch, human, flow_state):
+    async with scan.factory() as db:
+        flow = await db.get(OrchestrationFlow, scan.flow.id)
+        flow.state = flow_state
+        await db.commit()
+
     if human:
         document = deepcopy(scan.request.specification)
         document.update(evidence_schema="workflow-evaluation/v1", acceptance_mode="human")
