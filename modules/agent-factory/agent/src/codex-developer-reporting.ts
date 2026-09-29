@@ -11,6 +11,7 @@ import { createWorkerActivityLog } from './worker-activity-log';
 export interface DeveloperReportingContext { repository: string; issue: number; model: string; persona?: string }
 export interface DeveloperReporter {
   control?: { signal: AbortSignal; socket: string; operation<T>(work: () => Promise<T>): Promise<T> };
+  observeEvent?(event: { type: string; item?: { id: string; type: string } }): void;
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;
@@ -55,7 +56,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
     tokenProvider: token, persona, issueNumber: context.issue,
     model: context.model, costLabel: 'See Agent Activity for metered usage', log: message => log('WARN', message),
   });
-  const control = await startControlRuntime({ log, createAdapter: gate => new CodexControlAdapter(gate) });
+  const control = await startControlRuntime({ log, createAdapter: gate => new CodexControlAdapter(gate, { sdkCommands: true }) });
   const adapter = control.runtime?.adapter;
   if (adapter) {
     adapter.drainSteering = () => control.runtime!.steerQueue.flush();
@@ -100,6 +101,7 @@ export async function createCodexDeveloperReporter(context: DeveloperReportingCo
         try { adapter.signal.throwIfAborted(); return await work(); }
         finally { control.runtime!.gate.settle(admission.ticket); }
       } } } : {}),
+    observeEvent(event) { adapter?.observeSdkEvent(event); },
     explanation,
     activity(text) {
       text = publicDeveloperText(text);

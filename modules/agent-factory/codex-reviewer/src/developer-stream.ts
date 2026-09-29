@@ -3,6 +3,7 @@ import { interruptedTransport } from './turn.js';
 
 export interface DeveloperReporter {
   control?: { signal: AbortSignal; socket: string };
+  observeEvent?(event: ThreadEvent): void;
   explanation(text: string): void;
   activity(text: string): void;
   session(id: string): void;
@@ -12,6 +13,7 @@ export interface DeveloperReporter {
 
 /** Publish intentional agent messages and tool activity, never reasoning items. */
 export function publishDeveloperEvent(event: ThreadEvent, reporter: DeveloperReporter): void {
+  reporter.observeEvent?.(event);
   if (event.type === 'thread.started') reporter.session(event.thread_id);
   if (event.type !== 'item.started' && event.type !== 'item.completed') return;
   const item = event.item;

@@ -4,7 +4,9 @@ import { reviewEvents, reviewSignal, reviewOperation, type ReviewObserver } from
 
 test('review activity omits reasoning, command output and unvalidated structured verdicts', () => {
   const seen: string[] = [];
+  const observed: string[] = [];
   const observer: ReviewObserver = {
+    observeEvent: event => observed.push(event.type),
     explanation: text => seen.push(text), activity: text => seen.push(text), session: text => seen.push(text),
     async finish() {}, async fail() {},
   };
@@ -14,6 +16,7 @@ test('review activity omits reasoning, command output and unvalidated structured
   publish({ type: 'item.completed', item: { type: 'command_execution', id: 'c', command: 'npm test',
     aggregated_output: 'private output', status: 'completed', exit_code: 0 } });
   assert.deepEqual(seen, ['Finished (exit 0): npm test']);
+  assert.ok(observed.includes('item.completed'), 'SDK command lifecycle reaches the control observer');
 });
 
 test('operator cancellation reaches both SDK signals and controller effects', async () => {

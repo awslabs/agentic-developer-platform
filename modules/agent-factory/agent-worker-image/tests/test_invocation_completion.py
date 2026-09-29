@@ -647,3 +647,36 @@ def stub_agent_runtime(monkeypatch):
     # These bootstrap tests stub execution; deadline/process-group tests run real children.
     import subprocess
     monkeypatch.setattr("lib.agent_process.run_agent", lambda command, **options: subprocess.run(command, **options))
+
+
+def test_codex_operator_abort_uses_shared_terminal_status_and_durable_ack(worker, monkeypatch):
+    client, envelope, executions, exit_codes, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["payload"] = {"issue": {"number": 42}, "comment": {"body": "review"}}
+    seed(client, envelope)
+    exit_codes[:] = [1]
+    monkeypatch.setattr(entrypoint, "_resolve_abort_outcome", lambda *_: {"command_id": "operator-abort"})
+    aborted = MagicMock(return_value=(0, True))
+    finalized = MagicMock(return_value=0)
+    monkeypatch.setattr(entrypoint, "_handle_abort", aborted)
+    monkeypatch.setattr(entrypoint, "_finalize_abort_acknowledgement", finalized)
+    assert entrypoint.main() == 0
+    assert len(executions) == 1
+    aborted.assert_called_once()
+    finalized.assert_called_once()
+    assert finalized.call_args.kwargs["terminal_persisted"] is True
+    ack.assert_not_called()
+
+
+def test_codex_review_archives_progress_before_terminal_status(worker, monkeypatch):
+    client, envelope, _, _, _, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["payload"] = {"issue": {"number": 42}, "comment": {"body": "review"}}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_read_run_reports", lambda: ("Review done", "Live reviewer activity"))
+    archive = MagicMock(return_value="runs/reviewer/transcript.md")
+    monkeypatch.setattr(entrypoint, "_upload_transcript_to_s3", archive)
+    assert entrypoint.main() == 0
+    assert archive.call_args.args[0] == "Live reviewer activity"
+    entrypoint._record_session_id.assert_called_once()
+    assert row(client, envelope)["transcript_key"] == {"S": "runs/reviewer/transcript.md"}

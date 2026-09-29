@@ -119,3 +119,41 @@ test("background execution withdraws pause instead of falsely reporting quiescen
   expect(adapter.activeWorkCount()).toBeNull();
   expect((await adapter.requestPause()).outcome).toBe("unavailable");
 });
+
+test('SDK command completion settles async Bash with no PostToolUse and holds Stop until resume', async () => {
+  await adapter.dispose();
+  adapter = new CodexControlAdapter(new PauseGate({ defaultTimeoutMs: 20000, settleTimeoutMs: 10 }), { sdkCommands: true });
+  await adapter.start();
+  await hook(adapter, 'PreToolUse', 'async-shell');
+  adapter.observeSdkEvent({ type: 'item.started', item: { id: 'command-item', type: 'command_execution' } });
+  expect((await adapter.requestPause()).outcome).toBe('requested');
+  let stopped = false;
+  const stop = hook(adapter, 'Stop').then(() => { stopped = true; });
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'command-item', type: 'command_execution' } });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(adapter.activeWorkCount()).toBe(0);
+  expect(adapter.gate.currentPhase()).toBe('paused');
+  expect(stopped).toBe(false);
+  await adapter.resumeFromPause();
+  await stop;
+});
+
+test('concurrent SDK commands settle once, out of order, without an early paused state', async () => {
+  await adapter.dispose();
+  adapter = new CodexControlAdapter(new PauseGate({ defaultTimeoutMs: 20000, settleTimeoutMs: 10 }), { sdkCommands: true });
+  await adapter.start();
+  for (const id of ['one', 'two']) {
+    await hook(adapter, 'PreToolUse', id);
+    adapter.observeSdkEvent({ type: 'item.started', item: { id, type: 'command_execution' } });
+    await hook(adapter, 'PostToolUse', id);
+  }
+  expect(adapter.activeWorkCount()).toBe(2);
+  await adapter.requestPause();
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'two', type: 'command_execution' } });
+  expect(adapter.activeWorkCount()).toBe(1);
+  expect(adapter.gate.currentPhase()).not.toBe('paused');
+  adapter.observeSdkEvent({ type: 'item.completed', item: { id: 'one', type: 'command_execution' } });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(adapter.activeWorkCount()).toBe(0);
+  expect(adapter.gate.currentPhase()).toBe('paused');
+});

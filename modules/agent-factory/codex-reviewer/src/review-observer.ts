@@ -1,7 +1,7 @@
 import type { ThreadEvent } from '@openai/codex-sdk';
 import { publishDeveloperEvent, type DeveloperReporter } from './developer-stream.js';
 
-export interface ReviewObserver extends Pick<DeveloperReporter, 'explanation' | 'activity' | 'session'> {
+export interface ReviewObserver extends Pick<DeveloperReporter, 'explanation' | 'activity' | 'session' | 'observeEvent'> {
   control?: {
     signal: AbortSignal;
     socket: string;

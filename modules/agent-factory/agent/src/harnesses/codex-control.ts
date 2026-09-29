@@ -18,6 +18,8 @@ export class CodexControlAdapter {
   private registry = new CurrentAttemptRegistry();
   private tickets = new Map<string, AdmissionTicket>();
   private hooked = false;
+  private pendingCommands: string[] = [];
+  private sdkCommands = new Map<string, AdmissionTicket>();
   private background = false;
   private boundary:
     | ((input?: ControlInput) => Promise<InputHandoffResult>)
@@ -48,7 +50,7 @@ export class CodexControlAdapter {
   socket = "";
   drainSteering: () => Promise<void> = async () => {};
 
-  constructor(readonly gate: PauseGate) {
+  constructor(readonly gate: PauseGate, private options: { sdkCommands?: boolean } = {}) {
     gate.subscribe((event) => {
       const attemptId = this.currentAttempt();
       if (attemptId) this.registry.emit({ ...event, attemptId });
@@ -111,6 +113,24 @@ export class CodexControlAdapter {
   }
   submitInput(input: ControlInput): Promise<InputHandoffResult> {
     return this.registry.deliver(input);
+  }
+  /** Async exec_command has no PostToolUse; its SDK completion owns settlement. */
+  observeSdkEvent(event: { type: string; item?: { id: string; type: string } }) {
+    if (!this.options.sdkCommands || event.item?.type !== 'command_execution') return;
+    if (event.type === 'item.started') {
+      const hookId = this.pendingCommands.shift();
+      const ticket = hookId ? this.tickets.get(hookId) : undefined;
+      if (!hookId || !ticket) { this.background = true; return; }
+      // Commands can finish out of order. Transfer each admission exactly once
+      // from the ordered Bash starts to the SDK's stable command item identity.
+      this.tickets.delete(hookId);
+      this.sdkCommands.set(event.item.id, ticket);
+    } else if (event.type === 'item.completed') {
+      const ticket = this.sdkCommands.get(event.item.id);
+      if (!ticket) { this.background = true; return; }
+      this.sdkCommands.delete(event.item.id);
+      this.gate.settle(ticket);
+    }
   }
   async requestPause(options?: {
     signal?: AbortSignal;
@@ -176,7 +196,7 @@ export class CodexControlAdapter {
       return;
     }
     this.hooked = true;
-    if (event === "PostToolUse") {
+    if (event === "PostToolUse" && !(this.options.sdkCommands && input.tool_name === "Bash")) {
       // An asynchronous shell result is not evidence that its process stopped.
       if (
         /Process running with session ID|"session_id"\s*:\s*\d+/.test(
@@ -219,6 +239,7 @@ export class CodexControlAdapter {
         }
         if (["Agent", "spawn_agent", "multi_agent_v1"].includes(input.tool_name ?? "")) this.background = true;
         this.tickets.set(input.tool_use_id, admission.ticket!);
+        if (this.options.sdkCommands && input.tool_name === 'Bash') this.pendingCommands.push(input.tool_use_id);
       }
       const output = instruction
         ? event === "Stop"

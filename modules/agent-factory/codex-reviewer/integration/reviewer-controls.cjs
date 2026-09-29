@@ -44,9 +44,11 @@ async function verify(mode) {
   await fs.writeFile(home + "/config.toml", cfg);
   const adapter = new CodexControlAdapter(
     new PauseGate({ defaultTimeoutMs: 10000, settleTimeoutMs: 100 }),
+    { sdkCommands: true },
   );
   await adapter.start();
   let count = 0;
+  let turnCompleted = false;
   const command =
     mode === "abort"
       ? "sleep 5; touch " + home + "/after-abort"
@@ -71,7 +73,7 @@ async function verify(mode) {
               arguments: JSON.stringify(
                 tool.name === "shell"
                   ? { command: ["bash", "-c", command] }
-                  : { command: command, cmd: command, yield_time_ms: 10000 },
+                  : { command: command, cmd: command, yield_time_ms: Number(process.env.CODEX_CONTROL_YIELD_MS ?? 1000) },
               ),
             }
           : {
@@ -137,6 +139,8 @@ async function verify(mode) {
       await runResumableTurn(thread, "Execute the requested command", {
         signal: AbortSignal.any([adapter.signal, AbortSignal.timeout(20000)]),
       }, undefined, undefined, async e => {
+        adapter.observeSdkEvent(e);
+        if (e.type === "turn.completed") turnCompleted = true;
         publish(e);
         console.log("EVENT", JSON.stringify(e));
         if (e.type === "item.started" && e.item.type === "command_execution") {
@@ -147,7 +151,7 @@ async function verify(mode) {
           console.log("PAUSE", await adapter.requestPause());
           setTimeout(async () => {
             try {
-              if (adapter.gate.currentPhase() !== "paused" || count !== 1)
+              if (adapter.gate.currentPhase() !== "paused" || turnCompleted)
                 throw new Error("pause did not hold next model request");
               console.log("PAUSED_CONFIRMED");
               adapter.drainSteering = async () => {
@@ -184,7 +188,7 @@ async function verify(mode) {
       return;
     }
     const request = JSON.parse(
-      await fs.readFile(home + "/request1.json", "utf8"),
+      await fs.readFile(home + "/request" + (count - 1) + ".json", "utf8"),
     );
     if (!JSON.stringify(request).includes("CONTROL_STEERING_PROOF"))
       throw new Error("steering missing from actual model context");

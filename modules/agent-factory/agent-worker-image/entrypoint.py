@@ -3015,7 +3015,17 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # for a pod whose agent has already exited should be as short as possible.
     _teardown_agent_control(message_id, arrived_at, control_registered)
 
-    if is_codex_review:
+    # Native reviewers share operator abort finalization and acknowledgement.
+    # Otherwise a stopped reviewer is marked failed and its message is retried.
+    abort_outcome = _resolve_abort_outcome(message_id, control_registered)
+    if is_codex_review and abort_outcome is None:
+        _record_session_id(message_id, arrived_at)
+        _, transcript_text = _read_run_reports()
+        transcript_key = _upload_transcript_to_s3(
+            transcript_text, repo, issue, message_id, arrived_at, persona
+        )
+        if transcript_key:
+            update_invocation_status(message_id, arrived_at, "in_progress", transcript_key=transcript_key)
         output_lines = (result.stdout or "").strip().splitlines()
         summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
         if result.returncode == 0:
@@ -3072,7 +3082,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     _record_session_id(message_id, arrived_at)
 
     # The own-run credential is still live here; terminal status invalidates it.
-    review_note = review_delivery.finish(reviewed_head_sha=reviewed_head_sha) if review_delivery else ""
+    review_note = review_delivery.finish(reviewed_head_sha=reviewed_head_sha) if review_delivery and abort_outcome is None else ""
     if review_note:
         logger.info("%s", review_note)
     review_options = {"review_note": review_note} if review_note else {}
@@ -3084,7 +3094,6 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # would post a "failed with exit code N" comment for a run an operator stopped
     # on purpose, and `_handle_failure`'s status write would already have landed by
     # the time anything could correct it. One terminal handler runs, never two.
-    abort_outcome = _resolve_abort_outcome(message_id, control_registered)
     if result.returncode != 0 and abort_outcome is None:
         from lib.codex_failure import failure_summary
 
