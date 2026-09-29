@@ -401,6 +401,7 @@ class GateDecisionRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    execution_preview: dict | None = None
     reason: str | None = Field(default=None, max_length=2000)
     # Optional revision binding (#5331). When present, the answer applies only if
     # this is still the plan in force for the gate's flow, compared inside the same
@@ -546,6 +547,7 @@ async def _answer_gate(
     access: AccessControl,
     db: AsyncSession,
     expected_plan_hash: str | None = None,
+    execution_preview: dict | None = None,
 ) -> GateDecisionResponse:
     """Approve or reject one gate through the shared adapter.
 
@@ -565,6 +567,7 @@ async def _answer_gate(
             access=access,
             input_path=InputPath.DASHBOARD,
             expected_plan_hash=expected_plan_hash,
+            execution_preview=execution_preview,
         )
     except PolicyNotAcceptableError as exc:
         # Policy promotion happens inside the same transaction as the tentative
@@ -634,6 +637,7 @@ async def approve_gate(
         access=access,
         db=db,
         expected_plan_hash=body.expected_plan_hash,
+        execution_preview=body.execution_preview,
     )
 
 
@@ -1201,3 +1205,35 @@ async def get_run_control_state(
         return await control.get_state(run_id, user_id=user_id, tenant_id=tenant_id)
     except ControlError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/gates/{gate_id}/execution-preview")
+async def gate_execution_preview(
+    gate_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from ..agentauth.bootstrap import BootstrapRefusedError
+    from ..agentauth.human_control import authorize_human_session
+    from .compile import ApprovalContext
+    from .evaluation_acceptance import EvaluationAcceptanceError
+    from .gate_execution import prepare_gate_execution
+    from .review_cycle import CycleBlockedError
+    from .routes import _resolve_actor_role
+    from .shared_window import WindowRenewalError
+
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    node = await db.scalar(select(OrchestrationNode).where(OrchestrationNode.id == gate_id, OrchestrationNode.org_id == current_user.org_id))
+    if node is None:
+        raise HTTPException(404, "No such gate in this organisation.")
+    try:
+        human = await authorize_human_session(current_user, db)
+    except BootstrapRefusedError:
+        raise HTTPException(403, "An authenticated human plan approver is required.") from None
+    actor = ApprovalContext(org_id=human.tenant_id, actor_id=human.user_id, actor_role=await _resolve_actor_role(access, current_user))
+    try:
+        result = await prepare_gate_execution(db, gate=node, actor=actor)
+        return {key: value for key, value in result.items() if key != "grants"}
+    except (EvaluationAcceptanceError, WindowRenewalError, CycleBlockedError, PolicyNotAcceptableError) as error:
+        raise HTTPException(409, {"message": "The next step is not executable: " + str(error)}) from None

@@ -8263,7 +8263,7 @@ def test_workflow_uploads_only_sanitized_artifacts():
     upload = next(
         step
         for step in document["jobs"]["evaluate"]["steps"]
-        if "upload-artifact" in str(step.get("uses", ""))
+        if step.get("name") == "Upload sanitized evidence"
     )
     paths = upload["with"]["path"]
     assert "report.json" in paths and "results.xml" in paths

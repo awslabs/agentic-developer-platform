@@ -914,7 +914,7 @@ def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
             and spec.acceptance_mode != "machine"
         ):
             violations.append(Violation("evaluation_policy_mode_mismatch", "Machine policy cannot use human evidence acceptance", node.address))
-        if spec.evidence_schema == "repository-evaluation/v1":
+        if spec.evidence_schema in {"repository-evaluation/v1", "workflow-evaluation/v1"}:
             from .repository_evaluation_contract import harness_digest
 
             if spec.runner.harness_sha256 != harness_digest():

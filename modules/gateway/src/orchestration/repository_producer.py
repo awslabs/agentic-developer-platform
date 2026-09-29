@@ -1,6 +1,7 @@
 """Admit one real scan execution, using the normal claim and action ledgers."""
 
 import hashlib
+import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -90,10 +91,19 @@ class RepositoryScanProvider(WorkflowProvider):
 
     async def preflight(self, binding, spec, sources):
         producer, workflow = spec.producer, spec.workflows[0]
-        require(producer is not None and producer.target.resource_id == binding.repo, "producer_target_repository_changed")
+        require(producer is not None, "producer_specification_missing")
+        if spec.evidence_schema != "workflow-evaluation/v1":
+            require(producer.target.resource_id == binding.repo, "producer_target_repository_changed")
         _, revisions = await self.evidence.verify_sources(binding, spec, sources)
         source = workflow.source.revision or revisions[workflow.source.predecessor]
         definition_revision = workflow.definition.revision or revisions[workflow.definition.predecessor]
+        if spec.evidence_schema == "workflow-evaluation/v1":
+            _, config_content = await self.evidence.definition_blob(binding, "tests/e2e/cli_uplift/config.example.json", source)
+            target_config = json.loads(config_content)
+            require(
+                (producer.target.account_id, producer.target.region) == (target_config.get("platform_account"), target_config.get("region")),
+                "qualification_target_configuration_changed",
+            )
         ref = WorkflowRef(
             path=workflow.path,
             definition_revision=definition_revision,
@@ -110,6 +120,8 @@ class RepositoryScanProvider(WorkflowProvider):
         expected_events = (
             {"workflow_dispatch", "schedule", "pull_request"} if spec.evidence_schema == "cli-live-evaluation/v1" else {"workflow_dispatch"}
         )
+        if spec.evidence_schema == "workflow-evaluation/v1":
+            expected_events = {"workflow_dispatch", "workflow_call", "pull_request"}
         require(names == expected_events, "producer_workflow_events_changed")
         if spec.evidence_schema == "cli-live-evaluation/v1":
             from .cli_live_contract import NIGHTLY_SCHEDULE
@@ -221,7 +233,7 @@ async def admit_producer(session, node, *, provider=None):
     node = await session.scalar(
         select(OrchestrationNode).where(OrchestrationNode.id == node.id).with_for_update().execution_options(populate_existing=True)
     )
-    require(flow.state == "running" and node.state == "ready", "producer_admission_raced")
+    require(flow.state in {"pending", "running"} and node.state == "ready", "producer_admission_raced")
     require(spec.runner.harness_sha256 == harness_digest(), "producer_harness_changed")
     fresh = await accepted_contract(session, node=node, plan=current)
     require(

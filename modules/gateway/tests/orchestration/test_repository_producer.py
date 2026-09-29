@@ -13,7 +13,14 @@ from src.orchestration.evaluation_acceptance import EvaluationAcceptanceError
 from src.orchestration.evaluation_controller import EvaluationController
 from src.orchestration.execution_runner import RunnerConfig, run_execution_runner
 from src.orchestration.execution_state import ExecutionPhase
-from src.orchestration.models import OrchestrationAction, OrchestrationDecision, OrchestrationExecution, OrchestrationNode, OrchestrationWorkClaim
+from src.orchestration.models import (
+    OrchestrationAcceptedPlan,
+    OrchestrationAction,
+    OrchestrationDecision,
+    OrchestrationExecution,
+    OrchestrationNode,
+    OrchestrationWorkClaim,
+)
 from src.orchestration.repository_evaluation import observe_repository_evaluation
 from src.orchestration.repository_producer import CONTEXT_KIND, PRODUCER_KIND, RepositoryScanProvider
 from src.orchestration.repository_producer_controller import RepositoryProducerController
@@ -158,9 +165,32 @@ async def test_uncertain_post_is_never_repeated_by_subsequent_runner_ticks(scan)
         assert node.state == "running" and node.attempts == 1
 
 
+@pytest.mark.parametrize("human", [False, True])
 @pytest.mark.parametrize("success", [True, False])
 @pytest.mark.parametrize("after_dispatch", [None, "budget_exhausted", "deadline_expired"])
-async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_passes_node(scan, success, after_dispatch):
+async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_passes_node(scan, success, after_dispatch, human):
+    if human:
+        document = deepcopy(scan.request.specification)
+        document.update(evidence_schema="workflow-evaluation/v1", acceptance_mode="human")
+        document["workflows"][0].update(
+            path=".github/workflows/eval-cli-uplift.yml",
+            source={"revision": "f" * 40},
+            required_jobs=["Live evaluation (dev)", "Recovery sweep (this run, plus anything expired)"],
+        )
+        producer = document["producer"]
+        producer.pop("images")
+        producer["target"].update(resource_kind="cli-evaluation", resource_id="dev")
+        producer["inputs"] = dict(
+            environment="dev", expected_revision="f" * 40, mode="start", fixtures_json="{}", suites="knowledge", evaluation_id="", inject_fault="none"
+        )
+        scan.request = scan.request.model_copy(update={"specification": document})
+        async with scan.factory() as db:
+            plan = await db.get(OrchestrationAcceptedPlan, scan.plan.id)
+            amended = deepcopy(plan.plan_document)
+            amended["execution_policy"]["evaluation_acceptance"] = {key: "human" for key in amended["execution_policy"]["evaluation_acceptance"]}
+            plan.plan_document = amended
+            await db.commit()
+
     async def dispatch(binding, **kwargs):
         await kwargs["reauthorize"]()
 
@@ -228,7 +258,7 @@ async def test_terminal_scan_releases_real_claim_and_only_verified_evidence_pass
         node = await db.get(OrchestrationNode, scan.eval_id)
         execution = await db.get(OrchestrationExecution, scan.scan_execution.id)
         claim = await db.get(OrchestrationWorkClaim, scan.scan_execution.claim_id)
-        assert node.state == ("passed" if success else "failed"), (report, execution.status)
+        assert node.state == (("awaiting_gate" if human else "passed") if success else "failed"), (report, execution.status)
         assert execution.status == "concluded" and claim.state == "released"
         assert claim.release_reason == ("completed" if success else "failed")
         if success:

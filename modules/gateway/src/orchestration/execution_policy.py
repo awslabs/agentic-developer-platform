@@ -1053,6 +1053,9 @@ class AuthorizationContext:
     # remote work is reconciled by existing controls, not here (this function
     # admits, it does not terminate).
     grant_revoked: bool = False
+    # Only trusted deterministic workflow dispatch supplies collect. It cannot
+    # authorize a machine verdict for a human-accepted evaluation.
+    evaluation_operation: Literal["accept", "collect"] = "accept"
 
     # `now` is injected rather than read from the clock so expiry is testable
     # without freezing time, matching `reservations.ReservationStore`'s clock
@@ -1308,7 +1311,7 @@ def authorize_action(
     if action is Action.EVALUATE:
         address = resource.node_address
         mode = policy.evaluation_acceptance.get(address) if address else None
-        if mode is not AcceptanceMode.MACHINE:
+        if mode is not AcceptanceMode.MACHINE and not (mode is AcceptanceMode.HUMAN and context.evaluation_operation == "collect"):
             # Absent, unknown-address and explicit-`HUMAN` all land here, and all
             # three are correct: `HUMAN` is the default because a typo in an address
             # must not promote an evaluation to machine acceptance.

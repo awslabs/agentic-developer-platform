@@ -74,7 +74,7 @@ class RepositoryEvaluationReceipt(Contract):
         return self
 
 
-async def sources_for(session, node, plan, spec, *, lock=False):
+async def sources_for(session, node, plan, spec, *, lock=False, preview_gate_id=None):
     query = (
         select(OrchestrationNode)
         .join(OrchestrationEdge, OrchestrationEdge.from_node_id == OrchestrationNode.id)
@@ -89,7 +89,14 @@ async def sources_for(session, node, plan, spec, *, lock=False):
         .execution_options(populate_existing=True)
     )
     parents = list(await session.scalars(query.with_for_update(of=OrchestrationNode) if lock else query))
-    require(len(parents) <= 128 and all(parent.state == "passed" for parent in parents), "predecessors_not_complete")
+    require(
+        len(parents) <= 128
+        and all(
+            parent.state == "passed" or (parent.id == preview_gate_id and parent.kind == "gate" and parent.state == "awaiting_gate")
+            for parent in parents
+        ),
+        "predecessors_not_complete",
+    )
     flow = await session.get(OrchestrationFlow, node.flow_id)
     stories = {graph_address(parent, flow_slug=flow.slug): parent for parent in parents if parent.kind == "story"}
     require(set(stories) == {item.address for item in spec.predecessors}, "predecessor_set_changed")
@@ -185,7 +192,9 @@ async def authorize(session, node, plan, spec, binding, provider, *, exclude_cur
     # agent's broad role. Minting must really succeed before claiming SCOPED.
     require(getattr(spec, "qualification", None) is None or node.issue_ref == str(spec.qualification.owner_issue), "cli_qualification_owner_changed")
     await provider.token(binding)
-    inputs, marker = await shared_policy.shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
+    from .evaluation_authority import evaluation_inputs
+
+    inputs, marker = await evaluation_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
     require(inputs.plan_version == plan.version and spec.runner.repository in inputs.policy.repository_ids, "policy_changed")
     from .evaluation_acceptance import accepted_contract
 
@@ -219,6 +228,7 @@ async def authorize(session, node, plan, spec, binding, provider, *, exclude_cur
     context = replace(
         context,
         work_owned_by_policy_flow=True,
+        evaluation_operation="collect" if spec.evidence_schema == "workflow-evaluation/v1" else "accept",
         observed_attempts=max(0, context.observed_attempts - int(exclude_current_evaluation and node.state == "running")),
         observed_concurrency=max(
             0,
@@ -294,7 +304,7 @@ async def observe_repository_evaluation(session, node, *, provider=None):
 
 async def _observe_repository_evaluation(session, node, *, provider=None):
     accepted = await accepted_evaluation(session, node)
-    if accepted is None or accepted[1].evidence_schema not in {"repository-evaluation/v1", "cli-live-evaluation/v1"}:
+    if accepted is None or accepted[1].evidence_schema not in {"repository-evaluation/v1", "cli-live-evaluation/v1", "workflow-evaluation/v1"}:
         return False
     plan, spec, _ = accepted
     provider = provider or RepositoryEvidenceProvider()
@@ -304,7 +314,7 @@ async def _observe_repository_evaluation(session, node, *, provider=None):
     try:
         require(node.state == "ready", "node_not_ready")
         flow = await session.get(OrchestrationFlow, node.flow_id)
-        require(flow is not None and flow.org_id == node.org_id and flow.state == "running", "flow_not_running")
+        require(flow is not None and flow.org_id == node.org_id and flow.state in {"pending", "running"}, "flow_not_running")
         if spec.producer is not None:
             from .repository_producer import admit_producer
 
@@ -351,7 +361,7 @@ async def _observe_repository_evaluation(session, node, *, provider=None):
         )
         require(node.attempts == expected_attempt, "attempt_changed")
         fresh = await accepted_evaluation(session, node)
-        require(fresh is not None and fresh[1] == spec and node.state == "ready" and flow.state == "running", "scope_changed")
+        require(fresh is not None and fresh[1] == spec and node.state == "ready" and flow.state in {"pending", "running"}, "scope_changed")
         require(await sources_for(session, node, current, spec, lock=True) == sources, "source_changed")
         require(await authorize(session, node, current, spec, binding, provider) == authority, "evaluation_authority_changed")
         receipt = receipt_model(spec)(

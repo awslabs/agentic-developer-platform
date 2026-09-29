@@ -52,6 +52,7 @@ SUITES = (
     "hosted-chat",
     "vault-lifecycle",
     "knowledge-lifecycle",
+    "knowledge",
     "machine-lifecycle",
     "budget-lifecycle",
     "hierarchy-lifecycle",
@@ -509,6 +510,8 @@ def suite_cases(suite):
         raise ValueError(f"Unknown suite {suite!r}; choose from {', '.join(SUITES)}")
     if suite == "full":
         return CASES
+    if suite == "knowledge":
+        return (BY_ID["E01"], LOGIN_CHECKPOINT, BY_ID["E32"])
     if suite == "nightly":
         return (
             BY_ID["E01"],

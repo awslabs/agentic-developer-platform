@@ -20,6 +20,7 @@ Two conventions worth stating because they are load-bearing:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -650,6 +651,12 @@ class TestMachineAcceptanceIsNeverGateAuthority:
         policy = _stamped(evaluation_acceptance={ADDRESS: AcceptanceMode.HUMAN})
         decision = authorize_action(_context(policy=policy), Action.EVALUATE, ResourceRef(node_address=ADDRESS, org_id=ORG_A), 1)
         assert decision.reason is DenyReason.MACHINE_ACCEPTANCE_NOT_PERMITTED
+
+    def test_human_evaluation_can_collect_without_accepting(self) -> None:
+        policy = _stamped(evaluation_acceptance={ADDRESS: AcceptanceMode.HUMAN})
+        context = replace(_context(policy=policy), evaluation_operation="collect")
+        decision = authorize_action(context, Action.EVALUATE, ResourceRef(node_address=ADDRESS, org_id=ORG_A), 1)
+        assert decision.permitted
 
     def test_mode_does_not_transfer_between_addresses(self) -> None:
         """A machine mode on one evaluation says nothing about another.

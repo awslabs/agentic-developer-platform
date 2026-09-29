@@ -46,7 +46,7 @@
     },
     "suites": {
       "type": "array",
-      "items": { "enum": ["capability-contrast", "usage-exports", "full", "nightly", "hosted-coding", "hosted-chat", "vault-lifecycle", "hierarchy-lifecycle", "machine-lifecycle", "budget-lifecycle", "knowledge-lifecycle", "tenant-isolation", "story-reads", "research", "login", "install", "admin", "personal-aws", "routing", "inference", "github", "parity", "harness", "multi-deployment", "superplane"] },
+      "items": { "enum": ["capability-contrast", "usage-exports", "full", "nightly", "hosted-coding", "hosted-chat", "vault-lifecycle", "hierarchy-lifecycle", "machine-lifecycle", "budget-lifecycle", "knowledge-lifecycle", "knowledge", "tenant-isolation", "story-reads", "research", "login", "install", "admin", "personal-aws", "routing", "inference", "github", "parity", "harness", "multi-deployment", "superplane"] },
       "minItems": 1
     },
     "partial": {

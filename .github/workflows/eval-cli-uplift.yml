@@ -1,4 +1,5 @@
 name: Eval — CLI Uplift (E2E on disposable EC2)
+run-name: ${{ format('ADP deployment {0}', inputs.adp_correlation) }}
 
 # Repeatable end-to-end evaluation of EPIC #5180 and its five stories
 # (#5185, #5181, #5182, #5183, #5184). Issue #5199.
@@ -34,6 +35,18 @@ name: Eval — CLI Uplift (E2E on disposable EC2)
 on:
   workflow_dispatch:
     inputs:
+      adp_correlation:
+        description: 'Engine dispatch correlation'
+        type: string
+        default: ''
+      adp_source_revision:
+        description: 'Engine accepted source revision'
+        type: string
+        default: ''
+      adp_definition_revision:
+        description: 'Engine accepted workflow revision'
+        type: string
+        default: ''
       environment:
         description: 'Target environment (selects the protected GitHub environment)'
         required: false
@@ -108,6 +121,7 @@ on:
     paths:
       - 'tests/e2e/cli_uplift/**'
       - 'tests/unit/test_cli_uplift.py'
+      - 'tests/unit/test_cli_workflow_context.py'
       - 'tests/unit/test_cli_tenant_scenarios.py'
       - 'tests/unit/test_cli_usage_exports.py'
       - 'tests/unit/test_superplane_executor_build.py'
@@ -160,8 +174,8 @@ jobs:
       - name: Lint and format check
         run: |
           set -euo pipefail
-          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
-          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
+          ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py
 
       - name: Offline guards
         # --disable-socket is the load-bearing flag: it proves these guards
@@ -175,7 +189,7 @@ jobs:
         # make full acceptance non-successful.
         env:
           AWS_EC2_METADATA_DISABLED: 'true'
-        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket
+        run: python -m pytest tests/unit/test_cli_uplift.py tests/unit/test_cli_workflow_context.py tests/unit/test_cli_tenant_scenarios.py tests/unit/test_cli_usage_exports.py tests/unit/test_cli_knowledge_lifecycle_plan.py tests/unit/test_cli_machine_lifecycle.py tests/unit/test_cli_budget_lifecycle.py tests/unit/test_superplane_executor_build.py -q --timeout=60 --disable-socket
 
       - name: Assert the published result schema still matches the report builder
         # report.schema.json is a deliverable other tooling validates against, so
@@ -301,6 +315,12 @@ jobs:
           fi
 
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify checked-out source is reviewed main history
+        run: git merge-base --is-ancestor HEAD "$GITHUB_SHA"
 
       # Must precede the harness-pin fetch below: that step parses the pin with
       # `python`, and the ARC runner image provides only `python3` until
@@ -440,6 +460,22 @@ jobs:
             exit 1
           fi
 
+      - name: Authenticate engine qualification context
+        if: inputs.adp_correlation != ''
+        env:
+          ADP_WORKFLOW_INPUTS: ${{ toJSON(inputs) }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: python -m tests.e2e.cli_uplift.workflow_context
+
+      - name: Publish engine qualification context
+        if: inputs.adp_correlation != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-deployment-context-eval-cli-uplift.yml-${{ github.run_attempt }}
+          path: /tmp/adp-cli-context/deployment-context.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Run the evaluation
         id: run
         # The orchestrator owns the stage sequence (preflight → EC2 →
@@ -542,6 +578,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Publish engine qualification result
+        if: always() && inputs.adp_correlation != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: e32-qualification-result
+          path: /tmp/cli-uplift-eval/out/report.json
+          if-no-files-found: error
+          retention-days: 30
+
   recover:
     name: Recovery sweep (this run, plus anything expired)
     # `always()` is not enough on its own — a cancelled run or a lost runner
@@ -627,6 +672,9 @@ jobs:
           fi
 
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
+          fetch-depth: 0
 
       - uses: actions/setup-python@v7
         with:

@@ -248,6 +248,7 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             if (
                 producer is not None
                 and qualification is None
+                and hasattr(producer, "images")
                 and (expected.name, expected.path) == (producer.receipt_artifact, producer.receipt_path)
             ):
                 from .repository_producer_contract import RepositoryScanReceipt

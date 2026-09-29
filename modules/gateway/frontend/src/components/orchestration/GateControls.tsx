@@ -71,8 +71,8 @@ export function GateControls({ node, flowId }: GateControlsProps) {
 
   const mode = controlModeFor(node);
   const preview = useQuery({
-    queryKey: ['orchestration', 'gate-plan-preview', flowId],
-    queryFn: () => getGatePlanPreview(flowId),
+    queryKey: ['orchestration', 'gate-plan-preview', flowId, node.id],
+    queryFn: () => getGatePlanPreview(flowId, node.id),
     enabled: Boolean(features.orchestration_engine && hasPermission(Permission.PLAN_APPROVE) && mode === 'gate'),
     retry: false,
     staleTime: Infinity,
@@ -92,7 +92,8 @@ export function GateControls({ node, flowId }: GateControlsProps) {
       if (action !== 'resume' && (!reviewed || !nodeInPlan || preview.isError)) {
         throw new Error('Load and review the current plan before deciding.');
       }
-      if (action === 'approve') return approveGate(node.id, trimmed, reviewed!.plan_hash);
+      if (action === 'approve' && reviewed?.execution?.ready === false) throw new Error('The next step is not executable. Resolve the listed configuration problems first.');
+      if (action === 'approve') return approveGate(node.id, trimmed, reviewed!.plan_hash, reviewed!.execution);
       if (action === 'reject') return rejectGate(node.id, trimmed, reviewed!.plan_hash);
       return resumeNode(node.id, trimmed);
     },
@@ -110,7 +111,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
             : 'Retry requested. The engine will check this work again.');
       queryClient.invalidateQueries({ queryKey: ['orchestration', 'flow-graph', flowId] });
       queryClient.invalidateQueries({ queryKey: ['orchestration', 'flows'] });
-      queryClient.invalidateQueries({ queryKey: ['orchestration', 'gate-plan-preview', flowId] });
+      queryClient.invalidateQueries({ queryKey: ['orchestration', 'gate-plan-preview', flowId, node.id] });
     },
   });
 
@@ -136,6 +137,16 @@ export function GateControls({ node, flowId }: GateControlsProps) {
           {(reviewed.plan_document.proposed_execution_policy || reviewed.plan_document.execution_policy) &&
             <details><summary>Review execution permissions and limits</summary><p>Spend limits apply only when budget enforcement is enabled.</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(
               reviewed.plan_document.proposed_execution_policy || reviewed.plan_document.execution_policy, null, 2)}</pre></details>}
+          {reviewed.execution?.required && <div className="space-y-2">
+            <p className="font-medium">Approving starts the following evaluation</p>
+            {reviewed.execution.runs.map(run => <div key={run.node_id}>
+              <p>{run.title}: {run.workflow}</p>
+              <p>Account {run.target.account_id}, {run.target.region}, environment {run.target.resource_id}.</p>
+              <p>Evidence: {run.criteria.join(', ')}. Final acceptance remains human.</p>
+            </div>)}
+            {reviewed.execution.window_request && <div><p>Approval also renews the expired execution window:</p><pre className="overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(reviewed.execution.window_request, null, 2)}</pre></div>}
+            {reviewed.execution.problems.map(problem => <Alert key={problem} variant="error" title="Next step needs configuration">{problem}</Alert>)}
+          </div>}
           <details><summary>Full plan and dependencies</summary>
             <pre className="max-h-80 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(reviewed.plan_document, null, 2)}</pre>
           </details>
@@ -178,7 +189,7 @@ export function GateControls({ node, flowId }: GateControlsProps) {
             <Button
               size="sm"
               variant="primary"
-              disabled={decisionDisabled}
+              disabled={decisionDisabled || reviewed?.execution?.ready === false}
               onClick={() => mutation.mutate('approve')}
               data-testid="gate-approve"
             >

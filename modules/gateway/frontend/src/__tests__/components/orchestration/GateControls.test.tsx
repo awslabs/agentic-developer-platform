@@ -156,7 +156,7 @@ describe('which control a state earns', () => {
     renderControls(makeNode('awaiting_gate', 'eval'));
     await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByRole('button', { name: 'Accept evaluation' }));
-    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash);
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, undefined);
   });
 
   it('reopens a gate after requested changes', async () => {
@@ -224,7 +224,7 @@ describe('recording a decision', () => {
     await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
-    await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', 'looks right', hash));
+    await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', 'looks right', hash, undefined));
   });
 
   it('sends no actor_kind — attribution is the session\'s to decide, not the caller\'s', async () => {
@@ -235,9 +235,9 @@ describe('recording a decision', () => {
     await user.click(screen.getByTestId('gate-approve'));
 
     await waitFor(() => expect(mockApprove).toHaveBeenCalled());
-    // The service takes (id, reason, revision hash) only. There is no argument position in which
+    // The service takes id, reason, revision hash and the execution preview. There is no argument position in which
     // this component could assert who the actor is.
-    expect(mockApprove.mock.calls[0]).toHaveLength(3);
+    expect(mockApprove.mock.calls[0]).toHaveLength(4);
     expect(mockApprove.mock.calls[0][1]).toBeUndefined();
   });
 
@@ -262,7 +262,7 @@ describe('recording a decision', () => {
     await waitFor(() => expect(screen.getByTestId('gate-approve')).toBeEnabled());
     await user.click(screen.getByTestId('gate-approve'));
 
-    await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash));
+    await waitFor(() => expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, undefined));
   });
 
   it('resuming posts to the resume endpoint', async () => {
@@ -354,12 +354,32 @@ describe('reviewed revision binding', () => {
     expect(await screen.findByText(/Proposed execution authority/)).toBeInTheDocument();
     await user.click(screen.getByTestId('gate-approve'));
     expect(await screen.findByText('Plan changed; review again')).toBeInTheDocument();
-    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash);
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, undefined);
     mockPreview.mockResolvedValue({...plan, version: 2, plan_hash: 'b'.repeat(64)});
     await user.click(screen.getByText('Reload plan preview'));
     expect(await screen.findByText(/Review plan version 2/)).toBeInTheDocument();
     expect(mockApprove).toHaveBeenCalledTimes(1);
     await user.click(screen.getByTestId('gate-approve'));
-    expect(mockApprove).toHaveBeenLastCalledWith('node-1', undefined, 'b'.repeat(64));
+    expect(mockApprove).toHaveBeenLastCalledWith('node-1', undefined, 'b'.repeat(64), undefined);
+  });
+});
+
+describe('executable next step', () => {
+  it('explains missing configuration and keeps approval disabled', async () => {
+    mockPreview.mockResolvedValue({ ...plan, execution: { required: true, ready: false, runs: [], problems: ['E32 needs a workflow binding'] } });
+    renderControls(makeNode('awaiting_gate'));
+    expect(await screen.findByText('E32 needs a workflow binding')).toBeInTheDocument();
+    expect(screen.getByTestId('gate-approve')).toBeDisabled();
+    expect(mockApprove).not.toHaveBeenCalled();
+  });
+
+  it('shows the target and sends the reviewed execution with one approval', async () => {
+    const execution = { required: true, ready: true, snapshot: 'b'.repeat(64), problems: [], runs: [{ node_id: 'eval-1', title: 'E32', workflow: 'eval-cli-uplift.yml', target: { account_id: '123456789012', region: 'us-east-1', resource_id: 'dev' }, acceptance: 'human', criteria: ['cleanup', 'E32'] }] };
+    mockPreview.mockResolvedValue({ ...plan, execution });
+    const user = userEvent.setup();
+    renderControls(makeNode('awaiting_gate'));
+    expect(await screen.findByText(/Account 123456789012/)).toBeInTheDocument();
+    await user.click(screen.getByTestId('gate-approve'));
+    expect(mockApprove).toHaveBeenCalledWith('node-1', undefined, hash, execution);
   });
 });

@@ -39,10 +39,10 @@ export async function getFlowGraph(flowId: string): Promise<FlowGraph> {
  * session, and the request model forbids extra fields, so a body asserting
  * `actor_kind` is a 422 rather than a silently-honoured claim.
  */
-export async function approveGate(gateId: string, reason?: string, expectedPlanHash?: string): Promise<GateDecisionResult> {
+export async function approveGate(gateId: string, reason?: string, expectedPlanHash?: string, executionPreview?: GateExecutionPreview): Promise<GateDecisionResult> {
   return apiClient.post<GateDecisionResult>(
     `/orchestration/gates/${encodeURIComponent(gateId)}/approve`,
-    { reason: reason ?? null, ...(expectedPlanHash ? { expected_plan_hash: expectedPlanHash } : {}) }
+    { reason: reason ?? null, ...(expectedPlanHash ? { expected_plan_hash: expectedPlanHash } : {}), ...(executionPreview ? { execution_preview: { snapshot: executionPreview.snapshot, window_request: executionPreview.window_request } } : {}) }
   );
 }
 
@@ -54,7 +54,17 @@ export async function rejectGate(gateId: string, reason?: string, expectedPlanHa
   );
 }
 
+export interface GateExecutionPreview {
+  required: boolean;
+  ready: boolean;
+  snapshot?: string;
+  problems: string[];
+  window_request?: Record<string, unknown> | null;
+  runs: { node_id: string; title: string; workflow: string; target: { account_id: string; region: string; resource_id: string }; acceptance: string; criteria: string[] }[];
+}
+
 export interface GatePlanPreview {
+  execution?: GateExecutionPreview;
   version: number;
   plan_hash: string;
   superseded_at: string | null;
@@ -67,7 +77,7 @@ export interface GatePlanPreview {
   };
 }
 
-export async function getGatePlanPreview(flowId: string): Promise<GatePlanPreview> {
+export async function getGatePlanPreview(flowId: string, gateId?: string): Promise<GatePlanPreview> {
   const plans = await apiClient.get<GatePlanPreview[]>(`/orchestration/flows/${encodeURIComponent(flowId)}/plans`);
   const current = Array.isArray(plans) ? plans.filter(plan => plan?.superseded_at === null) : [];
   if (current.length !== 1 || !/^[a-f0-9]{64}$/.test(current[0].plan_hash)
@@ -76,7 +86,7 @@ export async function getGatePlanPreview(flowId: string): Promise<GatePlanPrevie
         && typeof node.title === 'string' && typeof node.kind === 'string')) {
     throw new Error('The current plan revision could not be verified. Reload its preview before deciding.');
   }
-  return current[0];
+  return gateId ? { ...current[0], execution: await apiClient.get<GateExecutionPreview>(`/orchestration/gates/${encodeURIComponent(gateId)}/execution-preview`) } : current[0];
 }
 
 /**

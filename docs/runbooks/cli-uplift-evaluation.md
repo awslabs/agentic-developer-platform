@@ -128,8 +128,14 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
   -f mode=start -f suites=full
 ```
 
-Suites: `capability-contrast`, `usage-exports`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `knowledge-lifecycle`, `machine-lifecycle`, `budget-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
+Suites: `capability-contrast`, `usage-exports`, `nightly`, `hosted-coding`, `hosted-chat`, `vault-lifecycle`, `hierarchy-lifecycle`, `knowledge-lifecycle`, `knowledge`, `machine-lifecycle`, `budget-lifecycle`, `story-reads`, `research`, `tenant-isolation`, `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
 `github`, `parity`, `harness`, `multi-deployment`, `superplane`, `full`.
+
+The `knowledge` checkpoint runs E01 installation, login and E32 knowledge command
+qualification only. It does not start indexing or inference. Engine dispatches
+bind the exact reviewed source, workflow, environment and sanitized report; both
+the live job and independent recovery job must succeed. A completed checkpoint
+still requires human final acceptance.
 
 **E16/E17 model execution is currently disabled**, even with reachable gateways.
 The `multi_deployment_model_limits` requirement blocks both cases until hard

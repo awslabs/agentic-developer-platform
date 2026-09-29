@@ -235,7 +235,7 @@ class RepositoryProducerController:
                 "producer_receipt_changed",
             )
         passed = receipt is not None and receipt.mandatory_passed
-        target = NodeState.PASSED if passed else NodeState.FAILED
+        target = (NodeState.AWAITING_GATE if spec.acceptance_mode == "human" else NodeState.PASSED) if passed else NodeState.FAILED
         require(
             transition(node.state, target, actor_kind=ActorKind.SERVICE, reason="Authenticated evaluation workflow outcome").allowed,
             "producer_transition_refused",
@@ -253,7 +253,7 @@ class RepositoryProducerController:
             terminal_evidence=snapshot["run"]["url"],
         )
         require(released.disposition in {Disposition.ADMITTED, Disposition.DUPLICATE}, "producer_claim_release_refused")
-        if passed:
+        if passed and spec.acceptance_mode == "machine":
             from .tick import release_satisfied_successors
 
             await release_satisfied_successors(session, node)

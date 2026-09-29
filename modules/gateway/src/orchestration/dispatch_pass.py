@@ -1390,7 +1390,7 @@ async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None
         from .repository_evaluation import observe_repository_evaluation
 
         accepted = await accepted_evaluation(session, node)
-        if accepted is not None and accepted[1].evidence_schema == "repository-evaluation/v1":
+        if accepted is not None and accepted[1].evidence_schema in {"repository-evaluation/v1", "cli-live-evaluation/v1", "workflow-evaluation/v1"}:
             if not report._repository_evaluation_attempted:
                 report._repository_evaluation_attempted = True
                 await observe_repository_evaluation(session, node)
