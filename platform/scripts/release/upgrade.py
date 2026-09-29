@@ -40,6 +40,18 @@ def integration_gate(manifest, manifest_sha, evidence):
         raise ValueError('Pre-production requires successful integration evidence for this exact release')
 
 
+def check_module_scope(s3, bucket):
+    """Refuse installed modules that the core update would touch without artifacts."""
+    keys = [item['Key'] for page in s3.get_paginator('list_objects_v2').paginate(Bucket=bucket, Prefix='dev/') for item in page.get('Contents', [])]
+    for key in keys:
+        # Superplane is deployed from its own module and is outside deploy-all.
+        # Agent context is in deploy-all's installed-module update scope.
+        if key.endswith('terraform.tfstate') and '/agent-context/' in key:
+            state = json.loads(s3.get_object(Bucket=bucket, Key=key)['Body'].read())
+            if state.get('resources'):
+                raise ValueError('Release contract does not cover installed agent-context')
+
+
 def upgrade(directory, environment, evidence_directory, integration_evidence=None):
     import boto3
     import botocore.exceptions
@@ -54,14 +66,9 @@ def upgrade(directory, environment, evidence_directory, integration_evidence=Non
         integration_gate(manifest, sha256(directory / 'manifest.json'), json.loads(integration_evidence.read_text()))
     s3 = storage.client()
     bucket = f'adp-terraform-state-{account}'
-    # This contract covers the installed platform, gateway, factory and webhook.
-    # Fail before publishing/applying if another module needs a release artifact.
-    keys = [item['Key'] for page in s3.get_paginator('list_objects_v2').paginate(Bucket=bucket, Prefix='dev/') for item in page.get('Contents', [])]
-    for key in keys:
-        if key.endswith('terraform.tfstate') and any('/' + name + '/' in key for name in ('agent-context', 'superplane')):
-            state = json.loads(s3.get_object(Bucket=bucket, Key=key)['Body'].read())
-            if state.get('resources'):
-                raise ValueError('Release contract does not cover installed agent-context/superplane')
+    # This contract covers platform, gateway, factory and webhook. Optional
+    # modules with their own deploy flows remain outside this release.
+    check_module_scope(s3, bucket)
     owner = str(uuid.uuid4())
     lock = {'LockID': {'S': f'adp-release-upgrade/{account}'}}
     dynamo = boto3.client('dynamodb', region_name=REGION)

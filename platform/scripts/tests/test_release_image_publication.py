@@ -25,6 +25,8 @@ class ReleasePublicationTests(unittest.TestCase):
             calls.append((parts, kwargs))
             if parts[:2] == ["aws", "ecr"]:
                 return "test-password"
+            if parts[0] == "python3" and str(parts[1]).endswith("upgrade-image-cache.py"):
+                return ""  # No source image exists yet; each repository needs a build.
             if parts[:2] == ["skopeo", "copy"]:
                 destination = Path(str(parts[-1]).removeprefix("dir:"))
                 destination.mkdir()

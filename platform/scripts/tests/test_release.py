@@ -14,6 +14,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'platform/scripts/release'))
 import common
+import build
 import artifacts
 import storage
 import upgrade
@@ -127,6 +128,41 @@ class ReleaseContracts(unittest.TestCase):
         for key in evidence:
             with self.subTest(key=key), self.assertRaises(ValueError):
                 upgrade.integration_gate(self.manifest, digest, dict(evidence, **{key: 'wrong'}))
+
+    def test_release_leaves_separate_superplane_state_outside_its_scope(self):
+        s3 = Mock()
+        s3.get_paginator.return_value.paginate.return_value = [{'Contents': [
+            {'Key': 'dev/modules/superplane/terraform.tfstate'},
+        ]}]
+        upgrade.check_module_scope(s3, 'state-bucket')
+        s3.get_object.assert_not_called()
+
+    def test_release_refuses_installed_agent_context_without_artifacts(self):
+        s3 = Mock()
+        s3.get_paginator.return_value.paginate.return_value = [{'Contents': [
+            {'Key': 'dev/modules/agent-context/terraform.tfstate'},
+        ]}]
+        s3.get_object.return_value = {'Body': Mock(read=Mock(return_value=b'{"resources":[{"type":"aws_s3_bucket"}]}'))}
+        with self.assertRaisesRegex(ValueError, 'installed agent-context'):
+            upgrade.check_module_scope(s3, 'state-bucket')
+
+    def test_release_reuses_verified_source_image_without_codebuild(self):
+        registry = '608380991969.dkr.ecr.us-east-1.amazonaws.com'
+        digest = 'sha256:' + 'd' * 64
+        with patch.object(build, 'run', return_value=f'{registry}/adp-gateway@{digest}\n') as runner:
+            self.assertEqual(build.ensure_image(registry, 'adp-gateway', 'gateway-build', 'a' * 40), digest)
+        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(runner.call_args.args[0][-1], f'{registry}/adp-gateway:{"a" * 40}')
+
+    def test_release_builds_when_source_image_is_missing(self):
+        registry = '608380991969.dkr.ecr.us-east-1.amazonaws.com'
+        digest = 'sha256:' + 'd' * 64
+        with patch.object(build, 'run', side_effect=['', None]) as runner, patch.object(
+            build, 'aws', return_value={'imageDetails': [{'imageDigest': digest}]}
+        ):
+            self.assertEqual(build.ensure_image(registry, 'adp-gateway', 'gateway-build', 'a' * 40), digest)
+        self.assertEqual(runner.call_count, 2)
+        self.assertEqual(runner.call_args.args[0][:2], ['bash', 'platform/scripts/codebuild-run.sh'])
 
     def test_release_lock_escapes_reserved_owner_attribute(self):
         dynamo = Mock()

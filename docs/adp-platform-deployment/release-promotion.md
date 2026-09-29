@@ -50,8 +50,9 @@ Both stages use `us-east-1` even though their Terraform environment name remains
 > **Current boundary:** the implemented chain stops at pre-production.
 > Production and customer-demo promotion are not implemented. Do not treat a
 > successful pre-production run as production approval. Installed agent-context
-> or superplane modules also fail release preflight because the release manifest
-> does not yet cover their artifacts.
+> fails release preflight because `deploy-all.sh --update` would include it but
+> the manifest does not cover its artifacts. Superplane has its own deploy flow;
+> a core release leaves its Terraform state and workloads outside the upgrade.
 
 ## One-time setup
 
@@ -103,8 +104,8 @@ Before dispatching:
 3. Confirm no legacy or manual deployment is running against either target.
 4. Confirm the one-time setup above is current with
    `python3 platform/scripts/release/bootstrap.py --verify-github`.
-5. Confirm the release contract covers every installed module. The workflow
-   deliberately refuses an installed agent-context or superplane deployment.
+5. Confirm the release contract covers every module in the core upgrade scope.
+   The workflow refuses installed agent-context; Superplane is upgraded separately.
 
 ### 2. Build and validate integration
 
