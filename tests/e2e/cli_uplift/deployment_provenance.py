@@ -85,6 +85,48 @@ def get_json(url, bearer, ca_data):
         raise PortError("Gateway metadata read failed") from None
 
 
+def immutable_source(aws, selected, digest):
+    """Resolve a modern release through its write-once Git source tag in ECR."""
+    repository = selected["image_repository"].split("/", 1)[1]
+    repositories = aws.call(
+        "ecr", "describe_repositories", repositoryNames=[repository]
+    ).get("repositories", [])
+    require(len(repositories) == 1, "Gateway ECR repository is ambiguous")
+    repo = repositories[0]
+    require(
+        repo.get("repositoryUri") == selected["image_repository"]
+        and repo.get("registryId") == selected["account"]
+        and repo.get("repositoryName") == repository
+        and repo.get("imageTagMutability") == "IMMUTABLE",
+        "Gateway source tags are not immutable in the reviewed repository",
+    )
+    images = aws.call(
+        "ecr",
+        "describe_images",
+        repositoryName=repository,
+        imageIds=[{"imageDigest": digest}],
+    ).get("imageDetails", [])
+    require(len(images) == 1, "Gateway digest has no unique ECR image")
+    image = images[0]
+    require(
+        image.get("registryId") == selected["account"]
+        and image.get("repositoryName") == repository
+        and image.get("imageDigest") == digest,
+        "Gateway ECR image identity mismatch",
+    )
+    revisions = [
+        tag for tag in image.get("imageTags", []) if re.fullmatch(r"[a-f0-9]{40}", tag)
+    ]
+    require(
+        len(revisions) == 1,
+        "Gateway digest has no unique immutable source tag or reviewed build receipt",
+    )
+    return {
+        "source_sha": revisions[0],
+        "revision_source": "gateway_eks_immutable_ecr_source",
+    }
+
+
 def resolve(aws, cfg, record):
     selected = binding(cfg)
     cluster = aws.call("eks", "describe_cluster", name=selected["cluster"])["cluster"]
@@ -180,7 +222,8 @@ def resolve(aws, cfg, record):
         "Gateway image is not digest pinned",
     )
     build = selected["images"].get(digest)
-    require(build is not None, "Gateway digest has no reviewed build receipt")
+    if build is None:
+        build = immutable_source(aws, selected, digest)
     revision = build["source_sha"]
     require(
         re.fullmatch(r"[a-f0-9]{40}", revision),
@@ -188,7 +231,9 @@ def resolve(aws, cfg, record):
     )
     record.update(
         {
-            "revision_source": "gateway_eks_build_receipt",
+            "revision_source": build.get(
+                "revision_source", "gateway_eks_build_receipt"
+            ),
             "revision_evidence": {
                 "cluster_arn": cluster["arn"],
                 "namespace": namespace,
@@ -197,8 +242,8 @@ def resolve(aws, cfg, record):
                 "generation": generation,
                 "service": service_name,
                 "image_digest": digest,
-                "build_id": build["build_id"],
-                "source_archive_sha256": build["source_archive_sha256"],
+                "build_id": build.get("build_id"),
+                "source_archive_sha256": build.get("source_archive_sha256"),
             },
         }
     )

@@ -14216,3 +14216,73 @@ def test_github_registration_errors_are_not_absent_fixtures(tmp_path, reply):
     cli.run.return_value = reply
     with pytest.raises(common.RemoteError):
         module.github_maintenance(cli, {})
+
+
+@pytest.fixture
+def immutable_gateway(observed):
+    cfg, aws, deployment, _, cluster, _, _ = observed
+    selected = dp.binding(cfg)
+    digest = "sha256:" + "0" * 64
+    deployment["spec"]["template"]["spec"]["containers"][0]["image"] = (
+        selected["image_repository"] + "@" + digest
+    )
+    repository = dict(
+        repositoryUri=selected["image_repository"],
+        registryId=selected["account"],
+        repositoryName="adp-gateway",
+        imageTagMutability="IMMUTABLE",
+    )
+    image = dict(
+        registryId=selected["account"],
+        repositoryName="adp-gateway",
+        imageDigest=digest,
+        imageTags=["a" * 40, "release-alias"],
+    )
+
+    def call(service, operation, **kwargs):
+        if service == "eks":
+            return {"cluster": cluster}
+        if operation == "describe_repositories":
+            assert kwargs == {"repositoryNames": ["adp-gateway"]}
+            return {"repositories": [repository]}
+        assert operation == "describe_images"
+        assert kwargs == {
+            "repositoryName": "adp-gateway",
+            "imageIds": [{"imageDigest": digest}],
+        }
+        return {"imageDetails": [image]}
+
+    aws.call.side_effect = call
+    return cfg, aws, repository, image
+
+
+def test_gateway_immutable_source_is_observed_independently(immutable_gateway):
+    cfg, aws, _, _ = immutable_gateway
+    cfg["expected_revision"] = "b" * 40
+    record = {}
+    assert dp.resolve(aws, cfg, record) == "a" * 40
+    assert record["revision_source"] == "gateway_eks_immutable_ecr_source"
+    assert record["revision_evidence"]["image_digest"] == "sha256:" + "0" * 64
+
+
+@pytest.mark.parametrize(
+    "target,key,value",
+    [
+        ("repo", "imageTagMutability", "MUTABLE"),
+        ("repo", "imageTagMutability", "IMMUTABLE_WITH_EXCLUSION"),
+        ("repo", "registryId", "123456789012"),
+        ("repo", "repositoryUri", "foreign/adp-gateway"),
+        ("image", "registryId", "123456789012"),
+        ("image", "repositoryName", "other"),
+        ("image", "imageDigest", "sha256:" + "1" * 64),
+        ("image", "imageTags", ["alias"]),
+        ("image", "imageTags", ["a" * 40, "b" * 40]),
+    ],
+)
+def test_gateway_immutable_source_rejects_unproven_mapping(
+    immutable_gateway, target, key, value
+):
+    cfg, aws, repo, image = immutable_gateway
+    (repo if target == "repo" else image)[key] = value
+    with pytest.raises(PortError):
+        dp.resolve(aws, cfg, {})

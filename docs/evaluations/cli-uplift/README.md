@@ -85,8 +85,14 @@ and reads only `adp-gateway/Deployment/bedrockgateway` and
 service/deployment selectors, positive desired replica count, observed generation,
 all replicas updated/ready/available, no old/unavailable/terminating replicas, and
 completed rollout conditions. It then resolves the gateway container's exact ECR
-digest through `gateway-deployment-receipts.json`. An unknown digest stops the run
-until independently verified build evidence is reviewed. The normal preflight
+digest through `gateway-deployment-receipts.json` for legacy images. Modern releases
+can instead resolve the exact digest through one full Git SHA tag in the reviewed
+ECR repository. The observer verifies the repository account/name/URI, its
+`IMMUTABLE` tag policy, and the returned image account/name/digest. Mutable
+repositories, missing or ambiguous source tags, and identity mismatches stop the
+run. The requested revision is still compared independently; it is never copied
+into the observed result. Arbitrarily tagged legacy images still require reviewed
+build receipts. The normal preflight
 still compares the resolved revision with the requested revision and every served
 CLI file with Git-derived hashes; the receipt does not replace those checks.
 
