@@ -319,6 +319,23 @@ class ReleaseContracts(unittest.TestCase):
         self.assertLess(role_index, config_index)
         self.assertLess(config_index, source_index)
 
+    def test_partial_pricing_refresh_is_explicit_and_forwarded_to_upgrade(self):
+        import yaml
+        parent = yaml.safe_load((ROOT / '.github/workflows/adp-release.yml').read_text())
+        reusable = yaml.safe_load((ROOT / '.github/workflows/adp-release-upgrade.yml').read_text())
+        dispatch = parent.get('on', parent.get(True))['workflow_dispatch']['inputs']
+        call = reusable.get('on', reusable.get(True))['workflow_call']['inputs']
+        self.assertEqual(dispatch['allow_partial_pricing_refresh']['type'], 'boolean')
+        self.assertIs(dispatch['allow_partial_pricing_refresh']['default'], False)
+        self.assertEqual(call['allow_partial_pricing_refresh']['type'], 'boolean')
+        self.assertIs(call['allow_partial_pricing_refresh']['default'], False)
+        self.assertEqual(parent['jobs']['integration']['with']['allow_partial_pricing_refresh'],
+                         '${{ inputs.allow_partial_pricing_refresh }}')
+        upgrade_step = next(step for step in reusable['jobs']['upgrade']['steps']
+                            if step.get('name') == 'Full upgrade and mandatory acceptance')
+        self.assertEqual(upgrade_step['env']['ADP_PRICING_ALLOW_PARTIAL_REFRESH'],
+                         '${{ inputs.allow_partial_pricing_refresh }}')
+
     def test_all_github_actions_jobs_use_self_hosted_runners(self):
         import yaml
 

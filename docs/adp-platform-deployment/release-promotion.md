@@ -139,6 +139,9 @@ In GitHub, open **Actions → ADP Release and Promote → Run workflow** and sel
 - Leave `release_id` and `manifest_sha256` empty to create a new release.
 - Supply both values only when deliberately retrying an already published
   immutable release.
+- Select `allow_partial_pricing_refresh` only after reviewing source gaps and
+  confirming that retaining older prices is acceptable for this integration
+  attempt. The default is `false`; this option does not change release artifacts.
 
 This dispatch is not a dry run. For a new release it:
 
