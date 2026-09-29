@@ -1544,12 +1544,18 @@ PY
     if [ -z "$COGNITO_PENTEST_CLIENT_ID" ] || [ "$COGNITO_PENTEST_CLIENT_ID" = "None" ]; then
       fail "Agent-factory deployed without publishing the dev pentest Cognito client ID"
     fi
-    PENTEST_CLIENT_PATCH=$(PENTEST_CLIENT_ID="$COGNITO_PENTEST_CLIENT_ID" python3 -c \
-      'import json, os; print(json.dumps({"data": {"BG_COGNITO_PENTEST_CLIENT_ID": os.environ["PENTEST_CLIENT_ID"]}}))')
-    kubectl patch configmap bedrockgateway-config -n adp-gateway \
-      --type merge --patch "$PENTEST_CLIENT_PATCH"
-    kubectl rollout restart deployment/bedrockgateway -n adp-gateway
-    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s \
+    CURRENT_PENTEST_CLIENT_ID=$(kubectl get configmap bedrockgateway-config -n adp-gateway \
+      -o jsonpath='{.data.BG_COGNITO_PENTEST_CLIENT_ID}')
+    if [ "$CURRENT_PENTEST_CLIENT_ID" != "$COGNITO_PENTEST_CLIENT_ID" ]; then
+      PENTEST_CLIENT_PATCH=$(PENTEST_CLIENT_ID="$COGNITO_PENTEST_CLIENT_ID" python3 -c \
+        'import json, os; print(json.dumps({"data": {"BG_COGNITO_PENTEST_CLIENT_ID": os.environ["PENTEST_CLIENT_ID"]}}))')
+      kubectl patch configmap bedrockgateway-config -n adp-gateway \
+        --type merge --patch "$PENTEST_CLIENT_PATCH"
+      kubectl rollout restart deployment/bedrockgateway -n adp-gateway
+    else
+      echo "Gateway pentest Cognito client is already configured; checking rollout"
+    fi
+    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=600s \
       || fail "Gateway rollout failed after adding the dev pentest Cognito client"
     ok "Gateway reconciled with the dev pentest Cognito client"
   fi
