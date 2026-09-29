@@ -1,3 +1,4 @@
+import { ExecutionWindowControl } from '@/components/orchestration/ExecutionWindowControl';
 import { BudgetEnforcementControl } from '@/components/budget/BudgetEnforcementControl';
 import { FlowExecutionControl } from '@/components/orchestration/FlowExecutionControl';
 /** Delivery flow: collapsible waves with dependency-ordered parallel groups. */
@@ -125,6 +126,7 @@ export function GraphView() {
           </div>
         </div>
 
+        <ExecutionWindowControl key={flowId} flowId={flowId!} window={data.execution_window} />
         <FlowExecutionControl flowId={flowId!} paused={data.execution_paused} />
         <BudgetEnforcementControl key={flowId} flowId={flowId} />
 

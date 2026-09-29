@@ -100,9 +100,18 @@ async def effective_shared_window(session, plan, policy):
         limit = datetime.fromisoformat(data["expires_at"])
         before = datetime.fromisoformat(data["before"])
         accepted = datetime.fromisoformat(data["accepted_at"])
+        started = datetime.fromisoformat(data["wall_clock_started_at"]) if data.get("wall_clock_started_at") else None
         if (
             any(t.tzinfo is None for t in (limit, before, accepted))
-            or not valid_extension(before, limit, accepted, data.get("before_wall_clock_seconds"), data.get("max_wall_clock_seconds"))
+            or not valid_extension(
+                before,
+                limit,
+                accepted,
+                data.get("before_wall_clock_seconds"),
+                data.get("max_wall_clock_seconds"),
+                started=started,
+                resume_expired=data.get("resume_expired") is True,
+            )
             or (accepted >= before and data.get("resume_expired") is not True)
         ):
             raise ValueError("invalid renewal window")
@@ -123,7 +132,10 @@ async def effective_shared_window(session, plan, policy):
         type(wall_clock) is not int
         or type(prior_wall_clock) is not int
         or not original.limits.max_wall_clock_seconds <= prior_wall_clock <= wall_clock <= 604_800
-        or wall_clock - prior_wall_clock > 86_400
+        or (
+            wall_clock != prior_wall_clock
+            and not valid_wall_clock(prior_wall_clock, wall_clock, accepted, started=started, resume_expired=data.get("resume_expired") is True)
+        )
     ):
         raise WindowRenewalError("window_wall_clock_receipt_unverifiable")
     if (
@@ -147,11 +159,25 @@ async def effective_shared_window(session, plan, policy):
     return apply_window(policy, limit, decision.id, wall_clock)
 
 
-def valid_extension(before, after, now, prior_seconds, seconds):
-    # A future expiry may stay unchanged only for an explicit elapsed-time
-    # increase. Extending expiry still requires the original 24-hour bound.
+def valid_wall_clock(prior, seconds, now, *, started=None, resume_expired=False):
+    if type(prior) is not int or type(seconds) is not int or not prior < seconds <= 604_800:
+        return False
+    if seconds - prior <= 86_400:
+        return True
+    # An explicit owner resumption can recover after a long gate wait. Keep
+    # elapsed time and cap the newly granted future window at 24 hours.
+    return bool(
+        resume_expired
+        and started is not None
+        and started.tzinfo is not None
+        and started + timedelta(seconds=prior) <= now
+        and now < started + timedelta(seconds=seconds) <= now + timedelta(hours=24)
+    )
+
+
+def valid_extension(before, after, now, prior_seconds, seconds, *, started=None, resume_expired=False):
     if after == before:
-        return after > now and type(prior_seconds) is int and type(seconds) is int and prior_seconds < seconds <= min(604_800, prior_seconds + 86_400)
+        return after > now and valid_wall_clock(prior_seconds, seconds, now, started=started, resume_expired=resume_expired)
     return max(now, before) < after <= now + timedelta(hours=24)
 
 
@@ -186,7 +212,15 @@ async def prepare_renewal(session, *, flow_id, actor, request):
     now = datetime.now(UTC)
     if policy.expires_at <= now and not request.resume_expired:
         raise WindowRenewalError("expired_policy_requires_explicit_reacceptance")
-    if not valid_extension(policy.expires_at, request.expires_at, now, policy.limits.max_wall_clock_seconds, request.max_wall_clock_seconds):
+    if not valid_extension(
+        policy.expires_at,
+        request.expires_at,
+        now,
+        policy.limits.max_wall_clock_seconds,
+        request.max_wall_clock_seconds,
+        started=started,
+        resume_expired=request.resume_expired,
+    ):
         raise WindowRenewalError("renewal_must_extend_within_24_hours")
     if not await policy_owner_matches(session, actor.actor_id, policy):
         raise WindowRenewalError("original_principal_required")
@@ -194,7 +228,9 @@ async def prepare_renewal(session, *, flow_id, actor, request):
         raise WindowRenewalError("flow_not_running")
     current_wall_clock = policy.limits.max_wall_clock_seconds
     wall_clock = request.max_wall_clock_seconds or current_wall_clock
-    if request.max_wall_clock_seconds is not None and not current_wall_clock < wall_clock <= min(604_800, current_wall_clock + 86_400):
+    if request.max_wall_clock_seconds is not None and not valid_wall_clock(
+        current_wall_clock, wall_clock, now, started=started, resume_expired=request.resume_expired
+    ):
         raise WindowRenewalError("wall_clock_must_increase_by_at_most_24_hours")
     if started + timedelta(seconds=wall_clock) <= now:
         raise WindowRenewalError("renewed_wall_clock_already_elapsed")

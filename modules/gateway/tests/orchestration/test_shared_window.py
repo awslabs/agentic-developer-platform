@@ -562,3 +562,43 @@ async def test_protected_retry_requires_original_owner(protected_window):
     )
     with pytest.raises(RetryIncreaseError, match="original_principal_required"):
         await preview_retry_increase(b.s.session, flow_id=b.s.flow.id, actor=replace(b.actor, actor_id="other-owner"), request=request)
+
+
+@pytest.mark.parametrize("keep_expiry", [False, True])
+async def test_owner_can_resume_after_multi_day_gate_wait_without_resetting_work(window, keep_expiry):
+    b = window
+    before = (await effective(b)).policy
+    started = datetime.now(UTC) - timedelta(days=3)
+    document = copy.deepcopy(b.s.plan.plan_document)
+    document["execution_continuation"]["accepted_at"] = started.isoformat()
+    b.s.plan.plan_document = document
+    b.s.plan.plan_hash = digest(document)
+    b.execution.created_at = started
+    b.execution.deadline_at = started + timedelta(seconds=before.limits.max_wall_clock_seconds)
+    await b.s.session.flush()
+    b.request = b.request.model_copy(
+        update={
+            "expected_plan_hash": b.s.plan.plan_hash,
+            "max_wall_clock_seconds": 3 * 86400 + 3600,
+            "resume_expired": True,
+        }
+    )
+    if keep_expiry:
+        b.request = b.request.model_copy(update={"expires_at": before.expires_at})
+    receipt, _ = await accept(b)
+    after = (await effective(b)).policy
+    assert receipt["accepted"]
+    assert after.limits.max_wall_clock_seconds == 3 * 86400 + 3600
+    assert after.limits.max_spend_usd == before.limits.max_spend_usd
+    assert after.limits.max_attempts_per_node == before.limits.max_attempts_per_node
+    assert b.s.node.attempts == b.execution.attempts == 2
+    assert b.s.claim.active_run_id == "run-current"
+    assert b.s.plan.plan_document == document
+
+
+@pytest.mark.parametrize("resume,hours", [(False, 1), (True, 25)])
+def test_long_expired_window_cannot_be_silently_or_excessively_renewed(resume, hours):
+    from src.orchestration.shared_window import valid_wall_clock
+
+    now = datetime.now(UTC)
+    assert not valid_wall_clock(3600, 3 * 86400 + hours * 3600, now, started=now - timedelta(days=3), resume_expired=resume)
