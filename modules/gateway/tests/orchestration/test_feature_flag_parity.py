@@ -217,19 +217,25 @@ class TestThreePlaceParity:
             f"on its own; got {active[index + 1]!r}. A literal value here arms every environment at once."
         )
 
-    @pytest.mark.parametrize("renderer", [
-        _DEPLOY_WORKFLOW,
-        _GATEWAY_ROOT.parents[1] / "platform" / "scripts" / "deploy-all.sh",
-    ])
+    @pytest.mark.parametrize(
+        "renderer",
+        [
+            _DEPLOY_WORKFLOW,
+            _GATEWAY_ROOT.parents[1] / "platform" / "scripts" / "deploy-all.sh",
+        ],
+    )
     def test_deployment_defaults_on_and_reads_environment_override(self, renderer):
         source = renderer.read_text()
         assert _FLAG_PLACEHOLDER in source
         assert f'get_ssm "{_FLAG_SSM_PARAM}" "true"' in source
 
-    @pytest.mark.parametrize("path, variable", [
-        ("infra/variables.tf", "orchestration_engine_enabled"),
-        ("infra/modules/orchestration-tick/variables.tf", "engine_enabled"),
-    ])
+    @pytest.mark.parametrize(
+        "path, variable",
+        [
+            ("infra/variables.tf", "orchestration_engine_enabled"),
+            ("infra/modules/orchestration-tick/variables.tf", "engine_enabled"),
+        ],
+    )
     def test_tick_deployment_defaults_on(self, path, variable):
         source = (_GATEWAY_ROOT / path).read_text()
         block = source.split(f'variable "{variable}" {{', 1)[1].split("\n}", 1)[0]
