@@ -24,6 +24,8 @@ locals {
   #   buildspec     — the spec executed from the source zip.
   #   ecr_repos     — ECR repositories this project may push to. A project with
   #                   an empty list gets NO push permission at all.
+  #   ecr_read_repos — other ECR repositories used as private build bases.
+  #                   Read grants never include image publication actions.
   #   s3_write      — object keys (under the state bucket) this project may
   #                   write. Used by the two Lambda-layer builds, which publish
   #                   a zip that gateway Terraform then reads.
@@ -69,6 +71,7 @@ locals {
     "agent-gateway" = {
       buildspec      = "codebuild/bs-agent-gateway.yml"
       ecr_repos      = ["adp-agent-gateway"]
+      ecr_read_repos = ["adp-agent-runtime"]
       privileged     = true
       privileged_why = "docker build -f gateway/Dockerfile"
     }
@@ -368,7 +371,7 @@ resource "aws_iam_role_policy" "project" {
       # ECR registry auth. Resource must be "*": GetAuthorizationToken is a
       # registry-level call with no repository ARN to scope it to. It yields a
       # token whose reach is decided by the repository grants below.
-      [for _ in range((length(lookup(each.value, "ecr_repos", [])) > 0 || lookup(each.value, "scan_upload", false)) ? 1 : 0) : {
+      [for _ in range((length(lookup(each.value, "ecr_repos", [])) > 0 || length(lookup(each.value, "ecr_read_repos", [])) > 0 || lookup(each.value, "scan_upload", false)) ? 1 : 0) : {
         Sid      = "EcrAuth"
         Effect   = "Allow"
         Action   = ["ecr:GetAuthorizationToken"]
@@ -391,6 +394,12 @@ resource "aws_iam_role_policy" "project" {
           "ecr:UploadLayerPart"
         ]
         Resource = [for repo in each.value.ecr_repos : "${local.ecr_repo_arn_prefix}/${repo}"]
+      }],
+      [for _ in range(length(lookup(each.value, "ecr_read_repos", [])) > 0 ? 1 : 0) : {
+        Sid      = "EcrBuildBaseRead"
+        Effect   = "Allow"
+        Action   = ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:DescribeImages", "ecr:GetDownloadUrlForLayer"]
+        Resource = [for repo in each.value.ecr_read_repos : "${local.ecr_repo_arn_prefix}/${repo}"]
       }],
       # The buildspecs retain a first-run-safe CreateRepository call. IAM can
       # authorize that call against the exact repository ARN even before the

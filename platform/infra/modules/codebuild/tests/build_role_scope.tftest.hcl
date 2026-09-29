@@ -391,3 +391,29 @@ run "runtime_build_has_exact_generated_identity_and_resources" {
     error_message = "Every agent runtime statement must remain scoped to exact source/log/repository resources, including unlisted sibling repositories."
   }
 }
+
+run "agent_gateway_reads_only_its_private_build_base" {
+  command = apply
+
+  assert {
+    condition = length([
+      for statement in jsondecode(aws_iam_role_policy.project["agent-gateway"].policy).Statement : statement
+      if statement.Sid == "EcrBuildBaseRead" &&
+      toset(statement.Action) == toset([
+        "ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+        "ecr:DescribeImages", "ecr:GetDownloadUrlForLayer"
+      ]) &&
+      toset(statement.Resource) == toset(["arn:aws:ecr:us-east-1:123456789012:repository/adp-agent-runtime"])
+    ]) == 1
+    error_message = "Agent gateway needs read-only ECR access to its runtime base image."
+  }
+
+  assert {
+    condition = length([
+      for statement in jsondecode(aws_iam_role_policy.project["agent-gateway"].policy).Statement : statement
+      if statement.Sid == "OwnEcrRepositories" &&
+      toset(statement.Resource) == toset(["arn:aws:ecr:us-east-1:123456789012:repository/adp-agent-gateway"])
+    ]) == 1
+    error_message = "Agent gateway image publication must remain limited to its own repository."
+  }
+}
