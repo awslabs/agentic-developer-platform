@@ -196,6 +196,7 @@ def harness(tmp_path):
         "deploy-checkpoints.py",
         "upgrade-scope.sh",
         "gateway-alb-vars.sh",
+        "gateway-rollout.sh",
         "prepare-backends.py",
         "render-model-root-config.py",
         "resolve-ecr-image.py",

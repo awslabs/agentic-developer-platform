@@ -1019,3 +1019,24 @@ to `false` and run the upgrade to hide Knowledge, Indexing Status, or the legacy
 Tenant Org Links menu. Knowledge and indexing default to enabled; legacy links
 default to hidden. These display flags do not delete stored data, remove teams,
 or stop indexing workers.
+
+### Gateway rollout budget
+
+The platform deploy script preserves the gateway's current desired replica count
+when applying an upgrade, including a count managed by the horizontal pod
+autoscaler. If that count cannot be read, the upgrade stops before applying the
+gateway Deployment. Fresh deployments start with two replicas.
+
+Gateway rollout checks default to 2,400 seconds (40 minutes), allowing for node
+provisioning, application startup, and the existing 960-second graceful shutdown
+window for active model streams. Set `ADP_GATEWAY_ROLLOUT_TIMEOUT_SECONDS` to a
+positive integer in seconds to override this total wait limit, for example:
+
+```bash
+ADP_GATEWAY_ROLLOUT_TIMEOUT_SECONDS=3000 ./deploy.sh --update
+```
+
+The timeout does not restart the rollout or extend itself indefinitely. On
+failure, the script prints replica/pod status, Deployment conditions, and namespace
+events before stopping. Treat these diagnostics as private operational evidence.
+The script does not change node consolidation policy.

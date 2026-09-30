@@ -19,6 +19,13 @@ verification still run, and upgrade resumes retain the original preservation
 snapshot. Keep the checkout, Terraform working directories and saved upgrade
 evidence available until recovery finishes.
 
+Account placeholders are materialized under the checkpoint lock before the input
+fingerprint is saved or compared. This keeps generated account substitutions from
+invalidating a later resume; operator configuration and source changes still fail
+validation. Checkpoints created by older scripts before this preparation may
+already be inconsistent. Start a new run with the corrected script in that case;
+do not edit saved checkpoint hashes to force a match.
+
 To deliberately rerun a completed phase and everything after it:
 
 ```bash

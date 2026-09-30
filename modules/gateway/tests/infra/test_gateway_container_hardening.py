@@ -414,8 +414,8 @@ def test_deploy_all_enforces_after_rollout_and_probes_admission():
     assert 'kubectl create --dry-run=client --validate=false -f "$f"' in deploy_all
     assert "grep -qx Namespace" in deploy_all
 
-    update_rollout = deploy_all.index("kubectl rollout status deployment/bedrockgateway", deploy_all.index('if [ "$UPDATE_MODE" = true ]'))
-    fresh_rollout = deploy_all.index("kubectl rollout status deployment/bedrockgateway", update_rollout + 1)
+    update_rollout = deploy_all.index("wait_for_gateway_rollout", deploy_all.index('if [ "$UPDATE_MODE" = true ]'))
+    fresh_rollout = deploy_all.index("wait_for_gateway_rollout", update_rollout + 1)
     enforce = deploy_all.index("kubectl apply -f k8s/namespace.yaml", fresh_rollout)
     probe = deploy_all.index("scripts/verify-restricted-admission.sh adp-gateway", enforce)
     assert update_rollout < fresh_rollout < enforce < probe

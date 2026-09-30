@@ -25,6 +25,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+source "${SCRIPT_DIR}/gateway-rollout.sh"
 
 # Load deployment config — populates ADP_ACCOUNT_ID, ADP_REGION,
 # ADP_ENVIRONMENT, ADP_GITHUB_ORG, etc. Falls back to runtime defaults
@@ -754,9 +755,12 @@ fi
 deploy_phase_complete
 fi
 
-# Backend configuration is needed for upgrades from a clean checkout too.
-python3 "$SCRIPT_DIR/prepare-backends.py" "$ROOT_DIR/environments/$ENVIRONMENT" "$ACCOUNT_ID"
-ok "Environment backend configs updated"
+# Backend configuration was prepared under the checkpoint lock before hashing
+# inputs, so our own placeholder substitutions cannot invalidate a resume.
+# CI does not create checkpoints and retains its existing preparation path.
+if [ "$CI_MODE" = true ]; then
+  python3 "$SCRIPT_DIR/prepare-backends.py" "$ROOT_DIR/environments/$ENVIRONMENT" "$ACCOUNT_ID"
+fi
 
 if [ "$UPDATE_MODE" = true ]; then
   step "Migrate legacy shared-key ownership"
@@ -1229,7 +1233,10 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   FEATURE_AGENT_CONTROL_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
   FEATURE_NEW_UI_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
   FEATURE_AGENT_MODELS_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-models" "$PERSONA_MODEL_MAPPING_ENABLED")
-  DEPLOYMENT_APPLY_RESULT=$(sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+  GATEWAY_DEPLOYMENT_REPLICAS=$(gateway_deployment_replicas "$UPDATE_MODE") \
+    || fail "Cannot read gateway replica count; refusing to reset upgrade capacity"
+  DEPLOYMENT_APPLY_RESULT=$(sed -e "s|^  replicas: .*|  replicas: ${GATEWAY_DEPLOYMENT_REPLICAS}|" \
+      -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
       -e "s|__FEATURE_KNOWLEDGE_ENABLED__|${FEATURE_KNOWLEDGE_ENABLED}|g" \
       -e "s|__FEATURE_INDEXING_ENABLED__|${FEATURE_INDEXING_ENABLED}|g" \
       -e "s|__FEATURE_TENANT_ORG_LINKS_ENABLED__|${FEATURE_TENANT_ORG_LINKS_ENABLED}|g" \
@@ -1257,7 +1264,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     else
       echo "Gateway pod template already matches the release; checking rollout..."
     fi
-    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=600s \
+    wait_for_gateway_rollout \
       || fail "Gateway rollout failed. Check: kubectl describe deployment/bedrockgateway -n adp-gateway"
 
     # Post-rollout health check (§2)
@@ -1270,7 +1277,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   else
     # Fresh deployments require the same release-image readiness as updates.
     kubectl set image deployment/bedrockgateway bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
-    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || fail "Gateway rollout not complete"
+    wait_for_gateway_rollout || fail "Gateway rollout not complete"
   fi
 
   # Enforce the restricted namespace policy only after the hardened image and
@@ -1460,10 +1467,10 @@ if [ "$UPDATE_MODE" = true ]; then
 elif [ "$DEPLOY_GATEWAY" = true ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
   step "Step 8/11: Bootstrap first admin"
   # Strict rollout gate: bootstrap-admin.sh does kubectl exec into the gateway
-  # pod, so the deployment must be fully healthy. Wait up to 300s (retries).
+  # pod, so the deployment must be fully healthy. Use the shared bounded rollout wait.
   echo "Waiting for gateway rollout to complete (required for admin bootstrap)..."
-  if ! kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s 2>/dev/null; then
-    fail "Gateway deployment not healthy after 300s. Cannot bootstrap admin (kubectl exec requires a running pod). Fix the gateway first, then re-run."
+  if ! wait_for_gateway_rollout; then
+    fail "Gateway deployment did not become healthy within the rollout budget. Cannot bootstrap admin (kubectl exec requires a running pod). Fix the gateway first, then re-run."
   fi
   bash "$ROOT_DIR/modules/gateway/scripts/bootstrap-admin.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
   ok "First admin bootstrapped"
@@ -1645,7 +1652,7 @@ PY
     else
       echo "Gateway pentest Cognito client is already configured; checking rollout"
     fi
-    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=600s \
+    wait_for_gateway_rollout \
       || fail "Gateway rollout failed after adding the dev pentest Cognito client"
     ok "Gateway reconciled with the dev pentest Cognito client"
   fi

@@ -77,7 +77,7 @@ kubectl() {
                 env = dict(os.environ, UPDATE_MODE='true', GATEWAY_IMAGE='target-image',
                            SECRET_APPLY_RESULT=secret, CONFIGMAP_APPLY_RESULT=configmap,
                            DEPLOYMENT_APPLY_RESULT=deployment)
-                result = subprocess.run(['bash', '-c', stub + block], env=env, text=True, capture_output=True)
+                result = subprocess.run(['bash', '-c', stub + (ROOT / 'platform/scripts/gateway-rollout.sh').read_text() + '\n' + block], env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual('restarted' in result.stdout, restart)
                 self.assertIn('ready', result.stdout)

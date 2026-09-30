@@ -80,7 +80,7 @@ run_codebuild() {
                 PATH=tmp + os.pathsep + os.environ["PATH"],
             )
             result = subprocess.run(
-                ["bash", "-c", prefix + block + '\nprintf "tag=%s\\n" "$IMAGE_TAG"'],
+                ["bash", "-c", prefix + (ROOT / 'platform/scripts/gateway-rollout.sh').read_text() + '\n' + block + '\nprintf "tag=%s\\n" "$IMAGE_TAG"'],
                 env=env,
                 text=True,
                 capture_output=True,

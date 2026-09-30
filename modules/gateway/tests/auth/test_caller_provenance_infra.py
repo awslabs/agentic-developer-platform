@@ -367,7 +367,7 @@ class TestPentestClientDeploymentContract:
         client_output = deploy.index("terraform output -raw pentest_actor_client_id", factory_apply)
         configmap_patch = deploy.index("kubectl patch configmap bedrockgateway-config", client_output)
         rollout_restart = deploy.index("kubectl rollout restart deployment/bedrockgateway", configmap_patch)
-        rollout_status = deploy.index("kubectl rollout status deployment/bedrockgateway", rollout_restart)
+        rollout_status = deploy.index("wait_for_gateway_rollout", rollout_restart)
         agent_gateway = deploy.index('step "Step 10b/11: Build and deploy agent gateway"', rollout_status)
 
         assert factory_apply < client_output < configmap_patch < rollout_restart < rollout_status < agent_gateway
@@ -393,7 +393,7 @@ ok() { printf 'OK: %s\n' "$1"; }
 """
 
         result = subprocess.run(
-            ["bash", "-c", harness + reconciliation],
+            ["bash", "-c", harness + (DEPLOY_ALL.parent / "gateway-rollout.sh").read_text() + "\n" + reconciliation],
             check=False,
             capture_output=True,
             text=True,

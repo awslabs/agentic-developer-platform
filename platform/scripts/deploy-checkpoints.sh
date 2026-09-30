@@ -9,6 +9,10 @@ deploy_checkpoint_init() {
   DEPLOY_CHECKPOINT_FILE="$ROOT_DIR/.adp-deploy-checkpoints/${ACCOUNT_ID}-${AWS_REGION}-${ENVIRONMENT}.json"
   exec {DEPLOY_LOCK_FD}>"$DEPLOY_CHECKPOINT_FILE.lock"
   flock -n "$DEPLOY_LOCK_FD" || fail "Another deployment holds this target's checkpoint lock"
+  # Materialize account placeholders before fingerprinting. The same idempotent
+  # preparation runs under the checkpoint lock on both first runs and resumes.
+  python3 "$SCRIPT_DIR/prepare-backends.py" "$ROOT_DIR/environments/$ENVIRONMENT" "$ACCOUNT_ID" \
+    || fail "Cannot prepare environment backend configuration"
   local flags=()
   [ "$RESUME" = false ] || flags+=(--resume)
   [ -z "$FROM_PHASE" ] || flags+=(--from "$FROM_PHASE")
