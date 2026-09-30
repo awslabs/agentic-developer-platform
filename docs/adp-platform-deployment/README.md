@@ -40,3 +40,6 @@ These explain decisions and proposals, not commands to follow for deployment:
 Keep customer commands in the quickstart, agent behavior in the agent guide,
 and detailed operations in the references. Historical implementation status and
 old run results are not current deployment acceptance evidence.
+
+Hosted cross-account bootstrap is unavailable. Dashboard-linked AWS roles are
+for steady-state operations only; install ADP with customer-controlled AWS credentials.

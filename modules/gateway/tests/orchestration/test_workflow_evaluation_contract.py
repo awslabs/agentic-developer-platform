@@ -1,5 +1,6 @@
 """Use the real workflow declaration to verify bounded dispatch readiness."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -17,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[4]
 
 @pytest.fixture
 def contract():
+    target_config = json.loads((ROOT / "tests/e2e/cli_uplift/config.example.json").read_text())
     return WorkflowEvaluationSpecification.model_validate(
         dict(
             evidence_schema="workflow-evaluation/v1",
@@ -40,7 +42,7 @@ def contract():
             ],
             producer=dict(
                 workflow_criterion_id="qualification",
-                target=dict(account_id="879318057152", region="us-east-1"),
+                target=dict(account_id=target_config["platform_account"], region=target_config["region"]),
                 inputs=dict(
                     environment="dev",
                     expected_revision="b" * 40,
