@@ -191,6 +191,9 @@ def harness(tmp_path):
     # External tools remain stubbed; these helpers only run against the temp tree.
     for name in (
         "terraform-update.sh",
+        "tfvars-account-check.py",
+        "deploy-checkpoints.sh",
+        "deploy-checkpoints.py",
         "upgrade-scope.sh",
         "gateway-alb-vars.sh",
         "prepare-backends.py",
@@ -224,7 +227,8 @@ def harness(tmp_path):
     )
 
     for rel, marker in _SUB_SCRIPTS.items():
-        _write_exec(root / rel, f'#!/usr/bin/env bash\necho "{marker}"\nexit 0\n')
+        failure = 'exit "${TEST_FAIL_WEBHOOK:-0}"' if 'deploy-webhook-ingress.sh' in rel else 'exit 0'
+        _write_exec(root / rel, f'#!/usr/bin/env bash\necho "{marker}"\n{failure}\n')
 
     _write_exec(
         root / "platform" / "scripts" / "undeploy-phases.sh",
@@ -483,3 +487,35 @@ class TestLegacyDestroy:
         result = harness("--destroy", input_text="no\n")
         assert result.returncode == 0
         assert "STUB-SUPERPLANE-TEARDOWN" not in result.stdout
+
+
+class TestDeploymentResume:
+    def test_webhook_failure_resumes_without_rebuilding_platform_or_gateway(self, harness):
+        failed = harness(env={"TEST_FAIL_WEBHOOK": "17"})
+        assert failed.returncode == 17, failed.stdout[-2000:] + failed.stderr
+        resumed = harness("--resume")
+        assert resumed.returncode == 0, resumed.stdout[-3000:] + resumed.stderr
+        assert "Resuming: platform already complete" in resumed.stdout
+        assert "Resuming: gateway already complete" in resumed.stdout
+        assert "Step 2/11:" not in resumed.stdout
+        assert "Step 4/11:" not in resumed.stdout
+        assert_ran(resumed.stdout, "webhook_ingress")
+        assert_ran(resumed.stdout, "agent_factory")
+        assert_ran(resumed.stdout, "frontend")
+
+    def test_from_replays_requested_phase_and_later_phases(self, harness):
+        first = harness()
+        assert first.returncode == 0, first.stderr
+        replay = harness("--from", "webhook")
+        assert replay.returncode == 0, replay.stdout[-3000:] + replay.stderr
+        assert "Step 2/11:" not in replay.stdout
+        assert_ran(replay.stdout, "webhook_ingress")
+        assert_ran(replay.stdout, "frontend")
+
+    def test_changed_scope_refuses_before_phases(self, harness):
+        first = harness(env={"TEST_FAIL_WEBHOOK": "17"})
+        assert first.returncode == 17
+        changed = harness("--resume", "--gateway-only")
+        assert changed.returncode != 0
+        assert "changed" in changed.stderr
+        assert "Step 1/11:" not in changed.stdout

@@ -7,19 +7,7 @@ _UPDATE_PLAN_HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # policy, URL and ConfigMap, so reject them before planning an update.
 terraform_update_var_file() {
   local DEFAULT_FILE="$1" EXPLICIT_FILE="${2:-}" TARGET_ACCOUNT="$3"
-  python3 - "${EXPLICIT_FILE:-$DEFAULT_FILE}" "$TARGET_ACCOUNT" <<'PY'
-import pathlib
-import re
-import sys
-
-path = pathlib.Path(sys.argv[1]).expanduser().resolve()
-if not path.is_file():
-    raise SystemExit(f"Upgrade tfvars file does not exist: {path}")
-foreign = sorted(set(re.findall(r"(?<![0-9])[0-9]{12}(?![0-9])", path.read_text())) - {sys.argv[2]})
-if foreign:
-    raise SystemExit(f"Upgrade tfvars {path} references a different AWS account; provide target-specific tfvars")
-print(path)
-PY
+  python3 "$_UPDATE_PLAN_HELPER_DIR/tfvars-account-check.py" "${EXPLICIT_FILE:-$DEFAULT_FILE}" "$TARGET_ACCOUNT"
 }
 
 terraform_update_apply() {

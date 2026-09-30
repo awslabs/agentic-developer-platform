@@ -19,7 +19,8 @@ class FactoryArtifactsTests(unittest.TestCase):
         start = source.index(
             'if [ "$DEPLOY_FACTORY" = true ]; then\n  step "Step 10/11:'
         )
-        block = source[start : source.index("\nrefresh_credentials", start)]
+        # Exercise the factory body, excluding its surrounding checkpoint wrapper.
+        block = source[start : source.index("\ndeploy_phase_complete", start)]
         prefix = """set -euo pipefail
 step() { :; }; ok() { :; }; warn() { :; }
 fail() { echo "$*" >&2; exit 1; }

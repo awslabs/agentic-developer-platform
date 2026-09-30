@@ -61,7 +61,7 @@ kubectl() {
     def test_tick_second_pass_runs_only_after_in_scope_gateway_and_refresh(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index('if [ "$DEPLOY_WEBHOOK" = true ]; then', source.index('# Step 9/11:'))
-        block = source[start:source.index('\nrefresh_credentials\n', start)]
+        block = source[start:source.index('\ndeploy_phase_complete\n', start)]
         prefix = '''set -euo pipefail
 step() { :; }
 ok() { :; }
@@ -116,9 +116,13 @@ terraform_update_apply() { echo "terraform $1"; }
 
     def finalize(self, audit_fail=False, ci_mode=False, deferred=False, engine_fail=False):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
-        start = source.index("# Finalize after all installed modules")
+        start = source.index("if deploy_phase_begin finalize; then")
         block = source[start:source.index("# Summary\n", start)]
+        # These assertions exercise phase ordering; checkpoint persistence has
+        # separate executable recovery tests.
         prefix = r'''set -euo pipefail
+deploy_phase_begin() { return 0; }
+deploy_phase_complete() { :; }
 step() { :; }
 fail() { echo "$*" >&2; exit 1; }
 python3() {

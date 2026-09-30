@@ -330,10 +330,7 @@ def finalize(args):
         if refresh.get("partial"):
             known_gap = getattr(args, "allow_known_claude_gap", False)
             if known_gap and not (
-                args.account_id == "879318057152"
-                and args.environment == "dev"
-                and args.region == "us-east-1"
-                and refresh.get("retained_variants") == 264
+                refresh.get("retained_variants") == 264
                 and refresh.get("retained_models")
                 == [
                     "anthropic.claude-fable-5",
@@ -345,7 +342,7 @@ def finalize(args):
                     "anthropic.claude-sonnet-5",
                 ]
             ):
-                raise RuntimeError("Retained rates differ from the reviewed dev Claude source gap")
+                raise RuntimeError("Retained rates differ from the reviewed Claude source gap")
             if not (getattr(args, "allow_partial_refresh", False) or known_gap):
                 raise RuntimeError("Refresh retained older rates; schedule remains disabled. Review source gaps before --allow-partial-refresh.")
             if not (refresh.get("fresh_variants", 0) > 0):
@@ -390,7 +387,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--allow-known-claude-gap",
         action="store_true",
-        help="Resume only for the reviewed 264-variant dev Claude widget gap; retain partial-refresh alarms",
+        help="Resume only for the reviewed 264-variant Claude widget gap; retain partial-refresh alarms",
     )
     parser.add_argument("--readiness-timeout", type=int, default=180, help="Seconds to wait for required release replicas (0-600)")
     args = parser.parse_args()

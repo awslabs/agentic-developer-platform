@@ -59,7 +59,7 @@ class ReleaseTests(unittest.TestCase):
                 script.parent.mkdir(parents=True)
                 (script.parent / 'prepare-release-config.py').write_text('from pathlib import Path\nPath("portable-config-used").touch()\n')
                 (script.parent / 'bootstrap.sh').write_text('printf bootstrap > bootstrap.txt\nexit ' + str(bootstrap_exit) + '\n')
-                script.write_text('#!/bin/bash\n# --update)\nprintf "%s\\n" "$@" > forwarded.txt\nexit ' + str(exit_code) + '\n')
+                script.write_text('#!/bin/bash\n# --update) --confirm-destructive) --allow-known-claude-gap)\nprintf "%s\\n" "$@" > forwarded.txt\nexit ' + str(exit_code) + '\n')
                 git('add', '.')
                 git('commit', '--quiet', '-m', 'test release')
                 git('tag', '-a', 'v1.2.0', '-m', 'release')
@@ -82,7 +82,7 @@ class ReleaseTests(unittest.TestCase):
                         self.assertFalse((work / 'source/forwarded.txt').exists())
                     else:
                         expected_exit = bootstrap_exit or exit_code
-                        self.assertEqual(release.upgrade(self.args(local=True, gateway_only=True, update=update)), expected_exit)
+                        self.assertEqual(release.upgrade(self.args(local=True, gateway_only=True, update=update, confirm_destructive=update, allow_known_claude_gap=True)), expected_exit)
                         mode = 'upgrade' if update else 'install'
                         receipt = json.loads((work / f'release-{mode}.json').read_text())
                         self.assertEqual(receipt['mode'], mode)
@@ -97,7 +97,7 @@ class ReleaseTests(unittest.TestCase):
                         self.assertEqual(receipt['status'], 'complete' if exit_code == 0 else 'failed')
                         self.assertEqual(receipt['source_sha'], sha)
                         self.assertEqual((work / 'source/forwarded.txt').read_text().splitlines(),
-                                         (['--update'] if update else []) + ['--env', 'dev', '--region', 'us-east-1', '--local', '--gateway-only'])
+                                         (['--update'] if update else []) + ['--env', 'dev', '--region', 'us-east-1'] + (['--confirm-destructive'] if update else []) + ['--allow-known-claude-gap', '--local', '--gateway-only'])
                         self.assertFalse((origin / 'forwarded.txt').exists())
 
     def test_wrapper_routing_and_invalid_flags(self):

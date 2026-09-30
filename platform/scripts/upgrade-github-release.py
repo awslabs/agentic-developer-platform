@@ -43,6 +43,12 @@ def upgrade(args):
           f"Caller: {identity['Arn']}\nRegion: {args.region}\nEnvironment: {args.env}", flush=True)
     mode = 'upgrade' if args.update else 'install'
     flags = (['--update'] if args.update else []) + ['--env', args.env, '--region', args.region]
+    if getattr(args, 'confirm_destructive', False):
+        if not args.update:
+            raise ValueError('--confirm-destructive requires --update')
+        flags.append('--confirm-destructive')
+    if getattr(args, 'allow_known_claude_gap', False):
+        flags.append('--allow-known-claude-gap')
     if args.local:
         flags.append('--local')
     if args.gateway_only:
@@ -72,6 +78,9 @@ def upgrade(args):
         raise ValueError('This release does not contain deploy-all.sh')
     if args.update and '--update)' not in script.read_text():
         raise ValueError('This release does not contain an update-capable deploy-all.sh')
+    for flag in ('--confirm-destructive', '--allow-known-claude-gap'):
+        if flag in flags and flag + ')' not in script.read_text():
+            raise ValueError(f'This release does not support {flag}; select a release containing this fix')
     bootstrap = source / 'platform/scripts/bootstrap.sh'
     if not args.update and not bootstrap.is_file():
         raise ValueError('This release does not contain bootstrap.sh for fresh installation')
@@ -122,6 +131,8 @@ def main():
     parser.add_argument('--update', action='store_true', help='Upgrade an existing deployment; otherwise install fresh')
     parser.add_argument('--env', default=os.environ.get('ENVIRONMENT', 'dev'))
     parser.add_argument('--region', default=os.environ.get('AWS_REGION', 'us-east-1'))
+    parser.add_argument('--confirm-destructive', action='store_true')
+    parser.add_argument('--allow-known-claude-gap', action='store_true')
     parser.add_argument('--local', action='store_true')
     parser.add_argument('--gateway-only', action='store_true')
     parser.add_argument('--dry-run', action='store_true')

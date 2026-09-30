@@ -466,7 +466,7 @@ def test_partial_recovery_cannot_hide_transport_failure(cli, args):
 
 
 @pytest.mark.parametrize("change", [None, "account", "environment", "region", "count", "models", "failed_source"])
-def test_automatic_known_gap_recovery_is_limited_to_reviewed_dev_gap(cli, args, change):
+def test_known_gap_recovery_is_portable_but_rejects_unreviewed_results(cli, args, change):
     cli.partial = True
     cli.retained_variants = 264
     cli.retained_models = KNOWN_CLAUDE_MODELS.copy()
@@ -484,7 +484,7 @@ def test_automatic_known_gap_recovery_is_limited_to_reviewed_dev_gap(cli, args, 
         cli.retained_models.append("anthropic.unreviewed")
     elif change == "failed_source":
         cli.failed_sources = ["https://aws.example/failed"]
-    if change is None:
+    if change in (None, "account", "environment", "region"):
         rollout.finalize(args)
         assert cli.state == "ENABLED"
     else:

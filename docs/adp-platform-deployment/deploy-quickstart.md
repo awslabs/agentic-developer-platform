@@ -1,5 +1,7 @@
 # Install and upgrade ADP
 
+For interrupted runs and explicit recovery flags, see [deployment recovery](deployment-recovery.md).
+
 Use this guide to deploy ADP into your own AWS account. Run commands from the
 repository root. An AI agent should also follow the
 [agent deployment instructions](deploy-with-agent.md), including confirmation

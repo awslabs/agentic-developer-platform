@@ -507,6 +507,11 @@ def open_access(args):
     if aws("sts", "get-caller-identity")["Account"] != before["account"]:
         raise ValueError("EKS access update account differs from the snapshot")
     cluster = f"adp-{before['environment']}-eks-cluster"
+    desired = json.loads((directory / "eks-access.json").read_text())["publicAccessCidrs"]
+    current = aws("eks", "describe-cluster", "--name", cluster)["cluster"]
+    if current["status"] == "ACTIVE" and set(current["resourcesVpcConfig"].get("publicAccessCidrs", [])) == set(desired):
+        print("EKS access already matches the saved upgrade configuration")
+        return
     result = aws("eks", "update-cluster-config", "--name", cluster,
                  "--resources-vpc-config", "file://" + str(directory / "eks-access.json"))
     update_id = result["update"]["id"]

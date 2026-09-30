@@ -53,6 +53,9 @@ LOCAL_MODE=false
 CI_MODE=false
 UPDATE_MODE=false
 CONFIRM_DESTRUCTIVE=false
+RESUME=false
+FROM_PHASE=""
+ALLOW_KNOWN_CLAUDE_GAP=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -72,6 +75,9 @@ while [ "$#" -gt 0 ]; do
     --skip-webhook-ingress) SKIP_WEBHOOK_INGRESS=true ;;
     --local) LOCAL_MODE=true ;;
     --ci) CI_MODE=true ;;
+    --resume) RESUME=true ;;
+    --from) FROM_PHASE="${2:?--from requires a phase}"; RESUME=true; shift ;;
+    --allow-known-claude-gap) ALLOW_KNOWN_CLAUDE_GAP=true ;;
     --update) UPDATE_MODE=true ;;
     --confirm-destructive) CONFIRM_DESTRUCTIVE=true ;;
     --help)
@@ -86,6 +92,10 @@ while [ "$#" -gt 0 ]; do
       echo "Update-mode flags (only with --update):"
       echo "  --confirm-destructive  Authorize terraform applies that include resource destroys"
       echo ""
+      echo "  --resume               Resume completed named phases for this source and target"
+      echo "  --from PHASE           Rerun PHASE and later phases (requires matching checkpoints)"
+      echo "  --allow-known-claude-gap Accept the reviewed pricing gap across accounts"
+      echo "  Phases: bootstrap platform gateway-infra gateway gateway-alb broker admin webhook factory context finalize frontend verify"
       echo "Target: --env <dev|staging|prod> --region <aws-region> (AWS_PROFILE selects account)"
       echo ""
       echo "Scope:"
@@ -192,6 +202,14 @@ if [ -n "$ADP_ACCOUNT_ID" ] && [ "$ADP_ACCOUNT_ID" != "$ACCOUNT_ID" ]; then
 fi
 
 ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
+if [ "$RESUME" = true ] && { [ "$DESTROY" = true ] || [ "$CI_MODE" = true ]; }; then
+  fail "--resume/--from cannot be combined with --destroy or --ci"
+fi
+if [ "$CI_MODE" = false ] && [ "$DESTROY" = false ]; then
+  source "$SCRIPT_DIR/deploy-checkpoints.sh"
+  deploy_checkpoint_init
+fi
+
 
 # ---------------------------------------------------------------------------
 # Accept Bedrock marketplace agreements for the Claude models the platform
@@ -239,9 +257,14 @@ if [ "$UPDATE_MODE" = true ]; then
   step "Update mode: precondition checks"
 
   export UPGRADE_RUN_DIR="${UPGRADE_RUN_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/adp-upgrade-${ACCOUNT_ID}.XXXXXX")}"
-  python3 "$SCRIPT_DIR/upgrade-state.py" prepare --directory "$UPGRADE_RUN_DIR" \
-    --account "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
-    || fail "Cannot safely discover the existing deployment"
+  if [ "${UPGRADE_REUSE_CONTEXT:-false}" = false ]; then
+    python3 "$SCRIPT_DIR/upgrade-state.py" prepare --directory "$UPGRADE_RUN_DIR" \
+      --account "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
+      || fail "Cannot safely discover the existing deployment"
+    printf '%s\n' "$UPGRADE_RUN_DIR" > "$DEPLOY_CHECKPOINT_FILE.upgrade-path"
+  else
+    ok "Resuming with the original upgrade preservation snapshot: $UPGRADE_RUN_DIR"
+  fi
   source "$UPGRADE_RUN_DIR/context.env"
   resolve_deploy_scope
   if [ -n "${ADP_RELEASE_DIR:-}" ]; then
@@ -693,6 +716,7 @@ fi
 # =============================================================================
 # Step 1: Bootstrap (always local — chicken-and-egg)
 # =============================================================================
+if deploy_phase_begin bootstrap; then
 refresh_credentials
 if [ "$UPDATE_MODE" = true ]; then
   step "Step 1/11: Bootstrap (skipped — update mode)"
@@ -727,6 +751,9 @@ else
 
 fi
 
+deploy_phase_complete
+fi
+
 # Backend configuration is needed for upgrades from a clean checkout too.
 python3 "$SCRIPT_DIR/prepare-backends.py" "$ROOT_DIR/environments/$ENVIRONMENT" "$ACCOUNT_ID"
 ok "Environment backend configs updated"
@@ -749,6 +776,7 @@ refresh_credentials
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
+if deploy_phase_begin platform; then
 step "Step 2/11: Deploy shared platform (VPC, EKS, ECR, IAM)"
 
 # Platform infra runs directly (Terraform + kubectl) — no CodeBuild needed.
@@ -766,6 +794,9 @@ else
   ok "Platform deployed"
 fi
 
+deploy_phase_complete
+fi
+
 # Configure kubectl (needed for k8s steps — local or CodeBuild deploy step)
 export KUBECONFIG="${KUBECONFIG:-$(mktemp "${TMPDIR:-/tmp}/adp-${ACCOUNT_ID}-kubeconfig.XXXXXX")}"
 if command -v kubectl >/dev/null 2>&1; then
@@ -776,6 +807,7 @@ refresh_credentials
 # =============================================================================
 # Step 3: Gateway infra
 # =============================================================================
+if deploy_phase_begin gateway-infra; then
 step "Step 3/11: Deploy gateway infrastructure"
 
 if [ "$DEPLOY_GATEWAY" = false ]; then
@@ -833,10 +865,14 @@ else
   fi
 fi
 
+deploy_phase_complete
+fi
+
 refresh_credentials
 # =============================================================================
 # Step 4: Build + deploy gateway
 # =============================================================================
+if deploy_phase_begin gateway; then
 step "Step 4/11: Build and deploy gateway"
 
 if [ "$DEPLOY_GATEWAY" = false ]; then
@@ -1245,6 +1281,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     --expected-image "$PRICING_RELEASE_IMAGE" \
     || fail "Gateway image is deployed but pricing migrations or activation are incomplete"
   PRICING_FINALIZE_ARGS=()
+  [ "$ALLOW_KNOWN_CLAUDE_GAP" = false ] || PRICING_FINALIZE_ARGS+=(--allow-known-claude-gap)
   case "${ADP_PRICING_ALLOW_PARTIAL_REFRESH:-false}" in
     true) PRICING_FINALIZE_ARGS+=(--allow-partial-refresh) ;;
     false) ;;
@@ -1264,10 +1301,18 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
 fi
 ok "Gateway deployed"
 
+deploy_phase_complete
+fi
+
 refresh_credentials
 # =============================================================================
 # Step 5/11: Discover internal ALB and wire to API Gateway + CloudFront
 # =============================================================================
+if [ "$DEPLOY_GATEWAY" = true ]; then
+  GATEWAY_IMAGE=$(python3 "$ROOT_DIR/platform/scripts/resolve-ecr-image.py" "$GATEWAY_IMAGE") \
+    || fail "Cannot resolve the gateway image for subsequent phases"
+fi
+if deploy_phase_begin gateway-alb; then
 if [ "$DEPLOY_GATEWAY" = true ]; then
   step "Step 5/11: Wire internal ALB to API Gateway and CloudFront"
 
@@ -1360,6 +1405,9 @@ else
   step "Step 5/11: Skipping ALB and API Gateway wiring (scope exclusion)"
 fi
 
+deploy_phase_complete
+fi
+
 refresh_credentials
 # =============================================================================
 # Step 5: Frontend
@@ -1372,6 +1420,7 @@ refresh_credentials
 # deploy-broker.sh packages the real github-auth-broker Lambda code and updates
 # the live Lambda (terraform ships a 503 placeholder). Required for GitHub login.
 # Gateway-scope: runs only when the resolved scope includes gateway.
+if deploy_phase_begin broker; then
 if [ "$DEPLOY_GATEWAY" = true ] && [ "$SKIP_BROKER" = false ] && [ "${UPGRADE_BROKER_ENABLED:-true}" = true ]; then
   step "Step 7/11: Deploy broker Lambda code"
   bash "$ROOT_DIR/modules/gateway/scripts/deploy-broker.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
@@ -1382,6 +1431,9 @@ else
   step "Step 7/11: Skipping broker Lambda (scope exclusion)"
 fi
 
+deploy_phase_complete
+fi
+
 refresh_credentials
 # =============================================================================
 # Step 8/11: Bootstrap first admin
@@ -1390,6 +1442,7 @@ refresh_credentials
 # Without it, the onboarding gate shows "request access" for everyone. Requires
 # the gateway pod to be healthy — we enforce a strict rollout gate here.
 # Gateway-scope: runs only when the resolved scope includes gateway.
+if deploy_phase_begin admin; then
 if [ "$UPDATE_MODE" = true ]; then
   step "Step 8/11: Admin bootstrap (skipped — update mode)"
   ok "Admin already exists on live platform"
@@ -1409,6 +1462,9 @@ else
   step "Step 8/11: Skipping admin bootstrap (scope exclusion)"
 fi
 
+deploy_phase_complete
+fi
+
 refresh_credentials
 # =============================================================================
 # Step 9/11: Webhook-ingress stack (KEDA + agent-runtime)
@@ -1418,6 +1474,7 @@ refresh_credentials
 # SQS → KEDA → agent-worker). Runs BEFORE agent-factory because agent-factory's
 # gateway-main.tf references the KEDA CRD and keda-operator-role that this step
 # creates (Issue #1052).
+if deploy_phase_begin webhook; then
 if [ "$DEPLOY_WEBHOOK" = true ]; then
   step "Step 9/11: Deploy webhook-ingress stack"
   WEBHOOK_UPDATE_ARGS=()
@@ -1449,6 +1506,9 @@ else
   step "Step 9/11: Skipping webhook-ingress (scope exclusion)"
 fi
 
+deploy_phase_complete
+fi
+
 refresh_credentials
 # =============================================================================
 # Step 10/11: Agent Factory
@@ -1456,6 +1516,7 @@ refresh_credentials
 # Runs after webhook-ingress which installs KEDA (CRD + operator role).
 # GitHub App secrets (ARC runner) are optional — enable_github_apps=false on
 # fresh deploys where Apps haven't been registered yet.
+if deploy_phase_begin factory; then
 if [ "$DEPLOY_FACTORY" = true ]; then
   step "Step 10/11: Deploy agent-factory"
   bash "$SCRIPT_DIR/build-agent-factory-lambdas.sh"
@@ -1638,11 +1699,15 @@ else
   step "Step 10/11: Skipping agent-factory"
 fi
 
+deploy_phase_complete
+fi
+
 refresh_credentials
 # =============================================================================
 # Step 11/11: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
 # =============================================================================
 
+if deploy_phase_begin context; then
 if [ "$DEPLOY_AGENT_CONTEXT" = true ]; then
   step "Step 11/11: Deploy agent-context"
 
@@ -1676,6 +1741,10 @@ else
   step "Step 11/11: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"
 fi
 
+deploy_phase_complete
+fi
+
+if deploy_phase_begin finalize; then
 # Finalize after all installed modules have been updated.
 if [ "$UPDATE_MODE" = true ]; then
   step "Finalize network-policy enforcement"
@@ -1699,6 +1768,10 @@ if [ "$UPDATE_MODE" = true ]; then
   fi
 fi
 
+deploy_phase_complete
+fi
+
+if deploy_phase_begin frontend; then
 if [ "$SKIP_FRONTEND" = false ] && [ "$DEPLOY_GATEWAY" = true ]; then
   step "Step 6/11: Publish frontend and both account-connection templates"
   bash "$ROOT_DIR/modules/gateway/scripts/deploy-frontend.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
@@ -1706,6 +1779,10 @@ else
   step "Step 6/11: Skipping frontend"
 fi
 
+deploy_phase_complete
+fi
+
+if deploy_phase_begin verify; then
 if [ "$UPDATE_MODE" = true ]; then
   REQUIRED_MODULE_ARGS=()
   [ "$DEPLOY_FACTORY" != true ] || REQUIRED_MODULE_ARGS+=(--require-module agent-factory)
@@ -1723,9 +1800,13 @@ if [ "$CI_MODE" = false ] && [ "${ADP_BEDROCK_VERIFY_DEFERRED:-false}" != true ]
   bash "$SCRIPT_DIR/enable-bedrock-models.sh" --verify || fail "Default model invocation failed."
 fi
 
+deploy_phase_complete
+fi
+
 # =============================================================================
 # Summary
 # =============================================================================
+deploy_checkpoint finish
 step "Deployment complete"
 
 echo "Platform:  $EKS_CLUSTER"

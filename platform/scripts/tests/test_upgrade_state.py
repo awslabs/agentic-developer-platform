@@ -21,6 +21,17 @@ def resource(kind, name, attributes, module=""):
 
 
 class PreservationTests(unittest.TestCase):
+    def test_resume_does_not_resubmit_completed_eks_access_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "integration-before.json").write_text(json.dumps({"account": "123", "environment": "dev"}))
+            (root / "eks-access.json").write_text(json.dumps({"publicAccessCidrs": ["203.0.113.10/32"]}))
+            with patch.object(state, "aws", side_effect=[{"Account": "123"},
+                    {"cluster": {"status": "ACTIVE", "resourcesVpcConfig": {"publicAccessCidrs": ["203.0.113.10/32"]}}}]) as aws:
+                state.open_access(SimpleNamespace(directory=directory))
+                self.assertEqual(aws.call_count, 2)
+
+
     def test_promoted_gateway_layers_keep_immutable_packages_and_retention(self):
         digest = "a" * 64
         layers = {"resources": [

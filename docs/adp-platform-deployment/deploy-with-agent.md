@@ -1,5 +1,7 @@
 # Deploy ADP with an AI agent
 
+For interrupted runs and explicit recovery flags, see [deployment recovery](deployment-recovery.md).
+
 The canonical instructions for deploying ADP with an AI coding agent (Claude
 Code, Kiro, Cursor, …). Point your agent at this file — `AGENTS.md`, `CLAUDE.md`,
 and `.kiro/steering/deployment.md` all redirect here so there is one source of

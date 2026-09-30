@@ -30,6 +30,9 @@ on:
       - 'platform/scripts/upgrade-*.py'
       - 'platform/scripts/upgrade-*.sh'
       - 'platform/scripts/terraform-update.sh'
+      - 'platform/scripts/deploy-checkpoints.*'
+      - 'platform/scripts/tfvars-account-check.py'
+      - 'platform/scripts/tests/test_deployment_recovery.py'
       - 'platform/scripts/prepare-backends.py'
       - 'platform/scripts/tests/test_upgrade*.py'
       - 'platform/scripts/tests/test_update_safety.py'
@@ -88,6 +91,9 @@ on:
       - 'platform/scripts/upgrade-*.py'
       - 'platform/scripts/upgrade-*.sh'
       - 'platform/scripts/terraform-update.sh'
+      - 'platform/scripts/deploy-checkpoints.*'
+      - 'platform/scripts/tfvars-account-check.py'
+      - 'platform/scripts/tests/test_deployment_recovery.py'
       - 'platform/scripts/prepare-backends.py'
       - 'platform/scripts/tests/test_upgrade*.py'
       - 'platform/scripts/tests/test_update_safety.py'
@@ -202,6 +208,7 @@ jobs:
           terraform_wrapper: false
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
+      - run: python -m unittest discover -s platform/scripts/tests -p test_deployment_recovery.py -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_gateway_engine_release.py -v
       - run: python -m pytest platform/scripts/tests/test_bedrock_model_access.py -q
       # Capacity-subnet retention and the runbook's resolve block (#5830). Pinned
