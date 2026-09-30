@@ -31,6 +31,10 @@ name: Superplane Domain CI
 # module's `conftest.py` excludes `src/` from collection for the same reason, and `.ruff.toml`
 # excludes it from ADP's lint rules — lint only; this lane, its path filters and review all
 # still cover it.
+#
+# Catalogue/registry-only PRs run prompt-file and catalogue parity checks in a
+# lightweight job. Any other changed path retains the full domain/controller
+# suites. Manual runs retain their full or controller-only selection.
 
 on:
   pull_request:
@@ -42,6 +46,8 @@ on:
       - 'modules/domain-apps/superplane/**'
       # The lane itself, so a change to it is checked by it.
       - '.github/workflows/superplane-domain-ci.yml'
+      - '.github/scripts/superplane_ci_scope.py'
+      - '.github/scripts/tests/test_superplane_ci_scope.py'
       # The central registration lists. These live OUTSIDE the module directory, which is
       # the entire reason they get missed (R1 acc. 3) — so a PR touching any of them has
       # to be able to run the suites that assert the registration is complete and paired.
@@ -102,8 +108,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  change-scope:
+    name: Select Superplane checks
+    runs-on: arc-runner-org
+    outputs:
+      persona_only: ${{ steps.scope.outputs.persona_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Classify PR changes
+        id: scope
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/superplane_ci_scope.py
+
+  persona-registration-tests:
+    name: Superplane persona registration tests
+    needs: change-scope
+    if: ${{ needs.change-scope.outputs.persona_only == 'true' }}
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install pytest
+      - name: Check persona prompt files and catalogue parity
+        working-directory: modules/agent-factory/webhook-ingress
+        run: |
+          python3 -m pytest \
+            lambda/common/tests/test_persona_prompt_files.py \
+            lambda/common/tests/test_persona_catalogue_parity.py -q
+
   superplane-domain-tests:
-    if: ${{ !inputs.controller_only }}
+    needs: change-scope
+    if: ${{ !inputs.controller_only && needs.change-scope.outputs.persona_only == 'false' }}
     # Required-check name for U12/U2/U8. Renaming a job silently removes a required check
     # rather than failing, so treat this string as a contract.
     name: Superplane domain tests
@@ -147,6 +192,9 @@ jobs:
         # The registration suites import the gateway's feature module, so they need its
         # dependency set. The domain module has none of its own yet.
         run: pip install -e ".[dev]" "setuptools>=75.0" wheel
+
+      - name: Test CI scope selection
+        run: python3 -m pytest .github/scripts/tests/test_superplane_ci_scope.py -q
 
       - name: Verify CLI evaluation guards without network access
         # The CLI dependency changes E18's acceptance and cleanup logic. Exercise
@@ -622,6 +670,8 @@ jobs:
           PYTHON
 
   controller-execution-tests:
+    needs: change-scope
+    if: ${{ needs.change-scope.outputs.persona_only == 'false' }}
     name: Superplane controller execution tests
     runs-on: arc-runner-org
     timeout-minutes: 15
