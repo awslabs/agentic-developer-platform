@@ -55,7 +55,7 @@ from src.shared.identity.providers import IdentityProvider
 from src.shared.models.base import Base
 from src.shared.models.budget import BudgetUsage, PersonBudgetConfig, PersonBudgetDefault
 from src.shared.models.onboarding import TenantMembership
-from src.shared.models.organization import User
+from src.shared.models.organization import Team, TeamMembership, User
 from src.shared.models.vault import UserIdentity
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import PeriodType
@@ -1367,6 +1367,24 @@ async def test_d2c_platform_admin_authors_a_team_default_with_both_halves(sessio
     assert response.status_code == 200, response.text
     rows = await stored_defaults(session)
     assert (rows[0].scope_type, rows[0].scope_id_org, rows[0].scope_id_team) == ("team", ORG_ID, TEAM_ID)
+
+
+async def test_d2c_non_primary_team_membership_accepts_and_enforces_default(session, seeded):
+    """A visible secondary team can govern a person without users.team_id pointing at it."""
+    secondary_team = "team-4629-secondary"
+    session.add(Team(id=secondary_team, org_id=ORG_ID, department_id="dept-4629", name="Secondary"))
+    session.add(TeamMembership(user_id=PERSON_CANONICAL, org_id=ORG_ID, team_id=secondary_team, is_primary=False))
+    await session.commit()
+
+    async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+        response = await client.put(f"/budget/person-default/team:{ORG_ID}:{secondary_team}", json={"budget_amount_usd": "50.00"})
+    assert response.status_code == 200, response.text
+
+    async with client_for(session, context_for(PERSON_SUB)) as client:
+        person_limit = await client.get("/me/budget/person-cap", params={"period_type": "monthly"})
+    assert person_limit.status_code == 200, person_limit.text
+    assert person_limit.json()["cap_usd"] == "50.00"
+    assert person_limit.json()["source"] == "team_default"
 
 
 async def test_d2d_a_default_is_always_stored_hard(session, seeded):

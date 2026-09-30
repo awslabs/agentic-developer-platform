@@ -386,9 +386,7 @@ class TestDelegationToTheCore:
     def test_login_preserves_exact_arguments(self, run_adp, spy_core, adp_bin, adp_home, explicit_url, no_browser):
         """Empty optional arguments must work under nounset, including Bash 3.2."""
         _write_config(adp_home)
-        (adp_bin / "bg-cognito-auth.sh").write_text(
-            '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > ' + shlex.quote(str(spy_core)) + '\n'
-        )
+        (adp_bin / "bg-cognito-auth.sh").write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > ' + shlex.quote(str(spy_core)) + "\n")
         options = ["--gateway-url", GATEWAY_URL] if explicit_url else []
         optional = ["--no-browser"] if no_browser else []
         result = run_adp(["login", *options, *optional])

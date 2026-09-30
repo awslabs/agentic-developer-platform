@@ -155,7 +155,7 @@ from src.shared.identity import (
 from src.shared.identity.person_anchor import UnresolvablePersonAnchorError
 from src.shared.models.base import new_uuid
 from src.shared.models.budget import PersonBudgetConfig, PersonBudgetDefault
-from src.shared.models.organization import Organization, User
+from src.shared.models.organization import Organization, TeamMembership, User
 from src.shared.schemas.auth import TokenContext
 from src.shared.schemas.budget import PeriodType
 
@@ -475,10 +475,11 @@ async def _require_scope_exists(db: AsyncSession, scope_type: str, scope_id_org:
     bounded. An existence SELECT at write time is the cheap, lifecycle-decoupled
     alternative to the FK the migration deliberately rejected.
 
-    Org: the ``organizations`` row must exist. Team: at least one ``users`` row
-    must carry the (org, team) pair — teams live in Cognito attributes, so "a
-    team someone is actually in" is the only existence a rule can usefully have;
-    a team no user carries would govern nobody by construction.
+    Org: the ``organizations`` row must exist. Team: at least one person must
+    belong to the (org, team) pair. TeamMembership is the authority for all
+    teams, including non-primary teams; users.team_id is retained for legacy
+    provisioning without membership rows. This matches resolve_person_team_keys,
+    which is what enforcement uses to decide whether the rule governs a person.
     """
     if scope_type == "platform":
         return
@@ -486,11 +487,15 @@ async def _require_scope_exists(db: AsyncSession, scope_type: str, scope_id_org:
     if org_exists is None:
         raise HTTPException(status_code=422, detail=f"No GitHub org with id '{scope_id_org}' exists on this platform; the rule would govern nobody.")
     if scope_type == "team":
-        member_exists = await db.scalar(select(User.id).where(User.org_id == scope_id_org, User.team_id == scope_id_team).limit(1))
+        member_exists = await db.scalar(
+            select(TeamMembership.user_id).where(TeamMembership.org_id == scope_id_org, TeamMembership.team_id == scope_id_team).limit(1)
+        )
+        if member_exists is None:
+            member_exists = await db.scalar(select(User.id).where(User.org_id == scope_id_org, User.team_id == scope_id_team).limit(1))
         if member_exists is None:
             raise HTTPException(
                 status_code=422,
-                detail=f"No member of GitHub org '{scope_id_org}' carries team id '{scope_id_team}'; the rule would govern nobody.",
+                detail=f"No member of GitHub org '{scope_id_org}' belongs to team id '{scope_id_team}'; the rule would govern nobody.",
             )
 
 
