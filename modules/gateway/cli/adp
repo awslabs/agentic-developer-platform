@@ -968,7 +968,8 @@ cmd_login() {
 
     gateway_url="$(require_url_matches_selected_deployment "${gateway_url}" "Signing in")"
 
-    core login --web --gateway-url "${gateway_url}" "${args[@]}"
+    # Bash 3.2 (macOS) treats an empty array as unset under set -u.
+    core login --web --gateway-url "${gateway_url}" ${args[@]+"${args[@]}"}
 }
 
 # A named deployment's URL is its IDENTITY, so establishing a session against a

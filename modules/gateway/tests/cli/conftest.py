@@ -250,16 +250,17 @@ def run_adp(adp_bin: Path, adp_home: Path):
 
     PATH deliberately does NOT contain the install dir: `adp` must resolve its
     core helper as a sibling of itself, not via a PATH lookup that could find an
-    unrelated copy.
+    unrelated copy. ADP_TEST_BASH can select an older Bash for compatibility checks.
     """
 
     def _run(args: list[str], extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-        env = os.environ.copy()
+        # A developer's active deployment must not override the sandboxed HOME.
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("ADP_", "BG_"))}
         env["HOME"] = str(adp_home)
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
-            ["bash", str(adp_bin / "adp"), *args],
+            [os.environ.get("ADP_TEST_BASH", "bash"), str(adp_bin / "adp"), *args],
             capture_output=True,
             text=True,
             env=env,

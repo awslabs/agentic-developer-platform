@@ -381,6 +381,20 @@ class TestDelegationToTheCore:
 
         assert spy_core.read_text().strip().endswith("--no-browser")
 
+    @pytest.mark.parametrize("explicit_url", [False, True])
+    @pytest.mark.parametrize("no_browser", [False, True])
+    def test_login_preserves_exact_arguments(self, run_adp, spy_core, adp_bin, adp_home, explicit_url, no_browser):
+        """Empty optional arguments must work under nounset, including Bash 3.2."""
+        _write_config(adp_home)
+        (adp_bin / "bg-cognito-auth.sh").write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > ' + shlex.quote(str(spy_core)) + '\n'
+        )
+        options = ["--gateway-url", GATEWAY_URL] if explicit_url else []
+        optional = ["--no-browser"] if no_browser else []
+        result = run_adp(["login", *options, *optional])
+        assert result.returncode == 0, result.stderr
+        assert spy_core.read_text().splitlines() == ["login", "--web", "--gateway-url", GATEWAY_URL, *optional]
+
     def test_explicit_gateway_url_wins_over_the_stored_one(self, run_adp, spy_core: Path, adp_home: Path) -> None:
         _write_config(adp_home)
 
