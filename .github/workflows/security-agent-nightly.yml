@@ -635,7 +635,17 @@ jobs:
       # The title contains an em dash. A step that mangled the encoding would fail
       # the exact-title match and file a duplicate umbrella rather than error, so
       # the title is not retyped here at all: the script's default is the value.
+      - name: Recover completed filing before authoring another plan
+        id: recovery
+        run: |
+          set -o pipefail
+          $SECURITYAGENT_PYTHON .github/scripts/resume_filed_triage.py \
+            --ledger-dir "$LEDGER_DIR" --new-findings new-findings.json \
+            --source "$SOURCE" --run-date "$RUN_DATE" | tee recovery.out
+          grep '^resume=' recovery.out >> "$GITHUB_OUTPUT"
+
       - name: Ensure the runtime umbrella EPIC and the story label exist
+        if: steps.recovery.outputs.resume != 'true'
         run: |
           $SECURITYAGENT_PYTHON .github/scripts/ensure_umbrella_epic.py \
             --repo "${{ github.repository }}"
@@ -663,6 +673,7 @@ jobs:
       # protected scan identity authenticates the gateway call -- there
       # is no token to mint, store or rotate -- so nothing secret is read here.
       - name: Author the night's grouping plan
+        if: steps.recovery.outputs.resume != 'true'
         run: |
           TRANSPORT_ARGS=(--bedrock-via "$BEDROCK_VIA")
           if [ "$BEDROCK_VIA" = "gateway" ]; then
@@ -699,6 +710,7 @@ jobs:
       # Every argument below matches the filing step exactly. Gating one body and
       # filing a different one would make this step decorative.
       - name: Gate the plan before anything is filed
+        if: steps.recovery.outputs.resume != 'true'
         run: |
           $SECURITYAGENT_PYTHON .github/scripts/triage_group_findings.py validate \
             --plan plan.json \
@@ -721,6 +733,7 @@ jobs:
       # scanner ran and found nothing" from "this scanner never signalled" —
       # without it every common night would look like a hung pass.
       - name: File the night's grouped work items
+        if: steps.recovery.outputs.resume != 'true'
         run: |
           $SECURITYAGENT_PYTHON .github/scripts/triage_group_findings.py file \
             --repo "${{ github.repository }}" \
@@ -852,7 +865,14 @@ jobs:
     # find no marker, and — now that the temporary `joinable` guard is gone —
     # hard-fail the barrier as STALLED, blaming a triage pass that had not yet
     # run. `needs` is what makes an absent marker mean "triage is broken".
-    needs: [code-review, triage]
+    needs: [code-review, scan_gate, triage]
+    # A processed scan skips triage, but a previous delivery failure must still
+    # reach the existing plan and durable root-dispatch marker.
+    if: >-
+      ${{ !cancelled() && needs.code-review.result == 'success' &&
+          needs.scan_gate.result == 'success' &&
+          (needs.triage.result == 'success' ||
+           (needs.triage.result == 'skipped' && needs.scan_gate.outputs.processed == 'true')) }}
     environment: adp-scan-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
@@ -971,8 +991,8 @@ jobs:
       # Only --run-date, --issue-number and the marker dir are passed. Persona,
       # service identity and target repo are deliberately NOT sent: they are
       # Terraform literals in the rule's InputTransformer, which is the primary
-      # control on this path since `events:PutEvents` cannot be scoped to an
-      # event source (§5). Passing any of them here would delete that control.
+      # payload control on this path. IAM also bounds the bus, event source and
+      # detail type. Passing persona or identity here would delete the payload control.
       #
       # With the rule disabled this emit matches nothing and starts no run,
       # which is the intended inert state.

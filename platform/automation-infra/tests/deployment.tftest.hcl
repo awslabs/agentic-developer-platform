@@ -164,3 +164,26 @@ run "empty_inventory_cannot_gain_cluster_admin_through_kubectl" {
     error_message = "Empty admission must deny all AWS actions, including indirect event/source mutation paths."
   }
 }
+
+run "security_delivery_can_only_emit_its_root_event" {
+  command = plan
+  assert {
+    condition     = aws_iam_role_policy.scan.role == aws_iam_role.scan.id
+    error_message = "Delivery permission must belong to the workflow's trusted-scan role."
+  }
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.scan.policy).Statement : s if s.Sid == "SecurityDeliveryRoot"]).Resource == "arn:aws:events:us-east-1:123456789012:event-bus/default"
+    error_message = "Security delivery must be scoped to this account and region's default bus."
+  }
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.scan.policy).Statement : s if s.Sid == "SecurityDeliveryRoot"]).Action == ["events:PutEvents"]
+    error_message = "Security delivery must not receive EventBridge rule or target administration."
+  }
+  assert {
+    condition = one([for s in jsondecode(aws_iam_role_policy.scan.policy).Statement : s if s.Sid == "SecurityDeliveryRoot"]).Condition.StringEquals == {
+      "events:source"      = "adp.security-agent"
+      "events:detail-type" = "ADP Agent Dispatch"
+    }
+    error_message = "Only the security-agent root event vocabulary may be emitted."
+  }
+}

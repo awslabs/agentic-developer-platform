@@ -318,6 +318,7 @@ jobs:
             tests/test_join_barrier.py \
             tests/test_ops_dispatch_bounds.py \
             tests/test_nightly_triage_wiring.py \
+            tests/test_resume_filed_triage.py \
             tests/test_report_finalization.py \
             tests/test_verify_scoped_plan.py \
             tests/test_gateway_infra_reviewed_source.py \

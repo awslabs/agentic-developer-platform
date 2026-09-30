@@ -47,6 +47,14 @@ resource "aws_iam_role_policy" "scan" {
         "arn:aws:codebuild:${var.aws_region}:${data.aws_caller_identity.current.account_id}:build/${var.name_prefix}-${tool}-scan:*"
       ]])
     },
+    {
+      Sid      = "SecurityDeliveryRoot", Effect = "Allow", Action = ["events:PutEvents"],
+      Resource = "arn:aws:events:${var.aws_region}:${data.aws_caller_identity.current.account_id}:event-bus/default",
+      Condition = { StringEquals = {
+        "events:source"      = "adp.security-agent",
+        "events:detail-type" = "ADP Agent Dispatch"
+      } }
+    },
     { Sid = "Identity", Effect = "Allow", Action = ["sts:GetCallerIdentity"], Resource = "*" },
     ], [for _ in range(var.security_agent_space_id == "" ? 0 : 1) : {
       Sid = "ExistingCodeReviewSpace", Effect = "Allow",
