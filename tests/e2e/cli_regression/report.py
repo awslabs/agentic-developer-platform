@@ -55,7 +55,7 @@ def render(jobs, revision, ec2_revision="", ec2_scope="nightly"):
                 "and EC2 E01 install + C01 native login/refresh.",
                 "**Full CLI acceptance is not established by this scope.** "
                 "E02–E22 are outside this login-only gate. The full matrix remains available "
-                "with `ec2_scope=full`; see docs/runbooks/nightly-cli-regression.md "
+                "with `ec2_scope=full`; see docs/regression-testing/nightly-cli-regression.md "
                 "for missing destination/GitHub/hosted/multi-deployment fixtures and "
                 "the E16/E17 model-limit guard.",
             ]

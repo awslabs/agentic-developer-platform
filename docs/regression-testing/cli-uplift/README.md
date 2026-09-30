@@ -32,7 +32,7 @@ To re-apply:
 aws iam put-role-policy \
   --role-name adp-cli-uplift-eval-orchestrator \
   --policy-name cli-uplift-eval-e02-fixtures \
-  --policy-document file://docs/evaluations/cli-uplift/orchestrator-e02-fixtures-policy.json
+  --policy-document file://docs/regression-testing/cli-uplift/orchestrator-e02-fixtures-policy.json
 ```
 
 
@@ -171,10 +171,10 @@ new deployment authority. Review commands (execute only by the supervisor):
 ```bash
 aws iam put-role-policy --role-name adp-cli-uplift-eval-orchestrator \
   --policy-name cli-uplift-gateway-observer \
-  --policy-document file://docs/evaluations/cli-uplift/gateway-observer-policy.json
+  --policy-document file://docs/regression-testing/cli-uplift/gateway-observer-policy.json
 aws eks create-access-entry --region us-east-1 \
-  --cli-input-json file://docs/evaluations/cli-uplift/gateway-observer-access-entry.json
-kubectl apply -f docs/evaluations/cli-uplift/gateway-observer-rbac.yaml
+  --cli-input-json file://docs/regression-testing/cli-uplift/gateway-observer-access-entry.json
+kubectl apply -f docs/regression-testing/cli-uplift/gateway-observer-rbac.yaml
 ```
 
 Read back exact policy, access entry/group and RoleBinding. Verify with the actual
@@ -220,7 +220,7 @@ binding; no worker role or task-dependent permission changes are involved.
 ```bash
 aws iam put-role-policy --role-name adp-cli-uplift-eval-orchestrator \
   --policy-name cli-uplift-eval-orchestrator \
-  --policy-document file://docs/evaluations/cli-uplift/orchestrator-policy.json
+  --policy-document file://docs/regression-testing/cli-uplift/orchestrator-policy.json
 ```
 
 For uncertain launches, the harness retains a stable EC2 client token and finds

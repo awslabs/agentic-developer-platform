@@ -30,7 +30,7 @@ run-name: ${{ format('ADP deployment {0}', inputs.adp_correlation) }}
 # never satisfy full acceptance however many cases pass. Closing #5199 needs two
 # fresh full runs against the same integrated deployed revision.
 #
-# See docs/runbooks/cli-uplift-evaluation.md for dispatch/status/resume/cleanup.
+# See docs/regression-testing/cli-uplift-evaluation.md for dispatch/status/resume/cleanup.
 
 on:
   workflow_dispatch:
@@ -127,8 +127,8 @@ on:
       - 'tests/unit/test_superplane_executor_build.py'
       - '.github/workflows/superplane-executor-build.yml'
       - '.github/actions/trusted-build/action.yml'
-      - 'docs/evaluations/cli-uplift/orchestrator-trust-policy.json'
-      - 'docs/runbooks/cli-uplift-evaluation.md'
+      - 'docs/regression-testing/cli-uplift/orchestrator-trust-policy.json'
+      - 'docs/regression-testing/cli-uplift-evaluation.md'
       - '.github/workflows/eval-cli-uplift.yml'
       # Documentation-only changes do not start this workflow.
       - '!docs/**'
@@ -878,7 +878,7 @@ jobs:
                 --state-dir "$EVAL_STATE_DIR" \
                 --evaluation-id "$EVALUATION_ID" \
                 --restore; then
-            echo "::error::State-based sweep for $EVALUATION_ID did not complete. Non-EC2 resources (IAM roles, instance profiles, CloudFormation stacks, secrets, Cognito users) may still exist in the platform or destination account. Sweep manually per docs/runbooks/cli-uplift-evaluation.md, then re-dispatch with mode=cleanup."
+            echo "::error::State-based sweep for $EVALUATION_ID did not complete. Non-EC2 resources (IAM roles, instance profiles, CloudFormation stacks, secrets, Cognito users) may still exist in the platform or destination account. Sweep manually per docs/regression-testing/cli-uplift-evaluation.md, then re-dispatch with mode=cleanup."
             exit 1
           fi
 

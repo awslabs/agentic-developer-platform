@@ -17,7 +17,7 @@ from .ports import PortError
 
 CATALOG = (
     Path(__file__).resolve().parents[3]
-    / "docs/evaluations/cli-uplift/gateway-deployment-receipts.json"
+    / "docs/regression-testing/cli-uplift/gateway-deployment-receipts.json"
 )
 
 

@@ -170,7 +170,7 @@ def test_eval_oidc_trust_is_exact_dev_environment_and_sts_audience():
 
     policy = json.loads(
         (
-            ROOT / "docs/evaluations/cli-uplift/orchestrator-trust-policy.json"
+            ROOT / "docs/regression-testing/cli-uplift/orchestrator-trust-policy.json"
         ).read_text()
     )
     oidc = [

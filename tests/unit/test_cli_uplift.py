@@ -8517,7 +8517,8 @@ def test_example_config_leaves_unestablished_fixtures_absent():
 # keep the operator-facing names honest against the code.
 
 RUNBOOK_PATH = (
-    pathlib.Path(__file__).parents[2] / "docs/runbooks/cli-uplift-evaluation.md"
+    pathlib.Path(__file__).parents[2]
+    / "docs/regression-testing/cli-uplift-evaluation.md"
 )
 
 
@@ -8602,7 +8603,9 @@ def test_runbook_states_that_state_json_is_never_published():
 
 
 def test_runbook_is_indexed():
-    index = (pathlib.Path(__file__).parents[2] / "docs/runbooks/README.md").read_text()
+    index = (
+        pathlib.Path(__file__).parents[2] / "docs/regression-testing/README.md"
+    ).read_text()
     assert "cli-uplift-evaluation.md" in index
 
 
@@ -10263,7 +10266,7 @@ def test_transport_uses_cluster_ca_bearer_no_redirects_and_scrubs_failures(monke
 def test_observer_artifacts_grant_only_two_named_reads():
     import yaml
 
-    directory = Path(__file__).parents[2] / "docs/evaluations/cli-uplift"
+    directory = Path(__file__).parents[2] / "docs/regression-testing/cli-uplift"
     role, binding = list(
         yaml.safe_load_all((directory / "gateway-observer-rbac.yaml").read_text())
     )

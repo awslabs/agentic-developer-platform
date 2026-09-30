@@ -353,7 +353,7 @@ both have regression tests.
 ## 8. Evaluation
 
 The existing CLI-uplift evaluation framework (`tests/e2e/cli_uplift/`, runbook
-[cli-uplift-evaluation.md](../runbooks/cli-uplift-evaluation.md)) is **extended**,
+[cli-uplift-evaluation.md](../regression-testing/cli-uplift-evaluation.md)) is **extended**,
 not replaced: two cases, **E16** and **E17**, and one new suite,
 `multi-deployment`.
 

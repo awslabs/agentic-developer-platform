@@ -60,7 +60,7 @@ Current domain workspace creation starts governed provisioning and requires its
 reviewed plan/approval path; it is not metadata-only. The basic create flags do
 not establish that approval or a compute ceiling. E18 remains guarded until
 staged recovery and provider teardown are implemented; see the
-[workspace recovery prerequisite](../evaluations/cli-uplift/superplane-workspace-recovery.md).
+[workspace recovery prerequisite](../regression-testing/cli-uplift/superplane-workspace-recovery.md).
 
 Mutations and recovery require an access token with a nonblank tenant claim.
 Org-less password sessions are refused before mutation and existing receipts

@@ -51,7 +51,7 @@ and dedicated fixture, alongside SSM agent permissions.
 
 ```bash
 gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
-  -f environment=customer-demo -f expected_revision=<verified-40-character-sha> \
+  -f environment=customer-demo -f expected_revision='<verified-40-character-sha>' \
   -f mode=start -f suites=login
 ```
 
@@ -127,7 +127,7 @@ served artifact hashes with the expected release.
 
 ```bash
 gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
-  -f environment=dev -f expected_revision=<verified-40-character-sha> \
+  -f environment=dev -f expected_revision='<verified-40-character-sha>' \
   -f mode=start -f suites=login
 ```
 
@@ -148,7 +148,7 @@ To run the same suite independently:
 
 ```bash
 gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
-  -f environment=dev -f expected_revision=<verified-40-character-sha> \
+  -f environment=dev -f expected_revision='<verified-40-character-sha>' \
   -f mode=start -f suites=full
 ```
 
@@ -413,8 +413,8 @@ not grant permissions or reset shared qualification spend.
 
 Use `suites=login,hosted-chat` for explicit diagnostic D01 or
 `suites=login,vault-lifecycle` for D02. Their fixture shapes are documented in
-[chat](../evaluations/cli-uplift/hosted-chat-diagnostic.md) and
-[vault](../evaluations/cli-uplift/vault-lifecycle-diagnostic.md). D01/D02 are opt-in
+[chat](cli-uplift/hosted-chat-diagnostic.md) and
+[vault](cli-uplift/vault-lifecycle-diagnostic.md). D01/D02 are opt-in
 and do not change the nightly/full matrix, E40 read-only claims or story
 acceptance. Missing fixtures block their case. Reports retain results and
 recovery evidence; normal owned EC2 cleanup still runs.
@@ -445,7 +445,7 @@ A same-instance rerun with an existing recovery directory also refuses dispatch.
 
 D03 uses `suites=login,hierarchy-lifecycle` with an independent ordinary fixture
 and a predeclared empty-team membership baseline. See
-[hierarchy lifecycle](../evaluations/cli-uplift/hierarchy-lifecycle-diagnostic.md)
+[hierarchy lifecycle](cli-uplift/hierarchy-lifecycle-diagnostic.md)
 for exact scope, retained recovery intent and restoration. It is excluded from
 `full` and `nightly` and performs no inference.
 

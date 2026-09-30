@@ -2,7 +2,7 @@
 
 End-to-end evaluation of the journey a new developer actually walks: sign in,
 get approved, download the helper, point Claude Code (or Codex) at the gateway,
-get a completion. It runs inside the [combined nightly regression](../../../docs/runbooks/nightly-cli-regression.md) against dev and can also be triggered on demand.
+get a completion. It runs inside the [combined nightly regression](../../../docs/regression-testing/nightly-cli-regression.md) against dev and can also be triggered on demand.
 
 Issue #4157 — Story 5 of EPIC #4143. It automates the manual live validation
 performed on 2026-08-26, so the journey shipped by #4144 (approval gate), #4145

@@ -8,7 +8,7 @@ subsystem and is intended to be actionable — all commands should run as-is
 
 | Runbook | Subsystem | When to use |
 |---|---|---|
-| [CLI Uplift Evaluation](./cli-uplift-evaluation.md) | CLI uplift (`adp` CLI, release routes, personal-AWS connect) | Dispatching the E2E evaluation on disposable EC2, reading per-case results, resuming an attempt, and verifying nothing was left running after a cancelled run |
+| [Regression testing](../regression-testing/README.md) | CLI Uplift and combined nightly regression | Choosing coverage, configuring targets, dispatching evaluations, interpreting results, and cleanup |
 | [Gateway Migrations](./gateway-migrations.md) | Gateway / Postgres | Applying pending Alembic migrations, diagnosing migration state, partial-apply recovery |
 | [GitHub Auth Allowlist Remediation](./github-auth-allowlist-remediation.md) | Gateway / GitHub auth broker | Rolling out the fail-closed allowlist, auditing users provisioned under the old open default, configuring the org-check token |
 | [Live Run-Control Evaluation](./agent-control-evaluation.md) | Agent live control | Running the Wave 1 control evaluation: fixture config contract, artifact requirements, exit codes, bounded cleanup |

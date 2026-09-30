@@ -108,7 +108,7 @@ permissions, never general AWS administration or removal of boundaries.
 ## Known implementation traps
 
 - Reuse `.github/workflows/eval-cli-uplift.yml`, `tests/e2e/cli_uplift/{config,preflight,stages,live,cleanup,statestore,report}.py`, `personal_aws_worker.py`, `remote/{personal_aws,bedrock_routing,personal_inference,common}.py`, and the pinned #5173 harness (`62b03d343181978aeb54ef1b29634204d050637d`).
-- `docs/runbooks/cli-uplift-destination-roles.md` describes the **old cross-account fixture request**. Its IAM examples are starting points to review against actual behavior, not a verified bootstrap for the new target. Correct its stale case references and change destination resource/trust bindings to **938500344975** while keeping source principals in **879318057152**; do not blindly replace source-account ARNs.
+- `docs/regression-testing/cli-uplift-destination-roles.md` describes the **old cross-account fixture request**. Its IAM examples are starting points to review against actual behavior, not a verified bootstrap for the new target. Correct its stale case references and change destination resource/trust bindings to **938500344975** while keeping source principals in **879318057152**; do not blindly replace source-account ARNs.
 - **#5274 is an open prerequisite for L05.** Current `_usage_record()` can accept one Claude row for both clients. Fix/integrate that assertion under its existing issue and require separate client/model/request correlations. Missing Codex usage must fail.
 - `_cloudtrail_invocation()` currently uses `LookupEvents` and derives `recorded_account` from config; this is not sufficient invocation proof. Determine the actually configured Bedrock invocation/data-event evidence source, use the supported log/query path, and match observed account, role/session, request and run/time window. CloudTrail management-event history is not a substitute for Bedrock data events. Do not enable broad logging changes in a shared account without a scoped, reviewed configuration.
 - Existing E06 destination deletion may leave a registry row when the API lacks a supported delete/unlink route. Leaving it behind is not successful cleanup. Reproduce and fix necessary product deletion support through normal reviewed changes; never patch the database directly or weaken the outstanding-resource assertion.
@@ -133,7 +133,7 @@ Before live dispatch, resolve the deployed gateway revision from Lambda
 `adp-dev-orchestration-tick`'s `Code.ResolvedImageUri` digest to its unique
 40-character tag in ECR `adp-gateway`; `/health` does not expose a product SHA.
 Record product, evaluation and served CLI revisions separately. Consult
-[the evaluation runbook](../runbooks/cli-uplift-evaluation.md) for current
+[the evaluation runbook](cli-uplift-evaluation.md) for current
 status/resume/cleanup entry points and update it for the new suite.
 
 Existing Linux offline checks in `eval-cli-uplift.yml` (job: **Offline guards
